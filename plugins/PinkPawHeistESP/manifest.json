@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "id": "anomaly.builtin.pink-paw-heist-esp",
+  "id": "anomaly.pink-paw-heist-esp",
   "name": "Pink Paw Heist ESP",
   "description": "Displays Pink Paw Heist loot and extraction points with value filters and pickup controls.",
   "author": "Anomaly",

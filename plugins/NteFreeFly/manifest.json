@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "id": "local.nte.free-fly",
+  "id": "mou-mou-sama.nte-free-fly",
   "name": "Free Fly",
   "description": "Hold WASD to move horizontally, Space to ascend and Ctrl to descend: the character flies freely and passes through walls.",
   "author": "Mou-Mou-SaMa",

@@ -1180,7 +1180,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     *descriptor = {sizeof(*descriptor),
                    ANOMALY_PLUGIN_API_V1_MAJOR,
                    ANOMALY_PLUGIN_API_V1_MINOR,
-                   StringView("local.nte.free-fly"),
+                   StringView("mou-mou-sama.nte-free-fly"),
                    StringView("NTE Free Fly"),
                    StringView("Anomaly Plugin"),
                    StringView("1.6.0"),

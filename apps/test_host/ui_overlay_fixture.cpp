@@ -8,7 +8,7 @@
 #include <stdexcept>
 
 namespace {
-constexpr auto kPluginId = "local.status-bar";
+constexpr auto kPluginId = "b1ank.status-bar";
 
 void Require(bool value, const char* message) {
     if (!value) throw std::runtime_error(message);

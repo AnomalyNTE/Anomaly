@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "id": "anomaly.local.nte.camera-blur-fix",
+  "id": "anomaly.camera-blur-fix",
   "name": "Camera Blur Fix",
   "description": "Disables camera-induced fading for the player, NPCs, and crowds, including pitch-based fading and close-range character hiding.",
   "author": "Anomaly",

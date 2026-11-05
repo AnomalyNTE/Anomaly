@@ -3738,7 +3738,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     }
     *descriptor = {
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
-        anomaly::sdk::StringView("anomaly.local.nte.fake-uid"),
+        anomaly::sdk::StringView("anomaly.fake-uid"),
         anomaly::sdk::StringView("Custom UID"),
         anomaly::sdk::StringView("Anomaly"), anomaly::sdk::StringView("1.2.2"),
         Load, Start, Stop, Unload, Update, Draw};

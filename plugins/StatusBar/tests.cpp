@@ -119,7 +119,7 @@ int main() {
     fixture::Probe p;
     AnomalyPluginDescriptorV1 descriptor{sizeof(descriptor)};
     Check(Succeeded(AnomalyPluginEntryV1(&descriptor)), "plugin entry failed");
-    Check(fixture::Text(descriptor.id) == "local.status-bar" && fixture::Text(descriptor.version) == "0.3.2",
+    Check(fixture::Text(descriptor.id) == "b1ank.status-bar" && fixture::Text(descriptor.version) == "0.3.2",
           "plugin identity or version differs from its manifest");
     void* loaded{};
     Check(Succeeded(descriptor.on_load(&p.host, &loaded)) && loaded, "load failed without optional font/texture services");

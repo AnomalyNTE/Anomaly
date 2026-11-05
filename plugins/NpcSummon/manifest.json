@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "id": "local.nte.npc-summon",
+  "id": "ouo.npc-summon",
   "name": "NPC Summon",
   "description": "Browse the NPC and vehicle classes that are actually running in the world, filter them by keyword, spawn one in front of the player, and clear the ones you spawned.",
   "author": "OUO",

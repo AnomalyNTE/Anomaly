@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "id": "local.ui-buttons",
+  "id": "anomaly.ui-buttons",
   "name": "UI Buttons",
   "description": "List in-game UI buttons by clickability, pick the button under the cursor and click it through the Host UI button service.",
   "author": "Anomaly",

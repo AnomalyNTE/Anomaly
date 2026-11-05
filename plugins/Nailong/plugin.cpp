@@ -35,7 +35,7 @@
 
 namespace {
 
-constexpr char kId[]="com.nailong.costume";
+constexpr char kId[]="yi621yi.nailong";
 
 constexpr char kVersion[]="1.7.7";
 

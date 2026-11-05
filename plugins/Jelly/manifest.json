@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "id": "anomaly.plugin.jelly",
+  "id": "shikari.jelly",
   "name": "Jelly",
   "description": "Development preview. Squashes and stretches characters, vehicles and other dynamic models in view with a volume-preserving three-axis scale and restores every component it touched. Vehicles are scaled as whole models, physics-driven bodies included by a switch, and their accessories follow them. Models can spin about their up axis, and a rest between bounces can be dialled in; count and strength are adjustable too. Hidden, static and multi-part models are skipped and reported.",
   "author": "Shikari",

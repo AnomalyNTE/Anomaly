@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "id": "anomaly.local.box-auto",
+  "id": "ccyellowstar.box-auto",
   "name": "Resource Auto Pickup",
   "description": "Reads resource point tables and auto-picks them up: Hunter Box, Character Box, Chameleon Box, Furniture, Prop Box, Food Box, Single Food, Prison Resource, Wallet, Shop Items, and Oracle Stone auto-teleport collection.",
   "author": "CCYellowStar",

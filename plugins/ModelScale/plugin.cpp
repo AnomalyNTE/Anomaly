@@ -17,7 +17,7 @@ namespace {
 
 namespace profile = model_scale_profile;
 
-constexpr std::string_view kConfigSchemaId = "anomaly.builtin.model-scale.settings";
+constexpr std::string_view kConfigSchemaId = "anomaly.model-scale.settings";
 constexpr std::uint32_t kConfigSchemaVersion = 1;
 inline constexpr std::string_view kConfigSchemaJson =
     R"({"type":"object","properties":{"enabled":{"type":"boolean"},)"
@@ -717,7 +717,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     }
     *descriptor = {
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
-        anomaly::sdk::StringView("anomaly.builtin.model-scale"),
+        anomaly::sdk::StringView("anomaly.model-scale"),
         anomaly::sdk::StringView("Model Scale"),
         anomaly::sdk::StringView("Anomaly"), anomaly::sdk::StringView("1.0.0"),
         Load, Start, Stop, Unload, Update, OnDraw};

@@ -27,7 +27,7 @@ unpacked into, so the artefact that is handed to a user is the one that was
 checked.
 
 .EXAMPLE
-pwsh -NoProfile -File plugins/Jelly/tools/verify_package.ps1 -Package output/jelly/packed/anomaly.plugin.jelly
+pwsh -NoProfile -File plugins/Jelly/tools/verify_package.ps1 -Package output/jelly/packed/shikari.jelly
 #>
 param(
     [Parameter(Mandatory = $true)][string]$Package,

@@ -99,7 +99,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         return {ANOMALY_STATUS_V1_INVALID_ARGUMENT, 0, {}};
     *descriptor = {
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
-        anomaly::sdk::StringView("anomaly.example.my-plugin"),
+        anomaly::sdk::StringView("example.my-plugin"),
         anomaly::sdk::StringView("My Plugin"),
         anomaly::sdk::StringView("Me"), anomaly::sdk::StringView("1.0.0"),
         Load, Start, Stop, Unload, /*on_update*/ nullptr, Draw,
@@ -146,7 +146,7 @@ Every plugin must have a `manifest.json`. Example:
 ```json
 {
   "schemaVersion": 2,
-  "id": "anomaly.example.my-plugin",
+  "id": "example.my-plugin",
   "name": "My Plugin",
   "description": "Shows current player and session diagnostics.",
   "author": "Me",
@@ -167,7 +167,7 @@ Every plugin must have a `manifest.json`. Example:
 
 See [Manifest and capabilities](../api-reference/manifest-and-capabilities.md) and [`schemas/plugin-manifest.schema.json`](../../../schemas/plugin-manifest.schema.json) for the complete field definitions.
 
-- `id` is the normalized ID (dot-separated lowercase).
+- `id` is the plugin ID: `<author>.<plugin>`, exactly two lowercase kebab labels. The first segment is the author namespace, written the way the author signs it (`CCYellowStar` becomes `ccyellowstar`); the second is the plugin name. There is no third segment, and `local` / `builtin` / `plugin` prefixes and reverse-domain forms are rejected by manifest validation.
 - `description` is the plugin blurb used in the "About" area of the management UI; a plugin can supply translations through `plugin.description` in its localization directory.
 - `builds` is the build compatibility declaration, and it accepts either `nte-*` or an exact fingerprint. The current production Runtime does not compute fingerprints and does not use this field to block plugins on load, so it is not a runtime safety check.
 - `license` is a single SPDX identifier (required for public distribution).
@@ -332,7 +332,7 @@ cmake -S . -B build -DAnomalySDK_DIR=C:\AnomalySDK\lib\cmake\AnomalySDK
 cmake --build build --config Debug
 anomaly-plugin validate build\package\MyPlugin
 anomaly-plugin pack build\package\MyPlugin --output .\dist
-anomaly-test-host --plugin .\dist\anomaly.example.my-plugin --reload 10 --ticks 60
+anomaly-test-host --plugin .\dist\example.my-plugin --reload 10 --ticks 60
 ```
 
 `anomaly-test-host` is an offline **game-free** fixture: it loads your package, runs a number of ticks and reloads, and verifies lifecycle and degraded behavior. That environment has no real game adapter, so NTE services stay `UNAVAILABLE`, but the plugin package itself must still load and unload cleanly.

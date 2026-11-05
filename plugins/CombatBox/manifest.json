@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "id": "anomaly.local.combat-box",
+  "id": "ccyellowstar.combat-box",
   "name": "Combat Resource Points",
   "description": "Combat resource points: combat treasure boxes (Gift of XX points) via table teleport, and anomaly furniture material (6 anomaly monsters) via hardcoded teleport, with local cache marking after defeat.",
   "author": "CCYellowStar",

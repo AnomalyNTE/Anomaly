@@ -27,7 +27,7 @@ constexpr std::size_t kEntityPageCapacity = ANOMALY_NTE_ENTITY_PAGE_V1_MAX_CAPAC
 constexpr std::size_t kMaximumPersistedFilters = 16384;
 constexpr std::size_t kMaximumSettingsBytes = 1024u * 1024u;
 constexpr std::uint32_t kSettingsSchemaVersion = 1u;
-constexpr std::string_view kSettingsSchemaId = "anomaly.builtin.entity-esp.settings";
+constexpr std::string_view kSettingsSchemaId = "anomaly.entity-esp.settings";
 constexpr std::string_view kSettingsSchema = R"json(
 {
   "type": "object",
@@ -1640,7 +1640,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     }
     *descriptor = {
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
-        anomaly::sdk::StringView("anomaly.builtin.entity-esp"),
+        anomaly::sdk::StringView("anomaly.entity-esp"),
         anomaly::sdk::StringView("Entity ESP"), anomaly::sdk::StringView("Anomaly"),
         anomaly::sdk::StringView("2.4.2"), Load, Start, Stop, Unload, Update, Draw};
     return anomaly::sdk::Ok();

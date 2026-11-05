@@ -1948,7 +1948,7 @@ AnomalyPluginEntryV1(AnomalyPluginDescriptorV1 *descriptor) {
   *descriptor = {sizeof(*descriptor),
                  ANOMALY_PLUGIN_API_V1_MAJOR,
                  ANOMALY_PLUGIN_API_V1_MINOR,
-                 anomaly::sdk::StringView("anomaly.local.nte.camera-tools"),
+                 anomaly::sdk::StringView("anomaly.camera-tools"),
                  anomaly::sdk::StringView("Camera Tools"),
                  anomaly::sdk::StringView("Anomaly"),
                  anomaly::sdk::StringView("1.0.0"),

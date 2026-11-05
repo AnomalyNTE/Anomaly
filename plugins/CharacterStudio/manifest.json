@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "id": "anomaly.local.nte.character-studio",
+  "id": "anomaly.character-studio",
   "name": "Character Studio",
   "description": "Local character models with a complete catalog, Chinese names, unlimited duplicate spawning, looping idle animations, camera-relative placement, and controls to move or remove each model.",
   "author": "Anomaly",

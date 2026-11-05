@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "id": "anomaly.builtin.memory-dump",
+  "id": "anomaly.memory-dump",
   "name": "Memory Dump",
   "description": "One-click dump of the live game module image: writes the raw memory image, a memory-image copy whose section pointers follow their virtual addresses, and a metadata record.",
   "author": "Anomaly",

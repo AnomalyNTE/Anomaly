@@ -2081,7 +2081,7 @@ void DrawDebugPanel(
     DrawText(ui, g_context.localizer.Text("detail.build_marker_abi",
         "Build marker: manifest schema v2 / Plugin API v1 / Vehicle service v8"));
     const std::array plugin_id_arguments{
-        std::string_view("anomaly.local.nte-vehicle")};
+        std::string_view("anomaly.nte-vehicle")};
     DrawText(ui, g_context.localizer.Format("detail.plugin_id", "Plugin ID: {0}",
         plugin_id_arguments));
     DrawText(ui, g_context.localizer.Text("detail.manifest",
@@ -2518,7 +2518,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
     *descriptor = {
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
-        anomaly::sdk::StringView("anomaly.local.nte-vehicle"),
+        anomaly::sdk::StringView("anomaly.nte-vehicle"),
         anomaly::sdk::StringView("Vehicle Control"), anomaly::sdk::StringView("Anomaly"),
         anomaly::sdk::StringView("0.10.6"), Load, Start, Stop, Unload, UpdateCallback, DrawCallback};
     return anomaly::sdk::Ok();

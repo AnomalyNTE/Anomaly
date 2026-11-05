@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "id": "anomaly.test.hook-lifecycle",
+  "id": "anomaly.hook-lifecycle",
   "name": "Hook Lifecycle Fixture",
   "description": "Verifies that plugin lifecycle cleanup owns hook release before host fallback revocation.",
   "author": "Anomaly",

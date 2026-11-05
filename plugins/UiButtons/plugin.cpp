@@ -29,7 +29,7 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
-constexpr std::string_view kPluginId = "local.ui-buttons";
+constexpr std::string_view kPluginId = "anomaly.ui-buttons";
 constexpr std::string_view kPluginVersion = "0.2.0";
 constexpr std::size_t kMaxRowsPerTab = 400;
 constexpr std::chrono::milliseconds kRescanAfterClick{600};

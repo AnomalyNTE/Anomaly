@@ -841,10 +841,10 @@ void ServicePendingNames() {
 // ---------------------------------------------------------------------------
 // 配置
 // ---------------------------------------------------------------------------
-constexpr const char* kConfigSchemaId = "damage-dashboard.settings";
+constexpr const char* kConfigSchemaId = "haaland-a.damage-dashboard.settings";
 // 插件身份。必须与 manifest.json 的 id / author / version 完全一致；
 // 所有需要 ID 的地方都从这里取值，避免多处字面量漂移。
-constexpr const char* kPluginId = "anomaly.local.damage-dashboard";
+constexpr const char* kPluginId = "haaland-a.damage-dashboard";
 constexpr const char* kPluginAuthor = "Haaland-a";
 // 版本号在日志里输出，升版本时这里和 manifest.json 一起改。
 constexpr const char* kPluginVersion = "2.7.1";

@@ -1681,7 +1681,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     }
     *descriptor = {
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
-        anomaly::sdk::StringView("anomaly.local.combat-box"),
+        anomaly::sdk::StringView("ccyellowstar.combat-box"),
         anomaly::sdk::StringView("Combat Resource Points"),
         anomaly::sdk::StringView("CCYellowStar"),
         anomaly::sdk::StringView("0.1.0"), Load, Start, Stop, Unload, Update, Draw};

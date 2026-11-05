@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "id": "anomaly.builtin.hifi-vehicle-music",
+  "id": "anomaly.hifi-vehicle-music",
   "name": "HiFi Vehicle Music",
   "description": "Replaces vehicle background music with local lossless files played through WASAPI exclusive, WASAPI shared, DirectSound or ASIO.",
   "author": "Anomaly",

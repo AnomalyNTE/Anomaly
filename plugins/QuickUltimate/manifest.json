@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "id": "anomaly.builtin.nte-quick-ultimate",
+  "id": "shikari.quick-ultimate",
   "name": "Quick Ultimate",
   "description": "Hold Alt+1 through Alt+4 to switch characters and repeatedly send Q until the shortcut is released.",
   "author": "Shikari",

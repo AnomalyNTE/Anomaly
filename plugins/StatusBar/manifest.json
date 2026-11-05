@@ -1,9 +1,9 @@
 {
   "schemaVersion": 2,
-  "id": "local.status-bar",
+  "id": "b1ank.status-bar",
   "name": "Status Bar",
   "description": "A liquid glass status bar with frame rate, 1% low, clock, CPU load, clock speed and power, memory load, and GPU load, clock speed, temperature and power.",
-  "author": "Local",
+  "author": "b1ank",
   "license": "AGPL-3.0-only",
   "version": "0.3.2",
   "entry": "plugin.dll",

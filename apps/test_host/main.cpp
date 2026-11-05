@@ -431,13 +431,13 @@ bool VerifyHookStopOrderFixture(const std::filesystem::path& root) {
     manager.LoadAll();
     auto loaded = manager.Plugins();
     auto plugin = std::ranges::find_if(loaded, [](const auto& view) {
-        return view.id == "anomaly.test.hook-lifecycle";
+        return view.id == "anomaly.hook-lifecycle";
     });
     if (plugin != loaded.end() && plugin->state == "disabled" &&
         manager.SetEnabled(plugin->id, true)) {
         loaded = manager.Plugins();
         plugin = std::ranges::find_if(loaded, [](const auto& view) {
-            return view.id == "anomaly.test.hook-lifecycle";
+            return view.id == "anomaly.hook-lifecycle";
         });
     }
     if (plugin == loaded.end() || plugin->state != "active") {
@@ -454,7 +454,7 @@ bool VerifyHookStopOrderFixture(const std::filesystem::path& root) {
     const bool stopped = manager.StopForRuntime(std::chrono::seconds(1));
     const bool quarantined = std::ranges::any_of(
         manager.Plugins(), [](const auto& view) {
-            return view.id == "anomaly.test.hook-lifecycle" &&
+            return view.id == "anomaly.hook-lifecycle" &&
                 view.state == "quarantined";
         });
     const bool released_from_on_stop =
@@ -505,13 +505,13 @@ bool VerifyEnablementDrainFixture(const std::filesystem::path& root) {
         manager.LoadAll();
         auto loaded = manager.Plugins();
         auto plugin = std::ranges::find_if(loaded, [](const auto& view) {
-            return view.id == "anomaly.test.hook-lifecycle";
+            return view.id == "anomaly.hook-lifecycle";
         });
         if (plugin != loaded.end() && plugin->state == "disabled" &&
             manager.SetEnabled(plugin->id, true)) {
             loaded = manager.Plugins();
             plugin = std::ranges::find_if(loaded, [](const auto& view) {
-                return view.id == "anomaly.test.hook-lifecycle";
+                return view.id == "anomaly.hook-lifecycle";
             });
         }
         if (plugin == loaded.end() || plugin->state != "active") {
@@ -524,7 +524,7 @@ bool VerifyEnablementDrainFixture(const std::filesystem::path& root) {
                     std::chrono::steady_clock::now() - started);
             const bool quarantined = std::ranges::any_of(
                 manager.Plugins(), [](const auto& view) {
-                    return view.id == "anomaly.test.hook-lifecycle" &&
+                    return view.id == "anomaly.hook-lifecycle" &&
                         view.state == "quarantined";
                 });
             valid = disabled && !quarantined &&

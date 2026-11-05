@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "id": "local.clone-enter",
+  "id": "ccyellowstar.clone-enter",
   "name": "Clone Enter",
   "description": "Enter clone dungeons and kill nearby monsters.",
   "author": "CCYellowStar",

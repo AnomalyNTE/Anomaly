@@ -973,7 +973,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     }
     *descriptor = {
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
-        StringView("local.status-bar"), StringView("Status Bar"),
+        StringView("b1ank.status-bar"), StringView("Status Bar"),
         StringView("Local"), StringView("0.3.2"),
         Load, Start, Stop, Unload, nullptr, Draw};
     return anomaly::sdk::Ok();

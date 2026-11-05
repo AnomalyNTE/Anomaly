@@ -115,7 +115,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         return {ANOMALY_STATUS_V1_INVALID_ARGUMENT, 0, {}};
     *descriptor = {
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
-        anomaly::sdk::StringView("anomaly.example.my-plugin"),
+        anomaly::sdk::StringView("example.my-plugin"),
         anomaly::sdk::StringView("My Plugin"),
         anomaly::sdk::StringView("Me"), anomaly::sdk::StringView("1.0.0"),
         Load, Start, Stop, Unload, /*on_update*/ nullptr, Draw,
@@ -162,7 +162,7 @@ if (!config) { /* 该服务不可用，降级处理 */ }
 ```json
 {
   "schemaVersion": 2,
-  "id": "anomaly.example.my-plugin",
+  "id": "example.my-plugin",
   "name": "My Plugin",
   "description": "Shows current player and session diagnostics.",
   "author": "Me",
@@ -183,7 +183,7 @@ if (!config) { /* 该服务不可用，降级处理 */ }
 
 字段完整定义见 [Manifest 与 capability](../api-reference/manifest-and-capabilities.md) 与 [`schemas/plugin-manifest.schema.json`](../../schemas/plugin-manifest.schema.json)。
 
-- `id` 是规范化 ID（点分小写）。
+- `id` 是插件 ID：`<作者>.<插件名>`，固定两段小写 kebab 标签。第一段是作者命名空间（写法随作者署名，如 `CCYellowStar` 写作 `ccyellowstar`），第二段是插件名；不再有第三段，`local` / `builtin` / `plugin` 前缀与反域名形式会被 manifest 校验拒绝。
 - `description` 是管理界面“关于”区域使用的插件简介；插件可通过本地化目录中的 `plugin.description` 提供翻译。
 - `builds` 是 build 兼容性声明，可以写 `nte-*` 或精确 fingerprint。当前生产 Runtime 不计算 fingerprint，加载时也不用该字段拦截插件，因此不能把它当作运行时安全检查。
 - `license` 是单个 SPDX identifier（公开分发时必填）。
@@ -380,7 +380,7 @@ cmake -S . -B build -DAnomalySDK_DIR=C:\AnomalySDK\lib\cmake\AnomalySDK
 cmake --build build --config Debug
 anomaly-plugin validate build\package\MyPlugin
 anomaly-plugin pack build\package\MyPlugin --output .\dist
-anomaly-test-host --plugin .\dist\anomaly.example.my-plugin --reload 10 --ticks 60
+anomaly-test-host --plugin .\dist\example.my-plugin --reload 10 --ticks 60
 ```
 
 `anomaly-test-host` 是**无游戏**的离线 fixture：它加载你的包、跑若干 tick 和 reload，用来验证生命周期与降级行为。该环境没有真实游戏适配器，NTE 服务会保持 `UNAVAILABLE`，但插件包本身仍应能够正常加载和卸载。

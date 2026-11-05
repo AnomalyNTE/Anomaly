@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "id": "anomaly.local.nte.night999",
+  "id": "wawmew.night999",
   "name": "Night 999",
   "description": "Night 999 script: a fully automatic monster farming loop - teleport to camp, refresh monsters, teleport to fight point 1, auto combat, teleport to fight point 2, auto combat, back to camp, repeated for the configured number of rounds (0 = unlimited). Intended for the Night 999 Crimson Dragon Castle map; neither refreshing nor combat needs any UI open.",
   "author": "WawMew",

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "id": "anomaly.local.nte-pickup-demo",
+  "id": "anomaly.nte-pickup-demo",
   "name": "Nearby Pickup",
   "description": "Requests the framework NTE pickup service for nearby items and displays confirmation state.",
   "author": "Anomaly",

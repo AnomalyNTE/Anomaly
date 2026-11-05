@@ -1040,7 +1040,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         return {ANOMALY_STATUS_V1_INVALID_ARGUMENT, 0, {}};
     }
     *descriptor = {sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
-                   StringView("anomaly.builtin.nte.deserted"), StringView("Deserted"),
+                   StringView("wawmew.deserted"), StringView("Deserted"),
                    StringView("WawMew"), StringView("0.6.3"), Load, Start, Stop, Unload, Update,
                    Draw};
     return anomaly::sdk::Ok();

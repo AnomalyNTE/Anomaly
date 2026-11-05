@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "id": "anomaly.local.damage-dashboard",
+  "id": "haaland-a.damage-dashboard",
   "name": "NTE Damage Dashboard",
   "description": "Combat statistics panel: metrics, bar charts (character/skill/buff/taken), health, shield and crit bars, height always fits the content (no scrollbars), draggable width. Same-name skills are merged and only the characters I control are counted.",
   "author": "Haaland-a",

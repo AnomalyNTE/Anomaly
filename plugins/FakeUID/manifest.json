@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "id": "anomaly.local.nte.fake-uid",
+  "id": "anomaly.fake-uid",
   "name": "Custom UID",
   "description": "Customizes the UID displayed by the NTE client without changing account data.",
   "author": "Anomaly",

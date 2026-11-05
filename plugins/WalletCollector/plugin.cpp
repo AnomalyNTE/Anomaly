@@ -1982,7 +1982,7 @@ AnomalyPluginEntryV1(AnomalyPluginDescriptorV1* descriptor) {
     return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
   *descriptor = {sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR,
                  ANOMALY_PLUGIN_API_V1_MINOR,
-                 anomaly::sdk::StringView("anomaly.local.nte-interactbox-collector"),
+                 anomaly::sdk::StringView("anomaly.wallet-collector"),
                  anomaly::sdk::StringView("WalletCollector"),
                  anomaly::sdk::StringView("Anomaly"),
                  anomaly::sdk::StringView("1.0.0"),

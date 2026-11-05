@@ -248,7 +248,7 @@ AnomalyPluginEntryV1(AnomalyPluginDescriptorV1 *descriptor) {
     return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
   *descriptor = {sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR,
                  ANOMALY_PLUGIN_API_V1_MINOR,
-                 anomaly::sdk::StringView("anomaly.local.nte.movement-hold-probe"),
+                 anomaly::sdk::StringView("anomaly.nte-movement-hold"),
                  anomaly::sdk::StringView("Movement Hold Probe"),
                  anomaly::sdk::StringView("Anomaly"),
                  anomaly::sdk::StringView("1.0.0"), Load, Start, Stop, Unload,

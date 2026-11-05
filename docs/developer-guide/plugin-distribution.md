@@ -23,7 +23,7 @@
 ```powershell
 anomaly-plugin validate .\build\package\MyPlugin
 anomaly-plugin pack .\build\package\MyPlugin --output .\dist\packed
-anomaly-test-host --plugin .\dist\packed\com.example.my-plugin --reload 10 --ticks 60
+anomaly-test-host --plugin .\dist\packed\example.my-plugin --reload 10 --ticks 60
 ```
 
 `anomaly-plugin pack` 会按 Manifest ID 创建目录，并生成 `package.sha256`。它的输出还是目录，不是第三方插件页面能下载的 ZIP。
@@ -35,8 +35,8 @@ anomaly-test-host --plugin .\dist\packed\com.example.my-plugin --reload 10 --tic
 压缩的是包目录里的**内容**，不要把最外层目录一起套进去：
 
 ```powershell
-$Packed = '.\dist\packed\com.example.my-plugin'
-$Zip = '.\dist\com.example.my-plugin-1.2.0.zip'
+$Packed = '.\dist\packed\example.my-plugin'
+$Zip = '.\dist\example.my-plugin-1.2.0.zip'
 Compress-Archive -Path "$Packed\*" -DestinationPath $Zip -Force
 ```
 
@@ -55,7 +55,7 @@ profile\              可选
 下面这种结构不能安装，因为 `manifest.json` 不在 ZIP 根目录：
 
 ```text
-com.example.my-plugin\
+example.my-plugin\
   manifest.json
   plugin.dll
 ```
@@ -76,7 +76,7 @@ com.example.my-plugin\
 [
   {
     "Name": "My Plugin",
-    "InternalName": "com.example.my-plugin",
+    "InternalName": "example.my-plugin",
     "Version": "1.2.0",
     "Author": "Example Author",
     "Punchline": "在游戏内显示一项实用信息。",
@@ -86,8 +86,8 @@ com.example.my-plugin\
     "Tags": ["ui", "utility"],
     "RepoUrl": "https://github.com/example/my-plugin",
     "IconUrl": "https://example.com/my-plugin/icon.png",
-    "DownloadLinkInstall": "https://github.com/example/my-plugin/releases/download/v1.2.0/com.example.my-plugin-1.2.0.zip",
-    "DownloadLinkUpdate": "https://github.com/example/my-plugin/releases/download/v1.2.0/com.example.my-plugin-1.2.0.zip",
+    "DownloadLinkInstall": "https://github.com/example/my-plugin/releases/download/v1.2.0/example.my-plugin-1.2.0.zip",
+    "DownloadLinkUpdate": "https://github.com/example/my-plugin/releases/download/v1.2.0/example.my-plugin-1.2.0.zip",
     "AcceptsFeedback": true
   }
 ]
@@ -149,7 +149,7 @@ example/anomaly-plugins
 
 example/my-plugin
   Releases/v1.2.0
-    com.example.my-plugin-1.2.0.zip
+    example.my-plugin-1.2.0.zip
 ```
 
 对应 URL 应使用直接内容或直接下载地址：
@@ -158,7 +158,7 @@ example/my-plugin
 | --- | --- |
 | 插件源 | `https://raw.githubusercontent.com/example/anomaly-plugins/main/pluginmaster.json` |
 | 图标 | `https://raw.githubusercontent.com/example/anomaly-plugins/main/assets/my-plugin.png` |
-| 插件 ZIP | `https://github.com/example/my-plugin/releases/download/v1.2.0/com.example.my-plugin-1.2.0.zip` |
+| 插件 ZIP | `https://github.com/example/my-plugin/releases/download/v1.2.0/example.my-plugin-1.2.0.zip` |
 | 项目主页 | `https://github.com/example/my-plugin` |
 
 不要把 `https://github.com/example/anomaly-plugins/blob/main/pluginmaster.json` 用作插件源；这是返回 HTML 的网页地址，不是原始 JSON。ZIP 也应使用 Release asset 下载地址，不能指向 Release 详情页。
@@ -167,7 +167,7 @@ example/my-plugin
 
 ```powershell
 $IndexUrl = 'https://raw.githubusercontent.com/example/anomaly-plugins/main/pluginmaster.json'
-$PluginId = 'com.example.my-plugin'
+$PluginId = 'example.my-plugin'
 
 $Entries = @(Invoke-RestMethod -Uri $IndexUrl)
 $Entry = $Entries | Where-Object { $_.InternalName -eq $PluginId }

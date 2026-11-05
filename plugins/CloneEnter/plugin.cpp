@@ -5699,7 +5699,7 @@ std::string GetConfigDir() noexcept {
     if (pos != std::string::npos) {
         dir = dir.substr(0, pos);
     }
-    dir += "\\state\\plugins\\local.clone-enter";
+    dir += "\\state\\plugins\\ccyellowstar.clone-enter";
     std::wstring wdir(dir.begin(), dir.end());
     CreateDirectoryW(wdir.c_str(), nullptr);
     return dir;
@@ -7259,7 +7259,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     }
     *descriptor = {
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
-        anomaly::sdk::StringView("local.clone-enter"),
+        anomaly::sdk::StringView("ccyellowstar.clone-enter"),
         anomaly::sdk::StringView("Clone Enter"),
         anomaly::sdk::StringView("CCYellowStar"),
         anomaly::sdk::StringView("0.2.14"),

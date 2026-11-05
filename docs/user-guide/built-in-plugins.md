@@ -12,7 +12,7 @@
 
 ## 状态条
 
-`Status Bar`（`local.status-bar`）在液态玻璃叠加层中显示帧率、1% 低帧率、时间、内存占用，
+`Status Bar`（`b1ank.status-bar`）在液态玻璃叠加层中显示帧率、1% 低帧率、时间、内存占用，
 以及受支持的 CPU/GPU 占用、频率、功耗和 GPU 温度。各项可独立开关，支持六个屏幕位置和间距调整。
 
 点击设置窗口的关闭按钮后，状态条继续显示；从插件列表重新打开窗口即可继续设置。
@@ -35,7 +35,7 @@
 
 ## Summon Lab（召唤实验室）
 
-`Summon Lab`（`local.nte.summon-lab`）按蓝图召唤并管理实体，不设插件数量上限。
+`Summon Lab`（`anomaly.summon-lab`）按蓝图召唤并管理实体，不设插件数量上限。
 蓝图目录自动从游戏 Asset Registry 更新，中文名来自完整的 `ST_ActorName` 名称表资产。
 无需 FModel 导出；目录与名称通过宿主写入用户存储中的 `catalog-cache.json`，启动时先读缓存再刷新。
 **刷新目录** 可手动更新，失败时保留旧目录。不同蓝图变体分别显示；没有可靠名称关联时保留原始类名。
@@ -98,7 +98,7 @@
 
 | | |
 | --- | --- |
-| **ID** | `anomaly.builtin.nte-position` |
+| **ID** | `anomaly.nte-position` |
 | **作用** | 只读显示当前玩家坐标、会话（World）状态与快照采样指标。 |
 | **依赖服务** | `anomaly.ui`；`anomaly.nte.session`、`anomaly.nte.player`、`anomaly.nte.metrics`（均为 V1，可选） |
 | **需要 Profile** | 是（玩家 / 会话数据依赖已验证符号） |
@@ -109,7 +109,7 @@
 
 | | |
 | --- | --- |
-| **ID** | `anomaly.builtin.nte-teleport` |
+| **ID** | `anomaly.nte-teleport` |
 | **作用** | 手动输入或读取当前坐标后传送玩家；支持准心方向传送、面朝方向定距传送，以及导入 JSON 点位分类管理。 |
 | **依赖服务** | `anomaly.ui`、`anomaly.config`；`anomaly.input`、`anomaly.json`、`anomaly.scheduler`、`anomaly.plugin-state`、`anomaly.nte.session/player/player-teleport`（均为 V1，可选） |
 | **需要 Profile** | 是（玩家、会话与传送桥接依赖已验证符号） |
@@ -124,7 +124,7 @@
 
 | | |
 | --- | --- |
-| **ID** | `anomaly.local.nte.night999` |
+| **ID** | `wawmew.night999` |
 | **作用** | 999夜副本全自动刷怪循环。 |
 | **依赖服务** | `anomaly.ui`；`anomaly.core`、`anomaly.nte.session/player/player-teleport/navigation/combat/skills/skill-invocation/actors/entities/pickup`、`anomaly.ue5.names/objects/world/framework`、`anomaly.interop.signature`（均为 V1，可选） |
 | **需要 Profile** | 是（会话与玩家快照、传送桥接、反射定位与自动战斗都依赖已验证符号） |
@@ -156,7 +156,7 @@
 
 | | |
 | --- | --- |
-| **ID** | `anomaly.local.damage-dashboard` |
+| **ID** | `haaland-a.damage-dashboard` |
 | **作用** | 实时显示玩家角色造成的战斗伤害、命中与技能分布。 |
 | **依赖服务** | `anomaly.ui`；`anomaly.core`、`anomaly.diagnostics`、`anomaly.notifications`、`anomaly.nte.combat`、`anomaly.nte.session`、`anomaly.json`、`anomaly.config`（均为 V1，可选） |
 | **需要 Profile** | 是（战斗快照与伤害事件依赖已验证的 NTE Combat 服务） |
@@ -172,7 +172,7 @@
 
 | | |
 | --- | --- |
-| **ID** | `anomaly.builtin.nte-quick-ultimate` |
+| **ID** | `shikari.quick-ultimate` |
 | **作用** | 按住 `Alt` 和数字键 `1`、`2`、`3`、`4` 时，自动切换到对应角色槽位并持续发送 `Q`，松开数字键或 `Alt` 后停止。 |
 | **依赖服务** | `anomaly.input`、`anomaly.ui`、`anomaly.localization`（均为 V1） |
 | **需要 Profile** | 否 |
@@ -188,7 +188,7 @@
 
 | | |
 | --- | --- |
-| **ID** | `anomaly.local.nte-pickup-demo` |
+| **ID** | `anomaly.nte-pickup-demo` |
 | **作用** | 点击一次拾取半径内的 `PropBox_`、`InteractBox_` 与随机物品 Actor，并显示 Host 确认状态。 |
 | **依赖服务** | `anomaly.ui`、`anomaly.localization`、`anomaly.nte.pickup`（V1） |
 | **需要 Profile** | 是；拾取反射 ABI、对象/名称/玩家/实体布局必须通过 `nte-pickup-layout-v1`。 |
@@ -202,7 +202,7 @@
 
 | | |
 | --- | --- |
-| **ID** | `anomaly.builtin.entity-esp` |
+| **ID** | `anomaly.entity-esp` |
 | **作用** | 使用 UE 原生 AHUD 绘制实体的世界空间包围盒与标签。 |
 | **依赖服务** | `anomaly.config`、`anomaly.ui`、`anomaly.ue5.ahud`；`anomaly.core`、`anomaly.nte.entities`、`anomaly.ue5.names`（均可选） |
 | **需要 Profile** | 是（实体快照、名称解析和 AHUD 绘制依赖已验证符号） |
@@ -213,7 +213,7 @@
 
 | | |
 | --- | --- |
-| **ID** | `anomaly.builtin.pink-paw-heist-esp` |
+| **ID** | `anomaly.pink-paw-heist-esp` |
 | **作用** | 显示粉爪大劫案中的战利品和撤离点，战利品可按最低价值筛选。 |
 | **依赖服务** | `anomaly.ui`、`anomaly.config`、`anomaly.interop.signature`、`anomaly.ue5.framework`、`anomaly.ue5.ahud`、`anomaly.ue5.names`；`anomaly.websocket`、`anomaly.nte.session/player/player-teleport/entities/actors`、`anomaly.font`、`anomaly.texture`（均为 V1，可选） |
 | **需要 Profile** | 是；物品与撤离点绘制需要已验证的 `ue5.ahud`，通用会话、玩家、实体与 Actor 服务也由 Profile 控制；Pink Paw 专用拾取签名和布局由插件自带 |
@@ -252,7 +252,7 @@ pickup 调用只存在于插件内；宿主提供签名扫描、Game 回调、AH
 
 | | |
 | --- | --- |
-| **ID** | `anomaly.local.nte.fake-uid` |
+| **ID** | `anomaly.fake-uid` |
 | **作用** | 通过签名解析与对象 / 名称服务，修改界面上显示的 UID。 |
 | **依赖服务** | `anomaly.config`、`anomaly.interop.signature`、`anomaly.scheduler`、`anomaly.ue5.names`、`anomaly.ue5.objects`；`anomaly.ui`、`anomaly.window`（可选） |
 | **需要 Profile** | 通用对象与名称服务需要；FakeUID 专用签名和布局由插件自带 |
@@ -264,7 +264,7 @@ pickup 调用只存在于插件内；宿主提供签名扫描、Game 回调、AH
 
 | | |
 | --- | --- |
-| **ID** | `anomaly.local.nte.camera-tools` |
+| **ID** | `anomaly.camera-tools` |
 | **作用** | 增加视距、调整 FOV、禁止强制转视角，或切换为可移动的自由相机；可选让场景跟随相机加载。 |
 | **依赖服务** | `anomaly.core`、`anomaly.config`、`anomaly.input`、`anomaly.ui`、`anomaly.localization`、`anomaly.interop.signature`、`anomaly.interop.hook`；`anomaly.nte.session`、`anomaly.nte.player`、`anomaly.nte.player-teleport` |
 | **需要 Profile** | 否（相机签名和布局由插件自带，并在加载时校验） |
@@ -280,7 +280,7 @@ pickup 调用只存在于插件内；宿主提供签名扫描、Game 回调、AH
 
 | | |
 | --- | --- |
-| **ID** | `anomaly.local.nte-interactbox-collector` |
+| **ID** | `anomaly.wallet-collector` |
 | **作用** | 扫描当前地图的钱包刷新点，按目标数量规划路线，自动移动到各点并通过拾取服务确认钱包已收集。 |
 | **依赖服务** | `anomaly.core`、`anomaly.ui`、`anomaly.localization`、`anomaly.nte.player`、`anomaly.nte.pickup`、`anomaly.interop.signature`、`anomaly.ue5.names`、`anomaly.ue5.objects`；`anomaly.nte.session`、`anomaly.nte.navigation`、`anomaly.nte.map-landmarks`、`anomaly.ue5.framework`（均为 V1，可选） |
 | **需要 Profile** | 是；玩家、拾取、寻路和地图地标服务由活动 Profile 的 Feature Gate 提供，钱包点签名与 UE5 对象 / 数据表布局还会在插件运行时校验。 |
@@ -293,7 +293,7 @@ pickup 调用只存在于插件内；宿主提供签名扫描、Game 回调、AH
 
 | | |
 | --- | --- |
-| **ID** | `local.nte.free-fly` |
+| **ID** | `mou-mou-sama.nte-free-fly` |
 | **作用** | 按住 WASD 水平飞行、空格上升、Ctrl 下降，让角色在空中自由移动并穿过墙体；开关快捷键可在面板里捕获并保存。 |
 | **依赖服务** | `anomaly.ui`、`anomaly.localization`、`anomaly.input`；`anomaly.config`、`anomaly.nte.session`、`anomaly.nte.player`、`anomaly.nte.player-teleport`、`anomaly.nte.player-hold`（均为 V1，可选） |
 | **需要 Profile** | 是（玩家、会话与传送桥接依赖已验证符号） |
@@ -314,7 +314,7 @@ pickup 调用只存在于插件内；宿主提供签名扫描、Game 回调、AH
 
 | | |
 | --- | --- |
-| **ID** | `anomaly.plugin.jelly` |
+| **ID** | `shikari.jelly` |
 | **作用** | 让镜头内的人物、载具与其他动态模型持续挤压、拉伸（近似保持体积），停止时把所有改动过的组件恢复原位。 |
 | **依赖服务** | `anomaly.core`、`anomaly.interop.signature`、`anomaly.ue5.names`、`anomaly.ue5.objects`、`anomaly.ue5.framework`、`anomaly.nte.actors`、`anomaly.nte.player`、`anomaly.nte.session`、`anomaly.ui`；`anomaly.localization`、`anomaly.config`（均为 V1，可选） |
 | **需要 Profile** | 是；调用入口与对象注册表在加载时校验，反射属性按名字与活动反射比对 |
@@ -331,7 +331,7 @@ pickup 调用只存在于插件内；宿主提供签名扫描、Game 回调、AH
 
 | | |
 | --- | --- |
-| **ID** | `local.ui-buttons` |
+| **ID** | `anomaly.ui-buttons` |
 | **作用** | 列出游戏内全部 UI 按钮，按 可点击 / 不可点击 / 隐藏 分类并给出原因；鼠标停在按钮上按快捷键识别按钮；直接调用按钮的点击事件，不模拟鼠标。 |
 | **依赖服务** | `anomaly.core`、`anomaly.ui`；`anomaly.input`、`anomaly.nte.ui-buttons`（均为 V1，可选） |
 | **需要 Profile** | 是；按钮扫描、遮挡判定与点击全部由 `anomaly.nte.ui-buttons` 提供，活动 Profile 必须通过 `nte-ui-buttons-layout-v1`。 |
@@ -374,7 +374,7 @@ pickup 调用只存在于插件内；宿主提供签名扫描、Game 回调、AH
 
 | | |
 | --- | --- |
-| **ID** | `anomaly.builtin.nte.deserted` |
+| **ID** | `wawmew.deserted` |
 | **作用** | 一个勾选框：勾选后人群与车流都不再生成（街上空无一人），取消勾选恢复勾选前的数值。不影响站桩 NPC。 |
 | **依赖服务** | `anomaly.ui`；`anomaly.core`、`anomaly.interop.signature`、`anomaly.ue5.names`、`anomaly.ue5.objects`、`anomaly.input`（均为 V1，可选） |
 | **需要 Profile** | 否（自行按 AOB 特征码定位人群/车辆生成器，依赖 `memory-read`/`memory-write` capability） |
@@ -391,7 +391,7 @@ pickup 调用只存在于插件内；宿主提供签名扫描、Game 回调、AH
 ## 开发者模式调试插件
 
 启用会话开发者模式后，插件列表还会显示 `Teleport Landmarks Probe`
-（`anomaly.builtin.teleport-landmarks-probe`）。它枚举框架提供的全部可传送地标，逐项显示
+（`anomaly.teleport-landmarks-probe`）。它枚举框架提供的全部可传送地标，逐项显示
 `TeleportID`、所属世界、世界坐标、楼层、类型和覆盖目的坐标，并允许从选项中提交
 `Normal` 或 `SellingIndulgences` 传送。该插件只消费
 `anomaly.nte.map-landmarks`，不保存签名或偏移，也不自行扫描对象、解析 DataTable 或调用
@@ -401,7 +401,7 @@ UE `ProcessEvent`；关闭开发者模式后不会出现在已安装插件视图
 
 | | |
 | --- | --- |
-| **ID** | `anomaly.local.nte.movement-hold-probe` |
+| **ID** | `anomaly.nte-movement-hold` |
 | **作用** | 用一个按钮切换宿主的角色按住（`anomaly.nte.player-hold`），并实时显示重力系数、速度与移动模式，用于在真实客户端上验证传送到达窗口的按住行为。 |
 | **依赖服务** | `anomaly.core`、`anomaly.nte.player-hold`（可选）、`anomaly.nte.player`（可选） |
 | **需要 Profile** | 是；`anomaly.nte.player` 与 `anomaly.nte.player-hold` 由活动 Profile 提供，服务未发布时面板照常显示并提示尚未可用。 |
@@ -414,7 +414,7 @@ UE `ProcessEvent`；关闭开发者模式后不会出现在已安装插件视图
 
 ### Map Spawn Exporter
 
-开发者模式下还可以使用 `Map Spawn Exporter`（`anomaly.builtin.map-spawn-exporter`）。点击
+开发者模式下还可以使用 `Map Spawn Exporter`（`anomaly.map-spawn-exporter`）。点击
 **Scan static map** 后，它在插件侧枚举 UE 对象注册表中的静态 DataTable，解析 `TeleportPoint`
 和带反射坐标字段的 Monster spawn 行，以及 OracleStone 和 RandomItem 行；不遍历 UWorld 的
 Actor/Entity 快照。点击 **Export JSON** 会通过 Host storage 原子写出插件存储目录中的
@@ -425,7 +425,7 @@ Actor/Entity 快照。点击 **Export JSON** 会通过 Host storage 原子写出
 
 | | |
 | --- | --- |
-| **ID** | `anomaly.builtin.dll-loader` |
+| **ID** | `anomaly.dll-loader` |
 | **作用** | 在插件启用或重载时加载指定的原生 DLL，并在插件停用或重载时释放该 DLL 的加载引用。 |
 | **依赖服务** | `anomaly.config`、`anomaly.ui` |
 | **需要 Profile** | 否 |
@@ -437,7 +437,7 @@ Actor/Entity 快照。点击 **Export JSON** 会通过 Host storage 原子写出
 
 | | |
 | --- | --- |
-| **ID** | `anomaly.local.nte-vehicle` |
+| **ID** | `anomaly.nte-vehicle` |
 | **作用** | 提供当前驾驶载具快照、载具目录和召唤、车速倍率、发动机扭矩、车轮摩擦调校，以及已加载非玩家载具的目标速度控制。默认 10 倍车速、0.5～10 倍精细范围、70 km/h 基准和批量目标范围均由插件管理；Core 只校验数值、识别目标对象并执行实际读写。停用插件后会请求恢复当前载具的原始参数。 |
 | **依赖服务** | `anomaly.ui`、`anomaly.nte.vehicle` v6、`anomaly.nte.player` |
 | **需要 Profile** | 是；只有活动 Profile 的原生符号、布局校验、Game 线程和反射绑定通过时，Core 才发布载具服务。 |
@@ -448,7 +448,7 @@ Debug 密钥和固定 SHA-256 摘要校验由插件持有，Core 不维护密钥
 
 | | |
 | --- | --- |
-| **ID** | `anomaly.builtin.nte-time-accel` |
+| **ID** | `wawmew.time-accel` |
 | **作用** | 给本地世界设置时间膨胀倍率，整体加速游戏节奏（动画、物理、本地移动、演出，含玩家角色）；支持「加速 N 秒」与「持续加速」，到点或停止后恢复 1 倍。 |
 | **依赖服务** | `anomaly.ui`、`anomaly.core`（可选）、`anomaly.ue5.names/objects/process-event`（可选）、`anomaly.nte.player`（可选）、`anomaly.input`（可选）、`anomaly.storage`（可选）、`anomaly.scheduler`（可选） |
 | **需要 Profile** | 否（通过 `anomaly.core::write_memory` 写世界设置；依赖 `memory-read`/`memory-write` capability） |

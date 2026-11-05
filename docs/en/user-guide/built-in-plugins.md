@@ -16,7 +16,7 @@ The runtime package ships with user-facing built-in plugins. Like third-party pl
 
 | | |
 | --- | --- |
-| **ID** | `anomaly.builtin.nte-position` |
+| **ID** | `anomaly.nte-position` |
 | **Purpose** | Read-only display of the current player coordinates, session (World) state and snapshot sampling metrics. |
 | **Required services** | `anomaly.ui`; `anomaly.nte.session`, `anomaly.nte.player`, `anomaly.nte.metrics` (all V1, optional) |
 | **Requires Profile** | Yes (player / session data depends on validated symbols) |
@@ -27,7 +27,7 @@ The plugin only reads data and does not modify game state. Use it to quickly con
 
 | | |
 | --- | --- |
-| **ID** | `anomaly.builtin.nte-teleport` |
+| **ID** | `anomaly.nte-teleport` |
 | **Purpose** | Teleport the player to manually entered or read-out coordinates; supports crosshair-direction teleport, fixed-distance travel along the facing direction, and imported JSON points with category management. |
 | **Required services** | `anomaly.ui`, `anomaly.config`; `anomaly.input`, `anomaly.json`, `anomaly.scheduler`, `anomaly.plugin-state`, `anomaly.nte.session/player/player-teleport` (all V1, optional) |
 | **Requires Profile** | Yes (player, session and the teleport bridge depend on validated symbols) |
@@ -38,7 +38,7 @@ Crosshair teleport advances a preset distance along the current camera direction
 
 | | |
 | --- | --- |
-| **ID** | `anomaly.local.nte.night999` |
+| **ID** | `wawmew.night999` |
 | **Purpose** | Fully automated monster farming loop for the 999 Nights instance. |
 | **Required services** | `anomaly.ui`; `anomaly.core`, `anomaly.nte.session/player/player-teleport/navigation/combat/skills/skill-invocation/actors/entities/pickup`, `anomaly.ue5.names/objects/world/framework`, `anomaly.interop.signature` (all V1, optional) |
 | **Requires Profile** | Yes (session and player snapshots, the teleport bridge, reflection lookup and auto combat all depend on validated symbols) |
@@ -63,7 +63,7 @@ The check does not use damage readings: when the damage stream is unreadable (st
 
 | | |
 | --- | --- |
-| **ID** | `anomaly.local.damage-dashboard` |
+| **ID** | `haaland-a.damage-dashboard` |
 | **Purpose** | Show the combat damage, hits and skill distribution dealt by the player character in real time. |
 | **Required services** | `anomaly.ui`; `anomaly.core`, `anomaly.diagnostics`, `anomaly.notifications`, `anomaly.nte.combat`, `anomaly.nte.session`, `anomaly.json`, `anomaly.config` (all V1, optional) |
 | **Requires Profile** | Yes (combat snapshots and damage events depend on the validated NTE Combat service) |
@@ -76,7 +76,7 @@ The plugin only counts damage dealt by the character the player currently contro
 
 | | |
 | --- | --- |
-| **ID** | `anomaly.builtin.nte-quick-ultimate` |
+| **ID** | `shikari.quick-ultimate` |
 | **Purpose** | While you hold `Alt` plus a number key `1`, `2`, `3` or `4`, switch to the matching character slot automatically and keep sending `Q`; releasing the number key or `Alt` stops it. |
 | **Required services** | `anomaly.input`, `anomaly.ui`, `anomaly.localization` (all V1) |
 | **Requires Profile** | No |
@@ -89,7 +89,7 @@ The plugin only confirms that keys were sent; it does not confirm whether the ga
 
 | | |
 | --- | --- |
-| **ID** | `anomaly.local.nte-pickup-demo` |
+| **ID** | `anomaly.nte-pickup-demo` |
 | **Purpose** | Pick up `PropBox_`, `InteractBox_` and random item Actors within the pickup radius with one click, and show the host's confirmation state. |
 | **Required services** | `anomaly.ui`, `anomaly.localization`, `anomaly.nte.pickup` (V1) |
 | **Requires Profile** | Yes; the pickup reflection ABI and the object/name/player/entity layouts have to pass `nte-pickup-layout-v1`. |
@@ -100,7 +100,7 @@ The `nearby`, `triggered`, `confirmed`, `checking`, `unconfirmed` and `skipped` 
 
 | | |
 | --- | --- |
-| **ID** | `anomaly.builtin.entity-esp` |
+| **ID** | `anomaly.entity-esp` |
 | **Purpose** | Draw world-space bounding boxes and labels for entities with the UE native AHUD. |
 | **Required services** | `anomaly.config`, `anomaly.ui`, `anomaly.ue5.ahud`; `anomaly.core`, `anomaly.nte.entities`, `anomaly.ue5.names` (all optional) |
 | **Requires Profile** | Yes (entity snapshots, name resolution and AHUD drawing depend on validated symbols) |
@@ -111,7 +111,7 @@ The plugin window and settings menu keep using ImGui; entity bounding boxes and 
 
 | | |
 | --- | --- |
-| **ID** | `anomaly.builtin.pink-paw-heist-esp` |
+| **ID** | `anomaly.pink-paw-heist-esp` |
 | **Purpose** | Show the loot and extraction points in Pink Paw Heist, with loot filterable by minimum value. |
 | **Required services** | `anomaly.ui`, `anomaly.config`, `anomaly.interop.signature`, `anomaly.ue5.framework`, `anomaly.ue5.ahud`, `anomaly.ue5.names`; `anomaly.websocket`, `anomaly.nte.session/player/player-teleport/entities/actors`, `anomaly.font`, `anomaly.texture` (all V1, optional) |
 | **Requires Profile** | Yes; drawing loot and extraction points requires a validated `ue5.ahud`, and the generic session, player, entity and Actor services are also gated by the Profile; the Pink Paw specific pickup signatures and layouts ship with the plugin |
@@ -130,7 +130,7 @@ On the Pink Paw map the plugin also broadcasts compatible coordinate messages, f
 
 | | |
 | --- | --- |
-| **ID** | `anomaly.local.nte.fake-uid` |
+| **ID** | `anomaly.fake-uid` |
 | **Purpose** | Change the UID shown in the interface through signature lookup and the object / name services. |
 | **Required services** | `anomaly.config`, `anomaly.interop.signature`, `anomaly.scheduler`, `anomaly.ue5.names`, `anomaly.ue5.objects`; `anomaly.ui`, `anomaly.window` (optional) |
 | **Requires Profile** | Required for the generic object and name services; the FakeUID specific signatures and layouts ship with the plugin |
@@ -142,7 +142,7 @@ On the Pink Paw map the plugin also broadcasts compatible coordinate messages, f
 
 | | |
 | --- | --- |
-| **ID** | `anomaly.local.nte.camera-tools` |
+| **ID** | `anomaly.camera-tools` |
 | **Purpose** | Increase draw distance and adjust the view FOV while keeping the character follow camera, or switch to a movable free camera; optionally make the scene stream in around the camera. |
 | **Required services** | `anomaly.core`, `anomaly.config`, `anomaly.input`, `anomaly.ui`, `anomaly.localization`, `anomaly.interop.signature`, `anomaly.interop.hook`; `anomaly.nte.session`, `anomaly.nte.player`, `anomaly.nte.player-teleport` |
 | **Requires Profile** | No (the camera signatures and layouts ship with the plugin and are validated at load time) |
@@ -153,7 +153,7 @@ The extra draw distance defaults to `0`, which means the game default draw dista
 
 | | |
 | --- | --- |
-| **ID** | `anomaly.local.nte-interactbox-collector` |
+| **ID** | `anomaly.wallet-collector` |
 | **Purpose** | Scan the wallet spawn points on the current map, plan a route for the target count, move to each point automatically and confirm through the pickup service that the wallet has been collected. |
 | **Required services** | `anomaly.core`, `anomaly.ui`, `anomaly.localization`, `anomaly.nte.player`, `anomaly.nte.pickup`, `anomaly.interop.signature`, `anomaly.ue5.names`, `anomaly.ue5.objects`; `anomaly.nte.session`, `anomaly.nte.navigation`, `anomaly.nte.map-landmarks`, `anomaly.ue5.framework` (all V1, optional) |
 | **Requires Profile** | Yes; the player, pickup, pathing and map landmark services come from the active Profile's feature gate, and the wallet point signatures plus the UE5 object / DataTable layouts are also validated while the plugin runs. |
@@ -166,7 +166,7 @@ The extra draw distance defaults to `0`, which means the game default draw dista
 
 | | |
 | --- | --- |
-| **ID** | `local.nte.free-fly` |
+| **ID** | `mou-mou-sama.nte-free-fly` |
 | **Purpose** | Let the character move freely through the air and through walls: hold WASD to fly horizontally, Space to rise and Ctrl to descend; the toggle hotkey can be captured and saved in the panel. |
 | **Required services** | `anomaly.ui`, `anomaly.localization`, `anomaly.input`; `anomaly.config`, `anomaly.nte.session`, `anomaly.nte.player`, `anomaly.nte.player-teleport`, `anomaly.nte.player-hold` (all V1, optional) |
 | **Requires Profile** | Yes (player, session and the teleport bridge depend on validated symbols) |
@@ -182,7 +182,7 @@ Placement is triggered on demand (when there is input, or when the character dev
 
 | | |
 | --- | --- |
-| **ID** | `anomaly.plugin.jelly` |
+| **ID** | `shikari.jelly` |
 | **Purpose** | Make the characters, vehicles and other dynamic models in view keep squashing and stretching (approximately preserving volume), and restore every modified component when it stops. |
 | **Required services** | `anomaly.core`, `anomaly.interop.signature`, `anomaly.ue5.names`, `anomaly.ue5.objects`, `anomaly.ue5.framework`, `anomaly.nte.actors`, `anomaly.nte.player`, `anomaly.nte.session`, `anomaly.ui`; `anomaly.localization`, `anomaly.config` (all V1, optional) |
 | **Requires Profile** | Yes; the call entry and object registry are validated at load time, and reflection properties are compared by name against the active reflection |
@@ -195,7 +195,7 @@ Hidden, static, instanced and multi-part models are skipped: **Last skip** in th
 
 | | |
 | --- | --- |
-| **ID** | `local.ui-buttons` |
+| **ID** | `anomaly.ui-buttons` |
 | **Purpose** | List every UI button in the game, classified as clickable / not clickable / hidden with the reason given; identify a button by hovering over it and pressing the hotkey; invoke the button's click event directly instead of simulating the mouse. |
 | **Required services** | `anomaly.core`, `anomaly.ui`; `anomaly.input`, `anomaly.nte.ui-buttons` (all V1, optional) |
 | **Requires Profile** | Yes; button scanning, occlusion checks and clicking are all provided by `anomaly.nte.ui-buttons`, and the active Profile has to pass `nte-ui-buttons-layout-v1`. |
@@ -233,7 +233,7 @@ re-enter the scene. Instance scenes need the game's own instance entry flow and 
 
 | | |
 | --- | --- |
-| **ID** | `anomaly.builtin.nte.deserted` |
+| **ID** | `wawmew.deserted` |
 | **Purpose** | A single checkbox: when checked, neither crowds nor traffic spawn any more (the streets are empty), and unchecking restores the values from before it was checked. Stationary NPCs are unaffected. |
 | **Required services** | `anomaly.ui`; `anomaly.core`, `anomaly.interop.signature`, `anomaly.ue5.names`, `anomaly.ue5.objects`, `anomaly.input` (all V1, optional) |
 | **Requires Profile** | No (locates the crowd/vehicle spawners by its own AOB patterns and depends on the `memory-read`/`memory-write` capability) |
@@ -247,13 +247,13 @@ When checked, it first reads the **current values** of these fields as the initi
 
 ## Developer-mode debugging plugins
 
-After you enable session developer mode, the plugin catalog also shows `Teleport Landmarks Probe` (`anomaly.builtin.teleport-landmarks-probe`). It enumerates every teleportable landmark the framework provides, showing `TeleportID`, owning world, world coordinates, floor, type and override destination coordinates for each entry, and it lets you submit a `Normal` or `SellingIndulgences` teleport from the options. The plugin only consumes `anomaly.nte.map-landmarks`: it stores no signatures or offsets and does not scan objects, parse DataTables or call UE `ProcessEvent` itself; after developer mode is turned off it no longer appears in the installed plugin view and does not execute teleport requests.
+After you enable session developer mode, the plugin catalog also shows `Teleport Landmarks Probe` (`anomaly.teleport-landmarks-probe`). It enumerates every teleportable landmark the framework provides, showing `TeleportID`, owning world, world coordinates, floor, type and override destination coordinates for each entry, and it lets you submit a `Normal` or `SellingIndulgences` teleport from the options. The plugin only consumes `anomaly.nte.map-landmarks`: it stores no signatures or offsets and does not scan objects, parse DataTables or call UE `ProcessEvent` itself; after developer mode is turned off it no longer appears in the installed plugin view and does not execute teleport requests.
 
 ### Movement Hold Probe
 
 | | |
 | --- | --- |
-| **ID** | `anomaly.local.nte.movement-hold-probe` |
+| **ID** | `anomaly.nte-movement-hold` |
 | **Purpose** | Toggle the host's character hold (`anomaly.nte.player-hold`) with one button and show the gravity scale, velocity and movement mode live, so the hold behaviour of the teleport arrival window can be verified on a real client. |
 | **Required services** | `anomaly.core`, `anomaly.nte.player-hold` (optional), `anomaly.nte.player` (optional) |
 | **Requires Profile** | Yes; `anomaly.nte.player` and `anomaly.nte.player-hold` are provided by the active Profile, and when the service is not published the panel still shows and reports that it is not available yet. |
@@ -262,13 +262,13 @@ The panel shows `held` / `refused`, the live gravity scale and velocity, and `mo
 
 ### Map Spawn Exporter
 
-In developer mode you can also use `Map Spawn Exporter` (`anomaly.builtin.map-spawn-exporter`). After you click **Scan static map**, it enumerates the static DataTables in the UE object registry on the plugin side and parses `TeleportPoint` and Monster spawn rows with reflected coordinate fields, as well as OracleStone and RandomItem rows; it does not walk the UWorld Actor/Entity snapshots. Clicking **Export JSON** atomically writes `map-spawns.json` into the plugin storage directory through host storage, and the file contains the point type, row ID, map name, source table and 3D coordinates. When the candidate DataTable is not loaded or the current Profile does not support it, that category shows as unavailable, and loaded objects are never used to infer points.
+In developer mode you can also use `Map Spawn Exporter` (`anomaly.map-spawn-exporter`). After you click **Scan static map**, it enumerates the static DataTables in the UE object registry on the plugin side and parses `TeleportPoint` and Monster spawn rows with reflected coordinate fields, as well as OracleStone and RandomItem rows; it does not walk the UWorld Actor/Entity snapshots. Clicking **Export JSON** atomically writes `map-spawns.json` into the plugin storage directory through host storage, and the file contains the point type, row ID, map name, source table and 3D coordinates. When the candidate DataTable is not loaded or the current Profile does not support it, that category shows as unavailable, and loaded objects are never used to infer points.
 
 ### DLL Loader
 
 | | |
 | --- | --- |
-| **ID** | `anomaly.builtin.dll-loader` |
+| **ID** | `anomaly.dll-loader` |
 | **Purpose** | Load the configured native DLL when the plugin is enabled or reloaded, and release the DLL's load reference when the plugin is disabled or reloaded. |
 | **Required services** | `anomaly.config`, `anomaly.ui` |
 | **Requires Profile** | No |
@@ -280,7 +280,7 @@ The default target is `dumper-7.dll`. Put the target DLL into `Anomaly\plugins\D
 
 | | |
 | --- | --- |
-| **ID** | `anomaly.local.nte-vehicle` |
+| **ID** | `anomaly.nte-vehicle` |
 | **Purpose** | Provide the current driven vehicle snapshot, a vehicle catalog and summoning, speed multiplier, engine torque, wheel friction tuning, and target speed control for loaded non-player vehicles. The default 10x speed, 0.5–10x fine range, 70 km/h baseline and batch target range are all managed by the plugin; Core only validates values, identifies target objects and performs the actual reads and writes. Disabling the plugin requests restoration of the current vehicle's original parameters. |
 | **Required services** | `anomaly.ui`, `anomaly.nte.vehicle` v6, `anomaly.nte.player` |
 | **Requires Profile** | Yes; Core publishes the vehicle service only when the active Profile's native symbols, layout validation, Game thread and reflection bindings pass. |
@@ -291,7 +291,7 @@ The debug key and the fixed SHA-256 digest check are held by the plugin, and Cor
 
 | | |
 | --- | --- |
-| **ID** | `anomaly.builtin.nte-time-accel` |
+| **ID** | `wawmew.time-accel` |
 | **Purpose** | Set a time dilation multiplier on the local world to speed up the overall game pace (animations, physics, local movement, cinematics, including the player character); supports "boost for N seconds" and "continuous boost", restoring 1x when the time is up or it is stopped. |
 | **Required services** | `anomaly.ui`, `anomaly.core` (optional), `anomaly.ue5.names/objects/process-event` (optional), `anomaly.nte.player` (optional), `anomaly.input` (optional), `anomaly.storage` (optional), `anomaly.scheduler` (optional) |
 | **Requires Profile** | No (writes world settings through `anomaly.core::write_memory`; depends on the `memory-read`/`memory-write` capability) |

@@ -973,7 +973,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     }
     *descriptor = {
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
-        anomaly::sdk::StringView("anomaly.example.nte-combat-demo"),
+        anomaly::sdk::StringView("anomaly.nte-combat-demo"),
         anomaly::sdk::StringView("NTE Combat Demo"),
         anomaly::sdk::StringView("Anomaly"), anomaly::sdk::StringView("1.1.2"),
         Load, Start, Stop, Unload, Update, Draw};

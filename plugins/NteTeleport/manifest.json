@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "id": "anomaly.builtin.nte-teleport",
+  "id": "anomaly.nte-teleport",
   "name": "Teleport",
   "description": "Teleports the current player to entered or saved world coordinates.",
   "author": "Anomaly",

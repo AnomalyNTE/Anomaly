@@ -82,7 +82,7 @@ std::wstring Utf8ToWide(std::string_view value);
 namespace limb_cal = better_pose::limb_calibration;
 
 constexpr std::string_view kPoseSettingsSchemaId =
-    "anomaly.builtin.character-pose.settings";
+    "anomaly.better-pose.settings";
 constexpr std::uint32_t kPoseSettingsSchemaVersion = 1;
 constexpr std::uint32_t kMotionCalibrationDefaultsVersion = 2;
 constexpr std::uint32_t kDynamicPhysicsAirDefaultVersion = 4;
@@ -4599,7 +4599,7 @@ std::filesystem::path DirectPoseProfilePath(const std::string &character_id) {
   if (anomaly_root.empty())
     return {};
   return anomaly_root / L"state" / L"plugins" /
-         L"anomaly.builtin.better-pose" / PoseProfilePath(character_id);
+         L"anomaly.better-pose" / PoseProfilePath(character_id);
 }
 
 bool WriteDirectPoseProfile(const std::string &character_id,
@@ -29167,7 +29167,7 @@ AnomalyPluginEntryV1(AnomalyPluginDescriptorV1 *descriptor) {
   descriptor->api_major = ANOMALY_PLUGIN_API_V1_MAJOR;
   descriptor->api_minor = ANOMALY_PLUGIN_API_V1_MINOR;
   descriptor->id =
-      anomaly::sdk::StringView("anomaly.builtin.better-pose");
+      anomaly::sdk::StringView("anomaly.better-pose");
   descriptor->name = anomaly::sdk::StringView("Better Pose");
   descriptor->author = anomaly::sdk::StringView("Anomaly");
   descriptor->version = anomaly::sdk::StringView("1.0.0");

@@ -21,7 +21,7 @@
       "const": 2
     },
     "id": {
-      "$ref": "#/definitions/qualifiedId"
+      "$ref": "#/definitions/pluginId"
     },
     "name": {
       "$ref": "#/definitions/displayName"
@@ -118,10 +118,18 @@
   },
   "definitions": {
     "qualifiedId": {
+      "description": "Service or dependency identifier. Shares the segment syntax with pluginId but may carry additional namespace depth (for example anomaly.nte.player-teleport).",
       "type": "string",
       "minLength": 3,
       "maxLength": 255,
       "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
+    },
+    "pluginId": {
+      "description": "Plugin package identifier, exactly two segments: <author>.<plugin>. The first segment is the author namespace in lower case, written the way the author signs it (CCYellowStar -> ccyellowstar, Mou-Mou-SaMa -> mou-mou-sama); the second is the plugin name. Author and plugin name are each lower-case kebab-case, so neither may carry a dot of its own. Source-tracking segments (local, builtin, plugin), reverse-domain prefixes and any third segment are rejected.",
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 128,
+      "pattern": "^(?!(?:local|builtin|plugin|example|com|org|net|io|dev|cn|co|me)\\.)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
     },
     "displayName": {
       "type": "string",
@@ -174,7 +182,7 @@
       "required": ["id", "version"],
       "properties": {
         "id": {
-          "$ref": "#/definitions/qualifiedId"
+          "$ref": "#/definitions/pluginId"
         },
         "version": {
           "$ref": "#/definitions/versionRange"

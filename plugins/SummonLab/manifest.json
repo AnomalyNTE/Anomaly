@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "id": "local.nte.summon-lab",
+  "id": "anomaly.summon-lab",
   "name": "Summon Lab",
   "description": "Summon characters with gameplay attributes initialized during native spawning, before spawn completion",
   "author": "Anomaly",

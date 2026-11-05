@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "id": "anomaly.builtin.map-spawn-exporter",
+  "id": "anomaly.map-spawn-exporter",
   "name": "Map Spawn Exporter",
   "description": "Reads static map spawn tables without scanning loaded actors and exports their coordinates as JSON.",
   "author": "Anomaly",

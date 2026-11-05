@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "id": "anomaly.local.nte-navmesh-demo",
+  "id": "anomaly.nte-navmesh-demo",
   "name": "Navigation",
   "description": "Starts and stops native NTE navigation through the Host ABI.",
   "author": "Anomaly",

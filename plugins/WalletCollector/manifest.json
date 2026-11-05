@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "id": "anomaly.local.nte-interactbox-collector",
+  "id": "anomaly.wallet-collector",
   "name": "WalletCollector",
   "description": "Plans a route and collects the configured number of wallets by navigation.",
   "author": "Anomaly",

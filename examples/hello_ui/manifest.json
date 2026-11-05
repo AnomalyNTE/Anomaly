@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2, "id": "anomaly.example.hello-ui", "name": "Hello UI", "author": "Anomaly", "license": "AGPL-3.0-only", "version": "1.0.0",
+  "schemaVersion": 2, "id": "anomaly.hello-ui", "name": "Hello UI", "author": "Anomaly", "license": "AGPL-3.0-only", "version": "1.0.0",
   "entry": "plugin.dll", "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
   "games": ["nte"], "builds": ["nte-*"], "loadPhase": "game-ready",
   "services": [

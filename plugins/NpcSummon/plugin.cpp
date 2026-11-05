@@ -3921,7 +3921,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     }
     *descriptor = AnomalyPluginDescriptorV1{
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
-        sv("local.nte.npc-summon"), sv("NPC Summon"), sv("OUO"), sv("1.1.0"),
+        sv("ouo.npc-summon"), sv("NPC Summon"), sv("OUO"), sv("1.1.0"),
         plugin_load, plugin_start, plugin_stop, plugin_unload, plugin_update, plugin_draw};
     return mk_status(ANOMALY_STATUS_V1_OK);
 }

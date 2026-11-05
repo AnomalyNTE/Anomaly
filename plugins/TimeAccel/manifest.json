@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "id": "anomaly.builtin.nte-time-accel",
+  "id": "wawmew.time-accel",
   "name": "Time Accel",
   "description": "NTE time acceleration (world time dilation): sets a time dilation multiplier on the game world so the whole game runs faster. Hotkeys can be rebound in the UI; Backspace unbinds. The bottom line shows the multiplier actually in effect. Character damage may be anomalous at 2x and above.",
   "author": "WawMew",

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "id": "anomaly.local.nte-vehicle",
+  "id": "anomaly.nte-vehicle",
   "name": "Vehicle Control",
   "description": "Vehicle control: plain vehicle summoning, per-model customized summoning, performance tuning, wheel friction, full durability for the current land vehicle, and diagnostics.",
   "author": "Anomaly",

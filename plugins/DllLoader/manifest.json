@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "id": "anomaly.builtin.dll-loader",
+  "id": "anomaly.dll-loader",
   "name": "DLL Loader",
   "description": "Loads a configured native DLL from this plugin package while the game is running.",
   "author": "Anomaly",

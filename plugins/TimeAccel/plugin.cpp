@@ -1259,7 +1259,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         return {ANOMALY_STATUS_V1_INVALID_ARGUMENT, 0, {}};
     }
     *descriptor = {sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
-                   StringView("anomaly.builtin.nte-time-accel"), StringView("Time Accel"),
+                   StringView("wawmew.time-accel"), StringView("Time Accel"),
                    StringView("WawMew"), StringView("0.3.7"), Load, Start, Stop, Unload, Update,
                    Draw};
     return anomaly::sdk::Ok();

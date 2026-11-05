@@ -23,7 +23,7 @@ The following assumes CMake has already output the directory package to `build\p
 ```powershell
 anomaly-plugin validate .\build\package\MyPlugin
 anomaly-plugin pack .\build\package\MyPlugin --output .\dist\packed
-anomaly-test-host --plugin .\dist\packed\com.example.my-plugin --reload 10 --ticks 60
+anomaly-test-host --plugin .\dist\packed\example.my-plugin --reload 10 --ticks 60
 ```
 
 `anomaly-plugin pack` creates a directory named after the manifest ID and generates `package.sha256`. Its output is still a directory, not the ZIP that the third-party plugins page can download.
@@ -35,8 +35,8 @@ For the exact build and TestHost usage, see [Plugin development](plugin-developm
 Zip the **contents** of the package directory; do not wrap the top-level directory inside it:
 
 ```powershell
-$Packed = '.\dist\packed\com.example.my-plugin'
-$Zip = '.\dist\com.example.my-plugin-1.2.0.zip'
+$Packed = '.\dist\packed\example.my-plugin'
+$Zip = '.\dist\example.my-plugin-1.2.0.zip'
 Compress-Archive -Path "$Packed\*" -DestinationPath $Zip -Force
 ```
 
@@ -55,7 +55,7 @@ other native DLLs     optional
 This layout cannot be installed, because `manifest.json` is not at the ZIP root:
 
 ```text
-com.example.my-plugin\
+example.my-plugin\
   manifest.json
   plugin.dll
 ```
@@ -76,7 +76,7 @@ The root of `pluginmaster.json` must be a JSON array. Usually a plugin ID carrie
 [
   {
     "Name": "My Plugin",
-    "InternalName": "com.example.my-plugin",
+    "InternalName": "example.my-plugin",
     "Version": "1.2.0",
     "Author": "Example Author",
     "Punchline": "Shows one useful piece of information in game.",
@@ -86,8 +86,8 @@ The root of `pluginmaster.json` must be a JSON array. Usually a plugin ID carrie
     "Tags": ["ui", "utility"],
     "RepoUrl": "https://github.com/example/my-plugin",
     "IconUrl": "https://example.com/my-plugin/icon.png",
-    "DownloadLinkInstall": "https://github.com/example/my-plugin/releases/download/v1.2.0/com.example.my-plugin-1.2.0.zip",
-    "DownloadLinkUpdate": "https://github.com/example/my-plugin/releases/download/v1.2.0/com.example.my-plugin-1.2.0.zip",
+    "DownloadLinkInstall": "https://github.com/example/my-plugin/releases/download/v1.2.0/example.my-plugin-1.2.0.zip",
+    "DownloadLinkUpdate": "https://github.com/example/my-plugin/releases/download/v1.2.0/example.my-plugin-1.2.0.zip",
     "AcceptsFeedback": true
   }
 ]
@@ -149,7 +149,7 @@ example/anomaly-plugins
 
 example/my-plugin
   Releases/v1.2.0
-    com.example.my-plugin-1.2.0.zip
+    example.my-plugin-1.2.0.zip
 ```
 
 The matching URLs should be direct content or direct download addresses:
@@ -158,7 +158,7 @@ The matching URLs should be direct content or direct download addresses:
 | --- | --- |
 | Plugin source | `https://raw.githubusercontent.com/example/anomaly-plugins/main/pluginmaster.json` |
 | Icon | `https://raw.githubusercontent.com/example/anomaly-plugins/main/assets/my-plugin.png` |
-| Plugin ZIP | `https://github.com/example/my-plugin/releases/download/v1.2.0/com.example.my-plugin-1.2.0.zip` |
+| Plugin ZIP | `https://github.com/example/my-plugin/releases/download/v1.2.0/example.my-plugin-1.2.0.zip` |
 | Project homepage | `https://github.com/example/my-plugin` |
 
 Do not use `https://github.com/example/anomaly-plugins/blob/main/pluginmaster.json` as the plugin source; that is a web page address returning HTML, not raw JSON. The ZIP should use the Release asset download address as well, and must not point at the Release detail page.
@@ -167,7 +167,7 @@ After uploading, fetch the index and the ZIP again from the public URL, and conf
 
 ```powershell
 $IndexUrl = 'https://raw.githubusercontent.com/example/anomaly-plugins/main/pluginmaster.json'
-$PluginId = 'com.example.my-plugin'
+$PluginId = 'example.my-plugin'
 
 $Entries = @(Invoke-RestMethod -Uri $IndexUrl)
 $Entry = $Entries | Where-Object { $_.InternalName -eq $PluginId }

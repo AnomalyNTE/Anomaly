@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "id": "local.nte.training-dummy",
+  "id": "anomaly.training-dummy",
   "name": "Training Dummy",
   "description": "Spawn WoodTest training dummies through the character's own SummonAI path and drive everything from a panel instead of writing into the in-game Tab wheel.",
   "author": "Anomaly",

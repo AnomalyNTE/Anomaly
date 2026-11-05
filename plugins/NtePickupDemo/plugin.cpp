@@ -310,7 +310,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     *descriptor = {
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR,
         ANOMALY_PLUGIN_API_V1_MINOR,
-        anomaly::sdk::StringView("anomaly.local.nte-pickup-demo"),
+        anomaly::sdk::StringView("anomaly.nte-pickup-demo"),
         anomaly::sdk::StringView("Nearby Pickup"),
         anomaly::sdk::StringView("Anomaly"),
         anomaly::sdk::StringView("0.1.0"),

@@ -165,7 +165,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         sizeof(*descriptor),
         ANOMALY_PLUGIN_API_V1_MAJOR,
         ANOMALY_PLUGIN_API_V1_MINOR,
-        anomaly::sdk::StringView("anomaly.test.hook-lifecycle"),
+        anomaly::sdk::StringView("anomaly.hook-lifecycle"),
         anomaly::sdk::StringView("Hook Lifecycle Fixture"),
         anomaly::sdk::StringView("Anomaly"),
         anomaly::sdk::StringView("1.0.0"),

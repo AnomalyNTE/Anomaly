@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "id": "anomaly.example.nte-combat-demo",
+  "id": "anomaly.nte-combat-demo",
   "name": "NTE Combat Demo",
   "author": "Anomaly",
   "license": "AGPL-3.0-only",
