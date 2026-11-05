@@ -318,3 +318,38 @@ typedef struct AnomalyUe5StreamingSourceServiceV1 {
 
 > [!NOTE]
 > Higher-level, NTE gameplay-oriented services (session events, player / camera, entity paging) are covered in [NTE services](nte-services.md).
+
+## `anomaly.ue5.assets`
+
+Version 1, capability `ue5-assets`. The service queries the engine Asset Registry's
+class inheritance index, including generated classes that have never been loaded.
+It can asynchronously request an entire StringTable asset and copy its source
+strings without loading monster blueprints or their CDOs. Source strings are not
+culture-specific `locres` translations.
+
+| Method | Domain | Contract |
+| --- | --- | --- |
+| `prepare_class` | Game | Bind a loaded base class by full path, e.g. `/Script/Engine.Actor` |
+| `enumerate_derived` | Worker | Synchronously visit complete generated-class paths from the registry |
+| `prepare_string_table` | Game | Start async loading, then copy up to 8 entries with a 1 ms soft budget checked between entries |
+| `enumerate_string_table` | Worker | Visit an immutable, complete key/source-string snapshot |
+
+Keys and source strings may be empty. Empty entries do not stop collection or enumeration.
+
+Preparation returns `UNAVAILABLE` while pending; advance on later ticks, never
+spin. Only pass confirmed StringTable asset paths. Native calls and engine load
+finalization cannot be preempted, so the soft budget is not an absolute time bound.
+The Profile must validate native registry/free entries, container ABI and reflected
+parameters. Unknown layouts disable the service.
+
+Visitors execute on the caller's Worker, are not retained, and their views expire
+on return. Return zero to cancel. Publish results only after `OK`; discard partial
+results on failure or cancellation. Paths already contain the generated class name.
+Queries for different bases do not share a cursor. Stopping drains active leases;
+cached service tables return `UNAVAILABLE` after stop.
+
+Use `anomaly.scheduler` for Worker tasks and `anomaly.storage` for atomic user
+caches. Refresh at startup and replace the complete catalog after success. Keep
+the previous snapshot on failure and label it as cached. SummonLab ships only
+`catalog-policy.json` with asset paths, name-key aliases and gameplay policies,
+not a manually exported class/name catalog.

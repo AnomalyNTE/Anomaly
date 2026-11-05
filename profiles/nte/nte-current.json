@@ -313,6 +313,36 @@
       "requiredBy": [
         "anomaly.nte.esc-menu-button"
       ]
+    },
+    "ue5.AssetRegistry.GetDerivedClassNames": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "4C 8B DC 55 49 8D 6B 98 48 81 EC 60 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 10 49 89 5B F0 48 8B D9 49 89 73 E8 49 89 7B E0 48 8D B9 A8 0B 00 00",
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable"
+      ],
+      "requiredBy": [
+        "anomaly.ue5.assets"
+      ]
+    },
+    "ue5.FMemory.Free": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "48 85 C9 74 2E 53 48 83 EC 20 48 8B D9 48 8B 0D ?? ?? ?? ?? 48 85 C9 75 0C E8 ?? ?? ?? ?? 48 8B 0D ?? ?? ?? ?? 48 8B 01 48 8B D3 FF 50 48 48 83 C4 20 5B C3",
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable"
+      ],
+      "requiredBy": [
+        "anomaly.ue5.assets"
+      ]
     }
   },
   "features": {
@@ -447,6 +477,10 @@
       "ue5.FNamePool",
       "ue5.GObjects",
       "ue5.ProcessEvent"
+    ],
+    "ue5.assets": [
+      "ue5.AssetRegistry.GetDerivedClassNames",
+      "ue5.FMemory.Free"
     ]
   },
   "optionalFeatures": [
@@ -468,7 +502,8 @@
     "nte.skills",
     "nte.skill-invocation",
     "ue5.streaming-source",
-    "nte.vehicle"
+    "nte.vehicle",
+    "ue5.assets"
   ],
   "featureLayoutValidators": {
     "ue5.ftext": [
@@ -534,6 +569,9 @@
     ],
     "nte.vehicle": [
       "nte-vehicle-layout-v1"
+    ],
+    "ue5.assets": [
+      "ue5-assets-abi-v1"
     ]
   },
   "featureDependencies": {
@@ -624,6 +662,11 @@
       "nte.player",
       "ue5.names",
       "ue5.objects",
+      "ue5.process-event"
+    ],
+    "ue5.assets": [
+      "ue5.names",
+      "ue5.object-find",
       "ue5.process-event"
     ]
   },
@@ -883,7 +926,20 @@
     "skillDamage.size": 120,
     "gameplayAbilityTips.size": 184,
     "gameplayEffectTips.size": 136,
-    "monsterData.size": 296
+    "monsterData.size": 296,
+    "assets.pathSize": 16,
+    "assets.setSize": 80,
+    "assets.setElementStride": 24,
+    "assets.setFlags": 16,
+    "assets.setHeapFlags": 32,
+    "assets.setFlagCount": 40,
+    "assets.setFlagCapacity": 44,
+    "assets.setFirstFree": 48,
+    "assets.setFreeCount": 52,
+    "assets.setHeapHash": 64,
+    "assets.setHashSize": 72,
+    "assets.setInlineFlagBits": 128,
+    "assets.derivedClassesVtableSlot": 368
   },
   "layoutCandidates": [
     {

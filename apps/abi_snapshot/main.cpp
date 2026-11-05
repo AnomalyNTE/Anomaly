@@ -218,6 +218,8 @@ std::string BuildSnapshot() {
     AppendUnsigned(output, ANOMALY_UE5_FRAMEWORK_SERVICE_V1_VERSION);
     output.append(",\n    \"ANOMALY_UE5_NAMES_SERVICE_V1_VERSION\": ");
     AppendUnsigned(output, ANOMALY_UE5_NAMES_SERVICE_V1_VERSION);
+    output.append(",\n    \"ANOMALY_UE5_ASSETS_SERVICE_V1_VERSION\": ");
+    AppendUnsigned(output, ANOMALY_UE5_ASSETS_SERVICE_V1_VERSION);
     output.append(",\n    \"ANOMALY_UE5_OBJECTS_SERVICE_V1_VERSION\": ");
     AppendUnsigned(output, ANOMALY_UE5_OBJECTS_SERVICE_V1_VERSION);
     output.append(",\n    \"ANOMALY_UE5_WORLD_SERVICE_V1_VERSION\": ");
@@ -1676,6 +1678,15 @@ std::string BuildSnapshot() {
          {"resolve_utf8", offsetof(AnomalyUe5NamesServiceV1, resolve_utf8)},
          {"resolve_ftext_utf8", offsetof(AnomalyUe5NamesServiceV1, resolve_ftext_utf8)}},
         false);
+    AppendStruct(output, "AnomalyUe5AssetsServiceV1", sizeof(AnomalyUe5AssetsServiceV1),
+        alignof(AnomalyUe5AssetsServiceV1),
+        {{"struct_size", offsetof(AnomalyUe5AssetsServiceV1, struct_size)},
+         {"service_version", offsetof(AnomalyUe5AssetsServiceV1, service_version)},
+         {"user", offsetof(AnomalyUe5AssetsServiceV1, user)},
+         {"prepare_class", offsetof(AnomalyUe5AssetsServiceV1, prepare_class)},
+         {"enumerate_derived", offsetof(AnomalyUe5AssetsServiceV1, enumerate_derived)},
+         {"prepare_string_table", offsetof(AnomalyUe5AssetsServiceV1, prepare_string_table)},
+         {"enumerate_string_table", offsetof(AnomalyUe5AssetsServiceV1, enumerate_string_table)}}, false);
     AppendStruct(
         output,
         "AnomalyUe5ObjectSnapshotV1",
@@ -2630,6 +2641,8 @@ std::string BuildSnapshot() {
         ANOMALY_UE5_FRAMEWORK_SERVICE_V1_VERSION, "AnomalyUe5FrameworkServiceV1", false);
     AppendService(output, ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_ID,
         ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_VERSION, "AnomalyUe5ProcessEventServiceV1", false);
+    AppendService(output, ANOMALY_UE5_ASSETS_SERVICE_V1_ID,
+        ANOMALY_UE5_ASSETS_SERVICE_V1_VERSION, "AnomalyUe5AssetsServiceV1", false);
     AppendService(output, ANOMALY_UE5_NAMES_SERVICE_V1_ID,
         ANOMALY_UE5_NAMES_SERVICE_V1_VERSION, "AnomalyUe5NamesServiceV1", false);
     AppendService(

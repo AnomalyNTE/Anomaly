@@ -118,6 +118,7 @@ capability 约束**服务可见性与资源归属**（不是 native 代码沙箱
 | `anomaly.ue5.objects` | `ue5-objects` |
 | `anomaly.ue5.world` | `ue5-world` |
 | `anomaly.ue5.streaming-source` | `ue5-streaming-source` |
+| `anomaly.ue5.assets` | `ue5-assets` |
 | `anomaly.nte.build` | `nte-build` |
 | `anomaly.nte.esc-menu-button` | `nte-esc-menu-button` |
 | `anomaly.nte.session` | `nte-session-snapshot` |

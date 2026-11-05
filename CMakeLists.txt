@@ -579,6 +579,7 @@ target_link_libraries(
 
 add_library(anomaly_adapter_services STATIC
     src/game/ue5/adapter_service_registry.cpp
+    src/game/ue5/ue5_assets.cpp
     src/game/ue5/ue5_object_lookup.cpp
     src/game/ue5/ue5_process_event.cpp
     src/game/ue5/ue5_process_event_hook.cpp
@@ -1148,6 +1149,13 @@ target_link_libraries(anomaly_test_host PRIVATE
 
 if(ANOMALY_BUILD_TEST_FIXTURES)
     enable_testing()
+    add_executable(anomaly_ue5_assets_fixture
+        apps/test_host/ue5_assets_fixture.cpp apps/test_host/ue5_assets_c_fixture.c)
+    target_link_libraries(anomaly_ue5_assets_fixture PRIVATE anomaly_adapter_services Anomaly::sdk)
+    target_compile_options(anomaly_ue5_assets_fixture PRIVATE /W4 /utf-8)
+    target_compile_options(anomaly_ue5_assets_fixture PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/EHsc>)
+    add_test(NAME ue5_assets_contract COMMAND anomaly_ue5_assets_fixture
+        "${CMAKE_SOURCE_DIR}/profiles/nte/nte-current.json")
     anomaly_add_plugin(anomaly_test_hook_lifecycle_plugin NO_RELEASE
         SOURCES apps/test_host/hook_lifecycle_fixture_plugin.cpp
         MANIFEST apps/test_host/hook_lifecycle_fixture_manifest.json

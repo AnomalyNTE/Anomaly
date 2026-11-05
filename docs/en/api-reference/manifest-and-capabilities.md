@@ -117,6 +117,7 @@ Every required (non-optional) service needs the capability listed in the table b
 | `anomaly.ue5.names` | `ue5-names` |
 | `anomaly.ue5.objects` | `ue5-objects` |
 | `anomaly.ue5.world` | `ue5-world` |
+| `anomaly.ue5.assets` | `ue5-assets` |
 | `anomaly.ue5.streaming-source` | `ue5-streaming-source` |
 | `anomaly.nte.build` | `nte-build` |
 | `anomaly.nte.esc-menu-button` | `nte-esc-menu-button` |

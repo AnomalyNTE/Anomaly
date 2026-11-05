@@ -317,3 +317,36 @@ typedef struct AnomalyUe5StreamingSourceServiceV1 {
 
 > [!NOTE]
 > 更高层、面向 NTE 玩法的服务（会话事件、玩家 / 相机、实体分页）见 [NTE 服务](nte-services.md)。
+
+## `anomaly.ue5.assets`
+
+- **ID**：`"anomaly.ue5.assets"` · **版本** 1 · **capability** `ue5-assets`
+
+通过 Asset Registry 的派生类索引列出完整蓝图类路径，包含从未加载的类。
+另可主动异步加载指定的 StringTable 资产并取得整表源文本；不依赖场景里已加载的角色，
+也不会为了收集名称批量加载怪物蓝图或 CDO。名称表源文本不等于按语言选取的 `locres` 翻译。
+
+| 成员 | 线程 | 说明 |
+| --- | --- | --- |
+| `prepare_class` | Game | 绑定已加载基类的完整路径，如 `/Script/HTGame.HTAICharacter` |
+| `enumerate_derived` | Worker | 查询注册表，通过同步 visitor 返回完整生成类路径 |
+| `prepare_string_table` | Game | 请求名称表异步加载，后续每次最多复制 8 项，并在条目之间检查 1 ms 软预算 |
+| `enumerate_string_table` | Worker | 通过同步 visitor 读取完整、不可变的键 / 源文本快照 |
+
+键和源文本都允许为空，空条目不会中止采集或枚举。
+
+准备方法返回 `UNAVAILABLE` 表示尚未就绪，调用方应在后续 Game tick 继续，不能循环等待。
+`prepare_string_table` 只接受调用方已确认是 StringTable 的资产路径。原生加载收尾和单次引擎调用
+无法抢占，因此软预算不保证每次调用的绝对耗时。长目录查询、排序、名称匹配和文件 I/O 应在 Worker。
+服务依赖活动 Profile 的 `ue5.assets` ABI 校验、注册表入口签名、内存释放入口及反射参数合同，
+不匹配时不可用，不猜测偏移。
+
+visitor 在调用者的 Worker 中同步执行，不会被宿主保留；字符串视图只在当前 visitor 调用期间有效。
+返回 0 会取消枚举。调用方只应在方法返回 `OK` 后发布新目录；任何失败或取消都应丢弃本次部分结果。
+路径已经包含生成类名称，不得额外添加 `_C`。不同基类查询互不覆盖，没有共享分页游标。
+停止服务会撤销并排空调用 lease；旧服务表在停止后返回 `UNAVAILABLE`。
+
+插件可用 `anomaly.scheduler` 安排 Worker，并用 `anomaly.storage` 原子保存用户缓存。
+缓存只用于启动加速，每次启动应重新查询注册表；成功后整体替换目录，以移除游戏更新后消失的资产。
+失败时保留旧快照，并显示缓存 / 刷新失败状态。SummonLab 的 `assets/catalog-policy.json` 只保存名称表路径、
+必要的名称键关联和玩法策略，不保存导出的蓝图清单或中文文本。

@@ -4,6 +4,7 @@
 #include "anomaly/nte_monster_names.hpp"
 #include "anomaly/nte_ui_buttons.hpp"
 #include "anomaly/ue5_ftext.hpp"
+#include "anomaly/ue5_assets.hpp"
 #include "anomaly/ue5_streaming_source_override.hpp"
 #include "anomaly/thread_local_value.hpp"
 
@@ -2437,6 +2438,10 @@ struct Ue5NteAdapter::State {
         if (id == ANOMALY_UE5_OBJECTS_SERVICE_V1_ID) {
             return framework_hook_ready && resolution.FeatureAvailable("ue5.objects");
         }
+        if (id == ANOMALY_UE5_ASSETS_SERVICE_V1_ID) {
+            return framework_hook_ready && resolution.FeatureAvailable(kUe5AssetsFeature) &&
+                ObjectFindAvailable() && static_cast<bool>(process_event_invoker);
+        }
         if (id == ANOMALY_UE5_WORLD_SERVICE_V1_ID) {
             return framework_hook_ready && resolution.FeatureAvailable("ue5.world");
         }
@@ -2708,6 +2713,10 @@ struct Ue5NteAdapter::State {
     }
 
     void ResetForStartLocked() noexcept {
+        asset_classes.clear();
+        asset_tables.clear();
+        asset_functions.clear();
+        asset_preparation_active = false;
         vehicle_bindings = {};
         vehicle_catalog.clear();
         vehicle_catalog_generation = 0;
@@ -13242,6 +13251,377 @@ struct Ue5NteAdapter::State {
             std::string_view(name.data, name.size), *name_id);
     }
 
+    // Asset enumeration never walks UObject instances. Game calls only bind
+    // reflection and copy a small part of a requested name-table asset.
+    struct AssetFunction { std::uintptr_t receiver{}, function{}; };
+    struct AssetParameter { const char* name; const char* type; std::size_t offset, size; };
+    struct AssetTextEntry { std::string key, source; };
+    struct AssetTable {
+        Ue5AssetName id;
+        bool load_requested{}, keys_requested{}, failed{};
+        std::chrono::steady_clock::time_point started{};
+        Ue5AssetArray keys;
+        std::int32_t cursor{};
+        std::uintptr_t free_memory{};
+        std::uintptr_t object{};
+        std::shared_ptr<const SymbolMemory> memory;
+        std::vector<AssetTextEntry> entries;
+        std::shared_ptr<const std::vector<AssetTextEntry>> snapshot;
+        ~AssetTable() {
+            // All remaining strings are ours, including cancellation during load.
+            if (memory) FreeUe5AssetStrings(free_memory, keys, cursor, *memory);
+        }
+    };
+    std::map<std::string, Ue5AssetRegistryBinding, std::less<>> asset_classes;
+    std::map<std::string, std::shared_ptr<AssetTable>, std::less<>> asset_tables;
+    std::map<std::wstring, AssetFunction, std::less<>> asset_functions;
+    std::int32_t asset_load_uuid{0x416E0000}; // Our latent-action namespace, not a game offset.
+    bool asset_preparation_active{}; // ProcessEvent subscribers can reenter preparation.
+    struct AssetPreparationGuard {
+        bool& active;
+        explicit AssetPreparationGuard(bool& value) : active(value) { active = true; }
+        ~AssetPreparationGuard() { active = false; }
+    };
+
+    bool AssetFunctionLocked(const wchar_t* path, std::uint16_t size, std::uint16_t returned,
+                             std::initializer_list<AssetParameter> params, AssetFunction& out) {
+        if (const auto found = asset_functions.find(path); found != asset_functions.end()) {
+            out = found->second;
+            return true;
+        }
+        AssetFunction binding;
+        std::uintptr_t owner{};
+        std::uint8_t count{};
+        std::uint16_t actual_size{}, actual_return{};
+        if (!FindExactObjectLocked(path, binding.function) ||
+            !ReadPointerAt(*memory, binding.function, Layout(profile, "object.outer"), owner) ||
+            !ReadPointerAt(*memory, owner, Layout(profile, "uclass.classDefaultObject"), binding.receiver) ||
+            !binding.receiver ||
+            !ReadValue(*memory, binding.function + Layout(profile, "ufunction.numParms"), count) ||
+            !ReadValue(*memory, binding.function + Layout(profile, "ufunction.parmsSize"), actual_size) ||
+            !ReadValue(*memory, binding.function + Layout(profile, "ufunction.returnValueOffset"), actual_return) ||
+            count != params.size() || actual_size != size || actual_return != returned) return false;
+        for (const auto& param : params) {
+            ReflectedPropertyInfo field;
+            if (!FindReflectedPropertyLocked(binding.function, param.name, field, false) ||
+                field.type != param.type || field.array_dim != 1 ||
+                field.offset != static_cast<std::int32_t>(param.offset) ||
+                field.element_size != static_cast<std::int32_t>(param.size)) return false;
+        }
+        asset_functions.emplace(path, binding);
+        out = binding;
+        return true;
+    }
+
+    bool AssetInvoke(std::unique_lock<std::timed_mutex>& lock, const AssetFunction& function,
+                     void* parameters, std::size_t size) {
+        // The ProcessEvent hook may invoke plugin subscribers which call back
+        // into this adapter. Never retain its mutex across that boundary.
+        lock.unlock();
+        const bool result = InvokeProcessEventGuarded(process_event_invoker, function.receiver,
+                                                     function.function, parameters, size);
+        lock.lock();
+        return result;
+    }
+
+    static bool AssetPathArgument(AnomalyStringViewV1 path) {
+        return path.data && path.size > 1 && path.size <= 512 && path.data[0] == '/' &&
+            !std::memchr(path.data, '\0', path.size) &&
+            std::string_view(path.data, path.size).find(':') == std::string_view::npos;
+    }
+
+    AnomalyStatusV1 PrepareAssetClass(AnomalyStringViewV1 path) noexcept {
+        try {
+            if (!AssetPathArgument(path)) return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+            if (GetCurrentThreadId() != game_thread_id.load(std::memory_order_acquire))
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "asset preparation requires Game");
+            std::unique_lock lock(mutex);
+            if (!SemanticServicesRunning() || !ServiceAvailableForPublication(ANOMALY_UE5_ASSETS_SERVICE_V1_ID))
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE);
+            const std::string key(path.data, path.size);
+            if (asset_classes.contains(key)) return Status(ANOMALY_STATUS_V1_OK);
+            if (asset_preparation_active) return Status(ANOMALY_STATUS_V1_UNAVAILABLE);
+            AssetPreparationGuard preparation(asset_preparation_active);
+            if (asset_classes.size() >= 32) return Status(ANOMALY_STATUS_V1_FAILED, "asset base limit reached");
+            std::wstring wide;
+            std::uintptr_t base{}, outer{};
+            Ue5AssetRegistryBinding binding;
+            if (!DecodeExactObjectPath(path, wide) || !FindExactObjectLocked(wide.c_str(), base) ||
+                !ReadPointerAt(*memory, base, Layout(profile, "object.outer"), outer) ||
+                !ReadValue(*memory, base + Layout(profile, "object.nameOffset"), binding.base_class.asset) ||
+                !ReadValue(*memory, outer + Layout(profile, "object.nameOffset"), binding.base_class.package))
+                return Status(ANOMALY_STATUS_V1_NOT_FOUND, "asset base class is not loaded");
+            std::uintptr_t class_type{};
+            std::string type;
+            if (!ReadPointerAt(*memory, base, Layout(profile, "object.class"), class_type) ||
+                !ReadReflectedObjectNameLocked(class_type, type) ||
+                (type != "Class" && type != "BlueprintGeneratedClass"))
+                return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT, "asset base is not a class");
+            struct RegistryResult { std::uintptr_t object{}, interface_pointer{}; } result;
+            AssetFunction get_registry;
+            if (!AssetFunctionLocked(L"/Script/AssetRegistry.AssetRegistryHelpers.GetAssetRegistry",
+                    sizeof(result), 0, {{"ReturnValue", "InterfaceProperty", 0, sizeof(result)}}, get_registry) ||
+                !AssetInvoke(lock, get_registry, &result, sizeof(result)) || !result.interface_pointer)
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "asset registry is not ready");
+            binding.registry = result.interface_pointer;
+            binding.get_derived = Symbol(kUe5DerivedClassesSymbol)->address;
+            binding.free_memory = Symbol(kUe5MemoryFreeSymbol)->address;
+            std::uintptr_t vtable{}, method{};
+            if (!ReadValue(*memory, binding.registry, vtable) ||
+                !ReadValue(*memory, vtable + Layout(profile, "assets.derivedClassesVtableSlot"), method) ||
+                method != binding.get_derived)
+                return Status(ANOMALY_STATUS_V1_FAILED, "asset registry native entry differs from Profile");
+            asset_classes.emplace(key, binding);
+            return Status(ANOMALY_STATUS_V1_OK);
+        } catch (...) { return Status(ANOMALY_STATUS_V1_FAILED, "asset class preparation failed"); }
+    }
+
+    AnomalyStatusV1 EnumerateAssetClasses(AnomalyStringViewV1 path,
+        AnomalyUe5AssetClassVisitorV1 visitor, void* visitor_user) noexcept {
+        try {
+            if (!visitor || !AssetPathArgument(path)) return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+            if (GetCurrentThreadId() == game_thread_id.load(std::memory_order_acquire))
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "asset enumeration requires Worker");
+            Ue5AssetRegistryBinding binding;
+            Ue5AssetNamePool pool;
+            {
+                std::scoped_lock lock(mutex);
+                if (!SemanticServicesRunning() || !ServiceAvailableForPublication(ANOMALY_UE5_ASSETS_SERVICE_V1_ID))
+                    return Status(ANOMALY_STATUS_V1_UNAVAILABLE);
+                const auto found = asset_classes.find(std::string_view(path.data, path.size));
+                if (found == asset_classes.end()) return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "asset base is not prepared");
+                binding = found->second;
+                pool = {Symbol("ue5.FNamePool")->address + Layout(profile, "names.blocksOffset"),
+                    static_cast<std::uint32_t>(Layout(profile, "names.blockBits")),
+                    static_cast<std::uint32_t>(Layout(profile, "names.entryStride")),
+                    static_cast<std::uint32_t>(Layout(profile, "names.headerLengthShift"))};
+            }
+            // Do not hold State::mutex while the engine queries its registry or
+            // while resolving thousands of immutable FName entries.
+            std::vector<Ue5AssetPath> names;
+            if (!QueryUe5DerivedClasses(binding, *memory, names))
+                return Status(ANOMALY_STATUS_V1_FAILED, "asset registry query failed");
+            for (const auto& name : names) {
+                if (!started.load(std::memory_order_acquire)) return Status(ANOMALY_STATUS_V1_CANCELLED);
+                auto package = ReadUe5AssetName(pool, *memory, name.package);
+                auto asset = ReadUe5AssetName(pool, *memory, name.asset);
+                if (package.empty() || asset.empty()) return Status(ANOMALY_STATUS_V1_FAILED, "asset path decode failed");
+                if (package.starts_with("/Script/") || !asset.ends_with("_C")) continue;
+                auto value = package + "." + asset;
+                if (!visitor(visitor_user, {value.data(), value.size()})) return Status(ANOMALY_STATUS_V1_CANCELLED);
+            }
+            return Status(ANOMALY_STATUS_V1_OK);
+        } catch (...) { return Status(ANOMALY_STATUS_V1_FAILED, "asset enumeration failed"); }
+    }
+
+    // Only plain FString/FName parameter values cross these calls. No FText
+    // references are created, and every engine allocation uses engine Free.
+    struct AssetSoftPath { Ue5AssetPath path; Ue5AssetArray subpath; };
+    struct AssetSoftReference { std::uint64_t weak{}; AssetSoftPath path; };
+    struct AssetLatentInfo { std::int32_t linkage{-1}, uuid{}; Ue5AssetName function; std::uintptr_t target{}; };
+    static_assert(sizeof(AssetSoftReference) == 40 && sizeof(AssetLatentInfo) == 24);
+
+    bool StartAssetTableLoadLocked(std::unique_lock<std::timed_mutex>& lock,
+                                   const std::wstring& path, AssetTable& table) {
+        struct NameParameters { Ue5AssetArray input; Ue5AssetName result; } name;
+        struct PathParameters { Ue5AssetArray input; AssetSoftPath result; } soft;
+        struct LoadParameters {
+            std::uintptr_t world{}; AssetSoftReference asset;
+            std::array<std::uint8_t, 16> callback{}; AssetLatentInfo latent;
+        } load;
+        static_assert(sizeof(LoadParameters) == 88);
+        AssetFunction name_function, path_function, load_function;
+        if (!AssetFunctionLocked(L"/Script/Engine.KismetStringLibrary.Conv_StringToName", sizeof(name),
+                offsetof(NameParameters, result), {{"InString", "StrProperty", 0, sizeof(name.input)},
+                {"ReturnValue", "NameProperty", offsetof(NameParameters, result), sizeof(name.result)}}, name_function) ||
+            !AssetFunctionLocked(L"/Script/Engine.KismetSystemLibrary.MakeSoftObjectPath", sizeof(soft),
+                offsetof(PathParameters, result), {{"PathString", "StrProperty", 0, sizeof(soft.input)},
+                {"ReturnValue", "StructProperty", offsetof(PathParameters, result), sizeof(soft.result)}}, path_function) ||
+            !AssetFunctionLocked(L"/Script/Engine.KismetSystemLibrary.LoadAsset", sizeof(load), 65535,
+                {{"WorldContextObject", "ObjectProperty", offsetof(LoadParameters, world), sizeof(load.world)},
+                 {"Asset", "SoftObjectProperty", offsetof(LoadParameters, asset), sizeof(load.asset)},
+                 {"OnLoaded", "DelegateProperty", offsetof(LoadParameters, callback), sizeof(load.callback)},
+                 {"LatentInfo", "StructProperty", offsetof(LoadParameters, latent), sizeof(load.latent)}}, load_function)) return false;
+        name.input = soft.input = {reinterpret_cast<std::uintptr_t>(path.c_str()),
+                                  static_cast<std::int32_t>(path.size() + 1), static_cast<std::int32_t>(path.size() + 1)};
+        struct ReleaseSubpath {
+            std::uintptr_t free_memory;
+            AssetSoftPath& value;
+            ~ReleaseSubpath() { FreeUe5AssetMemory(free_memory, value.subpath.data); }
+        } release_subpath{table.free_memory, soft.result};
+        if (!AssetInvoke(lock, name_function, &name, sizeof(name)) ||
+            !AssetInvoke(lock, path_function, &soft, sizeof(soft))) return false;
+        table.id = name.result;
+        // A top-level asset cannot contain a subobject string. Release even a
+        // rejected result rather than retaining an engine allocation.
+        if (soft.result.subpath.data) return false;
+        load.world = world_pointer;
+        load.asset.path = soft.result;
+        load.latent.uuid = ++asset_load_uuid;
+        load.latent.target = load_function.receiver;
+        // No callback into the adapter/plugin survives this call. The engine
+        // owns the latent action and its CDO callback target, including shutdown.
+        if (!AssetInvoke(lock, load_function, &load, sizeof(load))) return false;
+        table.load_requested = true;
+        table.started = std::chrono::steady_clock::now();
+        return true;
+    }
+
+    AnomalyStatusV1 PrepareAssetStringTable(AnomalyStringViewV1 path) noexcept {
+        try {
+            if (!AssetPathArgument(path)) return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+            if (GetCurrentThreadId() != game_thread_id.load(std::memory_order_acquire))
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "string table preparation requires Game");
+            std::unique_lock lock(mutex);
+            if (!SemanticServicesRunning() || !ServiceAvailableForPublication(ANOMALY_UE5_ASSETS_SERVICE_V1_ID) || !world_pointer)
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE);
+            if (asset_preparation_active) return Status(ANOMALY_STATUS_V1_UNAVAILABLE);
+            AssetPreparationGuard preparation(asset_preparation_active);
+            const std::string key(path.data, path.size);
+            auto found = asset_tables.find(key);
+            if (found != asset_tables.end() && found->second->failed) {
+                asset_tables.erase(found);
+                found = asset_tables.end();
+            }
+            if (found == asset_tables.end()) {
+                if (asset_tables.size() >= 16) return Status(ANOMALY_STATUS_V1_FAILED, "string table limit reached");
+                auto table = std::make_shared<AssetTable>();
+                table->free_memory = Symbol(kUe5MemoryFreeSymbol)->address;
+                table->memory = memory;
+                found = asset_tables.emplace(key, std::move(table)).first;
+            }
+            auto& table = *found->second;
+            if (table.snapshot) return Status(ANOMALY_STATUS_V1_OK);
+            std::wstring wide;
+            if (!DecodeExactObjectPath(path, wide)) return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+            if (!table.load_requested) {
+                if (!StartAssetTableLoadLocked(lock, wide, table)) {
+                    table.failed = true;
+                    return Status(ANOMALY_STATUS_V1_FAILED, "string table async load unavailable");
+                }
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "string table loading");
+            }
+            if (!table.keys_requested) {
+                std::uintptr_t object{}, type_object{};
+                std::string type;
+                if (!FindExactObjectLocked(wide.c_str(), object)) {
+                    if (std::chrono::steady_clock::now() - table.started > std::chrono::seconds(30)) {
+                        table.failed = true;
+                        return Status(ANOMALY_STATUS_V1_FAILED, "string table async load timed out");
+                    }
+                    return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "string table loading");
+                }
+                if (!ReadPointerAt(*memory, object, Layout(profile, "object.class"), type_object) ||
+                    !ReadReflectedObjectNameLocked(type_object, type) || type != "StringTable") {
+                    table.failed = true;
+                    return Status(ANOMALY_STATUS_V1_FAILED, "asset is not a StringTable");
+                }
+                table.object = object;
+                struct Parameters { Ue5AssetName id; Ue5AssetArray result; } params{table.id};
+                AssetFunction function;
+                if (!AssetFunctionLocked(L"/Script/Engine.KismetStringTableLibrary.GetKeysFromStringTable",
+                        sizeof(params), offsetof(Parameters, result), {{"TableID", "NameProperty", 0, sizeof(params.id)},
+                        {"ReturnValue", "ArrayProperty", offsetof(Parameters, result), sizeof(params.result)}}, function)) {
+                    table.failed = true;
+                    return Status(ANOMALY_STATUS_V1_FAILED, "string table key query unavailable");
+                }
+                const bool invoked = AssetInvoke(lock, function, &params, sizeof(params));
+                table.keys = params.result;
+                if (!invoked) {
+                    table.failed = true;
+                    return Status(ANOMALY_STATUS_V1_FAILED, "string table key query failed");
+                }
+                table.keys_requested = true;
+                if (table.keys.count <= 0 || table.keys.count > 65536 || table.keys.capacity < table.keys.count ||
+                    table.keys.capacity > 65536 || !table.keys.data) {
+                    table.failed = true;
+                    return Status(ANOMALY_STATUS_V1_FAILED, "string table keys are empty or invalid");
+                }
+                table.entries.reserve(static_cast<std::size_t>(table.keys.count));
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "string table copying");
+            }
+            // The async loader does not retain the asset for our multi-frame
+            // copy. If GC unloads it, discard this attempt instead of publishing
+            // missing strings as a complete table. Never dereference the saved object.
+            std::uintptr_t current_object{};
+            if (!FindExactObjectLocked(wide.c_str(), current_object) || current_object != table.object) {
+                table.failed = true;
+                return Status(ANOMALY_STATUS_V1_FAILED, "string table unloaded during copy");
+            }
+            struct EntryParameters { Ue5AssetName id; Ue5AssetArray key, result; } entry{table.id};
+            AssetFunction function;
+            if (!AssetFunctionLocked(L"/Script/Engine.KismetStringTableLibrary.GetTableEntrySourceString",
+                    sizeof(entry), offsetof(EntryParameters, result), {{"TableID", "NameProperty", 0, sizeof(entry.id)},
+                    {"Key", "StrProperty", offsetof(EntryParameters, key), sizeof(entry.key)},
+                    {"ReturnValue", "StrProperty", offsetof(EntryParameters, result), sizeof(entry.result)}}, function)) {
+                table.failed = true;
+                return Status(ANOMALY_STATUS_V1_FAILED, "string table source query unavailable");
+            }
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1);
+            for (unsigned step = 0; table.cursor < table.keys.count && step < 8; ++step) {
+                if (!ReadValue(*memory, table.keys.data + static_cast<std::size_t>(table.cursor) * sizeof(Ue5AssetArray), entry.key)) {
+                    table.failed = true;
+                    return Status(ANOMALY_STATUS_V1_FAILED, "string table key is unreadable");
+                }
+                entry.result = {};
+                struct ReleaseResult {
+                    std::uintptr_t free_memory;
+                    Ue5AssetArray& string;
+                    ~ReleaseResult() { FreeUe5AssetMemory(free_memory, string.data); }
+                } release_result{table.free_memory, entry.result};
+                const auto string_key = ReadUe5AssetString(entry.key, *memory);
+                // StringTable assets can contain an empty key/source pair.
+                // A decoded empty FString is valid; only a failed read aborts.
+                if (!string_key) {
+                    table.failed = true;
+                    return Status(ANOMALY_STATUS_V1_FAILED, "string table key is invalid");
+                }
+                if (!AssetInvoke(lock, function, &entry, sizeof(entry))) {
+                    table.failed = true;
+                    return Status(ANOMALY_STATUS_V1_FAILED, "string table entry query failed");
+                }
+                const auto source = ReadUe5AssetString(entry.result, *memory);
+                if (!source) {
+                    table.failed = true;
+                    return Status(ANOMALY_STATUS_V1_FAILED, "string table source is unreadable");
+                }
+                table.entries.push_back({*string_key, *source});
+                FreeUe5AssetMemory(table.free_memory, entry.key.data);
+                ++table.cursor;
+                if (std::chrono::steady_clock::now() >= deadline) break;
+            }
+            if (table.cursor != table.keys.count) return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "string table copying");
+            table.snapshot = std::make_shared<const std::vector<AssetTextEntry>>(std::move(table.entries));
+            FreeUe5AssetMemory(table.free_memory, table.keys.data);
+            table.keys = {};
+            return Status(ANOMALY_STATUS_V1_OK);
+        } catch (...) { return Status(ANOMALY_STATUS_V1_FAILED, "string table preparation failed"); }
+    }
+
+    AnomalyStatusV1 EnumerateAssetStringTable(AnomalyStringViewV1 path,
+        AnomalyUe5StringTableVisitorV1 visitor, void* visitor_user) noexcept {
+        try {
+            if (!visitor || !AssetPathArgument(path)) return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+            if (GetCurrentThreadId() == game_thread_id.load(std::memory_order_acquire))
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "string table enumeration requires Worker");
+            std::shared_ptr<const std::vector<AssetTextEntry>> snapshot;
+            {
+                std::scoped_lock lock(mutex);
+                if (!SemanticServicesRunning()) return Status(ANOMALY_STATUS_V1_UNAVAILABLE);
+                const auto found = asset_tables.find(std::string_view(path.data, path.size));
+                if (found == asset_tables.end() || !found->second->snapshot)
+                    return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "string table is not prepared");
+                snapshot = found->second->snapshot;
+            }
+            for (const auto& entry : *snapshot) {
+                if (!started.load(std::memory_order_acquire) || !visitor(visitor_user,
+                        {entry.key.data(), entry.key.size()}, {entry.source.data(), entry.source.size()}))
+                    return Status(ANOMALY_STATUS_V1_CANCELLED);
+            }
+            return Status(ANOMALY_STATUS_V1_OK);
+        } catch (...) { return Status(ANOMALY_STATUS_V1_FAILED, "string table enumeration failed"); }
+    }
+
     static AnomalyStatusV1 ANOMALY_CALL ResolveFText(
         void* user, const std::uintptr_t address, char* destination,
         std::size_t* size) noexcept {
@@ -16673,6 +17053,10 @@ struct Ue5NteAdapter::State::SemanticServiceEndpoint final {
             sizeof(AnomalyUe5ObjectsServiceV1), ANOMALY_UE5_OBJECTS_SERVICE_V1_VERSION,
             this, ObjectGenerationThunk, ObjectCountThunk, ObjectSnapshotThunk,
             ObjectSnapshotByHandleThunk, FindExactObjectThunk};
+        assets_service = {
+            sizeof(AnomalyUe5AssetsServiceV1), ANOMALY_UE5_ASSETS_SERVICE_V1_VERSION,
+            this, PrepareAssetClassThunk, EnumerateAssetClassesThunk,
+            PrepareAssetStringTableThunk, EnumerateAssetStringTableThunk};
         world_service = {
             sizeof(AnomalyUe5WorldServiceV1), ANOMALY_UE5_WORLD_SERVICE_V1_VERSION,
             this, CurrentWorldThunk, WorldSnapshotThunk};
@@ -17027,6 +17411,25 @@ private:
     static AnomalyStatusV1 ANOMALY_CALL ClearStreamingOverrideThunk(void* user) noexcept {
         auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
         return lease ? State::ClearStreamingOverride(lease.User()) : StoppedStatus();
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL PrepareAssetClassThunk(void* user, AnomalyStringViewV1 path) noexcept {
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        return lease ? static_cast<State*>(lease.User())->PrepareAssetClass(path) : StoppedStatus();
+    }
+    static AnomalyStatusV1 ANOMALY_CALL EnumerateAssetClassesThunk(void* user, AnomalyStringViewV1 path,
+        AnomalyUe5AssetClassVisitorV1 visitor, void* visitor_user) noexcept {
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        return lease ? static_cast<State*>(lease.User())->EnumerateAssetClasses(path, visitor, visitor_user) : StoppedStatus();
+    }
+    static AnomalyStatusV1 ANOMALY_CALL PrepareAssetStringTableThunk(void* user, AnomalyStringViewV1 path) noexcept {
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        return lease ? static_cast<State*>(lease.User())->PrepareAssetStringTable(path) : StoppedStatus();
+    }
+    static AnomalyStatusV1 ANOMALY_CALL EnumerateAssetStringTableThunk(void* user, AnomalyStringViewV1 path,
+        AnomalyUe5StringTableVisitorV1 visitor, void* visitor_user) noexcept {
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        return lease ? static_cast<State*>(lease.User())->EnumerateAssetStringTable(path, visitor, visitor_user) : StoppedStatus();
     }
 
     static std::uint64_t ANOMALY_CALL MapLandmarkSequenceThunk(void* user) noexcept {
@@ -17580,6 +17983,7 @@ public:
     AnomalyUe5NamesServiceV1 names_service{};
     AnomalyUe5ObjectsServiceV1 objects_service{};
     AnomalyUe5WorldServiceV1 world_service{};
+    AnomalyUe5AssetsServiceV1 assets_service{};
 };
 
 struct Ue5NteAdapter::State::CallbackEndpoint final {
@@ -18349,6 +18753,14 @@ bool Ue5NteAdapter::State::PublishAvailableServices(const std::weak_ptr<State>& 
             ANOMALY_UE5_WORLD_SERVICE_V1_ID,
             ANOMALY_UE5_WORLD_SERVICE_V1_VERSION,
             &endpoint->world_service,
+            {}, semantic_lifetime)) {
+        return false;
+    }
+    if (ServiceAvailableForPublication(ANOMALY_UE5_ASSETS_SERVICE_V1_ID) &&
+        !PublishIfMissing(
+            ANOMALY_UE5_ASSETS_SERVICE_V1_ID,
+            ANOMALY_UE5_ASSETS_SERVICE_V1_VERSION,
+            &endpoint->assets_service,
             {}, semantic_lifetime)) {
         return false;
     }
