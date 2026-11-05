@@ -16,13 +16,18 @@ Anomaly 的内建战斗统计插件：只读实时伤害/治疗统计、独立 O
 plugins/NteCombatTracker/
   manifest.json           插件 manifest（name/description 用英文回退）
   locales/zh-CN.json      中文目录（window.title / plugin.description）
+  profile/                compatibility.profile.json：签名、布局偏移与虚表槽位
   src/                    插件 DLL、Overlay 与采集引擎的源码
   tests/                  15 个离线夹具，随 -DANOMALY_BUILD_TEST_FIXTURES=ON 构建
   assets/                 仅属性配色表（角色属性在运行时从 DT_Character 读取）
   cmake/plugin_version.hpp.in
 ```
 
-`assets/` 由 `anomaly_add_plugin` 自动镜像进包目录并随 GameRuntime 组件安装。
+`assets/` 与 `profile/` 由 `anomaly_add_plugin` 自动镜像进包目录并随 GameRuntime 组件安装。
+`profile/compatibility.profile.json` 是唯一的兼容数据来源：签名、入口字节、对象/反射/DataTable
+偏移、虚表槽位与记录步长都在那里，代码只保留 `struct_size`/指令解码与范围、对齐校验。宿主在
+Lifecycle 阶段通过 `anomaly.profile` 校验并加载，缺项或签名失配时停用 UID 探测与属性配色，
+不回退到代码内偏移。
 
 ## 名称来源
 
@@ -49,9 +54,9 @@ plugins/NteCombatTracker/
 | 步骤 | 途径 |
 | --- | --- |
 | 定位表对象 | `anomaly.ue5.objects` → `find_exact("/Game/DataTable/Character/DT_Character.DT_Character")` |
-| 句柄 → 对象地址 | 插件解析 `GObjects` 签名（`anomaly.interop.signature`）后读注册表 |
+| 句柄 → 对象地址 | 按 Profile 的 `kGObjectsPattern` 解析注册表（`anomaly.profile` + `anomaly.interop.signature`），再按 Profile 布局读注册表 |
 | 逐行读取 | `anomaly.core` → `read_memory` 遍历 `UDataTable::RowMap` |
-| 字段偏移 | 走行结构体的 `ChildProperties` 链（含 `SuperStruct`）解析 `CharacterElementType` |
+| 字段偏移 | 走行结构体的 `ChildProperties` 链（含 `SuperStruct`）解析 `CharacterElementType`，偏移来自 Profile |
 | 行 ↔ 角色 | 角色对象路径里的 `player_003` 对应行键 `1003` |
 
 `ElementData.CharacterElementType` 是 1 字节枚举，值映射到
@@ -86,9 +91,10 @@ pwsh -NoProfile -File tools/check_plugin_i18n.ps1 -Plugin NteCombatTracker
 
 ## 实现要点
 
+- **兼容数据**：签名、入口字节与布局只在 `profile/compatibility.profile.json`；离线夹具也从
+  同一份 Profile 派生，生产代码与测试都不保留第二份数值副本。
 - **双进程**：插件采集并通过宿主 `anomaly.websocket` 发布 JSON 快照；Overlay 以 WinHTTP
-  WebSocket 客户端连接 `127.0.0.1:<宿主端口>`，用 Direct2D 自绘，不受宿主 ImGui 能力限制。
-- **CRT 依赖**：插件与 Overlay 都以 `/MD` 构建，包内不带 CRT 副本。`LaunchOverlay` 先从
+  WebSocket 客户端连接 `127.0.0.1:<宿主端口>`，用 Direct2D 自绘，不受宿主 ImGui 能力限制。- **CRT 依赖**：插件与 Overlay 都以 `/MD` 构建，包内不带 CRT 副本。`LaunchOverlay` 先从
   包目录把 CRT 模块解析进当前进程，子进程再继承，避免默认搜索顺序造成的加载器弹窗。
 - **日志**：schema v3，`events-NNNNNN.jsonl` 按 1024 事件 / 1 MiB 分段，`index.json` 记录
   逐段 SHA-256；所有写入都是临时文件 + `MoveFileExW`。

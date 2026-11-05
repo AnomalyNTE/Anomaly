@@ -1,6 +1,7 @@
 #pragma once
 
 #include "account_identity.hpp"
+#include "native_layout.hpp"
 
 #include <anomaly/sdk/anomaly_sdk.h>
 
@@ -40,12 +41,16 @@ struct UidDetectorDiagnostics {
     std::uint64_t next_retry_tick{};
 };
 
-// Read-only extraction of the original numeric TextBlock_RoleID value. This is
-// derived from Anomaly v1.7.0's FakeUID 1.1.4 object discovery and validation
-// path; it intentionally contains none of FakeUID's SetText behavior.
+// Read-only extraction of the original numeric TextBlock_RoleID value. The
+// discovery path is derived from Anomaly v1.7.0's FakeUID 1.1.4 object
+// discovery and validation path; it intentionally contains none of FakeUID's
+// SetText behavior. Its signatures, offsets and vtable slot come from
+// profile/compatibility.profile.json through `native::Snapshot`.
 class UidDetector {
 public:
-    explicit UidDetector(const AnomalyHostApiV1* host);
+    // The profile-derived snapshot is owned by the caller for the whole
+    // session; the detector only reads it.
+    UidDetector(const AnomalyHostApiV1* host, const native::Snapshot& native);
     ~UidDetector();
     UidDetector(UidDetector&&) noexcept;
     UidDetector& operator=(UidDetector&&) noexcept;

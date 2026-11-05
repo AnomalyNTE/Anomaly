@@ -15,10 +15,10 @@
 // stream's participant technical path carries.
 
 #include <anomaly/sdk/services/core.h>
-#include <anomaly/sdk/services/interop.h>
 #include <anomaly/sdk/services/ue5.h>
 
 #include "character_identity.hpp"
+#include "native_layout.hpp"
 
 #include <cstdint>
 #include <string>
@@ -31,7 +31,9 @@ struct CharacterAttributeServices {
     const AnomalyCoreServiceV1* core{};
     const AnomalyUe5ObjectsServiceV1* objects{};
     const AnomalyUe5NamesServiceV1* names{};
-    const AnomalySignatureServiceV1* signatures{};
+    // Profile-derived layout and resolved GObjects accessor; the attribute
+    // source never scans a signature itself.
+    const native::Snapshot* native{};
 };
 
 // The character id is derived from the participant object path, which is the

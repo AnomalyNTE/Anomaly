@@ -1628,6 +1628,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
     target_link_libraries(anomaly_nte_combat_model PUBLIC anomaly_nte_combat_protocol)
 
     add_library(anomaly_nte_combat_uid STATIC
+        ${ANOMALY_NTE_COMBAT_DIR}/src/native_layout.cpp
         ${ANOMALY_NTE_COMBAT_DIR}/src/uid_detector.cpp)
     target_include_directories(anomaly_nte_combat_uid PUBLIC
         "${CMAKE_SOURCE_DIR}/${ANOMALY_NTE_COMBAT_DIR}/src")

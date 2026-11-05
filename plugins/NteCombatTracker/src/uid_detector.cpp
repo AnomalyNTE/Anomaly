@@ -15,21 +15,10 @@
 namespace nte::account {
 namespace {
 
-// Read-only compatibility profile shared with Anomaly 1.7.1 FakeUID 1.1.5.
-constexpr std::string_view kSetTextPattern =
-    "48 89 5C 24 10 48 89 74 24 18 57 48 83 EC 50 48 8B F9 48 8B F2 48 8B 0A "
-    "48 8B 9F 88 01 00 00 48 3B D9 74 25 48 89 8F 88 01 00 00 48 85 C9 74 0B "
-    "48 8B 01 48 8D 54 24 60 FF 50 08 48 85 DB 74 09 48 8B 03 48 8B CB FF 50 10 "
-    "8B 46 08 48 8D 54 24 60";
-constexpr std::string_view kFreeStringPattern =
-    "48 85 C9 74 2E 53 48 83 EC 20 48 8B D9 48 8B 0D ?? ?? ?? ?? 48 85 C9 75 0C "
-    "E8 ?? ?? ?? ?? 48 8B 0D ?? ?? ?? ?? 48 8B 01 48 8B D3 FF 50 48 48 83 C4 20 "
-    "5B C3";
-constexpr std::string_view kTextToStringPattern =
-    "40 53 48 83 EC 20 48 8B D9 48 8B CA E8 ?? ?? ?? ?? 48 8B D0 48 8B CB E8 ?? "
-    "?? ?? ?? 48 8B C3 48 83 C4 20 5B C3";
-constexpr std::string_view kGObjectsPattern =
-    "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3 33 C0 48 8B 00 C3";
+// Read-only discovery of the UID widget. Signatures, object offsets, vtable
+// slots and record strides all come from profile/compatibility.profile.json
+// through `native::Snapshot`; only discovery cadence and the game-owned widget
+// identity stay in code.
 constexpr std::string_view kTargetWidgetName = "TextBlock_RoleID";
 constexpr std::string_view kTargetWidgetTemplatePath =
     "/Game/UI/Blueprints/Common/BPUI_RoleID.BPUI_RoleID_C:WidgetTree.TextBlock_RoleID";
@@ -43,17 +32,6 @@ constexpr std::uint32_t kIncrementalObjectBatchSize = 128;
 constexpr std::uint32_t kNeighborhoodObjectBatchSize = 512;
 constexpr std::uint32_t kRoleIdNeighborhoodRadius = 8192;
 constexpr std::size_t kMaximumTrackedWidgets = 64;
-
-constexpr std::uint32_t kObjectNameOffset = 24;
-constexpr std::uint32_t kObjectRegistryItemsOffset = 16;
-constexpr std::uint32_t kObjectChunkSize = 65536;
-constexpr std::uint32_t kObjectItemStride = 24;
-constexpr std::uint32_t kObjectItemSerialOffset = 16;
-constexpr std::uint32_t kTextFieldOffset = 392;
-constexpr std::uintptr_t kSetTextVtableOffset = 856;
-constexpr std::uint32_t kGObjectsResolveOffset = 3;
-constexpr std::uint32_t kGObjectsInstructionSize = 7;
-constexpr std::int32_t kGObjectsAddend = -16;
 
 struct UnrealString {
     wchar_t* data{};
@@ -78,12 +56,6 @@ const Service* Query(const AnomalyHostApiV1* host,
     return static_cast<const Service*>(service);
 }
 
-bool SignatureReady(const AnomalySignatureServiceV1* service) noexcept {
-    return service != nullptr &&
-        service->struct_size >= offsetof(AnomalySignatureServiceV1, resolve) +
-            sizeof(service->resolve) && service->resolve != nullptr;
-}
-
 bool ObjectsReady(const AnomalyUe5ObjectsServiceV1* service) noexcept {
     return service != nullptr &&
         service->struct_size >= offsetof(AnomalyUe5ObjectsServiceV1, find_exact) +
@@ -96,14 +68,6 @@ bool NamesReady(const AnomalyUe5NamesServiceV1* service) noexcept {
     return service != nullptr &&
         service->struct_size >= offsetof(AnomalyUe5NamesServiceV1, resolve_utf8) +
             sizeof(service->resolve_utf8) && service->resolve_utf8 != nullptr;
-}
-
-bool Resolve(const AnomalySignatureServiceV1& signature,
-    const std::string_view pattern, std::uintptr_t& target) noexcept {
-    if (target != 0) return true;
-    return signature.resolve(signature.user, anomaly::sdk::StringView("HTGame.exe"),
-        anomaly::sdk::StringView(".text"), anomaly::sdk::StringView(pattern),
-        &target).code == ANOMALY_STATUS_V1_OK && target != 0;
 }
 
 bool ResolveName(const AnomalyUe5NamesServiceV1& names,
@@ -121,10 +85,11 @@ bool ResolveName(const AnomalyUe5NamesServiceV1& names,
 }
 
 bool ReadWidgetText(const std::uintptr_t widget,
-    const TextToStringFn text_to_string, UnrealString& current) noexcept {
+    const TextToStringFn text_to_string, const std::uint32_t text_field_offset,
+    UnrealString& current) noexcept {
     __try {
         const auto* text = reinterpret_cast<const UnrealText*>(
-            widget + kTextFieldOffset);
+            widget + text_field_offset);
         return text_to_string(&current, text) != nullptr &&
             current.data != nullptr && current.count > 1 && current.count <= 2048 &&
             current.capacity >= current.count && current.data[current.count - 1] == L'\0';
@@ -148,12 +113,36 @@ struct UidDetector::Impl {
         std::uint64_t last_read_tick{};
     };
 
-    explicit Impl(const AnomalyHostApiV1* value) : host(value) {}
+    Impl(const AnomalyHostApiV1* value, const native::Snapshot& profile)
+        : host(value), layout(profile.layout), bindings(profile.bindings) {
+        if (!profile.complete) {
+            diagnostics.missing_bindings = profile.error;
+            diagnostics.phase = UidDetectorPhase::WaitingForBindings;
+            return;
+        }
+        free_string = reinterpret_cast<FreeStringFn>(bindings.free_string);
+        text_to_string = reinterpret_cast<TextToStringFn>(bindings.text_to_string);
+        // Both the GObjects accessor and its instruction shape come from the
+        // profile; only the RIP-relative decoding itself stays in code.
+        std::int32_t displacement{};
+        std::memcpy(&displacement,
+            reinterpret_cast<const void*>(
+                bindings.gobjects_accessor + native::kRipDisplacementOffset),
+            sizeof(displacement));
+        object_registry = bindings.gobjects_accessor + native::kRipInstructionSize +
+            displacement + layout.gobjects_addend;
+        profile_bound = object_registry != 0 && free_string != nullptr &&
+            text_to_string != nullptr && bindings.set_text != 0;
+        if (!profile_bound) {
+            diagnostics.missing_bindings = "compatibility profile snapshot is unusable";
+            diagnostics.phase = UidDetectorPhase::WaitingForBindings;
+        }
+    }
 
     bool BindRuntime() noexcept {
-        if (!SignatureReady(signature)) {
-            signature = Query<AnomalySignatureServiceV1>(host,
-                ANOMALY_SIGNATURE_SERVICE_V1_ID, ANOMALY_SIGNATURE_SERVICE_V1_VERSION);
+        if (!profile_bound) {
+            diagnostics.phase = UidDetectorPhase::WaitingForBindings;
+            return false;
         }
         if (!ObjectsReady(objects)) {
             objects = Query<AnomalyUe5ObjectsServiceV1>(host,
@@ -169,7 +158,6 @@ struct UidDetector::Impl {
             if (!destination.empty()) destination += ',';
             destination.append(value);
         };
-        if (!SignatureReady(signature)) AddMissing(diagnostics.missing_services, "signature");
         if (!ObjectsReady(objects)) AddMissing(diagnostics.missing_services, "objects");
         if (!NamesReady(names)) AddMissing(diagnostics.missing_services, "names");
         if (!diagnostics.missing_services.empty()) {
@@ -177,32 +165,9 @@ struct UidDetector::Impl {
             return false;
         }
 
-        Resolve(*signature, kSetTextPattern, set_text);
-        Resolve(*signature, kFreeStringPattern, free_address);
-        Resolve(*signature, kTextToStringPattern, text_address);
-        Resolve(*signature, kGObjectsPattern, gobjects_accessor);
         diagnostics.missing_bindings.clear();
-        if (set_text == 0) AddMissing(diagnostics.missing_bindings, "SetText");
-        if (free_address == 0) AddMissing(diagnostics.missing_bindings, "FreeString");
-        if (text_address == 0) AddMissing(diagnostics.missing_bindings, "TextToString");
-        if (gobjects_accessor == 0) AddMissing(diagnostics.missing_bindings, "GObjects");
-        if (!diagnostics.missing_bindings.empty()) {
-            diagnostics.phase = UidDetectorPhase::WaitingForBindings;
-            return false;
-        }
-
-        if (object_registry == 0) {
-            std::int32_t displacement{};
-            std::memcpy(&displacement,
-                reinterpret_cast<const void*>(gobjects_accessor + kGObjectsResolveOffset),
-                sizeof(displacement));
-            object_registry = gobjects_accessor + kGObjectsInstructionSize +
-                displacement + kGObjectsAddend;
-        }
-        free_string = reinterpret_cast<FreeStringFn>(free_address);
-        text_to_string = reinterpret_cast<TextToStringFn>(text_address);
-        ready = object_registry != 0 && free_string != nullptr && text_to_string != nullptr;
-        if (ready && diagnostics.phase != UidDetectorPhase::Detected) {
+        ready = true;
+        if (diagnostics.phase != UidDetectorPhase::Detected) {
             diagnostics.phase = widgets.empty() ? UidDetectorPhase::Scanning :
                 UidDetectorPhase::WidgetPending;
         }
@@ -368,21 +333,21 @@ struct UidDetector::Impl {
         const std::uint32_t expected_serial = static_cast<std::uint32_t>(handle.id >> 32U);
         __try {
             const auto chunks = *reinterpret_cast<const std::uintptr_t* const*>(
-                object_registry + kObjectRegistryItemsOffset);
+                object_registry + layout.object_registry_items_offset);
             if (chunks == nullptr) return false;
-            const auto chunk = chunks[index / kObjectChunkSize];
+            const auto chunk = chunks[index / layout.object_chunk_size];
             if (chunk == 0) return false;
             const auto item = chunk + static_cast<std::uintptr_t>(
-                index % kObjectChunkSize) * kObjectItemStride;
+                index % layout.object_chunk_size) * layout.object_item_stride;
             const auto serial = *reinterpret_cast<const std::uint32_t*>(
-                item + kObjectItemSerialOffset);
+                item + layout.object_item_serial_offset);
             const auto object = *reinterpret_cast<const std::uintptr_t*>(item);
             if (serial != expected_serial || object == 0 ||
-                *reinterpret_cast<const std::uint32_t*>(object + kObjectNameOffset) !=
-                    target_name_id) return false;
+                *reinterpret_cast<const std::uint32_t*>(
+                    object + layout.object_name_offset) != target_name_id) return false;
             const auto vtable = *reinterpret_cast<const std::uintptr_t*>(object);
             if (vtable == 0 || *reinterpret_cast<const std::uintptr_t*>(
-                    vtable + kSetTextVtableOffset) != set_text) return false;
+                    vtable + layout.set_text_vtable_offset) != bindings.set_text) return false;
             widget = object;
             return true;
         } __except (1) {
@@ -408,7 +373,8 @@ struct UidDetector::Impl {
             return ReadResult::Stale;
         }
         UnrealString current{};
-        const bool readable = ReadWidgetText(widget, text_to_string, current);
+        const bool readable = ReadWidgetText(
+            widget, text_to_string, layout.text_field_offset, current);
         if (!readable) {
             if (current.data != nullptr) free_string(current.data);
             ++diagnostics.failed_reads;
@@ -445,13 +411,19 @@ struct UidDetector::Impl {
     std::optional<AccountIdentity> Update() noexcept {
         ++tick;
         diagnostics.update_tick = tick;
+        if (!profile_bound) {
+            diagnostics.current_observation_valid = false;
+            diagnostics.retry_status = "compatibility profile unavailable";
+            diagnostics.next_retry_tick = 0;
+            return detected;
+        }
         if (!ready && tick >= next_runtime_binding_tick) {
             next_runtime_binding_tick = tick + kRuntimeBindingRetryInterval;
             BindRuntime();
         }
         if (!ready) {
             diagnostics.current_observation_valid = false;
-            diagnostics.retry_status = "runtime service/signature retry";
+            diagnostics.retry_status = "runtime service retry";
             diagnostics.next_retry_tick = next_runtime_binding_tick;
             return detected;
         }
@@ -519,15 +491,12 @@ struct UidDetector::Impl {
     }
 
     const AnomalyHostApiV1* host{};
-    const AnomalySignatureServiceV1* signature{};
     const AnomalyUe5ObjectsServiceV1* objects{};
     const AnomalyUe5NamesServiceV1* names{};
+    native::Layout layout;
+    native::Bindings bindings;
     FreeStringFn free_string{};
     TextToStringFn text_to_string{};
-    std::uintptr_t set_text{};
-    std::uintptr_t free_address{};
-    std::uintptr_t text_address{};
-    std::uintptr_t gobjects_accessor{};
     std::uintptr_t object_registry{};
     std::uint64_t tick{};
     std::uint64_t next_runtime_binding_tick{1};
@@ -544,14 +513,15 @@ struct UidDetector::Impl {
     bool named_scan{};
     bool bootstrap_started{};
     bool recovery_scan_requested{};
+    bool profile_bound{};
     bool ready{};
     std::vector<TrackedWidget> widgets;
     std::optional<AccountIdentity> detected;
     UidDetectorDiagnostics diagnostics;
 };
 
-UidDetector::UidDetector(const AnomalyHostApiV1* host)
-    : impl_(std::make_unique<Impl>(host)) {}
+UidDetector::UidDetector(const AnomalyHostApiV1* host, const native::Snapshot& native)
+    : impl_(std::make_unique<Impl>(host, native)) {}
 UidDetector::~UidDetector() = default;
 UidDetector::UidDetector(UidDetector&&) noexcept = default;
 UidDetector& UidDetector::operator=(UidDetector&&) noexcept = default;

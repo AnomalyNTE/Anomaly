@@ -6,6 +6,7 @@
 #include "developer_diagnostics.hpp"
 #include "display_name_origin.hpp"
 #include "log_worker.hpp"
+#include "native_layout.hpp"
 #include "uid_detector.hpp"
 #include "overlay_publish_policy.hpp"
 #include "overlay_protocol.hpp"
@@ -159,7 +160,11 @@ struct Context {
     // their identity colour instead of an attribute colour.
     std::string character_attribute_error;
     bool character_attributes_ready{};
+    bool character_attributes_disabled{};
     TimePoint next_character_attribute_attempt{};
+    // Profile-derived compatibility snapshot; loaded once in Start (Lifecycle)
+    // and only read afterwards.
+    nte::native::Snapshot native;
     std::string producer_instance_id;
     std::uint64_t overlay_snapshot_sequence{};
     std::uint64_t local_overlay_drops{};
@@ -1395,6 +1400,8 @@ void ResetState() {
     g_context.cursor.Clear();
     g_context.log_session = {};
     g_context.uid_detector.reset();
+    g_context.native = {};
+    g_context.character_attributes_disabled = false;
     g_context.account = nte::account::Unknown();
     g_context.participant_names.clear();
     g_context.observed_world = {};
@@ -2674,6 +2681,15 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
 // reading once at Start would then lose the attribute for the whole session.
 void LoadCharacterAttributes(const anomaly::sdk::Host& services) {
     if (g_context.character_attributes_ready) return;
+    if (g_context.character_attributes_disabled) return;
+    if (!g_context.native.complete) {
+        // Without the profile layout there is nothing to read; report once
+        // instead of polling memory on every game tick.
+        g_context.character_attributes_disabled = true;
+        g_context.character_attribute_error =
+            "compatibility profile is unavailable: " + g_context.native.error;
+        return;
+    }
     const auto now = nte::combat_stats::Clock::now();
     if (now < g_context.next_character_attribute_attempt) return;
     g_context.next_character_attribute_attempt = now + std::chrono::seconds(2);
@@ -2685,15 +2701,10 @@ void LoadCharacterAttributes(const anomaly::sdk::Host& services) {
         ANOMALY_UE5_OBJECTS_SERVICE_V1_ID, ANOMALY_UE5_OBJECTS_SERVICE_V1_VERSION);
     const auto names = services.Query<AnomalyUe5NamesServiceV1>(
         ANOMALY_UE5_NAMES_SERVICE_V1_ID, ANOMALY_UE5_NAMES_SERVICE_V1_VERSION);
-    // V1 is enough: resolve() is the leading member of both revisions, and the
-    // Host only publishes V2 for an exact minimum_version == 2 request while V1
-    // accepts any minimum. Requesting V1 keeps this working on both.
-    const auto signatures = services.Query<AnomalySignatureServiceV1>(
-        ANOMALY_SIGNATURE_SERVICE_V1_ID, ANOMALY_SIGNATURE_SERVICE_V1_VERSION);
     resolved.core = core.get();
     resolved.objects = objects.get();
     resolved.names = names.get();
-    resolved.signatures = signatures.get();
+    resolved.native = &g_context.native;
 
     std::string error;
     auto source = std::make_shared<nte::combat_stats::CharacterAttributeSource>(
@@ -2732,8 +2743,16 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* context) {
         g_context.log_worker.reset();
     }
     ResetState();
+    g_context.native = nte::native::Load(g_context.host);
+    if (!g_context.native.complete && g_context.core != nullptr &&
+        g_context.core->log != nullptr) {
+        const std::string message =
+            "NteCombatTracker: " + g_context.native.error;
+        g_context.core->log(g_context.core->user, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
+            anomaly::sdk::StringView(message));
+    }
     g_context.uid_detector = std::make_unique<nte::account::UidDetector>(
-        g_context.host);
+        g_context.host, g_context.native);
     CloseControlHandles();
     g_context.manual_end_event = CreateEventW(nullptr, FALSE, FALSE,
         nte::combat_stats::overlay::kManualEndEventName);
