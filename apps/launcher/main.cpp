@@ -1524,6 +1524,12 @@ const char* ClientLauncherFileName(const anomaly::launcher::NteClient client) no
 // read-only after start-up, so concurrent reads are safe.
 const anomaly::Translator* g_translator{};
 
+std::string Num(const double value, const int precision) {
+    char buffer[32]{};
+    std::snprintf(buffer, sizeof(buffer), "%.*f", precision, value);
+    return buffer;
+}
+
 std::string Tr(const anomaly::MessageId id) {
     return g_translator != nullptr ? std::string(g_translator->Text(id)) : std::string{};
 }
@@ -3001,10 +3007,11 @@ std::string LauncherCheckUpdates(std::vector<LauncherModEntry>& mods,
         ++unrecorded;
     }
     char summary[320]{};
-    std::snprintf(summary, sizeof(summary),
-        "检查完成（共 %d 个）：%d 个已是最新，%d 个有更新，%d 个首次登记来源，%d 个网络失败，"
-        "%d 个没有来源链接，%d 个无法判断",
-        static_cast<int>(mods.size()), unchanged, updated, adopted, failed, skipped, unrecorded);
+    std::snprintf(summary, sizeof(summary), "%s",
+        Tr(anomaly::MessageId::LauncherCheckSummary,
+            {std::to_string(mods.size()), std::to_string(unchanged), std::to_string(updated),
+                std::to_string(adopted), std::to_string(failed), std::to_string(skipped),
+                std::to_string(unrecorded)}).c_str());
     return summary;
 }
 
@@ -3196,7 +3203,9 @@ std::string LauncherUpdateMod(
             std::filesystem::copy_options::overwrite_existing, error);
         std::filesystem::remove(icon_temp, error);
     }
-    return copied == 0 ? "更新包里没有 pak 文件" : "已更新 " + std::to_string(copied) + " 个文件";
+    return copied == 0
+        ? Tr(anomaly::MessageId::LauncherMsgUpdateNoPak)
+        : Tr(anomaly::MessageId::LauncherMsgUpdated, {std::to_string(copied)});
 }
 
 
@@ -3869,8 +3878,8 @@ std::string LauncherInstallFromGameBanana(
             needs_lua_runtime = true;
         }
         return pak_files == 0
-            ? "压缩包里没有 pak/utoc/ucas（可能是 Aurora 模块或工具包）"
-            : "解压后没有可复制的文件";
+            ? Tr(anomaly::MessageId::LauncherMsgNoPakAurora)
+            : Tr(anomaly::MessageId::LauncherMsgNoCopiedFiles);
     }
     // Archives rarely ship an icon; use the GameBanana cover so the mod list has a thumbnail.
     if (const auto parsed = nlohmann::json::parse(body, nullptr, false); parsed.is_object()) {
@@ -3970,7 +3979,7 @@ void DrawBrowseMode(
     }
     ImGui::SameLine();
     if (browse_loading) {
-        ImGui::TextDisabled("加载中…");
+        ImGui::TextDisabled("%s", Tr(anomaly::MessageId::LauncherMsgLoading).c_str());
     } else if (ImGui::Button(exhausted ? Text(translator, anomaly::MessageId::LauncherBrowseAllLoaded)
                 : Text(translator, anomaly::MessageId::LauncherBrowseLoadMore)) && !exhausted) {
         browse_loading = true;
@@ -3990,7 +3999,7 @@ void DrawBrowseMode(
     ImGui::InputTextWithHint("##gb-filter",
         Text(translator, anomaly::MessageId::LauncherBrowseSearchHint), search, sizeof(search));
     ImGui::SameLine();
-    if (ImGui::Button("搜索")) {
+    if (ImGui::Button(Tr(anomaly::MessageId::LauncherBrowseSearch).c_str())) {
         items.clear();
         loaded_pages = 0;
         exhausted = false;
@@ -4012,15 +4021,17 @@ void DrawBrowseMode(
         std::scoped_lock lock(browse_mutex);
         if (!browse_outcome.empty() || !browse_outcome_ok) {
             if (!browse_outcome_ok) {
-                status = "加载失败（网络问题）";
+                status = Tr(anomaly::MessageId::LauncherMsgLoadFailedNetwork);
             } else if (browse_outcome.empty()) {
                 exhausted = true;
-                status = active_query.empty() ? "已到最后一页"
-                                              : "没有找到结果（试试英文关键词）";
+                status = active_query.empty()
+                    ? Tr(anomaly::MessageId::LauncherMsgLastPage)
+                    : Tr(anomaly::MessageId::LauncherMsgNoResults);
             } else {
                 ++loaded_pages;
                 items.insert(items.end(), browse_outcome.begin(), browse_outcome.end());
-                status = "已加载 " + std::to_string(items.size()) + " 个模组";
+                status = Tr(anomaly::MessageId::LauncherMsgLoadedCount,
+                    {std::to_string(items.size())});
             }
             browse_outcome.clear();
             browse_outcome_ok = true;  // 复位：下一次失败仍能识别
@@ -4040,13 +4051,13 @@ void DrawBrowseMode(
     }
     if (std::any_of(search, search + std::strlen(search),
             [](const char c) { return static_cast<unsigned char>(c) >= 0x80; })) {
-        ImGui::TextDisabled("提示：GameBanana 搜索对中文支持很差，中文词常返回无关结果，"
-                            "请用英文关键词（如 loading / hair / outfit）");
+        ImGui::TextDisabled("%s",
+            Tr(anomaly::MessageId::LauncherBrowseCjkHint).c_str());
     }
     const bool game_running = LauncherGameRunning();
     if (game_running) {
-        ImGui::TextColored(ImVec4(0.95f, 0.55f, 0.15f, 1.0f),
-            "游戏正在运行：安装/重装已禁用（模组文件被引擎占用）。请退出游戏后再安装。");
+        ImGui::TextColored(ImVec4(0.95f, 0.55f, 0.15f, 1.0f), "%s",
+            Tr(anomaly::MessageId::LauncherBrowseInstallBlocked).c_str());
     }
     if (!status.empty()) ImGui::TextDisabled("%s", status.c_str());
     ImGui::Separator();
@@ -4114,14 +4125,19 @@ void DrawBrowseMode(
     static int sort_mode{};  // client-side: 0 none, 1 name, 2 downloads, 3 size
     static bool sort_descending{true};
     // One combo instead of a row of buttons: the server-side sorts are mutually exclusive.
-    static const char* server_sort_labels[] = {"默认", "最新", "下载", "浏览", "喜爱"};
+    static const anomaly::MessageId server_sort_labels[] = {
+        anomaly::MessageId::LauncherSortDefault, anomaly::MessageId::LauncherSortNewest,
+        anomaly::MessageId::LauncherSortDownloads, anomaly::MessageId::LauncherSortViews,
+        anomaly::MessageId::LauncherSortLikes};
     static const char* server_sort_values[] = {"default", "new", "downloads", "views", "likes"};
     int server_sort_index = 0;
     for (int i = 0; i < 5; ++i) {
         if (active_sort == server_sort_values[i]) server_sort_index = i;
     }
     ImGui::SetNextItemWidth(Scale(140.0f));
-    if (ImGui::Combo("##server-sort", &server_sort_index, server_sort_labels, 5)) {
+    const char* server_sort_text[5]{};
+    for (int i = 0; i < 5; ++i) server_sort_text[i] = Text(translator, server_sort_labels[i]);
+    if (ImGui::Combo("##server-sort", &server_sort_index, server_sort_text, 5)) {
         const std::string chosen = server_sort_values[server_sort_index];
         if (chosen != active_sort && !browse_loading) {
             active_sort = chosen;
@@ -4146,12 +4162,14 @@ void DrawBrowseMode(
 
     ImGui::TextDisabled("%s", Text(translator, anomaly::MessageId::LauncherBrowseLoadedOnly));
     ImGui::SameLine();
-    const char* client_labels[] = {"名称", "下载", "大小", "时间"};
+    const anomaly::MessageId client_labels[] = {
+        anomaly::MessageId::LauncherSortName, anomaly::MessageId::LauncherSortDownloads,
+        anomaly::MessageId::LauncherSortSize, anomaly::MessageId::LauncherSortTime};
     for (int mode = 0; mode < 4; ++mode) {
         const bool active = sort_mode == mode + 1;
         if (active) ImGui::PushStyleColor(ImGuiCol_Button,
             ImGui::GetStyle().Colors[ImGuiCol_ButtonActive]);
-        if (ImGui::Button((std::string(client_labels[mode]) + "##cli" +
+        if (ImGui::Button((std::string(Text(translator, client_labels[mode])) + "##cli" +
                 std::to_string(mode)).c_str())) {
             if (sort_mode == mode + 1) sort_descending = !sort_descending;
             sort_mode = mode + 1;
@@ -4254,7 +4272,8 @@ void DrawBrowseMode(
                 }
                 ImGui::Image(reinterpret_cast<ImTextureID>(large), ImVec2(width, height));
             } else {
-                ImGui::TextDisabled("加载预览…");
+                ImGui::TextDisabled("%s",
+                    Tr(anomaly::MessageId::LauncherMsgLoadingPreview).c_str());
             }
             ImGui::TextDisabled("%s", item.name.c_str());
             ImGui::EndTooltip();
@@ -4273,9 +4292,15 @@ void DrawBrowseMode(
                 download_text = found->second;
             }
         }
-        if (!download_text.empty() && download_text != "0") info += "  ·  下 " + download_text;
-        if (!item.likes.empty() && item.likes != "0") info += "  ·  喜 " + item.likes;
-        if (!item.views.empty() && item.views != "0") info += "  ·  阅 " + item.views;
+        if (!download_text.empty() && download_text != "0") {
+            info += Tr(anomaly::MessageId::LauncherBrowseDownloads, {download_text});
+        }
+        if (!item.likes.empty() && item.likes != "0") {
+            info += Tr(anomaly::MessageId::LauncherBrowseLikes, {item.likes});
+        }
+        if (!item.views.empty() && item.views != "0") {
+            info += Tr(anomaly::MessageId::LauncherBrowseViews, {item.views});
+        }
         const std::string date = LauncherFormatDate(item.added);
         if (!date.empty()) info += "  ·  " + date;
         std::string size_text;
@@ -4308,20 +4333,22 @@ void DrawBrowseMode(
             ImGui::NewLine();
             const double done = static_cast<double>(g_download_bytes.load());
             const double total = static_cast<double>(g_download_total.load());
-            char overlay[128]{};
+            const double seconds = ImGui::GetTime() - install_started;
             if (total > 0.0) {
-                std::snprintf(overlay, sizeof(overlay), "%.1f / %.1f MB（%.0f%%） %.0f 秒",
-                    done / (1024.0 * 1024.0), total / (1024.0 * 1024.0),
-                    done * 100.0 / total, ImGui::GetTime() - install_started);
+                const std::string overlay = Tr(anomaly::MessageId::LauncherBrowseProgressPercent,
+                    {Num(done / (1024.0 * 1024.0), 1), Num(total / (1024.0 * 1024.0), 1),
+                        Num(done * 100.0 / total, 0), Num(seconds, 0)});
                 ImGui::ProgressBar(static_cast<float>(done / total), ImVec2(Scale(240.0f), 0.0f),
-                    overlay);
+                    overlay.c_str());
             } else {
-                std::snprintf(overlay, sizeof(overlay), "%.1f MB %.0f 秒",
-                    done / (1024.0 * 1024.0), ImGui::GetTime() - install_started);
-                ImGui::TextDisabled("安装中… %s", overlay);
+                ImGui::TextDisabled("%s",
+                    Tr(anomaly::MessageId::LauncherBrowseInstalling,
+                        {Tr(anomaly::MessageId::LauncherBrowseProgressBytes,
+                            {Num(done / (1024.0 * 1024.0), 1), Num(seconds, 0)})}).c_str());
             }
             ImGui::SameLine();
-            if (ImGui::Button((std::string("取消") + "##cancel" + item.id).c_str())) {
+            if (ImGui::Button((Tr(anomaly::MessageId::LauncherModsCancel) + "##cancel" +
+                    item.id).c_str())) {
                 g_download_cancel.store(true);
             }
         } else if (ImGui::Button((std::string(installed ? Text(translator, anomaly::MessageId::LauncherModsReinstall)
@@ -4345,9 +4372,11 @@ void DrawBrowseMode(
         }
     }
     if (items.empty()) {
-        ImGui::TextDisabled("点「加载更多」开始浏览 Neverness To Everness 的模组");
+        ImGui::TextDisabled("%s",
+            Tr(anomaly::MessageId::LauncherBrowseStartHint).c_str());
     } else if (shown == 0) {
-        ImGui::TextDisabled("当前过滤条件下没有匹配项");
+        ImGui::TextDisabled("%s",
+            Tr(anomaly::MessageId::LauncherBrowseNoMatches).c_str());
     }
     ImGui::EndChild();
 }
@@ -4419,13 +4448,14 @@ void DrawModsMode(
         if (entry.needs_lua) ++needs_lua_count;
     }
     if (needs_lua_count != 0) {
-        ImGui::TextColored(ImVec4(0.95f, 0.55f, 0.15f, 1.0f),
-            "可能有 %zu 个模组需要 Lua 运行时（本框架当前不支持），它们已安装但不会生效",
-            needs_lua_count);
+        ImGui::TextColored(ImVec4(0.95f, 0.55f, 0.15f, 1.0f), "%s",
+            Tr(anomaly::MessageId::LauncherModsNeedsLuaBanner,
+                {std::to_string(needs_lua_count)}).c_str());
     }
     ImGui::TextDisabled("%s", LauncherNarrow(directory).c_str());
     ImGui::SameLine();
-    ImGui::TextDisabled("（改动需重启游戏生效）");
+    ImGui::TextDisabled("%s",
+        Tr(anomaly::MessageId::LauncherModsRestartHint).c_str());
     if (ImGui::Button(Text(translator, anomaly::MessageId::LauncherModsRefresh))) {
         LauncherRefreshMods(snapshot, mods);
     }
@@ -4438,8 +4468,8 @@ void DrawModsMode(
     ImGui::SameLine();
     const bool game_running = LauncherGameRunning();
     if (game_running) {
-        ImGui::TextColored(ImVec4(0.95f, 0.55f, 0.15f, 1.0f),
-            "游戏正在运行：模组操作已禁用（.ucas/.utoc 被占用，改名/删除会失败）");
+        ImGui::TextColored(ImVec4(0.95f, 0.55f, 0.15f, 1.0f), "%s",
+            Tr(anomaly::MessageId::LauncherModsGameRunning).c_str());
     }
     ImGui::BeginDisabled(game_running);
     if (ImGui::Button(Text(translator, anomaly::MessageId::LauncherModsImport))) {
@@ -4584,7 +4614,9 @@ void DrawModsMode(
     bool hide_group{};
     for (auto& entry : mods) {
         if (!matches(entry)) continue;
-        const std::string group_name = entry.group.empty() ? "未分组" : entry.group;
+        const std::string group_name = entry.group.empty()
+            ? Tr(anomaly::MessageId::LauncherModsUngrouped)
+            : entry.group;
         if (group_name != current_group) {
             current_group = group_name;
             grid_column = 0;
@@ -4613,8 +4645,9 @@ void DrawModsMode(
                 entry.version.empty() ? "" : "  ·  v", entry.version.c_str());
             if (!entry.remote_version.empty() &&
                 (entry.version.empty() || entry.remote_version != entry.version)) {
-                ImGui::TextColored(ImVec4(0.95f, 0.55f, 0.15f, 1.0f), "↑ 新版本 v%s",
-                    entry.remote_version.c_str());
+                ImGui::TextColored(ImVec4(0.95f, 0.55f, 0.15f, 1.0f), "%s",
+                    Tr(anomaly::MessageId::LauncherModsNewVersionShort,
+                        {entry.remote_version}).c_str());
             }
             if (ImGui::Button((std::string(entry.enabled
                     ? Text(translator, anomaly::MessageId::LauncherModsDisable)
@@ -4662,7 +4695,8 @@ void DrawModsMode(
         if (!entry.author.empty()) meta += "  ·  " + entry.author;
         if (!entry.version.empty()) meta += "  ·  v" + entry.version;
         if (!entry.remote_version.empty() && entry.remote_version != entry.version) {
-            meta += "  ·  ↑ 新版本 v" + entry.remote_version;
+            meta += Tr(anomaly::MessageId::LauncherModsNewVersionInline,
+                {entry.remote_version});
         }
         ImGui::Text("%s  ·  %s  ·  %zu  ·  %.1f MB%s", title.c_str(),
             entry.enabled ? "ON" : "OFF", entry.files,
@@ -4783,7 +4817,7 @@ void DrawModsMode(
     if (ImGui::BeginPopupModal("confirm-uninstall", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::Text("%s", Format(translator, anomaly::MessageId::LauncherModsConfirmUninstall,
             {pending_uninstall}).c_str());
-        if (ImGui::Button("确定卸载")) {
+        if (ImGui::Button(Tr(anomaly::MessageId::LauncherModsConfirmUninstallButton).c_str())) {
             for (const auto& entry : mods) {
                 if (entry.name != pending_uninstall) continue;
                 LauncherRemoveMod(snapshot, entry);
@@ -4794,7 +4828,8 @@ void DrawModsMode(
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
-        if (ImGui::Button("取消##uninstall")) ImGui::CloseCurrentPopup();
+        if (ImGui::Button((Tr(anomaly::MessageId::LauncherModsCancel) + "##uninstall").c_str()))
+            ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
     if (ImGui::BeginPopupModal("confirm-batch-uninstall", nullptr,
@@ -4814,7 +4849,7 @@ void DrawModsMode(
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
-        if (ImGui::Button("取消##batch")) {
+        if (ImGui::Button((Tr(anomaly::MessageId::LauncherModsCancel) + "##batch").c_str())) {
             pending_batch = false;
             ImGui::CloseCurrentPopup();
         }
@@ -4846,9 +4881,9 @@ void DrawModsMode(
                         LauncherWriteAuroraSource(entry.icon_path, id, LauncherGameBananaFileId(body),
                             LauncherGameBananaFileName(body), LauncherGameBananaFileMd5(body),
                             LauncherGameBananaAuthor(body), entry.display_name, entry.needs_lua);
-                        import_message = "已关联 GameBanana #" + id;
+                        import_message = Tr(anomaly::MessageId::LauncherModsLinked, {id});
                     } else {
-                        import_message = "关联失败：取不到该 mod 页面";
+                        import_message = Tr(anomaly::MessageId::LauncherModsLinkFailed);
                     }
                 }
                 break;
@@ -4865,7 +4900,8 @@ void DrawModsMode(
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
-        if (ImGui::Button("取消##notes")) ImGui::CloseCurrentPopup();
+        if (ImGui::Button((Tr(anomaly::MessageId::LauncherModsCancel) + "##notes").c_str()))
+            ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
     ImGui::EndChild();
