@@ -1612,6 +1612,23 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         add_executable(anomaly_skin_changer_vehicle_fixture plugins/SkinChanger/vehicle_tests.cpp)
         target_compile_features(anomaly_skin_changer_vehicle_fixture PRIVATE cxx_std_20)
         target_compile_options(anomaly_skin_changer_vehicle_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+        foreach(suite IN ITEMS lifecycle cosmetics_runtime vehicle_runtime profile)
+            add_executable(anomaly_skin_changer_${suite}_fixture
+                plugins/SkinChanger/${suite}_tests.cpp)
+            target_link_libraries(anomaly_skin_changer_${suite}_fixture PRIVATE
+                Anomaly::sdk anomaly_plugin_profile ue5mem_memory)
+            target_compile_features(anomaly_skin_changer_${suite}_fixture PRIVATE cxx_std_20)
+            target_compile_options(anomaly_skin_changer_${suite}_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+            add_test(NAME skin_changer_${suite}
+                COMMAND anomaly_skin_changer_${suite}_fixture)
+        endforeach()
+        add_test(NAME skin_changer_cosmetics COMMAND anomaly_skin_changer_fixture)
+        foreach(suite IN ITEMS awakening plate plate_follow vehicle)
+            add_test(NAME skin_changer_${suite}
+                COMMAND anomaly_skin_changer_${suite}_fixture)
+        endforeach()
+        add_test(NAME skin_changer_localization
+            COMMAND pwsh -NoProfile -File "${CMAKE_CURRENT_SOURCE_DIR}/tools/check_plugin_i18n.ps1" -Plugin SkinChanger)
     endif()
 
     add_library(anomaly_quick_ultimate_sequence STATIC

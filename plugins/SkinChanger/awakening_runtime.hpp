@@ -13,7 +13,7 @@ struct VisualBackup {
 std::vector<VisualBackup> visual_backups;
 Clock::time_point next_visual{};
 struct View {
-    std::string status{localizer.Text("status.inventory_waiting", "Waiting for the local character inventory.")}; size_t owned{}, changed{}, processed{}, rejected{}, already{};
+    std::string status{lite_i18n::localizer.Text("awakening.wait_inventory", "Waiting for the local character inventory.")}; size_t owned{}, changed{}, processed{}, rejected{}, already{};
     bool ready{}, active{}, busy{}, restore_failed{};
 };
 std::atomic<std::shared_ptr<const View>> published;
@@ -72,8 +72,8 @@ bool PrepareWorldPointer(const Reader& r) {
     if (!world_pointer) {
         const auto instruction=accessory::profile::compatibility.Address("World");
         int32_t displacement{};
-        if (!instruction || !r.Read(instruction+3,displacement)) return false;
-        world_pointer = static_cast<uintptr_t>(static_cast<intptr_t>(instruction)+7+displacement);
+        if (!instruction || !r.Read(instruction+accessory::profile::native_layout.RipDisplacement,displacement)) return false;
+        world_pointer = static_cast<uintptr_t>(static_cast<intptr_t>(instruction)+accessory::profile::native_layout.RipInstructionSize+displacement);
     }
     return true;
 }
@@ -158,7 +158,7 @@ void DiscoverUi(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects) {
     const auto until = Clock::now()+std::chrono::microseconds(500);
     for (size_t n = 0; ui_scan_index && n < 1024 && Clock::now() < until; ++n) {
         const auto index = --ui_scan_index; uintptr_t chunk{}, object{}, cls{};
-        if (!r.Read(chunks+8*(index/accessory::profile::native_layout.ChunkSize),chunk) || !r.Read(chunk+accessory::profile::native_layout.ItemStride*(index%accessory::profile::native_layout.ChunkSize),object) ||
+        if (!r.Read(chunks+sizeof(uintptr_t)*(index/accessory::profile::native_layout.ChunkSize),chunk) || !r.Read(chunk+accessory::profile::native_layout.ItemStride*(index%accessory::profile::native_layout.ChunkSize),object) ||
             !r.Read(object+accessory::profile::native_layout.ObjectClass,cls) || cls != ui_class) continue;
         uint64_t uid{};
         if (!r.Read(object+skin_awakening_profile::native_layout.AwakenUiInfo,uid) || !uid) continue;
@@ -274,15 +274,15 @@ bool EffectNames(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects, FNa
     uintptr_t row_type{}; RowArray entries{}; int32_t free{};
     if (!table || !r.IsA(table, "DataTable") || !r.Read(table+skin_awakening_profile::native_layout.DataTableRowStruct, row_type) ||
         r.NameAt(row_type+accessory::profile::native_layout.ObjectName) != "CharacterAwakenEffectData" ||
-        !Layout(r,row_type, "AwakenEffectStructList", 8, 16) || !r.Read(table+skin_awakening_profile::native_layout.DataTableRowMap, entries) ||
+        !Layout(r,row_type, "AwakenEffectStructList", accessory::profile::native_layout.AwakenList, 16) || !r.Read(table+skin_awakening_profile::native_layout.DataTableRowMap, entries) ||
         entries.count < 1 || entries.count > 128 || entries.capacity < entries.count ||
         !r.Read(table+skin_awakening_profile::native_layout.DataTableRowMapFreeCount, free) || free != 0) return false;
     const auto type = FindCached(r, objects, "/Script/HTGame.AwakenEffectStruct");
     const auto item_type = FindCached(r, objects, "/Script/HTGame.AwakenEffectData");
     int32_t stride{}, item_stride{};
-    if (!type || !r.Read(type+skin_awakening_profile::native_layout.ScriptStructSize, stride) || stride != skin_awakening_profile::native_layout.AwakenEffectStride || !Layout(r,type,"EffectID",0,8) ||
+    if (!type || !r.Read(type+skin_awakening_profile::native_layout.ScriptStructSize, stride) || stride != static_cast<int32_t>(skin_awakening_profile::native_layout.AwakenEffectStride) || !Layout(r,type,"EffectID",skin_awakening_profile::native_layout.AwakenEffectId,8) ||
         !Layout(r,type,"AwakenType",skin_awakening_profile::native_layout.AwakenEffectType,1) || !item_type || !r.Read(item_type+skin_awakening_profile::native_layout.ScriptStructSize,item_stride) ||
-        item_stride != 12 || !Layout(r,item_type,"Unlocked",0,1) || !Layout(r,item_type,"EffectID",4,8)) return false;
+        item_stride != static_cast<int32_t>(skin_awakening_profile::native_layout.AwakenDataStride) || !Layout(r,item_type,"Unlocked",skin_awakening_profile::native_layout.AwakenDataUnlocked,1) || !Layout(r,item_type,"EffectID",skin_awakening_profile::native_layout.AwakenDataId,8)) return false;
     for (int32_t i = 0; i < entries.count; ++i) {
         FName key{}; uintptr_t row{}; RowArray effects{};
         if (!r.Read(entries.data+accessory::profile::native_layout.MapEntryStride*i, key) || Pack(key) != Pack(character)) continue;
@@ -291,7 +291,7 @@ bool EffectNames(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects, FNa
         std::array<bool,6> found{};
         for (int32_t j = 0; j < effects.count; ++j) {
             FName name{}; uint8_t kind{};
-            if (!r.Read(effects.data+skin_awakening_profile::native_layout.AwakenEffectStride*j, name) || !r.Read(effects.data+skin_awakening_profile::native_layout.AwakenEffectStride*j+skin_awakening_profile::native_layout.AwakenEffectType, kind)) return false;
+            if (!r.Read(effects.data+skin_awakening_profile::native_layout.AwakenEffectStride*j+skin_awakening_profile::native_layout.AwakenEffectId, name) || !r.Read(effects.data+skin_awakening_profile::native_layout.AwakenEffectStride*j+skin_awakening_profile::native_layout.AwakenEffectType, kind)) return false;
             if (kind != 0) continue;
             const auto label = r.Name(name);
             for (size_t k = 0; k < 6; ++k) if (label == "Effect"+std::to_string(k+1)) {
@@ -343,7 +343,7 @@ void Publish() {
     data->busy = !initial_complete && cursor < queue.size();
     data->restore_failed = restore_failed;
     if (!result.empty()) data->status = result;
-    else if (data->ready) data->status = localizer.Text("status.inventory_ready","All owned characters were read.");
+    else if (data->ready) data->status = lite_i18n::localizer.Text("awakening.inventory_ready", "All owned characters have been read.");
     published.store(std::move(data));
 }
 void Tick(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects) {
@@ -355,7 +355,7 @@ void Tick(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects) {
     int off = 2;
     if (requested.compare_exchange_strong(off,0)) {
         restore_failed = !Restore(r,objects,true);
-        result = restore_failed ? localizer.Text("status.restore_partial","Some characters were not fully restored; try again.") : localizer.Text("status.restore_done","All characters' original awakening was restored.");
+        result = restore_failed ? lite_i18n::localizer.Text("awakening.restore_partial", "Some characters could not be restored. Please retry.") : lite_i18n::localizer.Text("awakening.restored", "Original awakening restored for all characters.");
         Publish(); return;
     }
     if (Clock::now() >= next_inventory) {
@@ -364,7 +364,7 @@ void Tick(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects) {
         const auto handle = inventory ? Handle(r,objects,inventory) : AnomalyGenerationHandleV1{};
         if (inventory_handle.id && inventory_handle.id != handle.id) {
             restore_failed = !Restore(r,objects,false);
-            result = restore_failed ? localizer.Text("status.restore_incomplete","Original awakening restore did not finish.") : localizer.Text("status.restore_after_inventory_change","The character inventory changed, so the original awakening was restored.");
+            result = restore_failed ? lite_i18n::localizer.Text("awakening.restore_failed", "Original awakening could not be fully restored.") : lite_i18n::localizer.Text("awakening.inventory_changed", "The character inventory changed. Original awakening restored.");
             owned.clear(); ui_handle = {}; ui_scan_index = 0;
         }
         inventory_handle = handle;
@@ -383,17 +383,15 @@ void Tick(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects) {
     if (const auto command = requested.exchange(0)) {
         if (command == 2) {
             restore_failed = !Restore(r,objects,true);
-            result = restore_failed ? localizer.Text("status.restore_partial","Some characters were not fully restored; try again.") : localizer.Text("status.restore_done","All characters' original awakening was restored.");
+            result = restore_failed ? lite_i18n::localizer.Text("awakening.restore_partial", "Some characters could not be restored. Please retry.") : lite_i18n::localizer.Text("awakening.restored", "Original awakening restored for all characters.");
         }
         else if (command == 1 && !owned.empty()) {
-            enabled = true; initial_complete=false; restore_failed = false; queue = owned; cursor = rejected = already = 0; result = localizer.Text("status.preview_running","Previewing all owned characters in batches.");
+            enabled = true; initial_complete=false; restore_failed = false; queue = owned; cursor = rejected = already = 0; result = lite_i18n::localizer.Text("awakening.processing", "Applying previews to owned characters in batches.");
         }
     }
     if (enabled && cursor < queue.size()) {
         Apply(r,objects,queue[cursor++]);
-        if (cursor == queue.size()) {initial_complete=true;result = rejected ?
-            localizer.Text("status.preview_partial","Some characters did not pass validation and were left unchanged."):
-            localizer.Text("status.preview_done","Every character's awakening nodes are unlocked (local preview).");}
+        if (cursor == queue.size()) {initial_complete=true;result = rejected ? lite_i18n::localizer.Text("awakening.rejected", "Some characters failed validation and were left unchanged.") : lite_i18n::localizer.Text("awakening.applied", "Awakening nodes enabled for all characters (local preview).");}
     }
     // A selected page is refreshed once; no continuous rewriting or RPCs.
     if (enabled) {
@@ -425,10 +423,10 @@ void Draw(const AnomalyUiServiceV1* ui) {
     const auto data = published.load(); if (!data) return;
     const auto command = requested.load();
     int checked = command ? command == 1 : data->active;
-    if (ui->checkbox && ui->checkbox(ui->user,StringView(localizer.Text("option.unlock_awakening","Unlock awakening")),&checked)) requested = checked ? 1 : 2;
-    if (data->restore_failed) ui->text(ui->user,StringView(localizer.Text("status.restore_failed_retry","The restore did not finish; turn the switch off and on to retry.")));
-    else if (!data->ready) ui->text(ui->user,StringView(localizer.Text("status.character_loading","Waiting for the character to load...")));
-    else if (data->busy) ui->text(ui->user,StringView(localizer.Text("status.enabling","Enabling...")));
-    else if (data->active && data->rejected) ui->text(ui->user,StringView(localizer.Text("status.enable_partial","Some characters could not be enabled.")));
+    if (ui->checkbox && ui->checkbox(ui->user,StringView(lite_i18n::localizer.Text("awakening.enabled", "Unlock awakening")),&checked)) requested = checked ? 1 : 2;
+    if (data->restore_failed) ui->text(ui->user,StringView(lite_i18n::localizer.Text("awakening.restore_retry", "Restoration is incomplete. Turn the option off to retry.")));
+    else if (!data->ready) ui->text(ui->user,StringView(lite_i18n::localizer.Text("awakening.wait_character", "Waiting for characters to load...")));
+    else if (data->busy) ui->text(ui->user,StringView(lite_i18n::localizer.Text("awakening.enabling", "Enabling...")));
+    else if (data->active && data->rejected) ui->text(ui->user,StringView(lite_i18n::localizer.Text("awakening.partial", "Some characters could not be enabled.")));
 }
 }

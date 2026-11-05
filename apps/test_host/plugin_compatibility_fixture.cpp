@@ -36,7 +36,8 @@ int main() {
                 accessory::profile::native_layout.DisplayCharacter == 10956, "1.5 SDK layout mismatch");
         host.image[0] = 0xCC;
         Require(!accessory::profile::LoadCompatibility(&host.api), "unknown image must not publish a fallback layout");
-        Require(accessory::profile::native_layout.DisplayCharacter == 10956, "failed load must not publish a partial snapshot");
+        Require(accessory::profile::native_layout.DisplayCharacter == 0 &&
+                accessory::profile::compatibility.Address("layout") == 0, "failed load must not expose the previous layout or addresses");
         host.package = host.package.parent_path() / "FakeUID";
         Require(fake_uid_profile::LoadCompatibility(&host.api), "shared widget layout must load");
         Require(fake_uid_profile::native_layout.kWidgetSlotOffset == 48 &&
