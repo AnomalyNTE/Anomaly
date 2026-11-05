@@ -304,9 +304,10 @@ bool IsPlatformFont(const ImFont& font, const float scale) noexcept {
     return std::strcmp(font.GetDebugName(), expected) == 0;
 }
 
-const ImWchar* PlatformChineseGlyphRanges(ImFontAtlas& atlas) noexcept {
+const ImWchar* PlatformChineseGlyphRanges(
+    ImFontAtlas& atlas, const bool symbol_blocks) noexcept {
     // Host and plugin windows draw localized text with the default font. Bake
-    // every GB2312 ideograph plus general punctuation so characters outside
+    // every GB2312 ideograph plus the symbol blocks below so characters outside
     // ImGui's common 2500 glyphs do not render as the missing-glyph '?'.
     //
     // GB2312 carries the simplified orthography only, so text spelled the
@@ -314,13 +315,38 @@ const ImWchar* PlatformChineseGlyphRanges(ImFontAtlas& atlas) noexcept {
     // U+7570 U+74B0 bakes neither character and the launcher draws its path as
     // '??'. Name both spellings explicitly so either one renders; the simplified
     // pair (U+5F02 U+73AF) is already in the table and costs nothing to repeat.
+    //
+    // ImGui's own range set stops at general punctuation (U+2000-U+206F) and the
+    // ideograph table below covers no symbol row, so every arrow (U+2192), check
+    // mark (U+2713) and enclosed numeral (U+2460) that shipped plugin text draws
+    // fell outside all baked ranges and rendered as '?'. Bake the blocks that text
+    // draws from. A block costs the range walk, not the atlas: the atlas build
+    // skips codepoints the font has no glyph for, so wide blocks stay cheap.
+    //
+    // Only a surface that draws text it does not author takes them. The launcher
+    // bakes the strings it writes itself and stays on general punctuation, so its
+    // single-size atlas is exactly the atlas it had before these blocks existed.
     static constexpr ImWchar kAdditionalIdeographs[] = {0x5F02, 0x73AF, 0x7570, 0x74B0};
+    static constexpr ImWchar kAdditionalSymbolBlocks[] = {
+        0x2000, 0x206F,  // General Punctuation
+        0x2190, 0x21FF,  // Arrows: arrow left/right, left-right arrow, double arrow
+        0x2460, 0x24FF,  // Enclosed Alphanumerics: circled digits
+        0x2500, 0x257F,  // Box Drawing: horizontal rules inside section headers
+        0x25A0, 0x25FF,  // Geometric Shapes: solid/hollow circle and square, triangle
+        0x2600, 0x26FF,  // Miscellaneous Symbols: filled/hollow star, heart
+        0x2700, 0x27BF,  // Dingbats: check and cross marks
+        0,
+    };
     static constexpr ImWchar kGeneralPunctuation[] = {0x2000, 0x206F, 0};
-    static ImVector<ImWchar> ranges;
+    // ImGui reads a source's glyph ranges when it builds the atlas, so both lists have
+    // to outlive the call: each surface resolves the one its bake asks for.
+    static ImVector<ImWchar> host_text_ranges;
+    static ImVector<ImWchar> own_text_ranges;
+    ImVector<ImWchar>& ranges = symbol_blocks ? host_text_ranges : own_text_ranges;
     if (ranges.empty()) {
         ImFontGlyphRangesBuilder builder;
         builder.AddRanges(atlas.GetGlyphRangesChineseSimplifiedCommon());
-        builder.AddRanges(kGeneralPunctuation);
+        builder.AddRanges(symbol_blocks ? kAdditionalSymbolBlocks : kGeneralPunctuation);
         ImWchar codepoint = 0x4E00;
         for (const ImWchar offset : kGb2312IdeographOffsets) {
             codepoint = static_cast<ImWchar>(codepoint + offset);
@@ -579,7 +605,7 @@ bool ConfigurePlatformUiFontAtlas(
         if (cjk_bytes.empty() ||
             AddBorrowedFontFromMemory(*io.Fonts, cjk_bytes,
                 kPlatformFontSizePixels * scale, cjk_configuration,
-                PlatformChineseGlyphRanges(*io.Fonts)) == nullptr) {
+                PlatformChineseGlyphRanges(*io.Fonts, bake.symbol_blocks)) == nullptr) {
             complete = false;
         }
 

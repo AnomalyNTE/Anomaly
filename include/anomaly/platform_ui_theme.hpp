@@ -112,6 +112,13 @@ struct PlatformUiFontBake final {
     // the empty band under the last row of glyphs. The glyph pixels and the texture
     // coordinates derived from them are the same either way.
     bool tight_atlas{false};
+    // The symbol blocks shipped copy draws from: arrows, circled digits, box-drawing
+    // rules, geometric shapes, stars and check marks. The host leaves it on because it
+    // draws text it does not author -- plugin messages, localized documents, diagnostic
+    // log lines -- and cannot know which symbols those carry. A surface that bakes only
+    // the strings it writes itself leaves it off and keeps its atlas to the punctuation
+    // ImGui already covers.
+    bool symbol_blocks{true};
 };
 
 // Requires an active ImGui context.

@@ -2278,11 +2278,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     // The launcher owns its whole surface, so it bakes only what it draws: one type
-    // scale, its eight icons, and an atlas no taller than the glyphs need. The host
-    // keeps its own ladder of sizes and the whole icon range for the in-game windows.
+    // scale, its eight icons, an atlas no taller than the glyphs need, and none of the
+    // symbol blocks plugin copy draws from. The host keeps its own ladder of sizes, the
+    // whole icon range and those blocks for the in-game windows.
     static_cast<void>(ue5mem::ConfigurePlatformUiFontAtlas(runtime_root,
         ue5mem::PlatformUiFontBake{
-            .scales = kLauncherFontScales, .icons = kLauncherIcons, .tight_atlas = true}));
+            .scales = kLauncherFontScales, .icons = kLauncherIcons, .tight_atlas = true,
+            .symbol_blocks = false}));
     g_launcher_dpi_scale = DpiScale(GetDpiForWindow(window));
     ApplyLauncherDpiScale();
     ImGuiIO& io = ImGui::GetIO();
