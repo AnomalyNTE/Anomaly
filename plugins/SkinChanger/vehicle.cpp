@@ -2,12 +2,12 @@
 #define NOMINMAX
 #endif
 #include <Windows.h>
+#include "localization.hpp"
 #include "vehicle.hpp"
 #include "cosmetics.hpp"
 #include "profile.hpp"
 #include "vehicle_rules.hpp"
 #include "vehicle_paint.hpp"
-#include "localization.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -21,7 +21,6 @@
 #include "plate_access.hpp"
 
 namespace {
-anomaly::sdk::Localizer& localizer = skin_change::Localizer();
 uint64_t Pack(FName n) {return (uint64_t{n.number}<<32)|n.id;}
 FName Unpack(uint64_t n) {return {static_cast<uint32_t>(n),static_cast<uint32_t>(n>>32)};}
 AnomalyGenerationHandleV1 Handle(const Reader& r,const AnomalyUe5ObjectsServiceV1* o,uintptr_t p) {
@@ -60,7 +59,7 @@ bool LocalFunction(const Reader& r,uintptr_t f,const char* name,uint8_t count,ui
 }
 bool ReadIds(const Reader& r,uintptr_t at,std::vector<uint64_t>& result) {
     RowArray array{};if(!r.Read(at,array) || array.count<0 || array.count>128 || array.capacity<array.count || array.capacity>4096) return false;
-    result.clear();for(int i=0;i<array.count;++i) {FName n{};if(!r.Read(array.data+8*i,n) || !n.id) return false;result.push_back(Pack(n));}
+    result.clear();for(int i=0;i<array.count;++i) {FName n{};if(!r.Read(array.data+sizeof(FName)*i,n) || !n.id) return false;result.push_back(Pack(n));}
     return true;
 }
 struct Target {AnomalyGenerationHandleV1 actor{},component{};FName vehicle{};std::vector<uint64_t> modules;int32_t color{-1};uint64_t entity{};};
@@ -87,7 +86,7 @@ bool Current(const Reader& r,const AnomalyUe5ObjectsServiceV1* o,Target& t) {
     return t.actor.id && t.component.id && list>=0 && ReadIds(r,component+list,t.modules);
 }
 struct Entry {vehicle_rules::Row rule;std::string id,label;};
-struct View {std::string status{localizer.Text("status.vehicle_idle", "Reading this vehicle's appearance once you sit in the driver seat.")},vehicle;Target target;std::vector<Entry> rows;bool scanning{};};
+struct View {std::string status{lite_i18n::localizer.Text("vehicle.instructions", "Enter the driver seat to read this vehicle's appearance.")},vehicle;Target target;std::shared_ptr<const std::vector<Entry>> rows;bool scanning{};};
 std::atomic<std::shared_ptr<const View>> published;
 struct Request {AnomalyGenerationHandleV1 actor{},component{};uint64_t selected{};bool restore{};};
 std::atomic<std::shared_ptr<const Request>> request;
@@ -98,6 +97,7 @@ AnomalyGenerationHandleV1 table_handle{};
 uint64_t catalog_vehicle{};uintptr_t rows_data{};int rows_count{},row_cursor{};
 std::vector<uint32_t> allocation;
 std::vector<Entry> entries;
+std::shared_ptr<const std::vector<Entry>> catalog_snapshot;
 struct Saved {
     Target target;std::vector<uint64_t> desired;std::vector<Entry> catalog;
     uint64_t signature{};bool signature_valid{},refresh{};
@@ -106,19 +106,12 @@ struct Saved {
 };
 std::map<uint64_t,Saved> saved;
 uint64_t last_driver{};
+uint64_t monitor_cursor{};
 std::string status;
+bool submit_message{},catalog_notice{};
 bool scanning{};
-constexpr std::array<const char*,5> category_keys{
-    "label.category_paint","label.category_attachment","label.category_wheel_smoke",
-    "label.category_wheel_mark","label.category_spray"};
-constexpr std::array<const char*,5> category_english{
-    "Paint","Attachments","Tire smoke","Tire marks","Spray paint"};
-constexpr std::array<const char*,7> attachment_group_keys{
-    "label.attachment_front_lip","label.attachment_rear_lip","label.attachment_spoiler",
-    "label.attachment_wheel","label.attachment_hook","label.attachment_suspension",
-    "label.attachment_other"};
-constexpr std::array<const char*,7> attachment_group_english{
-    "Front lip","Rear lip","Spoiler","Wheels","Hook","Suspension","Other attachments"};
+std::array<std::string,5> categories;
+std::array<std::string,7> attachment_groups;
 int category{},attachment_group{};uint64_t selected{};char search[128]{};
 
 struct FloatView {const float* data{};int32_t count{};uint32_t padding{};};
@@ -136,7 +129,7 @@ uint64_t last_paint_report{};Clock::time_point next_paint_report{};
 bool BindingLive(const Reader& r,const PaintBinding& b) {
     const auto index=ANOMALY_UE5_OBJECT_HANDLE_INDEX(b.handle);
     uintptr_t chunks{},chunk{},object{};uint32_t count{},serial{};uint64_t entity{};uint8_t pool{};
-    return r.Read(registry+accessory::profile::native_layout.RegistryCount,count) && index<count && r.Read(registry+accessory::profile::native_layout.RegistryItems,chunks) && r.Read(chunks+8*(index/accessory::profile::native_layout.ChunkSize),chunk) &&
+    return r.Read(registry+accessory::profile::native_layout.RegistryCount,count) && index<count && r.Read(registry+accessory::profile::native_layout.RegistryItems,chunks) && r.Read(chunks+sizeof(uintptr_t)*(index/accessory::profile::native_layout.ChunkSize),chunk) &&
         r.Read(chunk+accessory::profile::native_layout.ItemStride*(index%accessory::profile::native_layout.ChunkSize),object) && object==b.mesh && r.Read(chunk+accessory::profile::native_layout.ItemStride*(index%accessory::profile::native_layout.ChunkSize)+accessory::profile::native_layout.Serial,serial) &&
         serial==ANOMALY_UE5_OBJECT_HANDLE_SERIAL(b.handle) && r.Read(b.entity_address,entity) && entity==b.entity &&
         r.Read(b.pool_address,pool) && !pool;
@@ -148,7 +141,7 @@ void __fastcall PaintDetour(void* component,int32_t index,const FloatView* value
     const bool leased=paint_hooks && paint_hooks->begin_callback(paint_hooks->user,paint_hook,&lease).code==0;
     FloatView replacement{};std::array<float,vehicle_paint::Maximum> input{},output{};
     const FloatView* argument=values;
-    if(leased && index>=0 && index<=vehicle_paint::ColorIndex) {
+    if(leased && index>=0 && index<=static_cast<int>(accessory::profile::native_layout.PaintColorIndex)) {
         const auto bindings=paint_bindings.load();
         if(bindings) {
             const auto address=reinterpret_cast<uintptr_t>(component);
@@ -157,9 +150,9 @@ void __fastcall PaintDetour(void* component,int32_t index,const FloatView* value
                 const Reader r{};FloatView source{};
                 if(BindingLive(r,*found) && r.Read(reinterpret_cast<uintptr_t>(values),source) && source.count>0 && source.count<=vehicle_paint::Maximum &&
                    core->read_memory(core->user,reinterpret_cast<uintptr_t>(source.data),{reinterpret_cast<uint8_t*>(input.data()),static_cast<size_t>(source.count)*4}).code==0 &&
-                   vehicle_paint::Override(index,{input.data(),static_cast<size_t>(source.count)},found->paint,output)) {
+                   vehicle_paint::Override(index,{input.data(),static_cast<size_t>(source.count)},found->paint,output,accessory::profile::native_layout.PaintColorIndex)) {
                     replacement={output.data(),source.count,0};argument=&replacement;
-                    if(input[vehicle_paint::ColorIndex-index]!=found->paint) ++paint_overrides;
+                    if(input[accessory::profile::native_layout.PaintColorIndex-index]!=found->paint) ++paint_overrides;
                 }
             }
         }
@@ -200,7 +193,7 @@ void PublishPaintBindings(const Reader& r,const AnomalyUe5ObjectsServiceV1* o,ui
         for(const auto key:{"Mesh","VehicleStaticMesh"}) {const auto at=Offset(r,o,cls,key,8);uintptr_t mesh{};if(at>=0 && r.Read(car+at,mesh) && mesh) meshes.push_back(mesh);}
         const auto component=Resolve(r,o,s.target.component);
         if(component && r.Read(component+accessory::profile::native_layout.ObjectClass,cls)) {
-            const auto at=Offset(r,o,cls,"ModuleComponentMap",80);RowArray map{};
+            const auto at=Offset(r,o,cls,"ModuleComponentMap",accessory::profile::native_layout.MapSize);RowArray map{};
             if(at>=0 && r.Read(component+at,map) && map.count>=0 && map.count<=64 && map.capacity>=map.count) {
                 for(int n=0;n<map.count;++n) {uintptr_t mesh{};if(r.Read(map.data+accessory::profile::native_layout.MapEntryStride*n+accessory::profile::native_layout.MapValue,mesh) && mesh && r.IsA(mesh,"PrimitiveComponent")) meshes.push_back(mesh);}
             }
@@ -219,14 +212,14 @@ bool PaintData(const Reader& r,const AnomalyUe5ObjectsServiceV1* o,const Target&
     if(mesh_at<0 || !r.Read(car+mesh_at,mesh) || !r.IsA(mesh,"PrimitiveComponent") || !r.Read(mesh+accessory::profile::native_layout.ObjectClass,cls)) return false;
     const auto at=Offset(r,o,cls,"CustomPrimitiveDataInternal",16);RowArray array{};float current{};
     if(at<0 || !r.Read(mesh+at,array) || array.count<0 || array.count>256 || array.capacity<array.count) return false;
-    const bool matches=array.count>2 && r.Read(array.data+8,current) && std::isfinite(current) && std::abs(current-paint)<0.0001f;
+    const bool matches=array.count>static_cast<int>(accessory::profile::native_layout.PaintColorIndex) && r.Read(array.data+sizeof(float)*accessory::profile::native_layout.PaintColorIndex,current) && std::isfinite(current) && std::abs(current-paint)<0.0001f;
     if(check_only) return matches;
     const auto set=Find(r,o,"/Script/Engine.PrimitiveComponent.SetCustomPrimitiveDataFloat");
     const auto modules=Find(r,o,"/Script/HTGame.HTVehicleModificationComponent.ApplyPrimitiveDataToModules");
     if(!LocalFunction(r,set,"SetCustomPrimitiveDataFloat",2,8) || !r.Property(set,"DataIndex",0,4) || !r.Property(set,"Value",4,4) ||
        !LocalFunction(r,modules,"ApplyPrimitiveDataToModules",2,8) || !r.Property(modules,"DataIndex",0,4) || !r.Property(modules,"Value",4,4)) return false;
-    struct Parameters {int32_t index;float value;} parameters{2,paint};static_assert(sizeof(parameters)==8);
-    // The captured before/after transition changes only colour slot 2.
+    struct Parameters {int32_t index;float value;} parameters{static_cast<int32_t>(accessory::profile::native_layout.PaintColorIndex),paint};static_assert(sizeof(parameters)==8);
+    // The captured before/after transition changes only the configured colour slot.
     // The native setter also marks rendering dirty; entity/damage slots stay intact.
     return Invoke(r,mesh,set,&parameters) && Invoke(r,component,modules,&parameters);
 }
@@ -237,7 +230,7 @@ bool CopyNamesCall(uintptr_t destination,const RowArray* source) noexcept {
         return true;
     } __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
 }
-bool PrepareArrayCopy(const Reader& r) {
+bool PrepareArrayCopy(const Reader&) {
     if(array_copy) return true;
     // The getter prologue is hooked after CosmeticsStart. Reuse its validated
     // array helper rather than trying to rescan the already-patched getter.
@@ -254,17 +247,18 @@ bool StartCatalog(const Reader& r,const AnomalyUe5ObjectsServiceV1* o,uint64_t v
     const auto table=Find(r,o,"/Game/DataTable/Vehicle/DT_vehicleModuleData.DT_vehicleModuleData");
     uintptr_t schema{};RowArray map{};uintptr_t flags{};int free{},bits{};
     if(!table || !r.IsA(table,"DataTable") || !r.Read(table+accessory::profile::native_layout.RowStruct,schema) || r.NameAt(schema+accessory::profile::native_layout.ObjectName)!="VehicleModuleData" ||
-       !r.Property(schema,"ModuleID",8,8) || !r.Property(schema,"VehicleID",16,8) || !r.Property(schema,"ModuleName",24,16) ||
+       !r.Property(schema,"ModuleID",accessory::profile::native_layout.VehicleRowId,8) || !r.Property(schema,"VehicleID",accessory::profile::native_layout.VehicleRowOwner,8) || !r.Property(schema,"ModuleName",accessory::profile::native_layout.VehicleRowName,16) ||
        !r.Property(schema,"ModuleType",accessory::profile::native_layout.VehicleRowType,1) || !r.Read(table+accessory::profile::native_layout.RowMap,map) || map.count<0 || map.count>8192 || map.capacity<map.count ||
        !r.Read(table+accessory::profile::native_layout.RowMap+accessory::profile::native_layout.MapBitsData,flags) || !r.Read(table+accessory::profile::native_layout.RowMap+accessory::profile::native_layout.MapBitCount,bits) || bits<map.count || !r.Read(table+accessory::profile::native_layout.RowMap+accessory::profile::native_layout.MapFreeCount,free) || free<0 || free>map.count) return false;
     if(!flags) {if(map.count>128) return false;flags=table+accessory::profile::native_layout.RowMap+accessory::profile::native_layout.MapInlineBits;}
     allocation.resize((map.count+31)/32);
     if(map.count && core->read_memory(core->user,flags,{reinterpret_cast<uint8_t*>(allocation.data()),allocation.size()*4}).code!=0) return false;
-    table_handle=Handle(r,o,table);rows_data=map.data;rows_count=map.count;row_cursor=0;catalog_vehicle=vehicle;entries.clear();scanning=true;
+    table_handle=Handle(r,o,table);rows_data=map.data;rows_count=map.count;row_cursor=0;catalog_vehicle=vehicle;entries.clear();catalog_snapshot.reset();scanning=true;
     return true;
 }
 void CatalogSlice(const Reader& r,const AnomalyUe5ObjectsServiceV1* o) {
     if(!scanning) return;
+    const auto previous_size=entries.size();
     const auto table=Resolve(r,o,table_handle);RowArray now{};
     if(!table || !r.Read(table+accessory::profile::native_layout.RowMap,now) || now.data!=rows_data || now.count!=rows_count) {scanning=false;catalog_vehicle=0;return;}
     const auto until=Clock::now()+std::chrono::milliseconds(2);int processed{};
@@ -272,7 +266,7 @@ void CatalogSlice(const Reader& r,const AnomalyUe5ObjectsServiceV1* o) {
         const auto i=row_cursor++;
         if(!(allocation[i/32]&(1u<<(i%32)))) continue;
         uintptr_t row{};FName key{},id{},vehicle{};uint8_t type{};
-        if(!r.Read(rows_data+accessory::profile::native_layout.MapEntryStride*i,key) || !r.Read(rows_data+accessory::profile::native_layout.MapEntryStride*i+8,row) || !row || !r.Read(row+accessory::profile::native_layout.VehicleRowId,id) || Pack(id)!=Pack(key) ||
+        if(!r.Read(rows_data+accessory::profile::native_layout.MapEntryStride*i,key) || !r.Read(rows_data+accessory::profile::native_layout.MapEntryStride*i+accessory::profile::native_layout.MapValue,row) || !row || !r.Read(row+accessory::profile::native_layout.VehicleRowId,id) || Pack(id)!=Pack(key) ||
            !r.Read(row+accessory::profile::native_layout.VehicleRowOwner,vehicle) || Pack(vehicle)!=catalog_vehicle || !r.Read(row+accessory::profile::native_layout.VehicleRowType,type)) continue;
         Entry e{{Pack(id),Pack(vehicle),type},r.Name(id),{}};
         if(vehicle_rules::Category(type)>=0 && r.names && r.names->resolve_ftext_utf8) {
@@ -281,6 +275,7 @@ void CatalogSlice(const Reader& r,const AnomalyUe5ObjectsServiceV1* o) {
         }
         entries.push_back(std::move(e));
     }
+    if(entries.size()!=previous_size) catalog_snapshot.reset();
     if(row_cursor>=rows_count) {scanning=false;Log("Vehicle appearance: catalog ready entries="+std::to_string(entries.size()));}
 }
 bool SameInstance(const Reader& r,const AnomalyUe5ObjectsServiceV1* o,const Target& target) {
@@ -290,6 +285,7 @@ bool SameInstance(const Reader& r,const AnomalyUe5ObjectsServiceV1* o,const Targ
     return entity_at>=0 && pool_at>=0 && r.Read(car+entity_at,entity) && entity==target.entity && r.Read(car+pool_at,pooled) && !pooled;
 }
 bool Submit(const Reader& r,const AnomalyUe5ObjectsServiceV1* o,const Target& target,const std::vector<uint64_t>& ids,const std::vector<Entry>& catalog) {
+    submit_message=false;
     if(!SameInstance(r,o,target)) return false;
     const auto component=Resolve(r,o,target.component);if(!component || ids.size()>128) return false;
     const auto car=Resolve(r,o,target.actor);uintptr_t car_class{},component_class{};
@@ -316,7 +312,7 @@ bool Submit(const Reader& r,const AnomalyUe5ObjectsServiceV1* o,const Target& ta
     const auto fish_fn=Find(r,o,"/Script/HTGame.HTVehicleModificationComponent.GetCurrentFishHookModule");
     uintptr_t fish{};
     if(!LocalFunction(r,fish_fn,"GetCurrentFishHookModule",1,8) || !r.Property(fish_fn,"ReturnValue",0,8) ||
-       !Invoke(r,component,fish_fn,&fish)) {status=localizer.Text("status.fish_hook_unreadable","The hook display data could not be read, so nothing was applied.");return false;}
+       !Invoke(r,component,fish_fn,&fish)) {submit_message=true;status=lite_i18n::localizer.Text("vehicle.fish_unavailable", "Could not read hook display data. Nothing was applied.");return false;}
     if(fish) {
         uintptr_t cls{};std::array<uint8_t,20> display{};
         if(!r.IsA(fish,"HTVehicleFishHookActor") || !r.Read(fish+accessory::profile::native_layout.ObjectClass,cls)) return false;
@@ -364,11 +360,11 @@ bool VisualSignature(const Reader& r,const AnomalyUe5ObjectsServiceV1* o,const T
         if(at<0 || core->read_memory(core->user,component+at,{bytes.data(),static_cast<size_t>(size)}).code!=0) return false;
         for(int n=0;n<size;++n) {hash^=bytes[n];hash*=1099511628211ull;}
     }
-    const auto components=Offset(r,o,cls,"ModuleComponentMap",80);RowArray map{};
+    const auto components=Offset(r,o,cls,"ModuleComponentMap",accessory::profile::native_layout.MapSize);RowArray map{};
     if(components<0 || !r.Read(component+components,map) || map.count<0 || map.count>64 || map.capacity<map.count) return false;
     // Include installed component identities so an attachment rebuild is seen
     // even when its paint and particle settings stayed the same.
-    std::array<uint8_t,24*64> rows{};const auto length=static_cast<size_t>(map.count)*24;
+    std::vector<uint8_t> rows(static_cast<size_t>(map.count)*accessory::profile::native_layout.MapEntryStride);const auto length=rows.size();
     if(length && core->read_memory(core->user,map.data,{rows.data(),length}).code!=0) return false;
     for(size_t n=0;n<length;++n) {hash^=rows[n];hash*=1099511628211ull;}
     const auto list=Offset(r,o,cls,"CurrentModuleIDList",16);std::vector<uint64_t> ids;
@@ -379,7 +375,7 @@ bool VisualSignature(const Reader& r,const AnomalyUe5ObjectsServiceV1* o,const T
     const auto color_at=Offset(r,o,car_class,"ColorID",4),mids_at=Offset(r,o,car_class,"MaterialInstanceDynamics",16);
     if(color_at<0 || mids_at<0 || !r.Read(car+color_at,color) || !r.Read(car+mids_at,materials) || materials.count<0 || materials.count>128) return false;
     hash^=static_cast<uint32_t>(color);hash*=1099511628211ull;
-    for(int i=0;i<materials.count;++i) {uintptr_t material{};if(!r.Read(materials.data+8*i,material)) return false;hash^=material;hash*=1099511628211ull;}
+    for(int i=0;i<materials.count;++i) {uintptr_t material{};if(!r.Read(materials.data+sizeof(uintptr_t)*i,material)) return false;hash^=material;hash*=1099511628211ull;}
     return true;
 }
 void Monitor(const Reader& r,const AnomalyUe5ObjectsServiceV1* o,uint64_t driver) {
@@ -388,12 +384,18 @@ void Monitor(const Reader& r,const AnomalyUe5ObjectsServiceV1* o,uint64_t driver
         old->second.refresh=true;old->second.observe=now+std::chrono::milliseconds(600);
     }
     last_driver=driver;
-    for(auto it=saved.begin();it!=saved.end();) {
+    if(!saved.empty()) {
+        // Bound every maintenance pass, including paint probes and pruning.
+        // Continue after the last visited ID so busy low IDs cannot starve
+        // vehicles later in the map.
+        auto it=saved.upper_bound(monitor_cursor);
+        if(it==saved.end()) it=saved.begin();
+        monitor_cursor=it->first;
         auto& s=it->second;
-        if(!SameInstance(r,o,s.target) || !Resolve(r,o,s.target.component)) {it=saved.erase(it);continue;}
+        if(!SameInstance(r,o,s.target) || !Resolve(r,o,s.target.component)) {saved.erase(it);return;}
         if(s.paint_valid && !PaintData(r,o,s.target,s.paint,true) && PaintData(r,o,s.target,s.paint,false))
             Log("Vehicle appearance: repaired paint primitive data vehicle="+r.Name(s.target.vehicle));
-        if(now<s.observe) {++it;continue;}
+        if(now<s.observe) return;
         s.observe=now+std::chrono::seconds(1);
         uint64_t current{};const bool valid=VisualSignature(r,o,s.target,current);
         if(s.refresh || (valid && s.signature_valid && current!=s.signature && now>=s.settle)) {
@@ -403,21 +405,23 @@ void Monitor(const Reader& r,const AnomalyUe5ObjectsServiceV1* o,uint64_t driver
                 Log("Vehicle appearance: maintained vehicle="+r.Name(s.target.vehicle));
             }
         } else if(valid && !s.signature_valid) {s.signature=current;s.signature_valid=true;}
-        break; // One vehicle per tick; never rebuild every saved car in a frame.
     }
 }
 void Publish(const Reader& r,const Target& t) {
     auto view=std::make_shared<View>();view->target=t;view->scanning=scanning;
-    if(t.actor.id) {view->vehicle=r.Name(t.vehicle);view->rows=entries;}
+    if(t.actor.id) {
+        if(!catalog_snapshot) catalog_snapshot=std::make_shared<const std::vector<Entry>>(entries);
+        view->vehicle=r.Name(t.vehicle);view->rows=catalog_snapshot;
+    }
     if(!status.empty()) view->status=status;
     published.store(std::move(view));
 }
 }
 namespace lite_vehicle {
-void Load(const AnomalyHostApiV1* host) noexcept {api=host;core=Host(host).Query<AnomalyCoreServiceV1>(ANOMALY_CORE_SERVICE_V1_ID).get();}
+void Load(const AnomalyHostApiV1* host) noexcept {categories={lite_i18n::localizer.Text("vehicle.category.skin", "Livery"),lite_i18n::localizer.Text("vehicle.category.attachment", "Attachments"),lite_i18n::localizer.Text("vehicle.category.smoke", "Tire smoke"),lite_i18n::localizer.Text("vehicle.category.marks", "Tire marks"),lite_i18n::localizer.Text("vehicle.category.paint", "Paint")};attachment_groups={lite_i18n::localizer.Text("vehicle.group.front", "Front lip"),lite_i18n::localizer.Text("vehicle.group.rear", "Rear lip"),lite_i18n::localizer.Text("vehicle.group.spoiler", "Spoiler"),lite_i18n::localizer.Text("vehicle.group.wheels", "Wheels"),lite_i18n::localizer.Text("vehicle.group.hook", "Hook"),lite_i18n::localizer.Text("vehicle.group.suspension", "Suspension"),lite_i18n::localizer.Text("vehicle.group.other", "Other attachments")};api=host;core=Host(host).Query<AnomalyCoreServiceV1>(ANOMALY_CORE_SERVICE_V1_ID).get();}
 void Start() noexcept {
-    registry=0;array_copy=0;retry_init={};next_tick=retry_catalog={};objects_cache.clear();offsets.clear();entries.clear();saved.clear();
-    visible=false;request.store({});published.store(std::make_shared<View>());catalog_vehicle=0;scanning=false;selected=0;attachment_group=0;last_driver=0;status.clear();
+    registry=0;array_copy=0;retry_init={};next_tick=retry_catalog={};objects_cache.clear();offsets.clear();entries.clear();saved.clear();catalog_notice=false;
+    visible=false;request.store({});published.store(std::make_shared<View>());catalog_vehicle=0;scanning=false;selected=0;attachment_group=0;last_driver=monitor_cursor=0;catalog_snapshot.reset();status.clear();
     paint_bindings.store({});paint_hook={};paint_original=0;paint_overrides=0;last_paint_report=0;next_paint_report={};
     paint_hooks=Host(api).Query<AnomalyHookServiceV1>(ANOMALY_HOOK_SERVICE_V1_ID).get();
 }
@@ -446,28 +450,23 @@ void Update() noexcept {
             next_paint_report=Clock::now()+std::chrono::seconds(5);last_paint_report=paint_overrides.load();
             Log("Vehicle appearance: native paint writes preserved="+std::to_string(last_paint_report));
         }
-        if(!driving) {status=saved.empty()?
-            localizer.Text("status.vehicle_no_land_driver","Sit in a land vehicle's driver seat."):
-            localizer.Text("status.vehicle_kept","This vehicle's appearance is kept; sit in the driver seat to keep editing.");
-            request.store({});Publish(r,{});return;}
-        const auto catalog_reading=localizer.Text("status.vehicle_catalog_reading","Reading this vehicle's appearance catalog...");
+        if(!driving) {status=saved.empty()?lite_i18n::localizer.Text("vehicle.enter", "Enter the driver seat of a land vehicle."):lite_i18n::localizer.Text("vehicle.maintained", "Vehicle appearance is maintained. Enter the driver seat to make changes.");request.store({});Publish(r,{});return;}
         if(catalog_vehicle!=Pack(target.vehicle) && Clock::now()>=retry_catalog) {
             retry_catalog=Clock::now()+std::chrono::seconds(2);
-            status=StartCatalog(r,o,Pack(target.vehicle))?catalog_reading:
-                localizer.Text("status.vehicle_catalog_waiting","Waiting for the vehicle appearance catalog to load.");
+            catalog_notice=StartCatalog(r,o,Pack(target.vehicle));
+            status=catalog_notice?lite_i18n::localizer.Text("vehicle.loading", "Reading this vehicle's appearance catalog..."):lite_i18n::localizer.Text("vehicle.wait_catalog", "Waiting for the vehicle appearance catalog.");
         }
         CatalogSlice(r,o);
-        if(!scanning && catalog_vehicle==Pack(target.vehicle) && status==catalog_reading)
-            status=localizer.Text("status.vehicle_catalog_ready","Select an appearance and apply it to the vehicle you are driving.");
+        if(!scanning && catalog_vehicle==Pack(target.vehicle) && catalog_notice) {catalog_notice=false;status=lite_i18n::localizer.Text("vehicle.choose", "Select an appearance and apply it to the vehicle you are driving.");}
         if(auto command=request.exchange({})) {
             if(command->actor.id!=target.actor.id || command->component.id!=target.component.id || scanning || catalog_vehicle!=Pack(target.vehicle)) {
-                status=localizer.Text("status.vehicle_changed","The vehicle or catalog changed; select again.");Publish(r,target);return;
+                status=lite_i18n::localizer.Text("vehicle.target_changed", "The vehicle or catalog changed. Select again.");Publish(r,target);return;
             }
             auto found=saved.find(target.actor.id);
-            if(!EnsurePaintHook(r,o)) {status=localizer.Text("status.material_interface_unmatched","The material preservation interface did not match, so nothing was applied.");Publish(r,target);return;}
+            if(!EnsurePaintHook(r,o)) {status=lite_i18n::localizer.Text("vehicle.paint_unavailable", "The paint maintenance interface did not match. Nothing was applied.");Publish(r,target);return;}
             PublishPaintBindings(r,o,target.actor.id);
             if(command->restore) {
-                if(found==saved.end()) status=localizer.Text("status.vehicle_no_changes","This vehicle has no changes from this plugin run.");
+                if(found==saved.end()) status=lite_i18n::localizer.Text("vehicle.no_changes", "This vehicle has no changes from the current plugin session.");
                 else if(Submit(r,o,target,found->second.target.modules,found->second.catalog)) {
                     const auto car=Resolve(r,o,target.actor);uintptr_t cls{};
                     if(car && r.Read(car+accessory::profile::native_layout.ObjectClass,cls)) {
@@ -476,14 +475,14 @@ void Update() noexcept {
                         if(at>=0 && core->write_memory(core->user,car+at,{reinterpret_cast<const uint8_t*>(&found->second.target.color),4}).code==0)
                             Invoke(r,car,notify,nullptr);
                     }
-                    saved.erase(found);status=localizer.Text("status.vehicle_restore_submitted","The original appearance restore was submitted.");
+                    saved.erase(found);status=lite_i18n::localizer.Text("vehicle.restored", "Original vehicle appearance restoration submitted.");
                 }
-                else status=localizer.Text("status.vehicle_restore_incomplete","The restore call did not complete; try again.");
+                else status=lite_i18n::localizer.Text("vehicle.restore_failed", "Restoration did not complete. Please retry.");
             } else {
                 std::vector<vehicle_rules::Row> catalog;for(const auto& row:entries) catalog.push_back(row.rule);
                 const auto& base=found==saved.end()?target.modules:found->second.desired;
                 const auto plan=vehicle_rules::Replace(base,catalog,Pack(target.vehicle),command->selected);
-                if(!plan) status=localizer.Text("status.vehicle_module_mismatch","The selected part does not match this vehicle model.");
+                if(!plan) status=lite_i18n::localizer.Text("vehicle.selection_invalid", "The selected resource does not match this vehicle model.");
                 else if(Submit(r,o,target,*plan,entries)) {
                     if(found==saved.end()) found=saved.emplace(target.actor.id,Saved{target,*plan,entries}).first;
                     else {found->second.desired=*plan;found->second.catalog=entries;}
@@ -494,49 +493,46 @@ void Update() noexcept {
                     }
                     found->second.signature_valid=VisualSignature(r,o,target,found->second.signature);
                     found->second.observe=Clock::now()+std::chrono::seconds(2);found->second.settle=found->second.observe;
-                    status=localizer.Text("status.vehicle_applied","Local appearance submitted; waiting for the model and effects to load.");
-                } else if(status!=localizer.Text("status.fish_hook_unreadable",
-                    "The hook display data could not be read, so nothing was applied."))
-                    status=localizer.Text("status.vehicle_apply_incomplete","The appearance call did not complete; try again.");
+                    status=lite_i18n::localizer.Text("vehicle.submitted", "Local appearance submitted. Waiting for models and effects to load.");
+                } else if(!submit_message) status=lite_i18n::localizer.Text("vehicle.apply_failed", "Appearance application did not complete. Please retry.");
             }
+            PublishPaintBindings(r,o);
         }
-        PublishPaintBindings(r,o);
         Publish(r,target);
-    } catch(...) {status=localizer.Text("status.vehicle_read_failed","Reading the vehicle appearance failed; get on the vehicle again and retry.");}
+    } catch(...) {status=lite_i18n::localizer.Text("vehicle.read_failed", "Could not read the vehicle appearance. Enter the vehicle again and retry.");}
 }
 void Draw(const AnomalyUiServiceV1* ui) noexcept {
     try {
         const auto view=published.load();if(!view) return;
-        ui->text(ui->user,StringView(view->status));if(!view->vehicle.empty()){const std::array arguments{std::string_view(view->vehicle)};
-            ui->text(ui->user,StringView(localizer.Format("text.vehicle_model","Vehicle model: {0}",arguments)));}
+        static const std::vector<Entry> empty_rows;
+        const auto& rows=view->rows?*view->rows:empty_rows;
+        ui->text(ui->user,StringView(view->status));if(!view->vehicle.empty()) ui->text(ui->user,StringView(lite_i18n::localizer.Format("vehicle.model", "Current model: {0}", std::array<std::string_view,1>{view->vehicle})));
         for(int i=0;i<5;++i) {
-            if(ui->button(ui->user,StringView(localizer.Text(category_keys[i],category_english[i])),0,0)) {category=i;selected=0;}
+            if(ui->button(ui->user,StringView(categories[i]),0,0)) {category=i;selected=0;}
             if(i<4) ui->same_line(ui->user,0,6);
         }
         if(category==1) {
             for(int i=0;i<7;++i) {
-                const auto group=localizer.Text(attachment_group_keys[i],attachment_group_english[i]);
-                const auto label=(attachment_group==i?std::string("[ "):std::string{})+group+(attachment_group==i?" ]":"")+"##vehicle-attachment-"+std::to_string(i);
+                const auto label=(attachment_group==i?lite_i18n::localizer.Format("vehicle.group_active", "[ {0} ]", std::array<std::string_view,1>{attachment_groups[i]}):attachment_groups[i])+"###vehicle-attachment-"+std::to_string(i);
                 if(ui->button(ui->user,StringView(label),0,0)) {attachment_group=i;selected=0;}
                 if(i<6 && i%4!=3) ui->same_line(ui->user,0,6);
             }
         }
-        ui->input_text(ui->user,StringView(localizer.Text("label.search_vehicle","Search name or ID")),search,sizeof(search),0);
+        ui->input_text(ui->user,StringView(lite_i18n::localizer.Text("vehicle.search", "Search name or ID")),search,sizeof(search),0);
         if(ui->begin_child(ui->user,StringView("vehicle-appearance-list"),0,category==1?220.f:260.f,0)) {
             size_t count{};
-            for(const auto& row:view->rows) {
+            for(const auto& row:rows) {
                 if(!vehicle_rules::Matches(row.rule.type,category,attachment_group) || (search[0] && row.label.find(search)==std::string::npos && row.id.find(search)==std::string::npos)) continue;
-                ++count;const auto label=(row.label.empty()?row.id:row.label+" ["+row.id+"]")+
-                    (selected==row.rule.id?localizer.Text("text.selected","(selected)"):std::string{})+"##vehicle-"+row.id;
+                ++count;const auto label=lite_i18n::ResourceLabel(row.label,row.id,{},selected==row.rule.id,"vehicle-");
                 if(ui->button(ui->user,StringView(label),0,0)) selected=row.rule.id;
             }
-            if(!count && !view->scanning) ui->text(ui->user,StringView(localizer.Text("status.vehicle_no_entries","This vehicle model has no available parts in this category.")));
+            if(!count && !view->scanning) ui->text(ui->user,StringView(lite_i18n::localizer.Text("vehicle.empty", "No resources in this category are available for this vehicle model.")));
         }
         ui->end_child(ui->user);
-        const bool valid=view->target.actor.id && !view->scanning && std::any_of(view->rows.begin(),view->rows.end(),[](const Entry& e){return e.rule.id==selected && vehicle_rules::Matches(e.rule.type,category,attachment_group);});
-        if(ui->button_enabled(ui->user,StringView(localizer.Text("action.apply_appearance","Apply selected appearance")),0,0,valid)) request.store(std::make_shared<Request>(Request{view->target.actor,view->target.component,selected,false}));
+        const bool valid=view->target.actor.id && !view->scanning && std::any_of(rows.begin(),rows.end(),[](const Entry& e){return e.rule.id==selected && vehicle_rules::Matches(e.rule.type,category,attachment_group);});
+        if(ui->button_enabled(ui->user,StringView(lite_i18n::localizer.Text("vehicle.apply", "Apply selected appearance")),0,0,valid)) request.store(std::make_shared<Request>(Request{view->target.actor,view->target.component,selected,false}));
         ui->same_line(ui->user,0,8);
-        if(ui->button_enabled(ui->user,StringView(localizer.Text("action.restore_vehicle","Restore this vehicle's original appearance")),0,0,view->target.actor.id && !view->scanning)) request.store(std::make_shared<Request>(Request{view->target.actor,view->target.component,0,true}));
+        if(ui->button_enabled(ui->user,StringView(lite_i18n::localizer.Text("vehicle.restore", "Restore original vehicle appearance")),0,0,view->target.actor.id && !view->scanning)) request.store(std::make_shared<Request>(Request{view->target.actor,view->target.component,0,true}));
     } catch(...) {}
 }
 }

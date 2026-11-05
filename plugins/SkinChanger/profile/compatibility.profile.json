@@ -79,7 +79,24 @@
     "awakening.DataTableRowMapFreeCount": 100,
     "awakening.ScriptStructSize": 88,
     "awakening.AwakenEffectStride": 128,
-    "awakening.AwakenEffectType": 88
+    "awakening.AwakenEffectType": 88,
+    "RipDisplacement": 3,
+    "RipInstructionSize": 7,
+    "DecorationPart": 8,
+    "DecorationMeshDatas": 144,
+    "GlideActorClass": 8,
+    "ScalarRecordSize": 36,
+    "ScalarRecordValue": 16,
+    "PaintColorIndex": 2,
+    "DrivingStateSize": 104,
+    "WaterDrivingStateSize": 16,
+    "MapSize": 80,
+    "ScalarRecordName": 0,
+    "ScalarParameterInfoSize": 16,
+    "awakening.AwakenEffectId": 0,
+    "awakening.AwakenDataStride": 12,
+    "awakening.AwakenDataUnlocked": 0,
+    "awakening.AwakenDataId": 4
   },
   "symbols": [
     {

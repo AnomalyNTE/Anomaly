@@ -76,9 +76,9 @@ uintptr_t Resolve(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects, An
     const auto index = ANOMALY_UE5_OBJECT_HANDLE_INDEX(h);
     uintptr_t chunks{}, chunk{}, object{}; uint32_t count{}, serial{}; int32_t actual{};
     if (!r.Read(registry+accessory::profile::native_layout.RegistryCount, count) || count > 16*1024*1024 || index >= count ||
-        !r.Read(registry+accessory::profile::native_layout.RegistryItems, chunks) || !r.Read(chunks + 8*(index/accessory::profile::native_layout.ChunkSize), chunk) ||
+        !r.Read(registry+accessory::profile::native_layout.RegistryItems, chunks) || !r.Read(chunks + sizeof(uintptr_t)*(index/accessory::profile::native_layout.ChunkSize), chunk) ||
         !r.Read(chunk + accessory::profile::native_layout.ItemStride*(index%accessory::profile::native_layout.ChunkSize), object) ||
-        !r.Read(chunk + accessory::profile::native_layout.ItemStride*(index%accessory::profile::native_layout.ChunkSize) +accessory::profile::native_layout.Serial,serial) ||
+        !r.Read(chunk + accessory::profile::native_layout.ItemStride*(index%accessory::profile::native_layout.ChunkSize)+accessory::profile::native_layout.Serial, serial) ||
         serial != ANOMALY_UE5_OBJECT_HANDLE_SERIAL(h) ||
         !r.Read(object+accessory::profile::native_layout.ObjectIndex, actual) || actual != static_cast<int32_t>(index)) return 0;
     return object;
@@ -103,8 +103,8 @@ bool Initialize(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects) {
     retry_init = Clock::now() + std::chrono::seconds(5);
     const auto instruction=accessory::profile::compatibility.Address("Objects");
     int32_t displacement{};
-    if (!objects || !objects->find_exact || !instruction || !r.Read(instruction+3,displacement)) return false;
-    registry=static_cast<uintptr_t>(static_cast<intptr_t>(instruction)+7+displacement-accessory::profile::native_layout.RegistrySubtract);
+    if (!objects || !objects->find_exact || !instruction || !r.Read(instruction+accessory::profile::native_layout.RipDisplacement,displacement)) return false;
+    registry=static_cast<uintptr_t>(static_cast<intptr_t>(instruction)+accessory::profile::native_layout.RipInstructionSize+displacement-accessory::profile::native_layout.RegistrySubtract);
     return true;
 }
 

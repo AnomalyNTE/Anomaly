@@ -1,5 +1,5 @@
+#include "profile_test_setup.hpp"
 #include "plates.cpp"
-#include "../../apps/test_host/plugin_profile_fixture_host.hpp"
 #include <iostream>
 
 namespace {
@@ -33,14 +33,13 @@ AnomalyStatusV1 ANOMALY_CALL Query(void* user,AnomalyStringViewV1 id,uint32_t,co
 }
 }
 int main() {
-    anomaly::testing::ProfileHost profile_host("SkinChanger");
-    if (!accessory::profile::LoadCompatibility(&profile_host.api)) { std::cerr << profile_host.error; return 1; }
+    LoadTestProfile();
     int failed{};
     const auto check = [&](bool ok,const char* label) { if (!ok) { ++failed; std::cerr << label << '\n'; } };
     TestHost host;
     host.core.user = &host;
     host.core.read_memory = [](void* user,uintptr_t address,AnomalyMutableByteSpanV1 destination) {
-        if (address == reinterpret_cast<uintptr_t>(&MeshEvent))
+        if(address==reinterpret_cast<uintptr_t>(&MeshEvent))
             return anomaly::testing::RecordedProcessEventEntry(destination);
         for (const auto& range : static_cast<TestHost*>(user)->memory) if (address >= range.start &&
             address-range.start <= range.size && destination.size <= range.size-(address-range.start)) {

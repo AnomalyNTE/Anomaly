@@ -1,11 +1,11 @@
 {
   "schemaVersion": 2,
   "id": "b1ank.skin-changer",
-  "name": "Skin Changer Lite",
-  "description": "Character accessories, gliders, awakening appearance, custom plates and vehicle appearance.",
+  "name": "SkinChanger Lite",
+  "description": "Local accessory, glider, awakening, license plate and vehicle appearance previews.",
   "author": "b1ank",
   "license": "AGPL-3.0-only",
-  "version": "0.1.42",
+  "version": "0.1.44",
   "entry": "plugin.dll",
   "api": {
     "major": 1,
@@ -26,10 +26,6 @@
     },
     {
       "id": "anomaly.ui",
-      "minVersion": 1
-    },
-    {
-      "id": "anomaly.localization",
       "minVersion": 1
     },
     {
@@ -59,6 +55,10 @@
     },
     {
       "id": "anomaly.nte.combat",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.localization",
       "minVersion": 1
     },
     {

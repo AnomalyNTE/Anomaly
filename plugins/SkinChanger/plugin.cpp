@@ -1,16 +1,15 @@
-#include "awakening_profile.hpp"
 #include <anomaly/sdk/cpp.hpp>
+#include "localization.hpp"
 #include "cosmetics.hpp"
 #include "awakening.hpp"
 #include "plates.hpp"
 #include "vehicle.hpp"
-#include "localization.hpp"
+#include "awakening_profile.hpp"
 #include <chrono>
 
 namespace {
 using namespace anomaly::sdk;
 using Clock = std::chrono::steady_clock;
-anomaly::sdk::Localizer& localizer = skin_change::Localizer();
 
 int category = 1;
 Clock::time_point next_update{};
@@ -30,7 +29,7 @@ bool EnsureWindow() noexcept {
     AnomalyWindowSpecV1 spec{};
     spec.struct_size = sizeof(spec);
     spec.id = StringView("skin-changer-lite-main");
-    const auto title = localizer.Text("window.title", "Skin Changer Lite");
+    const auto title=lite_i18n::localizer.Text("window.title", "SkinChanger Lite");
     spec.title = StringView(title);
     spec.initial_width = 430.0F;
     spec.initial_height = 540.0F;
@@ -51,9 +50,14 @@ void ReleaseWindow() noexcept {
 }
 
 AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) noexcept {
-    if (!accessory::profile::LoadCompatibility(host) || !skin_awakening_profile::LoadLayout())
-        return {ANOMALY_STATUS_V1_UNAVAILABLE,0,{}};
-    skin_change::Localizer() = anomaly::sdk::Localizer(host);
+    if(!context)return {ANOMALY_STATUS_V1_INVALID_ARGUMENT,0,{}};
+    *context=nullptr;
+    lite_i18n::localizer = anomaly::sdk::Localizer(host);
+    if(!accessory::profile::LoadCompatibility(host)||!skin_awakening_profile::LoadLayout()) {
+        static thread_local std::string message;
+        message=lite_i18n::localizer.Text("error.profile", "The compatibility profile is unavailable or incompatible. No game features were started.");
+        return {ANOMALY_STATUS_V1_UNAVAILABLE,0,StringView(message)};
+    }
     window_service = Host(host).Query<AnomalyWindowServiceV1>(
         ANOMALY_WINDOW_SERVICE_V1_ID, ANOMALY_WINDOW_SERVICE_V1_VERSION).get();
     window_handle = {};
@@ -76,6 +80,8 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* context) noexcept {
 }
 
 AnomalyStatusV1 ANOMALY_CALL Stop(void* context, uint32_t reason) noexcept {
+    lite_awakening::SetVisible(false);
+    lite_vehicle::SetVisible(false);
     ReleaseWindow();
     lite_plates::Stop();
     const auto vehicle_status=lite_vehicle::Stop();
@@ -106,26 +112,30 @@ void ANOMALY_CALL Update(void* context, double delta) noexcept {
 }
 
 void DrawContent(void* context, const AnomalyUiServiceV1* ui) {
-    if (ui->button(ui->user, StringView(localizer.Label("action.category_accessories", "Accessories", "category")), 0, 0)) category = 1;
+    if (ui->button(ui->user, StringView(lite_i18n::localizer.Label("tab.accessories", "Accessories", "category-accessories")), 0, 0)) category = 1;
     ui->same_line(ui->user, 0, -1);
-    if (ui->button(ui->user, StringView(localizer.Label("action.category_gliders", "Gliders", "category")), 0, 0)) category = 2;
+    if (ui->button(ui->user, StringView(lite_i18n::localizer.Label("tab.glider", "Glider", "category-glider")), 0, 0)) category = 2;
     ui->same_line(ui->user, 0, -1);
-    if (ui->button(ui->user, StringView(localizer.Label("action.category_awakening", "Awakening", "category")), 0, 0)) category = 3;
+    if (ui->button(ui->user, StringView(lite_i18n::localizer.Label("tab.awakening", "Awakening", "category-awakening")), 0, 0)) category = 3;
     ui->same_line(ui->user, 0, -1);
-    if (ui->button(ui->user, StringView(localizer.Label("action.category_plates", "Plates", "category")), 0, 0)) category = 4;
+    if (ui->button(ui->user, StringView(lite_i18n::localizer.Label("tab.plates", "Plates", "category-plates")), 0, 0)) category = 4;
     ui->same_line(ui->user, 0, -1);
-    if (ui->button(ui->user, StringView(localizer.Label("action.category_vehicles", "Vehicles", "category")), 0, 0)) category = 5;
-    lite_awakening::SetVisible(category == 3);
-    lite_vehicle::SetVisible(category == 5);
+    if (ui->button(ui->user, StringView(lite_i18n::localizer.Label("tab.vehicle", "Vehicle", "category-vehicle")), 0, 0)) category = 5;
     if (category == 5) lite_vehicle::Draw(ui);
     else if (category == 4) lite_plates::Draw(ui);
     else if (category == 3) lite_awakening::Draw(ui);
     else if (cosmetics_started) CosmeticsDraw(context, ui, category);
-    else ui->text(ui->user, StringView(localizer.Text("status.cosmetics_unavailable",
-        "The accessory and glider interfaces are unavailable for this game version.")));
+    else ui->text(ui->user, StringView(lite_i18n::localizer.Text("cosmetics.unavailable", "The accessory/glider interface is unavailable for this game build.")));
 }
 
 void ANOMALY_CALL Draw(void* context, const AnomalyUiServiceV1* ui) noexcept {
+    struct Visibility {
+        bool content{};
+        ~Visibility() {
+            lite_awakening::SetVisible(content && category == 3);
+            lite_vehicle::SetVisible(content && category == 5);
+        }
+    } visibility;
     try {
         if (!ui || !ui->begin_window || !ui->end_window || !ui->button ||
             !ui->same_line || !ui->text) return;
@@ -136,14 +146,15 @@ void ANOMALY_CALL Draw(void* context, const AnomalyUiServiceV1* ui) noexcept {
             std::int32_t visible{};
             if (window_service->begin(window_service->user, window_handle,
                     0, &visible).code != ANOMALY_STATUS_V1_OK) return;
-            if (visible != 0) DrawContent(context, ui);
-            static_cast<void>(window_service->end(window_service->user, window_handle));
+            struct EndWindow {
+                ~EndWindow() { static_cast<void>(window_service->end(window_service->user, window_handle)); }
+            } end_window;
+            if (visible != 0) { visibility.content = true; DrawContent(context, ui); }
             return;
         }
         if (fallback_open == 0) return;
-        const auto title = localizer.Text("window.title", "Skin Changer Lite");
-        UiWindow window(ui, title, &fallback_open);
-        if (window) DrawContent(context, ui);
+        UiWindow window(ui, lite_i18n::localizer.Text("window.title", "SkinChanger Lite"), &fallback_open);
+        if (window) { visibility.content = true; DrawContent(context, ui); }
     } catch (...) {}
 }
 }
@@ -151,8 +162,8 @@ void ANOMALY_CALL Draw(void* context, const AnomalyUiServiceV1* ui) noexcept {
 ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(AnomalyPluginDescriptorV1* descriptor) {
     if (!descriptor || descriptor->struct_size < sizeof(*descriptor)) return {ANOMALY_STATUS_V1_INVALID_ARGUMENT, 0, {}};
     *descriptor = {sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
-        anomaly::sdk::StringView("b1ank.skin-changer"), anomaly::sdk::StringView("Skin Changer Lite"),
-        anomaly::sdk::StringView("b1ank"), anomaly::sdk::StringView("0.1.42"),
+        anomaly::sdk::StringView("b1ank.skin-changer"), anomaly::sdk::StringView("SkinChanger Lite"),
+        anomaly::sdk::StringView("b1ank"), anomaly::sdk::StringView("0.1.44"),
         Load, Start, Stop, Unload, Update, Draw};
     return anomaly::sdk::Ok();
 }
