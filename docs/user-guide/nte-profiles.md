@@ -24,6 +24,11 @@ Runtime 按 `local override > repository > bundled` 的优先级选择**一个**
 - Resolver 每次启动都按活动 Profile 扫描符号，并对每个解析结果运行 Profile 声明的 validator。
 - 符号组装完成后，Feature 仍要满足 Profile 声明的依赖、布局 validator、ABI 和线程条件。
 
+形状相同的原生包装函数可声明 `call-target:<符号 ID>:<layout 键>` validator：
+`layout` 提供相对于函数入口的 E8 调用位置，目标符号提供被调用函数的签名。
+Resolver 只保留调用目标匹配该签名的候选，之后仍执行 Feature 的完整调用关系校验。
+这使 ESC 菜单入口无需固定最后一次调用的链接位移，同时拒绝其他同形包装函数。
+
 ### 自动学习与签名恢复
 
 Runtime 会在符号成功解析后读取最多 128 字节的 x64 指令，自动生成用于下次恢复的指令签名，

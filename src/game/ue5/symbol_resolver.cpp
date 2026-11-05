@@ -1,6 +1,7 @@
 #include "anomaly/symbol_resolver.hpp"
 #include "anomaly/artifact_crypto.hpp"
 #include "anomaly/signature_updater.hpp"
+#include "pattern.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1567,6 +1568,45 @@ SymbolValidationResult SymbolValidatorRegistry::Validate(
     const ue5mem::ModuleInfo& module,
     std::uintptr_t address,
     const SymbolMemory& memory) const {
+    constexpr std::string_view call_prefix = "call-target:";
+    if (id.starts_with(call_prefix)) {
+        const auto arguments = id.substr(call_prefix.size());
+        const auto separator = arguments.find(':');
+        if (separator == std::string_view::npos)
+            return {false, "call-target requires a symbol and layout key"};
+        const auto target = profile.symbols.find(arguments.substr(0, separator));
+        const auto offset = profile.layout.find(arguments.substr(separator + 1));
+        if (target == profile.symbols.end() || offset == profile.layout.end() ||
+            offset->second < 0 || static_cast<std::uint64_t>(offset->second) > module.size ||
+            target->second.module != symbol.module ||
+            target->second.resolve.kind != ProfileResolveKind::Direct ||
+            target->second.resolve.addend != 0)
+            return {false, "call-target declaration is unsupported"};
+        const auto call_offset = static_cast<std::size_t>(offset->second);
+        if (!Contains(module.base, module.size, address, call_offset + 5U))
+            return {false, "call-target instruction is outside the module"};
+        std::array<std::uint8_t, 5> call{};
+        if (!memory.Read(address + call_offset, call.data(), call.size()) || call[0] != 0xE8)
+            return {false, "call-target instruction is not a readable E8 rel32"};
+        std::int32_t displacement{};
+        std::memcpy(&displacement, call.data() + 1, sizeof(displacement));
+        const auto callee = static_cast<std::uintptr_t>(
+            static_cast<std::intptr_t>(address + call_offset + call.size()) + displacement);
+        // Thunks can have identical instruction templates. Their declared
+        // callee distinguishes them without fixing link-dependent rel32 bytes.
+        try {
+            const auto pattern = ue5mem::Pattern::Parse(target->second.pattern);
+            if (!Contains(module.base, module.size, callee, pattern.Size()))
+                return {false, "call-target destination is outside the module"};
+            std::vector<std::uint8_t> bytes(pattern.Size());
+            if (!memory.Read(callee, bytes.data(), bytes.size()) ||
+                pattern.FindAll(bytes, 1) != std::vector<std::size_t>{0})
+                return {false, "call-target destination does not match the declared symbol"};
+        } catch (const std::invalid_argument&) {
+            return {false, "call-target pattern is invalid"};
+        }
+        return {true, {}};
+    }
     constexpr std::string_view prefix = "address-in-section:";
     if (id.starts_with(prefix)) {
         const std::string_view section_name = id.substr(prefix.size());

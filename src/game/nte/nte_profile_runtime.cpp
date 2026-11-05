@@ -819,15 +819,18 @@ FeatureValidationResult ValidateEscMenuHooks(
         0x48, 0x03, 0xF8, 0x48, 0x89, 0x7B, 0x20};
     std::uint8_t call_opcode{};
     std::uintptr_t add_menu_page_call_target{};
-    if (!MatchesBytes(
+    std::uint64_t exec_call_offset{};
+    if (!ProfileLayoutValue(profile, "escMenu.execAddMenuPageCallOffset", &exec_call_offset) ||
+        exec_call_offset > module->size ||
+        !MatchesBytes(
             memory, exec_add_menu_page->address + 0x55U,
             kAddMenuPageExecDispatch) ||
         !memory.Read(
-            exec_add_menu_page->address + 0x6EU,
+            exec_add_menu_page->address + exec_call_offset,
             &call_opcode, sizeof(call_opcode)) ||
         call_opcode != 0xE8U ||
         !ResolveRel32Target(
-            memory, exec_add_menu_page->address + 0x6EU, 1U, 5U,
+            memory, exec_add_menu_page->address + exec_call_offset, 1U, 5U,
             &add_menu_page_call_target) ||
         add_menu_page_call_target != add_menu_page->address) {
         return {false, "AddMenuPage Exec wrapper no longer calls the hook target"};

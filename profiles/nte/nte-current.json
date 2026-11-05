@@ -277,7 +277,8 @@
       },
       "validators": [
         "address-in-module",
-        "executable"
+        "executable",
+        "call-target:nte.HTUI_MenuExtension.AddMenuPage:escMenu.execAddMenuPageCallOffset"
       ],
       "requiredBy": [
         "anomaly.nte.esc-menu-button"
@@ -662,6 +663,7 @@
     "ufunction.execFunction": 216,
     "fstack.locals": 32,
     "escMenu.buttonClickedVtableOffset": 1392,
+    "escMenu.execAddMenuPageCallOffset": 110,
     "ffield.class": 8,
     "ffield.name": 32,
     "ffield.next": 24,
@@ -955,7 +957,7 @@
       },
       "symbolPatterns": {
         "nte.ClientIgnoreGameAndUiInput": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 20 41 0F B6 F8 0F B6 EA 40 0F B6 D7 41 B0 01 41 0F B6 F1 48 8B D9 E8 ?? ?? ?? ?? 48 8B 03 48 8B CB FF 90 C8 14 00 00 48 8B D8 48 85 C0 74 ?? 40 84 ED",
-        "nte.HTUI_MenuExtension.execAddMenuPage": "48 89 5C 24 08 48 89 74 24 18 57 48 83 EC 20 33 FF 48 8B DA 89 7C 24 38 48 8B F1 E8 ?? ?? 5C FA 48 8B CB 48 39 7B 20 74 10 48 8B 53 18 4C 8D 44 24 38 E8 ?? ?? ?? ?? EB 1C 4C 8B 83 88 00 00 00 48 8D 54 24 38 49 8B 40 18 48 89 83 88 00 00 00 E8 ?? ?? ?? ?? 48 8B 43 20 48 8B CE 8B 54 24 38 48 85 C0 40 0F 95 C7 48 03 F8 48 89 7B 20 E8 ?? ?? 12 02"
+        "nte.HTUI_MenuExtension.execAddMenuPage": "48 89 5C 24 08 48 89 74 24 18 57 48 83 EC 20 33 FF 48 8B DA 89 7C 24 38 48 8B F1 E8 ?? ?? 5C FA 48 8B CB 48 39 7B 20 74 10 48 8B 53 18 4C 8D 44 24 38 E8 ?? ?? ?? ?? EB 1C 4C 8B 83 88 00 00 00 48 8D 54 24 38 49 8B 40 18 48 89 83 88 00 00 00 E8 ?? ?? ?? ?? 48 8B 43 20 48 8B CE 8B 54 24 38 48 85 C0 40 0F 95 C7 48 03 F8 48 89 7B 20 E8 ?? ?? ?? ??"
       }
     }
   ]
