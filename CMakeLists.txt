@@ -1595,6 +1595,28 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         target_link_libraries(anomaly_autofish_persistence_fixture PRIVATE Anomaly::sdk)
         target_compile_options(anomaly_autofish_persistence_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
     endif()
+    anomaly_add_plugin(anomaly_builtin_autotaxi
+        SOURCES plugins/Autotaxi/plugin.cpp
+        MANIFEST plugins/Autotaxi/manifest.json
+        PACKAGE_NAME Autotaxi
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/Autotaxi")
+    if(ANOMALY_BUILD_TEST_FIXTURES)
+        add_executable(anomaly_autotaxi_policy_fixture plugins/Autotaxi/tests.cpp)
+        target_compile_features(anomaly_autotaxi_policy_fixture PRIVATE cxx_std_20)
+        target_compile_options(anomaly_autotaxi_policy_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+        add_test(NAME autotaxi_order_progress_and_settlement COMMAND anomaly_autotaxi_policy_fixture)
+        foreach(suite IN ITEMS runtime profile)
+            add_executable(anomaly_autotaxi_${suite}_fixture plugins/Autotaxi/${suite}_tests.cpp)
+            target_link_libraries(anomaly_autotaxi_${suite}_fixture PRIVATE
+                Anomaly::sdk anomaly_plugin_profile ue5mem_memory)
+            target_include_directories(anomaly_autotaxi_${suite}_fixture PRIVATE "${CMAKE_SOURCE_DIR}/apps/test_host")
+            target_compile_features(anomaly_autotaxi_${suite}_fixture PRIVATE cxx_std_20)
+            target_compile_options(anomaly_autotaxi_${suite}_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+            add_test(NAME autotaxi_${suite} COMMAND anomaly_autotaxi_${suite}_fixture)
+        endforeach()
+        add_test(NAME autotaxi_localization
+            COMMAND pwsh -NoProfile -File "${CMAKE_CURRENT_SOURCE_DIR}/tools/check_plugin_i18n.ps1" -Plugin Autotaxi)
+    endif()
     anomaly_add_plugin(anomaly_builtin_skin_changer
         SOURCES plugins/SkinChanger/plugin.cpp plugins/SkinChanger/cosmetics.cpp
             plugins/SkinChanger/awakening.cpp plugins/SkinChanger/plates.cpp
@@ -1620,6 +1642,23 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         add_executable(anomaly_skin_changer_vehicle_fixture plugins/SkinChanger/vehicle_tests.cpp)
         target_compile_features(anomaly_skin_changer_vehicle_fixture PRIVATE cxx_std_20)
         target_compile_options(anomaly_skin_changer_vehicle_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+        foreach(suite IN ITEMS lifecycle cosmetics_runtime vehicle_runtime profile)
+            add_executable(anomaly_skin_changer_${suite}_fixture
+                plugins/SkinChanger/${suite}_tests.cpp)
+            target_link_libraries(anomaly_skin_changer_${suite}_fixture PRIVATE
+                Anomaly::sdk anomaly_plugin_profile ue5mem_memory)
+            target_compile_features(anomaly_skin_changer_${suite}_fixture PRIVATE cxx_std_20)
+            target_compile_options(anomaly_skin_changer_${suite}_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+            add_test(NAME skin_changer_${suite}
+                COMMAND anomaly_skin_changer_${suite}_fixture)
+        endforeach()
+        add_test(NAME skin_changer_cosmetics COMMAND anomaly_skin_changer_fixture)
+        foreach(suite IN ITEMS awakening plate plate_follow vehicle)
+            add_test(NAME skin_changer_${suite}
+                COMMAND anomaly_skin_changer_${suite}_fixture)
+        endforeach()
+        add_test(NAME skin_changer_localization
+            COMMAND pwsh -NoProfile -File "${CMAKE_CURRENT_SOURCE_DIR}/tools/check_plugin_i18n.ps1" -Plugin SkinChanger)
     endif()
 
     add_library(anomaly_quick_ultimate_sequence STATIC
@@ -1821,7 +1860,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         anomaly_builtin_nte_quick_ultimate
         anomaly_builtin_nte_free_fly anomaly_builtin_skin_changer anomaly_builtin_ui_buttons
         anomaly_builtin_dll_loader anomaly_builtin_hifi_vehicle_music
-        anomaly_builtin_model_scale anomaly_builtin_status_bar anomaly_builtin_autofish anomaly_builtin_character_studio
+        anomaly_builtin_model_scale anomaly_builtin_status_bar anomaly_builtin_autofish anomaly_builtin_autotaxi anomaly_builtin_character_studio
         anomaly_builtin_deserted anomaly_builtin_jelly anomaly_builtin_night999
         anomaly_builtin_npc_summon anomaly_builtin_training_dummy
         anomaly_builtin_summon_lab anomaly_builtin_memory_dump anomaly_builtin_nailong)
@@ -1849,6 +1888,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         target_compile_options(anomaly_builtin_nte_free_fly PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_skin_changer PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_autofish PRIVATE /utf-8)
+        target_compile_options(anomaly_builtin_autotaxi PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_ui_buttons PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_deserted PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_hifi_vehicle_music PRIVATE /utf-8)
@@ -1913,6 +1953,7 @@ anomaly_stage_platform_preview_plugin(
 anomaly_stage_platform_preview_plugin(anomaly_builtin_nte_free_fly NteFreeFly)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_skin_changer SkinChanger)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_autofish AutoFish)
+anomaly_stage_platform_preview_plugin(anomaly_builtin_autotaxi Autotaxi)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_ui_buttons UiButtons)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_dll_loader DllLoader)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_time_accel TimeAccel)

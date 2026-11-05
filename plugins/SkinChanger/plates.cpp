@@ -5,7 +5,6 @@
 #include "plates.hpp"
 #include "profile.hpp"
 #include "plate_animation.hpp"
-#include "localization.hpp"
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -16,10 +15,10 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include "localization.hpp"
 #include "plate_access.hpp"
 
 namespace {
-anomaly::sdk::Localizer& localizer = skin_change::Localizer();
 struct Field { uintptr_t type{}; std::string name; int32_t size{}, offset{-1}; };
 std::vector<Field> fields;
 int32_t Offset(const Reader& r, uintptr_t type, const char* name, int32_t size) {
@@ -89,7 +88,7 @@ std::atomic_bool dynamic{};
 std::atomic_bool restart_animation{};
 std::atomic<float> interval{0.15F};
 std::atomic<std::shared_ptr<const std::string>> pending;
-struct View { std::string status{localizer.Text("status.plate_idle", "Once enabled, it applies to the vehicle you ride in.")}; size_t width{7}; bool enabled{}; };
+struct View { std::string status{lite_i18n::localizer.Text("plates.instructions", "When enabled, the plate follows the vehicle you enter.")}; size_t width{7}; bool enabled{}; };
 std::atomic<std::shared_ptr<const View>> published;
 std::string status;
 size_t width = 7;
@@ -126,17 +125,17 @@ bool CaptureMesh(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects, uin
     if (offset < 0 || !r.Read(mesh+offset,materials) || materials.count < 1 || materials.count > 64 || materials.capacity < materials.count) return false;
     for (int i = 0; i < materials.count; ++i) {
         uintptr_t material{}; RowArray values{};
-        if (!r.Read(materials.data+i*8,material) || !r.Read(material+accessory::profile::native_layout.ObjectClass,cls)) continue;
+        if (!r.Read(materials.data+i*sizeof(uintptr_t),material) || !r.Read(material+accessory::profile::native_layout.ObjectClass,cls)) continue;
         const auto scalars = Offset(r,cls,"ScalarParameterValues",16);
         if (scalars < 0 || !r.Read(material+scalars,values) || values.count < 1 || values.count > 256 || values.capacity < values.count) continue;
         std::map<int,Scalar> slots; std::optional<Scalar> mode;
         // FScalarParameterValue: reflected ParameterInfo and float ParameterValue.
         const auto type = Find(r,objects,"/Script/Engine.ScalarParameterValue"); int32_t stride{};
-        if (!type || !r.Read(type+0x58,stride) || stride != 36 || Offset(r,type,"ParameterInfo",16) != 0 ||
-            Offset(r,type,"ParameterValue",4) != 16) return false;
+        if (!type || !r.Read(type+accessory::profile::native_layout.ScriptStructSize,stride) || stride != static_cast<int32_t>(accessory::profile::native_layout.ScalarRecordSize) || Offset(r,type,"ParameterInfo",accessory::profile::native_layout.ScalarParameterInfoSize) != static_cast<int32_t>(accessory::profile::native_layout.ScalarRecordName) ||
+            Offset(r,type,"ParameterValue",4) != static_cast<int32_t>(accessory::profile::native_layout.ScalarRecordValue)) return false;
         for (int j = 0; j < values.count; ++j) {
             FName name{}; float value{};
-            if (!r.Read(values.data+stride*j,name) || !r.Read(values.data+stride*j+16,value)) return false;
+            if (!r.Read(values.data+stride*j+accessory::profile::native_layout.ScalarRecordName,name) || !r.Read(values.data+stride*j+accessory::profile::native_layout.ScalarRecordValue,value)) return false;
             const auto label = r.Name(name);
             if (label == "UseErrorCodePlate") mode = Scalar{name,value,-1};
             else for (int k = 0; k < 16; ++k) if (label == "CarPlate"+std::to_string(k)) slots[k] = {name,value,k};
@@ -160,10 +159,10 @@ bool Select(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects, Vehicle&
     if (!r.Read(character+accessory::profile::native_layout.ObjectClass,cls)) return false;
     const auto land_type = Find(r,objects,"/Script/HTGame.CharacterVehicleState");
     const auto water_type = Find(r,objects,"/Script/HTGame.CharacterWaterVehicleState");
-    const auto land = Offset(r,cls,"DrivingState",0x68);
+    const auto land = Offset(r,cls,"DrivingState",accessory::profile::native_layout.DrivingStateSize);
     const auto current_land = land_type ? Offset(r,land_type,"CurrentDrivingVehicle",8) : -1;
     if (land >= 0 && current_land >= 0) r.Read(character+land+current_land,vehicle);
-    const auto water = Offset(r,cls,"WaterVehicleDrivingState",16);
+    const auto water = Offset(r,cls,"WaterVehicleDrivingState",accessory::profile::native_layout.WaterDrivingStateSize);
     const auto current_water = water_type ? Offset(r,water_type,"CurrentDrivingVehicle",8) : -1;
     if (!vehicle && water >= 0 && current_water >= 0) r.Read(character+water+current_water,vehicle);
     if (!vehicle) {
@@ -193,7 +192,7 @@ bool MaterialUnchanged(const Reader& r, const AnomalyUe5ObjectsServiceV1* object
     if (!mesh || !r.Read(mesh+accessory::profile::native_layout.ObjectClass,cls)) return false;
     const auto offset = Offset(r,cls,"OverrideMaterials",16);
     return offset >= 0 && r.Read(mesh+offset,array) && saved.material_index < array.count &&
-        r.Read(array.data+8*saved.material_index,material) && material == Resolve(r,objects,saved.material);
+        r.Read(array.data+sizeof(uintptr_t)*saved.material_index,material) && material == Resolve(r,objects,saved.material);
 }
 bool IsType(const Reader& r,uintptr_t object,uintptr_t type) {
     uintptr_t cls{}; if (!type || !r.Read(object+accessory::profile::native_layout.ObjectClass,cls)) return false;
@@ -232,7 +231,7 @@ std::vector<uintptr_t> PlateMeshCandidates(const Reader& r,const AnomalyUe5Objec
         RowArray children{};
         if (r.Read(node+children_offset,children) && children.count >= 0 && children.count <= 256 && children.capacity >= children.count)
             for (int i = 0; i < children.count && queue.size() < 512; ++i) {
-                uintptr_t next{}; if (r.Read(children.data+i*8,next)) queue.push_back(next);
+                uintptr_t next{}; if (r.Read(children.data+i*sizeof(uintptr_t),next)) queue.push_back(next);
             }
     }
     return result;
@@ -271,19 +270,19 @@ void FollowVehicle(const Reader& r, const AnomalyUe5ObjectsServiceV1* objects) {
     }),vehicles.end());
     Vehicle candidate;
     if (!Select(r,objects,candidate)) {
-        status = vehicles.empty() ? localizer.Text("status.plate_waiting_board","Enabled; waiting to board a vehicle.") : localizer.Text("status.plate_following","Enabled; following the vehicle automatically."); return;
+        status = vehicles.empty() ? lite_i18n::localizer.Text("plates.wait_vehicle", "Enabled. Waiting for you to enter a vehicle.") : lite_i18n::localizer.Text("plates.following", "Enabled. Automatically following your vehicle."); return;
     }
     auto found = std::find_if(vehicles.begin(),vehicles.end(),[&](const Vehicle& v){return v.actor.id == candidate.actor.id;});
     if (found == vehicles.end()) {
-        if (!RefreshVehicle(r,objects,candidate)) { status = localizer.Text("status.plate_not_ready","This vehicle's plate is not ready yet; waiting."); return; }
+        if (!RefreshVehicle(r,objects,candidate)) { status = lite_i18n::localizer.Text("plates.wait_material", "Waiting for this vehicle's plate to become ready."); return; }
         width = candidate.width; vehicles.push_back(std::move(candidate));
     } else {
         if (found->component.id != candidate.component.id) { found->meshes.clear(); found->last_frame.clear(); }
         found->component = candidate.component; found->original = std::move(candidate.original);
-        if (!RefreshVehicle(r,objects,*found)) { status = localizer.Text("status.plate_refreshing","The plate mesh is refreshing; waiting."); return; }
+        if (!RefreshVehicle(r,objects,*found)) { status = lite_i18n::localizer.Text("plates.refreshing", "Waiting for the plate model to refresh."); return; }
         width = found->width;
     }
-    status = localizer.Text("status.plate_following","Enabled; following the vehicle automatically.");
+    status = lite_i18n::localizer.Text("plates.following", "Enabled. Automatically following your vehicle.");
 }
 
 }
@@ -325,16 +324,14 @@ void Update() noexcept {
                         applied = previous;
                     }
                 }
-                status = Restore(r,objects) ?
-                    localizer.Text("status.plate_restored","Disabled; the original plate was restored.") :
-                    localizer.Text("status.plate_restore_failed","Restore failed; try again.");
+                status = Restore(r,objects) ? lite_i18n::localizer.Text("plates.restored", "Disabled. Original plate restored.") : lite_i18n::localizer.Text("plates.restore_failed", "Restoration failed. Please retry.");
             } else if (command == 1) {
                 const auto text = pending.exchange({});
                 const auto normalized = text ? plate_animation::Normalize(Wide(*text),width) : std::nullopt;
                 if (normalized) {
                     applied = *normalized; enabled = true; epoch = Clock::now(); next_probe = next_frame = {};
                     for (auto& vehicle : vehicles) { vehicle.last_frame.clear(); vehicle.reapply_at = {}; }
-                } else status = localizer.Text("status.plate_invalid_text","Unsupported character, or the plate text is too long.");
+                } else status = lite_i18n::localizer.Text("plates.invalid", "Unsupported characters or plate text is too long.");
             }
         }
         if (restart_animation.exchange(false)) {
@@ -368,25 +365,23 @@ void Update() noexcept {
             }
         }
         Publish();
-    } catch (...) { status = localizer.Text("status.plate_pending","The plate is not ready yet; waiting."); Publish(); }
+    } catch (...) { status = lite_i18n::localizer.Text("plates.unavailable", "Waiting for the plate to become ready."); Publish(); }
 }
 void Draw(const AnomalyUiServiceV1* ui) noexcept {
     const auto view = published.load(); if (!view || !ui || !ui->input_text || !ui->text || !ui->checkbox) return;
-    ui->text(ui->user,StringView(localizer.Text("hint.plate_local_only","Only this vehicle's plate appearance is modified.")));
-    const bool edited = ui->input_text(ui->user,StringView(localizer.Text("label.plate_text","Plate text")),editor.data(),editor.size(),0) != 0;
-    const auto width_text = std::to_string(view->width);
-    const std::array width_arguments{std::string_view(width_text)};
-    ui->text(ui->user,StringView(localizer.Format("hint.plate_characters","Up to {0} characters: A-Z, 0-9, ·, -, space, ♥",width_arguments)));
+    ui->text(ui->user,StringView(lite_i18n::localizer.Text("plates.local_only", "Changes the local plate appearance only.")));
+    const bool edited = ui->input_text(ui->user,StringView(lite_i18n::localizer.Text("plates.text", "Plate text")),editor.data(),editor.size(),0) != 0;
+    ui->text(ui->user,StringView(lite_i18n::localizer.Format("plates.allowed", "Up to {0} characters: A-Z, 0-9, middle dot, hyphen, space, heart", std::array<std::string_view,1>{std::to_string(view->width)})));
     const auto command = requested.load();
     int use = command ? command == 1 : view->enabled;
-    if (ui->checkbox && ui->checkbox(ui->user,StringView(localizer.Text("option.apply_plate","Apply plate")),&use)) {
+    if (ui->checkbox && ui->checkbox(ui->user,StringView(lite_i18n::localizer.Text("plates.enabled", "Apply plate")),&use)) {
         if (use) { pending.store(std::make_shared<const std::string>(editor.data())); requested = 1; }
         else requested = 2;
     } else if (edited && use) { pending.store(std::make_shared<const std::string>(editor.data())); requested = 1; }
     int motion = dynamic.load();
-    if (ui->checkbox && ui->checkbox(ui->user,StringView(localizer.Text("option.dynamic_plate","Dynamic plate")),&motion)) { dynamic = motion != 0; restart_animation = true; }
+    if (ui->checkbox && ui->checkbox(ui->user,StringView(lite_i18n::localizer.Text("plates.animated", "Animated plate")),&motion)) { dynamic = motion != 0; restart_animation = true; }
     if (motion && ui->slider_float) { float seconds = interval.load();
-        if (ui->slider_float(ui->user,StringView(localizer.Text("label.scroll_interval","Scroll interval (s)")),&seconds,0.05F,1.0F)) interval = seconds;
+        if (ui->slider_float(ui->user,StringView(lite_i18n::localizer.Text("plates.interval", "Scroll interval (seconds)")),&seconds,0.05F,1.0F)) interval = seconds;
     }
     ui->text(ui->user,StringView(view->status));
 }

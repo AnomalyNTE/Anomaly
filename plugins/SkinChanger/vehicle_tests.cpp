@@ -34,10 +34,10 @@ int main() {
     check(Matches(7,1,6) && Matches(12,1,6) && Matches(14,1,6) && !Matches(1,1,6) && !Matches(23,1,6),
         "other accessories retain side kits, hood and roof without including engine or smoke");
     std::array<float,10> incoming{0,123,0,4,5,6,7,8,9,10};std::array<float,36> patched{};
-    check(vehicle_paint::Override(0,incoming,3,patched) && patched[2]==3 && patched[1]==123 && patched[3]==4 && incoming[2]==0,
+    check(vehicle_paint::Override(0,incoming,3,patched,2) && patched[2]==3 && patched[1]==123 && patched[3]==4 && incoming[2]==0,
         "bulk native data retains entity and damage fields while overriding only the paint slot, without mutating caller input");
-    check(vehicle_paint::Override(2,std::span<const float>(incoming.data(),1),7,patched) && patched[0]==7,"single-float writes to paint slot are handled");
-    check(!vehicle_paint::Override(3,incoming,3,patched) && !vehicle_paint::Override(-1,incoming,3,patched) &&
-        !vehicle_paint::Override(0,std::span<const float>(incoming.data(),2),3,patched),"unrelated or out-of-range writes remain untouched");
+    check(vehicle_paint::Override(2,std::span<const float>(incoming.data(),1),7,patched,2) && patched[0]==7,"single-float writes to paint slot are handled");
+    check(!vehicle_paint::Override(3,incoming,3,patched,2) && !vehicle_paint::Override(-1,incoming,3,patched,2) &&
+        !vehicle_paint::Override(0,std::span<const float>(incoming.data(),2),3,patched,2),"unrelated or out-of-range writes remain untouched");
     return failed?1:0;
 }

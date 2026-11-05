@@ -1,7 +1,14 @@
 #pragma once
 #include "profile.hpp"
+#include "awakening_data.hpp"
+#include <cstddef>
 namespace skin_awakening_profile {
 struct Layout {
+    std::uint32_t AwakenEffectId{};
+    std::uint32_t AwakenDataStride{};
+    std::uint32_t AwakenDataUnlocked{};
+    std::uint32_t AwakenDataId{};
+
     std::uint32_t WorldGameInstance{};
     std::uint32_t GameInstanceLocalPlayers{};
     std::uint32_t LocalPlayerController{};
@@ -29,8 +36,14 @@ struct Layout {
 };
 inline Layout native_layout;
 inline bool LoadLayout() noexcept {
+    native_layout={};
     try {
         Layout parsed;
+        parsed.AwakenEffectId=accessory::profile::compatibility.Value("awakening.AwakenEffectId",65536);
+        parsed.AwakenDataStride=accessory::profile::compatibility.Value("awakening.AwakenDataStride",65536);
+        parsed.AwakenDataUnlocked=accessory::profile::compatibility.Value("awakening.AwakenDataUnlocked",65536);
+        parsed.AwakenDataId=accessory::profile::compatibility.Value("awakening.AwakenDataId",65536);
+
         parsed.WorldGameInstance=accessory::profile::compatibility.Value("awakening.WorldGameInstance",65536);
         parsed.GameInstanceLocalPlayers=accessory::profile::compatibility.Value("awakening.GameInstanceLocalPlayers",65536);
         parsed.LocalPlayerController=accessory::profile::compatibility.Value("awakening.LocalPlayerController",65536);
@@ -55,6 +68,12 @@ inline bool LoadLayout() noexcept {
         parsed.ScriptStructSize=accessory::profile::compatibility.Value("awakening.ScriptStructSize",65536);
         parsed.AwakenEffectStride=accessory::profile::compatibility.Value("awakening.AwakenEffectStride",65536);
         parsed.AwakenEffectType=accessory::profile::compatibility.Value("awakening.AwakenEffectType",65536);
+        // Effects are read/restored as the named representation in awakening_data.
+        // Reject a profile outside that implementation contract before any access.
+        if (parsed.AwakenDataStride != sizeof(awakening_data::Effect) ||
+            parsed.AwakenDataUnlocked != offsetof(awakening_data::Effect,unlocked) ||
+            parsed.AwakenDataId != offsetof(awakening_data::Effect,name) ||
+            parsed.AwakenEffectId + sizeof(awakening_data::Name) > parsed.AwakenEffectStride) return false;
         if (!parsed.AwakenEffectStride || parsed.AwakenEffectType>=parsed.AwakenEffectStride ||
             parsed.AwakenUiLevel<parsed.AwakenUiInfo || parsed.AwakenUiLevel+sizeof(std::int32_t)>parsed.AwakenUiInfo+parsed.AwakenUiInfoSize) return false;
         native_layout=parsed;
