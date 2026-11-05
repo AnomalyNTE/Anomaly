@@ -19,7 +19,6 @@ inline constexpr Text kReasonInstance{"reason.instance", "Connection failed (ins
 inline constexpr Text kReasonWeekly{"reason.weekly", "Connection failed (weekly instance; the server does not accept a direct teleport)"};
 inline constexpr Text kReasonNotOpen{"reason.not_open", "Connection failed (not open on the server)"};
 inline constexpr Text kReasonTestMap{"reason.test_map", "Connection failed (test map)"};
-inline constexpr Text kReasonTravelError{"reason.travel_error", "The client fails to load the map (HandleTravelError) and stays on the loading screen"};
 inline constexpr KnownScene kKnownScenes[] = {
     {"XL_map_bigworld_test", SceneStatus::Verified, {}},
     {"DLC_WuChao", SceneStatus::Verified, {}},
@@ -44,7 +43,8 @@ inline constexpr KnownScene kKnownScenes[] = {
     {"MassAI_wtao", SceneStatus::Unusable, kReasonTestMap},
     // Traced 2026-10-31: the server accepts the entry and sends ClientTravel, then the client's map
     // load fails (GameInstance.HandleTravelError) and the game stays on the loading screen.
-    {"DLC_DeadNumber", SceneStatus::Unusable, kReasonTravelError},
+    // Verified in a later live test: the entry completes and the scene loads.
+    {"DLC_DeadNumber", SceneStatus::Verified, {}},
     // About 8 s after arrival the scene's main logic (MLPS_MainLogic_SLY_C) itself calls
     // ServerRequestExitSingleLevelSceneRPC(q110135). With that request held back the player stays
     // (live test 2026-10-31), so the loader holds it while the player is in this scene.
