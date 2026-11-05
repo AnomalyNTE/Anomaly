@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 2,
+  "id": "shikari.nte-combat-tracker",
+  "name": "NTE Combat Tracker",
+  "description": "FFXIV-style DPS meter panel.",
+  "author": "Shikari",
+  "license": "AGPL-3.0-only",
+  "version": "0.4.0-alpha.3",
+  "audience": "user",
+  "entry": "plugin.dll",
+  "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
+  "games": ["nte"],
+  "builds": ["nte-*"],
+  "loadPhase": "game-ready",
+  "services": [
+    {"id": "anomaly.ui", "minVersion": 1},
+    {"id": "anomaly.localization", "minVersion": 1},
+    {"id": "anomaly.json", "minVersion": 1},
+    {"id": "anomaly.profile", "minVersion": 1},
+    {"id": "anomaly.core", "minVersion": 1},
+    {"id": "anomaly.runtime-info", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.build", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.combat", "minVersion": 1},
+    {"id": "anomaly.nte.skills", "minVersion": 1, "optional": true},
+    {"id": "anomaly.websocket", "minVersion": 1, "optional": true},
+    {"id": "anomaly.interop.signature", "minVersion": 1},
+    {"id": "anomaly.ue5.names", "minVersion": 1},
+    {"id": "anomaly.ue5.objects", "minVersion": 1},
+    {"id": "anomaly.ue5.world", "minVersion": 1, "optional": true}
+  ],
+  "capabilities": ["ui", "json", "memory-read", "runtime-info", "nte-build", "nte-combat-read",
+    "nte-skills-read", "websocket", "interop-signature", "ue5-names", "ue5-objects", "ue5-world"]
+}

@@ -1577,6 +1577,126 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         PACKAGE_NAME DamageDashboard
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/DamageDashboard")
 
+    # 战斗统计：插件只采集，呈现交给随包分发的独立 Overlay 进程（NteCombatTracker.exe）。
+    # 采集引擎刻意不依赖 SDK，便于在没有插件 ABI 的情况下做单元验证。
+    set(ANOMALY_NTE_COMBAT_DIR "plugins/NteCombatTracker")
+    # 插件版本号只来自 manifest 的 version；生成的头文件让插件与 Overlay 共用同一份字符串。
+    file(READ "${CMAKE_SOURCE_DIR}/${ANOMALY_NTE_COMBAT_DIR}/manifest.json"
+        ANOMALY_NTE_COMBAT_MANIFEST_JSON)
+    string(JSON ANOMALY_NTE_COMBAT_PLUGIN_VERSION GET
+        "${ANOMALY_NTE_COMBAT_MANIFEST_JSON}" version)
+    configure_file(
+        "${CMAKE_SOURCE_DIR}/${ANOMALY_NTE_COMBAT_DIR}/cmake/plugin_version.hpp.in"
+        "${CMAKE_CURRENT_BINARY_DIR}/generated/nte_combat_tracker/plugin_version.hpp"
+        @ONLY)
+    add_library(anomaly_nte_combat_engine STATIC
+        ${ANOMALY_NTE_COMBAT_DIR}/src/account_identity.cpp
+        ${ANOMALY_NTE_COMBAT_DIR}/src/attribute_color_map.cpp
+        ${ANOMALY_NTE_COMBAT_DIR}/src/combat_cursor.cpp
+        ${ANOMALY_NTE_COMBAT_DIR}/src/combat_stats_engine.cpp
+        ${ANOMALY_NTE_COMBAT_DIR}/src/damage_log.cpp
+        ${ANOMALY_NTE_COMBAT_DIR}/src/developer_diagnostics.cpp
+        ${ANOMALY_NTE_COMBAT_DIR}/src/event_damage_source_resolver.cpp
+        ${ANOMALY_NTE_COMBAT_DIR}/src/log_worker.cpp)
+    target_include_directories(anomaly_nte_combat_engine PUBLIC
+        "${CMAKE_SOURCE_DIR}/${ANOMALY_NTE_COMBAT_DIR}/src"
+        "${CMAKE_CURRENT_BINARY_DIR}/generated/nte_combat_tracker")
+    target_compile_definitions(anomaly_nte_combat_engine PRIVATE
+        UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_options(anomaly_nte_combat_engine PRIVATE /W4 /permissive- /EHsc /utf-8)
+    target_link_libraries(anomaly_nte_combat_engine PUBLIC
+        bcrypt shell32 ole32 nlohmann_json::nlohmann_json)
+
+    add_library(anomaly_nte_combat_protocol STATIC
+        ${ANOMALY_NTE_COMBAT_DIR}/src/overlay_protocol.cpp)
+    target_include_directories(anomaly_nte_combat_protocol PUBLIC
+        "${CMAKE_SOURCE_DIR}/${ANOMALY_NTE_COMBAT_DIR}/src")
+    target_compile_options(anomaly_nte_combat_protocol PRIVATE /W4 /permissive- /EHsc /utf-8)
+    target_link_libraries(anomaly_nte_combat_protocol PUBLIC
+        anomaly_nte_combat_engine nlohmann_json::nlohmann_json)
+
+    add_library(anomaly_nte_combat_model STATIC
+        ${ANOMALY_NTE_COMBAT_DIR}/src/app_settings.cpp
+        ${ANOMALY_NTE_COMBAT_DIR}/src/combat_export.cpp
+        ${ANOMALY_NTE_COMBAT_DIR}/src/history_reader.cpp
+        ${ANOMALY_NTE_COMBAT_DIR}/src/overlay_model.cpp
+        ${ANOMALY_NTE_COMBAT_DIR}/src/overlay_publish_policy.cpp
+        ${ANOMALY_NTE_COMBAT_DIR}/src/overlay_text_catalog.cpp)
+    target_include_directories(anomaly_nte_combat_model PUBLIC
+        "${CMAKE_SOURCE_DIR}/${ANOMALY_NTE_COMBAT_DIR}/src")
+    target_compile_options(anomaly_nte_combat_model PRIVATE /W4 /permissive- /EHsc /utf-8)
+    target_link_libraries(anomaly_nte_combat_model PUBLIC anomaly_nte_combat_protocol)
+
+    add_library(anomaly_nte_combat_uid STATIC
+        ${ANOMALY_NTE_COMBAT_DIR}/src/native_layout.cpp
+        ${ANOMALY_NTE_COMBAT_DIR}/src/uid_detector.cpp)
+    target_include_directories(anomaly_nte_combat_uid PUBLIC
+        "${CMAKE_SOURCE_DIR}/${ANOMALY_NTE_COMBAT_DIR}/src")
+    target_compile_definitions(anomaly_nte_combat_uid PRIVATE
+        UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_options(anomaly_nte_combat_uid PRIVATE /W4 /permissive- /EHsc /utf-8)
+    target_link_libraries(anomaly_nte_combat_uid PUBLIC
+        anomaly_nte_combat_engine Anomaly::sdk)
+
+    # Overlay 是独立 GUI 进程：Direct2D/DirectWrite/WIC 自绘，不受宿主 ImGui 能力限制。
+    # 文案目录来自 anomaly_nte_combat_model，Overlay 与离线夹具共用同一份实现。
+    add_executable(anomaly_nte_combat_overlay WIN32
+        ${ANOMALY_NTE_COMBAT_DIR}/src/overlay_app.cpp)
+    target_compile_definitions(anomaly_nte_combat_overlay PRIVATE
+        UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_options(anomaly_nte_combat_overlay PRIVATE /W4 /permissive- /EHsc /utf-8)
+    target_link_libraries(anomaly_nte_combat_overlay PRIVATE
+        anomaly_nte_combat_model d2d1 dwrite windowscodecs winhttp shell32 ole32 user32 gdi32)
+    set_target_properties(anomaly_nte_combat_overlay PROPERTIES
+        OUTPUT_NAME "NteCombatTracker"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteCombatTracker")
+
+    anomaly_add_plugin(anomaly_builtin_nte_combat_tracker
+        SOURCES ${ANOMALY_NTE_COMBAT_DIR}/src/plugin.cpp
+            ${CMAKE_SOURCE_DIR}/${ANOMALY_NTE_COMBAT_DIR}/src/character_attribute_source.cpp
+        MANIFEST ${ANOMALY_NTE_COMBAT_DIR}/manifest.json
+        PACKAGE_NAME NteCombatTracker
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteCombatTracker")
+    target_link_libraries(anomaly_builtin_nte_combat_tracker PRIVATE
+        anomaly_nte_combat_model anomaly_nte_combat_uid)
+    # anomaly_add_plugin 只镜像 locales/ 与 assets/，不处理额外可执行文件；Overlay 由这里
+    # 显式打进构建树包目录并随 GameRuntime 组件安装，插件的独立进程才有可启动的目标。
+    add_dependencies(anomaly_builtin_nte_combat_tracker anomaly_nte_combat_overlay)
+    add_custom_command(TARGET anomaly_builtin_nte_combat_tracker POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "$<TARGET_FILE:anomaly_nte_combat_overlay>"
+                "$<TARGET_FILE_DIR:anomaly_builtin_nte_combat_tracker>/NteCombatTracker.exe"
+        VERBATIM)
+    install(TARGETS anomaly_nte_combat_overlay
+        RUNTIME DESTINATION "Anomaly/plugins/NteCombatTracker" COMPONENT GameRuntime)
+
+    if(ANOMALY_BUILD_TEST_FIXTURES)
+        # 离线夹具：采集引擎/日志仓库 与 界面模型/协议/ABI 两组各自在没有游戏进程时验证。
+        set(ANOMALY_NTE_COMBAT_TEST_SOURCE_DIR
+            "${CMAKE_SOURCE_DIR}/${ANOMALY_NTE_COMBAT_DIR}")
+        # One fixture executable per dependency group; each test source defines its
+        # own entry point through NTE_TEST_GROUP and links the group's libraries.
+        function(anomaly_nte_combat_test_fixture target test_name source libraries)
+            add_executable(${target}
+                "${ANOMALY_NTE_COMBAT_TEST_SOURCE_DIR}/tests/${source}")
+            target_include_directories(${target} PRIVATE
+                "${ANOMALY_NTE_COMBAT_TEST_SOURCE_DIR}/src")
+            target_compile_options(${target} PRIVATE /W4 /permissive- /EHsc /utf-8)
+            target_compile_definitions(${target} PRIVATE
+                UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
+                NTE_TEST_SOURCE_DIR="${ANOMALY_NTE_COMBAT_TEST_SOURCE_DIR}")
+            target_link_libraries(${target} PRIVATE ${libraries})
+            add_test(NAME ${test_name} COMMAND ${target})
+        endfunction()
+
+        anomaly_nte_combat_test_fixture(anomaly_nte_combat_engine_fixture
+            nte_engine nte_engine_tests.cpp
+            "anomaly_nte_combat_engine;Anomaly::sdk;nlohmann_json::nlohmann_json")
+        anomaly_nte_combat_test_fixture(anomaly_nte_combat_surface_fixture
+            nte_surface nte_surface_tests.cpp
+            "anomaly_nte_combat_model;anomaly_nte_combat_uid;Anomaly::sdk;nlohmann_json::nlohmann_json;anomaly_plugin_profile;ue5mem_memory")
+    endif()
+
     anomaly_add_plugin(anomaly_builtin_nte_free_fly
         SOURCES plugins/NteFreeFly/plugin.cpp
         MANIFEST plugins/NteFreeFly/manifest.json
@@ -1887,7 +2007,8 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         anomaly_builtin_autoclaw anomaly_builtin_character_studio
         anomaly_builtin_deserted anomaly_builtin_jelly anomaly_builtin_night999
         anomaly_builtin_npc_summon anomaly_builtin_training_dummy
-        anomaly_builtin_summon_lab anomaly_builtin_memory_dump anomaly_builtin_nailong)
+        anomaly_builtin_summon_lab anomaly_builtin_memory_dump anomaly_builtin_nailong
+        anomaly_builtin_nte_combat_tracker)
 
     if(ANOMALY_BUILD_TEST_PLUGINS)
         list(APPEND ANOMALY_BUILTIN_PLUGIN_TARGETS
@@ -1909,6 +2030,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         target_compile_options(anomaly_builtin_clone_enter PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_scene_loader PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_damage_dashboard PRIVATE /utf-8)
+        target_compile_options(anomaly_builtin_nte_combat_tracker PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_nte_free_fly PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_skin_changer PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_autofish PRIVATE /utf-8)
@@ -1973,6 +2095,8 @@ anomaly_stage_platform_preview_plugin(anomaly_builtin_clone_enter CloneEnter)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_scene_loader SceneLoader)
 anomaly_stage_platform_preview_plugin(
     anomaly_builtin_damage_dashboard DamageDashboard)
+anomaly_stage_platform_preview_plugin(
+    anomaly_builtin_nte_combat_tracker NteCombatTracker)
 anomaly_stage_platform_preview_plugin(
     anomaly_builtin_nte_quick_ultimate QuickUltimate)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_nte_free_fly NteFreeFly)

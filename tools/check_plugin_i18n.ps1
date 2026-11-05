@@ -98,6 +98,21 @@ foreach ($name in $Plugin) {
         foreach ($array in [regex]::Matches($source, '(?s)constexpr\s+std::array<[^>]*>\s+\w*keys\s*\{(.*?)\};')) {
             foreach ($item in [regex]::Matches($array.Groups[1].Value, '"([^"]+)"')) { $used[$item.Groups[1].Value] = $file.Name }
         }
+        # Local helper wrappers such as ScopedLabel("key","fallback"),
+        # TextLocalized(ui,"key","fallback") and LocalizedStatus("key","fallback")
+        # take both literals directly; the localizer.* form above cannot see them.
+        foreach ($match in [regex]::Matches($source, '(?:ScopedLabel|TextLocalized|LocalizedStatus)\s*\(\s*(?:[^,"()]*,\s*)?"([^"]+)"\s*,\s*"((?:[^"\\]|\\.)*)"')) {
+            $used[$match.Groups[1].Value] = $file.Name
+            $english[$match.Groups[1].Value] = $match.Groups[2].Value
+        }
+        # Catalog-namespaced literals also appear in static tables and as keys
+        # handed to helpers through variables. File names that merely start with a
+        # catalog namespace (e.g. "settings.txt") are not user copy.
+        foreach ($match in [regex]::Matches($source, '"(?<key>(?:window|plugin|settings|developer|overlay)\.[a-z0-9._-]+)"')) {
+            $key = $match.Groups['key'].Value
+            if ($key -match '\.(txt|json|jsonl|ini|log|dll|exe|xml|csv|zip|png|bin)$') { continue }
+            if (-not $used.ContainsKey($key)) { $used[$key] = $file.Name }
+        }
     }
 
     $missing = @()

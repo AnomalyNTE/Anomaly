@@ -1,0 +1,13 @@
+#pragma once
+
+// 版本号唯一来源是插件 manifest 的 version 字段（anomaly_add_plugin 以它作为发布身份），
+// 所以这里不复制版本常量：仓库根 CMakeLists.txt 在 configure 阶段从 manifest.json 取版本
+// 生成这个头文件，插件 DLL 与 Overlay 共用同一份字符串。
+
+namespace nte::build {
+
+inline constexpr char kPluginVersion[] = "@ANOMALY_NTE_COMBAT_PLUGIN_VERSION@";
+inline constexpr wchar_t kOverlayUserAgent[] =
+    L"NteCombatTracker/@ANOMALY_NTE_COMBAT_PLUGIN_VERSION@";
+
+}  // namespace nte::build
