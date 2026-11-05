@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.0-alpha.3 - 2026-11-05
+
+### 修复与改进
+
+- 签名、GObjects/反射/DataTable 布局与虚表槽位迁移到
+  `profile/compatibility.profile.json`，由宿主 `anomaly.profile` 校验后加载；
+  代码只保留指令解码与语义校验，缺项或失配时相关功能确定性停用。
+- 补齐设置页与开发者页缺失的中文文案（锁定/折叠/置顶/离战隐藏、Overlay 开关、
+  导出结果等），窗口标题、开发者页签和 Overlay `DPS` 表头改走本地化目录。
+- UID 探测与角色属性的离线夹具改为由随包 Profile 派生布局，不再复制代码中的兼容数值。
+
 ## 0.4.0-alpha.1 - 2026-08-30
 
 首个公开 Alpha 版本。
