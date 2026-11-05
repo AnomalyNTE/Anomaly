@@ -34,6 +34,10 @@
       "minVersion": 1
     },
     {
+      "id": "anomaly.config",
+      "minVersion": 1
+    },
+    {
       "id": "anomaly.profile",
       "minVersion": 1
     },
@@ -96,6 +100,7 @@
     "interop-hook",
     "ue5-assets",
     "scheduler",
-    "storage"
+    "storage",
+    "configuration"
   ]
 }

@@ -14,12 +14,16 @@
 #include "battle_graph.hpp"
 #include "native_layout.hpp"
 #include "blueprint_names.hpp"
+#include "presets.hpp"
+#include "preset_file_picker.hpp"
+#include "profile_symbols.hpp"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <cstdio>
 #include <cstring>
 #include <cmath>
@@ -35,6 +39,7 @@
 #include <nlohmann/json.hpp>
 
 #include <windows.h>
+#include <shlobj.h>
 #include <string>
 #include <vector>
 
@@ -42,23 +47,25 @@ namespace {
 
 // ---------------------------------------------------------------- 常量
 
-constexpr std::size_t kMaxRecords = 256;
 constexpr std::size_t kManagementPageSize = 10;
+constexpr std::size_t kPresetPageSize = 10;
 // SummonAI accepts signed 32-bit levels; do not impose a gameplay cap.
-constexpr std::uint32_t kMaxLevel = static_cast<std::uint32_t>(
-    std::numeric_limits<std::int32_t>::max());
-// A full summon batch and a full management selection fit alongside single actions.
-constexpr std::size_t kMaxPending = 2 * kMaxRecords + 16;
+constexpr std::uint32_t kMaxLevel = summon_lab::kMaximumLevel;
 constexpr std::size_t kTextCapacity = 256;
 constexpr std::size_t kPathCapacity = 512;
 constexpr std::size_t kAttributeNameCapacity = 96;
 constexpr std::size_t kDisplayNameCapacity = 96;
 using summon_lab::kBirthAttributeNames;
 using summon_lab::kMaxHpAttribute;
+using summon_lab::BirthPreset;
+using summon_lab::SummonSettings;
+using summon_lab::SummonPreset;
+using summon_lab::SavedConfiguration;
 
 // Parsed once per DLL generation; callbacks only read this snapshot.
 summon_lab::NativeLayout g_layout;
 bool g_layout_ready{};
+summon_lab::ProfileScans g_profile_scans;
 using summon_lab::NativeIdentity;
 using summon_lab::MirrorEntry;
 using summon_lab::ConfigureSummon;
@@ -153,23 +160,6 @@ struct AttributeValue {
     float current{};
 };
 
-struct BirthPreset {
-    int enabled{};
-    double value{};
-};
-
-// Captured on submission; later UI edits only affect the next batch.
-struct SummonSettings {
-    std::string class_path;
-    std::string display_name;
-    std::string server_combat_blueprint;
-    std::uint32_t level{}, skill_level{};
-    bool hostile{}, pet{}, aggressive{}, ignore_player{}, compatibility{};
-    std::array<BirthPreset, kBirthAttributeNames.size()> presets{};
-    std::uint32_t count{1};
-    double spacing{5.0};
-};
-
 #ifdef _MSC_VER
 #pragma warning(push)
 #pragma warning(disable: 4324) // The captured native FTransform retains its 16-byte alignment.
@@ -181,7 +171,7 @@ struct SummonBatch {
     bool stopped{}, in_progress{};
     summon_lab::Transform origin;
     summon_lab::Vector rotation{};
-    std::uint32_t next_slot{};
+    std::uint64_t next_slot{};
     std::vector<summon_lab::Vector> occupied;
 };
 #ifdef _MSC_VER
@@ -201,6 +191,7 @@ struct Record {
     float hp{};
     float max_hp{};
     bool pet{};
+    bool mute_boss_music{}, mute_boss_dialogue{};
     SummonIdentity registration;
     std::string class_path;
     std::string server_combat_source;
@@ -238,6 +229,12 @@ struct NameTextConversion {
 };
 static_assert(sizeof(NameTextConversion) == 32);
 
+struct PresetTransfer {
+    bool importing{};
+    std::string path;
+    std::vector<SummonPreset> presets;
+};
+
 struct Context {
     const AnomalyHostApiV1* host{};
     anomaly::sdk::Localizer localizer;
@@ -256,6 +253,21 @@ struct Context {
     const AnomalyUe5AssetsServiceV1* assets{};
     const AnomalySchedulerServiceV1* scheduler{};
     const AnomalyStorageServiceV1* storage{};
+    const AnomalyConfigServiceV1* config{};
+    AnomalyGenerationHandleV1 config_schema{}, config_task{}, preset_transfer_task{};
+    bool config_writable{}, config_dirty{}, config_stopping{};
+    std::uint64_t config_revision{};
+    std::string config_error, preset_message;
+    std::vector<SummonPreset> saved_presets;
+    std::size_t selected_preset{summon_lab::kNoPreset};
+    std::array<char, summon_lab::kPresetNameCapacity> new_preset_name{}, preset_rename{};
+    std::array<char, 96> preset_filter{};
+    std::size_t preset_page{};
+    std::array<char, summon_lab::kPresetFileNameCapacity> preset_export_name{};
+    std::string preset_export_folder, preset_import_file;
+    summon_lab::PresetFilePicker preset_picker;
+    int presets_current_blueprint{1};
+    std::shared_ptr<PresetTransfer> preset_transfer;
     std::string catalog_base, catalog_name_table;
     std::set<std::string, std::less<>> catalog_exclusions;
     std::map<std::string, std::string, std::less<>> catalog_name_aliases;
@@ -268,6 +280,8 @@ struct Context {
     AnomalyGenerationHandleV1 catalog_task{};
     std::array<char, 160> catalog_scan_status{};
     std::array<NativeCombatHook, 5> local_combat_hooks{};
+    std::array<NativeCombatHook, 4> story_audio_hooks{};
+    std::atomic<bool> story_audio_ready{false};
     struct DamageReportLayout {
         std::uint32_t size{}, source{}, target{}, effect{}, damage{}, hp{};
     } damage_report;
@@ -287,12 +301,10 @@ struct Context {
     bool has_invoke{};
 
     std::mutex mutex;
-    std::array<Record, kMaxRecords> records{};
-    std::size_t record_count{};
+    std::vector<Record> records;
     std::uint64_t next_record_id{1};
 
-    std::array<PendingOp, kMaxPending> pending{};
-    std::size_t pending_count{};
+    std::deque<PendingOp> pending;
     std::shared_ptr<SummonBatch> summon_batch;
 
     bool session_world_ready{};
@@ -315,6 +327,8 @@ struct Context {
     int pet{};
     int aggressive{};
     int ignore_player{};
+    int mute_boss_music{};
+    int mute_boss_dialogue{};
     int ft_compatibility{};
     std::uint32_t summon_count{1};
     double summon_spacing{5.0};
@@ -342,6 +356,322 @@ struct Context {
 } g_context;
 
 std::atomic<std::uint32_t> g_pending_hint{0};
+
+// Configuration snapshots contain values only, never live actor handles.
+SummonSettings CaptureSettingsLocked() {
+    SummonSettings settings;
+    settings.class_path = g_context.class_path.data();
+    settings.display_name = g_context.display_name.data();
+    settings.level = g_context.level;
+    settings.skill_level = g_context.skill_level;
+    settings.hostile = g_context.hostile != 0;
+    settings.pet = g_context.pet != 0;
+    settings.aggressive = g_context.aggressive != 0;
+    settings.ignore_player = g_context.ignore_player != 0;
+    settings.mute_boss_music = g_context.mute_boss_music != 0;
+    settings.mute_boss_dialogue = g_context.mute_boss_dialogue != 0;
+    settings.compatibility = g_context.ft_compatibility != 0;
+    settings.presets = g_context.birth_presets;
+    settings.count = g_context.summon_count;
+    settings.spacing = g_context.summon_spacing;
+    return settings;
+}
+
+void ApplySettingsLocked(const SummonSettings& settings) {
+    std::snprintf(g_context.class_path.data(), g_context.class_path.size(), "%s", settings.class_path.c_str());
+    std::snprintf(g_context.display_name.data(), g_context.display_name.size(), "%s", settings.display_name.c_str());
+    g_context.level = settings.level;
+    g_context.skill_level = settings.skill_level;
+    g_context.hostile = settings.hostile;
+    g_context.pet = settings.pet;
+    g_context.aggressive = settings.aggressive;
+    g_context.ignore_player = settings.ignore_player;
+    g_context.mute_boss_music = settings.mute_boss_music;
+    g_context.mute_boss_dialogue = settings.mute_boss_dialogue;
+    g_context.ft_compatibility = settings.compatibility;
+    g_context.birth_presets = settings.presets;
+    g_context.summon_count = settings.count;
+    g_context.summon_spacing = settings.spacing;
+    g_context.blueprint_config = {};
+    g_context.blueprint_check_delay = 0;
+}
+
+SavedConfiguration CaptureConfigurationLocked() {
+    SavedConfiguration saved;
+    saved.current = CaptureSettingsLocked();
+    saved.presets = g_context.saved_presets;
+    saved.catalog_filter = g_context.catalog_filter;
+    saved.attribute_filter = g_context.attribute_filter.data();
+    saved.only_overrides = g_context.only_overrides != 0;
+    saved.only_current_blueprint = g_context.presets_current_blueprint != 0;
+    saved.export_name = g_context.preset_export_name.data();
+    saved.export_folder = g_context.preset_export_folder;
+    saved.import_file = g_context.preset_import_file;
+    return saved;
+}
+
+AnomalyByteSpanV1 ConfigurationBytes(std::string_view text) {
+    return {reinterpret_cast<const std::uint8_t*>(text.data()), text.size()};
+}
+
+void ANOMALY_CALL SaveConfigurationWorker(void*, AnomalyGenerationHandleV1);
+
+void ScheduleConfigurationSaveLocked() {
+    if (!g_context.config_writable || g_context.config_stopping || g_context.config_task.id != 0 ||
+        g_context.scheduler == nullptr) return;
+    const auto status = g_context.scheduler->schedule(g_context.scheduler->user, 500,
+        SaveConfigurationWorker, nullptr, &g_context.config_task);
+    if (status.code != ANOMALY_STATUS_V1_OK)
+        g_context.config_error = g_context.localizer.Text("presets.save_failed", "Configuration could not be saved");
+}
+
+void ConfigurationChangedLocked() {
+    g_context.config_dirty = true;
+    ++g_context.config_revision;
+    ScheduleConfigurationSaveLocked();
+}
+
+bool SaveConfiguration() noexcept {
+    try {
+        SavedConfiguration saved;
+        std::uint64_t revision{};
+        {
+            std::scoped_lock lock(g_context.mutex);
+            if (!g_context.config_dirty || !g_context.config_writable) return true;
+            saved = CaptureConfigurationLocked();
+            revision = g_context.config_revision;
+        }
+        // Serialization, schema validation and disk I/O run on Worker/Lifecycle.
+        const auto text = summon_lab::ConfigurationJson(saved);
+        const auto status = g_context.config->write_atomic(g_context.config->user,
+            anomaly::sdk::StringView(summon_lab::kSettingsSchemaId), summon_lab::kSettingsSchemaVersion,
+            ConfigurationBytes(text));
+        std::scoped_lock lock(g_context.mutex);
+        if (status.code != ANOMALY_STATUS_V1_OK) {
+            g_context.config_error = g_context.localizer.Text("presets.save_failed", "Configuration could not be saved");
+            return false;
+        }
+        if (revision == g_context.config_revision) g_context.config_dirty = false;
+        g_context.config_error.clear();
+        return true;
+    } catch (...) {
+        std::scoped_lock lock(g_context.mutex);
+        g_context.config_error = g_context.localizer.Text("presets.save_failed", "Configuration could not be saved");
+        return false;
+    }
+}
+
+void ANOMALY_CALL SaveConfigurationWorker(void*, AnomalyGenerationHandleV1) {
+    try {
+        const bool saved = SaveConfiguration();
+        std::scoped_lock lock(g_context.mutex);
+        g_context.config_task = {};
+        if (saved && g_context.config_dirty) ScheduleConfigurationSaveLocked();
+    } catch (...) {}
+}
+
+bool LoadConfiguration() noexcept {
+    try {
+        std::uint32_t version{};
+        std::size_t size{};
+        const auto id = anomaly::sdk::StringView(summon_lab::kSettingsSchemaId);
+        const auto status = g_context.config->read(g_context.config->user, id, &version, {}, &size);
+        if (status.code == ANOMALY_STATUS_V1_NOT_FOUND) {
+            std::scoped_lock lock(g_context.mutex);
+            g_context.config_writable = true;
+            g_context.config_error.clear();
+            return true;
+        }
+        if (status.code != ANOMALY_STATUS_V1_OK || version != summon_lab::kSettingsSchemaVersion ||
+            size == 0 || size > summon_lab::kMaximumSettingsBytes) return false;
+        std::string text(size, '\0');
+        if (g_context.config->read(g_context.config->user, id, &version,
+                {reinterpret_cast<std::uint8_t*>(text.data()), text.size()}, &size).code != ANOMALY_STATUS_V1_OK ||
+            version != summon_lab::kSettingsSchemaVersion || size > text.size()) return false;
+        text.resize(size);
+        SavedConfiguration saved;
+        if (!summon_lab::ParseConfiguration(text, saved)) return false;
+        std::scoped_lock lock(g_context.mutex);
+        ApplySettingsLocked(saved.current);
+        g_context.saved_presets = std::move(saved.presets);
+        std::snprintf(g_context.catalog_filter, sizeof(g_context.catalog_filter), "%s", saved.catalog_filter.c_str());
+        std::snprintf(g_context.attribute_filter.data(), g_context.attribute_filter.size(), "%s", saved.attribute_filter.c_str());
+        std::snprintf(g_context.preset_export_name.data(), g_context.preset_export_name.size(), "%s", saved.export_name.c_str());
+        g_context.preset_export_folder = std::move(saved.export_folder);
+        g_context.preset_import_file = std::move(saved.import_file);
+        g_context.only_overrides = saved.only_overrides;
+        g_context.presets_current_blueprint = saved.only_current_blueprint;
+        g_context.config_writable = true;
+        g_context.config_dirty = false;
+        g_context.config_error.clear();
+        return true;
+    } catch (...) { return false; }
+}
+
+void InitializeConfiguration(const anomaly::sdk::Host& host) {
+    PWSTR documents{};
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &documents))) {
+        g_context.preset_export_folder = summon_lab::PathUtf8(std::filesystem::path(documents));
+        CoTaskMemFree(documents);
+    }
+    g_context.config = host.Query<AnomalyConfigServiceV1>(ANOMALY_CONFIG_SERVICE_V1_ID).get();
+    const auto config = g_context.config;
+    if (config != nullptr && config->struct_size >= offsetof(AnomalyConfigServiceV1, write_atomic) +
+            sizeof(config->write_atomic) && config->register_schema && config->read && config->write_atomic) {
+        const auto schema = summon_lab::ConfigurationSchema();
+        const auto status = config->register_schema(config->user, anomaly::sdk::StringView(summon_lab::kSettingsSchemaId),
+            summon_lab::kSettingsSchemaVersion, ConfigurationBytes(schema), &g_context.config_schema);
+        if (status.code == ANOMALY_STATUS_V1_OK && g_context.config_schema.id != 0 && LoadConfiguration()) return;
+    }
+    // Never replace an unreadable library with the default empty one.
+    g_context.config_error = g_context.localizer.Text("presets.load_failed", "Configuration could not be read; automatic saving is disabled");
+}
+
+std::filesystem::path PresetFilePath(std::string_view text) {
+    const std::filesystem::path path(std::u8string(text.begin(), text.end()));
+    if (!path.is_absolute() || _wcsicmp(path.extension().c_str(), L".json") != 0)
+        throw std::invalid_argument("absolute JSON path required");
+    return path;
+}
+
+std::filesystem::path PresetExportPath(std::string_view folder, std::string_view filename) {
+    std::filesystem::path name(std::u8string(filename.begin(), filename.end()));
+    if (name.empty() || name.has_parent_path() || !name.has_filename())
+        throw std::invalid_argument("file name required");
+    if (!name.has_extension()) name += L".json";
+    return PresetFilePath(summon_lab::PathUtf8(
+        std::filesystem::path(std::u8string(folder.begin(), folder.end())) / name));
+}
+
+void ConsumePresetPickerLocked() {
+    auto result = g_context.preset_picker.TakeResult();
+    if (!result || result->status == HRESULT_FROM_WIN32(ERROR_CANCELLED)) return;
+    if (FAILED(result->status)) {
+        g_context.preset_message = g_context.localizer.Text("presets.picker_failed", "File picker could not be opened");
+        return;
+    }
+    if (result->kind == summon_lab::PresetFilePicker::Kind::Folder)
+        g_context.preset_export_folder = std::move(result->path);
+    else
+        g_context.preset_import_file = std::move(result->path);
+    g_context.preset_message.clear();
+    ConfigurationChangedLocked();
+}
+
+void OpenPresetPickerLocked(summon_lab::PresetFilePicker::Kind kind) {
+    std::string initial = g_context.preset_export_folder;
+    if (kind == summon_lab::PresetFilePicker::Kind::ImportFile) {
+        initial = g_context.preset_import_file;
+        if (initial.empty()) {
+            const auto folder = std::filesystem::path(std::u8string(
+                g_context.preset_export_folder.begin(), g_context.preset_export_folder.end()));
+            initial = summon_lab::PathUtf8(folder / summon_lab::kDefaultPresetFileName);
+        }
+    }
+    const auto title = kind == summon_lab::PresetFilePicker::Kind::Folder
+        ? g_context.localizer.Text("presets.choose_folder", "Choose folder")
+        : g_context.localizer.Text("presets.choose_file", "Choose file");
+    if (!g_context.preset_picker.Start(kind, std::move(initial), title))
+        g_context.preset_message = g_context.localizer.Text("presets.picker_failed", "File picker could not be opened");
+}
+
+void WritePresetFile(const std::filesystem::path& path, std::string_view text) {
+    auto temporary = path;
+    temporary += L".tmp-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64());
+    const HANDLE file = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) throw std::runtime_error("create export");
+    DWORD written{};
+    const bool complete = WriteFile(file, text.data(), static_cast<DWORD>(text.size()), &written, nullptr) != 0 &&
+        written == text.size() && FlushFileBuffers(file) != 0;
+    CloseHandle(file);
+    if (!complete || !MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        DeleteFileW(temporary.c_str());
+        throw std::runtime_error("write export");
+    }
+}
+
+std::string BirthPresetError(const std::array<BirthPreset, kBirthAttributeNames.size()>& presets);
+
+void ANOMALY_CALL TransferPresetsWorker(void*, AnomalyGenerationHandleV1) {
+    std::shared_ptr<PresetTransfer> transfer;
+    {
+        std::scoped_lock lock(g_context.mutex);
+        transfer = g_context.preset_transfer;
+    }
+    try {
+        const auto path = PresetFilePath(transfer->path);
+        if (transfer->importing) {
+            const auto size = std::filesystem::file_size(path);
+            if (size == 0 || size > summon_lab::kMaximumSettingsBytes) throw std::runtime_error("import size");
+            std::ifstream file(path, std::ios::binary);
+            std::string text(static_cast<std::size_t>(size), '\0');
+            if (!file.read(text.data(), static_cast<std::streamsize>(text.size()))) throw std::runtime_error("read import");
+            std::vector<SummonPreset> imported;
+            if (!summon_lab::ImportPresets(text, imported)) throw std::runtime_error("import format");
+            for (const auto& preset : imported)
+                if (!BirthPresetError(preset.settings.presets).empty()) throw std::runtime_error("import attributes");
+            SavedConfiguration proposed;
+            {
+                std::scoped_lock lock(g_context.mutex);
+                proposed = CaptureConfigurationLocked();
+            }
+            // Library edits are disabled while a transfer is pending. Append only;
+            // current controls and existing presets are never replaced by import.
+            proposed.presets.insert(proposed.presets.end(), imported.begin(), imported.end());
+            static_cast<void>(summon_lab::ConfigurationJson(proposed));
+            const auto count = std::to_string(imported.size());
+            const std::array<std::string_view, 1> args{count};
+            std::scoped_lock lock(g_context.mutex);
+            g_context.saved_presets = std::move(proposed.presets);
+            g_context.presets_current_blueprint = 0;
+            g_context.preset_filter = {};
+            g_context.preset_page = 0;
+            g_context.selected_preset = summon_lab::kNoPreset;
+            g_context.preset_message = g_context.localizer.Format("presets.imported", "Imported {0} presets", args);
+            ConfigurationChangedLocked();
+        } else {
+            WritePresetFile(path, summon_lab::ExportPresets(transfer->presets));
+            std::scoped_lock lock(g_context.mutex);
+            g_context.preset_message = g_context.localizer.Text("presets.exported", "Presets exported");
+        }
+    } catch (...) {
+        std::scoped_lock lock(g_context.mutex);
+        g_context.preset_message = g_context.localizer.Text("presets.transfer_failed", "Transfer failed; check the JSON file and path");
+    }
+    std::scoped_lock lock(g_context.mutex);
+    g_context.preset_transfer.reset();
+    g_context.preset_transfer_task = {};
+}
+
+void QueuePresetTransferLocked(bool importing, bool all) {
+    if (g_context.preset_transfer || !g_context.scheduler) return;
+    auto transfer = std::make_shared<PresetTransfer>();
+    transfer->importing = importing;
+    if (importing) transfer->path = g_context.preset_import_file;
+    else {
+        try {
+            transfer->path = summon_lab::PathUtf8(PresetExportPath(
+                g_context.preset_export_folder, g_context.preset_export_name.data()));
+        } catch (...) {
+            g_context.preset_message = g_context.localizer.Text("presets.invalid_filename", "Enter a JSON file name without a path");
+            return;
+        }
+    }
+    if (!importing) {
+        if (all) transfer->presets = g_context.saved_presets;
+        else if (g_context.selected_preset < g_context.saved_presets.size())
+            transfer->presets.push_back(g_context.saved_presets[g_context.selected_preset]);
+        if (transfer->presets.empty()) return;
+    }
+    g_context.preset_transfer = std::move(transfer);
+    g_context.preset_message = g_context.localizer.Text("presets.transferring", "Transferring presets");
+    const auto status = g_context.scheduler->schedule(g_context.scheduler->user, 0,
+        TransferPresetsWorker, nullptr, &g_context.preset_transfer_task);
+    if (status.code != ANOMALY_STATUS_V1_OK) {
+        g_context.preset_transfer.reset();
+        g_context.preset_message = g_context.localizer.Text("presets.transfer_failed", "Transfer failed; check the JSON file and path");
+    }
+}
 
 // ---------------------------------------------------------------- 安全读 / 日志
 
@@ -1091,6 +1421,8 @@ struct BirthInitialization {
     std::int32_t registration_index{-1};
     std::uintptr_t registration_cdo{};
     bool registration_substituted{};
+    bool mute_boss_music{}, mute_boss_dialogue{};
+    std::uintptr_t story_audio_actor{};
 };
 
 using AttributeBaseInputFn = void (ANOMALY_CALL*)(void*, const void*, float);
@@ -1152,7 +1484,6 @@ void ClearSummonedState() {
     g_context.health_event_lookup_pending = g_context.health_observer.id != 0;
     std::scoped_lock lock(g_context.mutex);
     g_context.records = {};
-    g_context.record_count = 0;
     g_context.selected_record_id = 0;
     g_context.management_page = 0;
     g_context.management_blueprint.clear();
@@ -1160,7 +1491,6 @@ void ClearSummonedState() {
     g_context.aggro_edit_members.clear();
     g_context.aggro_edit = {};
     g_context.pending = {};
-    g_context.pending_count = 0;
     g_context.summon_batch.reset();
     g_context.blueprint_config = {};
     g_context.blueprint_check_delay = 0;
@@ -1654,16 +1984,13 @@ bool ValidateSummonProfile(const anomaly::sdk::Profile& profile, summon_lab::Nat
 }
 
 bool InstallBirthAttributeHook(const anomaly::sdk::Host& query, const anomaly::sdk::Profile& profile) {
-    const auto signature = query.Query<AnomalySignatureServiceV1>(
-        ANOMALY_SIGNATURE_SERVICE_V1_ID, ANOMALY_SIGNATURE_SERVICE_V1_VERSION);
     g_context.hooks = query.Query<AnomalyHookServiceV1>(
         ANOMALY_HOOK_SERVICE_V1_ID, ANOMALY_HOOK_SERVICE_V1_VERSION).get();
-    if (!signature || signature->resolve == nullptr || g_context.hooks == nullptr ||
+    if (g_context.hooks == nullptr ||
         g_context.hooks->create == nullptr || g_context.hooks->release == nullptr ||
         g_context.hooks->begin_callback == nullptr || g_context.hooks->end_callback == nullptr)
         return false;
-    const auto resolved = anomaly::sdk::ResolveProfileSymbol(
-        signature.get(), g_context.core, profile, "attribute-base-input");
+    const auto resolved = g_profile_scans.Resolve(g_context.core, profile, "attribute-base-input");
     if (!resolved) return false;
     AnomalyHookRequestV1 request{sizeof(request)};
     request.kind = ANOMALY_HOOK_V1_FUNCTION;
@@ -1878,12 +2205,9 @@ std::uintptr_t ANOMALY_CALL ObserveNativeDamageReport(std::uintptr_t controller,
     return report;
 }
 
-bool InstallDamageReportObserver(const anomaly::sdk::Host& host, const anomaly::sdk::Profile& profile) {
+bool InstallDamageReportObserver(const anomaly::sdk::Profile& profile) {
     try {
-        const auto signature = host.Query<AnomalySignatureServiceV1>(
-            ANOMALY_SIGNATURE_SERVICE_V1_ID, ANOMALY_SIGNATURE_SERVICE_V1_VERSION);
-        const auto resolved = anomaly::sdk::ResolveProfileSymbol(
-            signature.get(), g_context.core, profile, "native-damage-report");
+        const auto resolved = g_profile_scans.Resolve(g_context.core, profile, "native-damage-report");
         if (!resolved) return false;
         const auto& values = resolved.candidate->values;
         Context::DamageReportLayout layout{values.at("recordSize"), values.at("sourceIdentity"),
@@ -1907,19 +2231,15 @@ bool InstallDamageReportObserver(const anomaly::sdk::Host& host, const anomaly::
     } catch (const std::out_of_range&) { return false; }
 }
 
-bool InstallLocalCombatHooks(const anomaly::sdk::Host& query, const anomaly::sdk::Profile& profile) {
-    const auto signature = query.Query<AnomalySignatureServiceV1>(
-        ANOMALY_SIGNATURE_SERVICE_V1_ID, ANOMALY_SIGNATURE_SERVICE_V1_VERSION);
-    if (!signature || signature->resolve == nullptr || g_context.hooks == nullptr ||
+bool InstallLocalCombatHooks(const anomaly::sdk::Profile& profile) {
+    if (g_context.hooks == nullptr ||
         g_context.hooks->create == nullptr || g_context.hooks->release == nullptr ||
         g_context.hooks->begin_callback == nullptr || g_context.hooks->end_callback == nullptr)
         return false;
     constexpr std::array<std::string_view, 2> names{
         "summon-registration", "local-attribute-mirror"};
-    const auto registration = anomaly::sdk::ResolveProfileSymbol(
-        signature.get(), g_context.core, profile, names[0]);
-    const auto mirror = anomaly::sdk::ResolveProfileSymbol(
-        signature.get(), g_context.core, profile, names[1]);
+    const auto registration = g_profile_scans.Resolve(g_context.core, profile, names[0]);
+    const auto mirror = g_profile_scans.Resolve(g_context.core, profile, names[1]);
     if (!registration || !mirror) return false;
     const std::array<std::uintptr_t, 2> targets{registration.address, mirror.address};
     g_context.mirror_record_size = mirror.candidate->values.at("recordSize");
@@ -1960,9 +2280,136 @@ public:
     }
 };
 
+// These native leaves are called directly by Blueprint VM instructions, which
+// do not pass through UObject::ProcessEvent. Filter the source instance here;
+// shared scripts, CDOs, FText arrays and global audio state remain engine-owned.
+enum class StoryAudioKind { Music, Dialogue };
+
+bool SuppressStoryAudio(std::uintptr_t source, StoryAudioKind kind) {
+    if (source == 0) return false;
+    if (g_birth_thread.load(std::memory_order_acquire) == GetCurrentThreadId()) {
+        auto* birth = g_birth_initialization;
+        const bool mute_birth = birth != nullptr && (kind == StoryAudioKind::Music
+            ? birth->mute_boss_music : birth->mute_boss_dialogue);
+        if (mute_birth && source == birth->story_audio_actor)
+            return true;
+        if (mute_birth && birth->story_audio_actor == 0) {
+            std::uintptr_t actor_class{};
+            std::uint32_t flags{};
+            if (ReadValue(source + g_layout.objectClass, &actor_class) &&
+                actor_class == birth->actor_class &&
+                ReadValue(source + g_layout.objectFlags, &flags) && (flags & 0x30U) == 0) {
+                birth->story_audio_actor = source;
+                return true;
+            }
+        }
+    }
+    AnomalyGenerationHandleV1 expected{};
+    {
+        std::scoped_lock lock(g_context.mutex);
+        for (std::size_t i = 0; i < g_context.records.size(); ++i) {
+            const auto& record = g_context.records[i];
+            const bool mute = kind == StoryAudioKind::Music
+                ? record.mute_boss_music : record.mute_boss_dialogue;
+            if (record.pointer == source && mute) {
+                expected = record.handle;
+                break;
+            }
+        }
+    }
+    // A destroyed actor's memory/index can be reused before the next refresh.
+    AnomalyGenerationHandleV1 actual{};
+    return expected.id != 0 && HandleFromPointer(source, &actual) &&
+        actual.id == expected.id && actual.generation == expected.generation;
+}
+
+class StoryAudioLease {
+public:
+    explicit StoryAudioLease(std::size_t index) : hooks_(g_context.hooks) {
+        if (hooks_ != nullptr && g_context.story_audio_hooks[index].handle.id != 0)
+            active_ = hooks_->begin_callback(hooks_->user,
+                g_context.story_audio_hooks[index].handle, &lease_).code == ANOMALY_STATUS_V1_OK;
+    }
+    ~StoryAudioLease() noexcept {
+        if (active_) {
+            try { static_cast<void>(hooks_->end_callback(hooks_->user, lease_)); }
+            catch (...) {}
+        }
+    }
+    explicit operator bool() const noexcept { return active_; }
+private:
+    const AnomalyHookServiceV1* hooks_{};
+    AnomalyGenerationHandleV1 lease_{};
+    bool active_{};
+};
+
+// Fixed native call ABIs: SpawnBossMusicVolume(), ShowMulVoiceMsg(context,
+// type, const TArray<FText>&), ShowDebugMulVoiceMsg(context, const TArray<...>&),
+// ShowVoiceMsg(context, type, const FText&). No ownership crosses these calls.
+template <std::size_t Index, typename... Args>
+void ANOMALY_CALL StoryAudioDetour(std::uintptr_t source, Args... args) noexcept {
+    using Function = void (ANOMALY_CALL*)(std::uintptr_t, Args...);
+    const auto original = reinterpret_cast<Function>(g_context.story_audio_hooks[Index].original);
+    try {
+        StoryAudioLease lease(Index);
+        bool suppress{};
+        try { suppress = lease && SuppressStoryAudio(source,
+            Index == 0 ? StoryAudioKind::Music : StoryAudioKind::Dialogue); }
+        catch (...) {}
+        if (!suppress && original != nullptr) original(source, args...);
+    } catch (...) {}
+}
+
+AnomalyStatusV1 ReleaseStoryAudioHooks() {
+    g_context.story_audio_ready.store(false, std::memory_order_release);
+    for (std::size_t i = g_context.story_audio_hooks.size(); i != 0; --i) {
+        auto& hook = g_context.story_audio_hooks[i - 1];
+        if (g_context.hooks != nullptr && hook.handle.id != 0) {
+            const auto status = g_context.hooks->release(g_context.hooks->user, hook.handle);
+            if (status.code != ANOMALY_STATUS_V1_OK && status.code != ANOMALY_STATUS_V1_NOT_FOUND)
+                return status;
+        }
+        hook = {};
+    }
+    return anomaly::sdk::Ok();
+}
+
+bool InstallStoryAudioHooks(const anomaly::sdk::Profile& profile) {
+    if (g_context.hooks == nullptr) return false;
+    constexpr std::array<const char*, 4> names{
+        "story-boss-music", "story-multiple-voices", "story-debug-voices", "story-single-voice"};
+    const std::array<void*, 4> detours{
+        reinterpret_cast<void*>(&StoryAudioDetour<0>),
+        reinterpret_cast<void*>(&StoryAudioDetour<1, std::uint8_t, const void*>),
+        reinterpret_cast<void*>(&StoryAudioDetour<2, const void*>),
+        reinterpret_cast<void*>(&StoryAudioDetour<3, std::uint8_t, const void*>)};
+    std::array<std::uintptr_t, names.size()> targets{};
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        const auto resolved = g_profile_scans.Resolve(g_context.core, profile, names[i]);
+        if (!resolved) return false;
+        targets[i] = resolved.address;
+    }
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        AnomalyHookRequestV1 request{sizeof(request)};
+        request.kind = ANOMALY_HOOK_V1_FUNCTION;
+        request.target = targets[i];
+        request.detour = detours[i];
+        request.label = anomaly::sdk::StringView(names[i]);
+        auto& hook = g_context.story_audio_hooks[i];
+        if (g_context.hooks->create(g_context.hooks->user, &request,
+                &hook.original, &hook.handle).code != ANOMALY_STATUS_V1_OK ||
+            hook.handle.id == 0 || hook.original == 0) {
+            static_cast<void>(ReleaseStoryAudioHooks());
+            return false;
+        }
+    }
+    g_context.story_audio_ready.store(true, std::memory_order_release);
+    return true;
+}
+
 bool DismissSummoned(AnomalyGenerationHandleV1 handle, std::uintptr_t pointer,
                      float previous_max_hp = 0.0F);
-void RefreshHealth();
+void RefreshHealth(bool refresh_attributes = true);
 
 // ---------------------------------------------------------------- 召唤
 
@@ -2062,21 +2509,13 @@ bool MakeConfigName(std::string_view config_name, std::uint64_t* result) {
     return true;
 }
 
-std::uintptr_t ResolveMonsterLevelQuery(
-    const anomaly::sdk::Host& query, const anomaly::sdk::Profile& profile) {
-    const auto signature = query.Query<AnomalySignatureServiceV1>(
-        ANOMALY_SIGNATURE_SERVICE_V1_ID, ANOMALY_SIGNATURE_SERVICE_V1_VERSION);
+std::uintptr_t ResolveMonsterLevelQuery(const anomaly::sdk::Profile& profile) {
     // Read-only query taking HTPlayerState*, UWorld* and an eight-byte FName.
-    return anomaly::sdk::ResolveProfileSymbol(
-        signature.get(), g_context.core, profile, "monster-default-level").address;
+    return g_profile_scans.Resolve(g_context.core, profile, "monster-default-level").address;
 }
 
-std::uint32_t ResolveDuelChaseRange(const anomaly::sdk::Host& query,
-                                    const anomaly::sdk::Profile& profile) {
-    const auto signature = query.Query<AnomalySignatureServiceV1>(
-        ANOMALY_SIGNATURE_SERVICE_V1_ID, ANOMALY_SIGNATURE_SERVICE_V1_VERSION);
-    const auto resolved = anomaly::sdk::ResolveProfileSymbol(
-        signature.get(), g_context.core, profile, "duel-current-chase-range");
+std::uint32_t ResolveDuelChaseRange(const anomaly::sdk::Profile& profile) {
+    const auto resolved = g_profile_scans.Resolve(g_context.core, profile, "duel-current-chase-range");
     if (!resolved) return 0;
     try {
         const auto offset = resolved.candidate->values.at("currentChaseRange");
@@ -2271,10 +2710,8 @@ CombatConfigSource PrepareFinalTowerConfig(std::string_view config_name) {
     return source;
 }
 
-bool InstallFinalTowerHooks(const anomaly::sdk::Host& host, const anomaly::sdk::Profile& profile) {
-    const auto signature = host.Query<AnomalySignatureServiceV1>(
-        ANOMALY_SIGNATURE_SERVICE_V1_ID, ANOMALY_SIGNATURE_SERVICE_V1_VERSION);
-    if (!signature || g_context.hooks == nullptr) return false;
+bool InstallFinalTowerHooks(const anomaly::sdk::Profile& profile) {
+    if (g_context.hooks == nullptr) return false;
     try {
         const auto& layout = profile.layout;
         const auto count_offset = layout.at("objectArrayCount");
@@ -2296,7 +2733,7 @@ bool InstallFinalTowerHooks(const anomaly::sdk::Host& host, const anomaly::sdk::
         std::array<std::uintptr_t, 5> addresses{};
         std::uint32_t displacement_offset{}, instruction_size{};
         for (std::size_t i = 0; i < names.size(); ++i) {
-            const auto resolved = anomaly::sdk::ResolveProfileSymbol(signature.get(), g_context.core, profile, names[i]);
+            const auto resolved = g_profile_scans.Resolve(g_context.core, profile, names[i]);
             if (!resolved) return false;
             addresses[i] = resolved.address;
             if (i == 4) {
@@ -2479,19 +2916,20 @@ std::uintptr_t LoadServerCombatCdo(AnomalyGenerationHandleV1 library, const std:
     return cdo;
 }
 
-summon_lab::Vector BatchSpawnOffset(const SummonSettings& settings, std::uint32_t index) {
+summon_lab::Vector BatchSpawnOffset(const SummonSettings& settings, std::uint64_t index) {
     if (settings.count == 1) return {};
     // Expand a square grid around the first cell. A wall in front must not
     // send every later attempt farther into that same wall.
-    const auto ring = static_cast<std::int32_t>(std::ceil((std::sqrt(index + 1.0) - 1.0) * 0.5));
+    const auto ring = static_cast<std::int64_t>(std::ceil((std::sqrt(static_cast<double>(index) + 1.0) - 1.0) * 0.5));
     const auto side = 2 * ring;
-    auto remaining = (side + 1) * (side + 1) - 1 - static_cast<std::int32_t>(index);
-    std::int32_t x = ring, y = -ring;
+    auto remaining = (side + 1) * (side + 1) - 1 - static_cast<std::int64_t>(index);
+    std::int64_t x = ring, y = -ring;
     if (remaining < side) x -= remaining;
     else if ((remaining -= side) < side) { x = -ring; y += remaining; }
     else if ((remaining -= side) < side) { x = -ring + remaining; y = ring; }
     else { remaining -= side; y = ring - remaining; }
-    return {(1.0 + x) * settings.spacing * 100.0, y * settings.spacing * 100.0, 0.0};
+    return {(1.0 + static_cast<double>(x)) * settings.spacing * 100.0,
+        static_cast<double>(y) * settings.spacing * 100.0, 0.0};
 }
 
 bool CaptureBatchOrigin(AnomalyGenerationHandleV1 pawn, SummonBatch& batch) {
@@ -2506,7 +2944,7 @@ bool CaptureBatchOrigin(AnomalyGenerationHandleV1 pawn, SummonBatch& batch) {
     std::vector<AnomalyGenerationHandleV1> handles;
     {
         std::scoped_lock lock(g_context.mutex);
-        for (std::size_t i = 0; i < g_context.record_count; ++i)
+        for (std::size_t i = 0; i < g_context.records.size(); ++i)
             handles.push_back(g_context.records[i].handle);
     }
     for (const auto handle : handles) {
@@ -2573,14 +3011,13 @@ bool FinishBatchPlacement(AnomalyGenerationHandleV1 actor, SummonBatch& batch,
 SummonResult SummonOne(SummonBatch& batch) {
     SummonResult result;
     const auto& settings = batch.settings;
-    {
-        std::scoped_lock lock(g_context.mutex);
-        if (g_context.record_count >= kMaxRecords) {
-            std::snprintf(result.detail, sizeof(result.detail), "summon: record limit reached");
-            return result;
-        }
+    if ((settings.mute_boss_music || settings.mute_boss_dialogue) &&
+        !g_context.story_audio_ready.load(std::memory_order_acquire)) {
+        const auto message = g_context.localizer.Text("summon.story_audio_unavailable",
+            "Boss music and dialogue control unavailable");
+        std::snprintf(result.detail, sizeof(result.detail), "%s", message.c_str());
+        return result;
     }
-
     AnomalyGenerationHandleV1 pawn{};
     if (!FindLocalPawn(&pawn)) {
         std::snprintf(result.detail, sizeof(result.detail), "summon: no local pawn");
@@ -2655,6 +3092,8 @@ SummonResult SummonOne(SummonBatch& batch) {
     }
 
     BirthInitialization birth;
+    birth.mute_boss_music = settings.mute_boss_music;
+    birth.mute_boss_dialogue = settings.mute_boss_dialogue;
     const auto preset_error = BirthPresetError(presets);
     if (!preset_error.empty()) {
         std::snprintf(result.detail, sizeof(result.detail), "%s", preset_error.c_str());
@@ -2851,7 +3290,9 @@ SummonResult SummonOne(SummonBatch& batch) {
             float hp{}, max_hp{};
             birth_ok = birth_ok && ReadMatchingHealth(ai_handle, birth.exact_hp, &hp, &max_hp);
         }
-    } else if (result.attribute_set != 0) {
+    } else if (result.attribute_set != 0 && batch.completed == 0) {
+        // The first member is selected automatically. Other members get their
+        // full attribute list when selected; birth overrides are always verified above.
         static_cast<void>(ReadAttributeValues(result.attribute_set, &result.attributes));
     }
     if (!birth_ok) {
@@ -3247,7 +3688,7 @@ void ChangeBattle(const PendingOp& op, bool forgetting = false) {
     {
         std::scoped_lock lock(g_context.mutex);
         previous = g_context.battles;
-        for (std::size_t i = 0; i < g_context.record_count; ++i) {
+        for (std::size_t i = 0; i < g_context.records.size(); ++i) {
             const auto& record = g_context.records[i];
             DuelActor actor{record.id, record.handle, record.pointer, {}, record.pet, record.registration};
             actor.battle_tuned = record.battle_tuned;
@@ -3457,7 +3898,7 @@ void ExcludeNewSummon(const SummonResult& result) {
     std::vector<DuelActor> fighters;
     {
         std::scoped_lock lock(g_context.mutex);
-        for (std::size_t i = 0; i < g_context.record_count; ++i) {
+        for (std::size_t i = 0; i < g_context.records.size(); ++i) {
             const auto& record = g_context.records[i];
             if (g_context.battles.Contains(record.id))
                 fighters.push_back({record.id, record.handle, record.pointer});
@@ -3479,23 +3920,21 @@ void ForgetRecord(std::uint64_t record_id) {
     SummonIdentity registration;
     {
         std::scoped_lock lock(g_context.mutex);
-        for (std::size_t i = 0; i < g_context.record_count; ++i) {
+        for (std::size_t i = 0; i < g_context.records.size(); ++i) {
             if (g_context.records[i].id != record_id) continue;
             handle = g_context.records[i].handle;
             registration = g_context.records[i].registration;
-            for (std::size_t k = i + 1; k < g_context.record_count; ++k)
-                g_context.records[k - 1] = std::move(g_context.records[k]);
-            g_context.records[--g_context.record_count] = {};
+            g_context.records.erase(g_context.records.begin() + i);
             if (g_context.selected_record_id == record_id) {
                 g_context.selected_record_id = 0;
             }
             break;
         }
         const auto end = std::remove_if(g_context.pending.begin(),
-            g_context.pending.begin() + g_context.pending_count,
+            g_context.pending.begin() + g_context.pending.size(),
             [&](const PendingOp& op) { return op.record_id == record_id || op.target_id == record_id; });
-        g_context.pending_count = static_cast<std::size_t>(end - g_context.pending.begin());
-        g_pending_hint.store(static_cast<std::uint32_t>(g_context.pending_count),
+        g_context.pending.erase(end, g_context.pending.end());
+        g_pending_hint.store(static_cast<std::uint32_t>(g_context.pending.size()),
                              std::memory_order_release);
         for (auto& record : g_context.records) {
             if (record.aggro.priority_target == record_id) record.aggro.priority_target = 0;
@@ -3514,7 +3953,7 @@ void RemoveOne(std::uint64_t record_id) {
     float previous_max_hp{};
     {
         std::scoped_lock lock(g_context.mutex);
-        for (std::size_t i = 0; i < g_context.record_count; ++i) {
+        for (std::size_t i = 0; i < g_context.records.size(); ++i) {
             if (g_context.records[i].id != record_id) continue;
             handle = g_context.records[i].handle;
             pointer = g_context.records[i].pointer;
@@ -3531,16 +3970,12 @@ void RemoveOne(std::uint64_t record_id) {
 }
 
 void ClearAll() {
-    std::array<std::uint64_t, kMaxRecords> snapshot{};
-    std::size_t count{};
-    {
-        std::scoped_lock lock(g_context.mutex);
-        count = g_context.record_count;
-        for (std::size_t i = 0; i < count; ++i)
-            snapshot[i] = g_context.records[i].id;
-    }
-    for (std::size_t i = 0; i < count; ++i)
-        RemoveOne(snapshot[i]);
+    std::scoped_lock lock(g_context.mutex);
+    // Removal shares the Game update budget, even for an unlimited batch.
+    // Put these before later commands so ClearAll retains its queue ordering.
+    for (auto it = g_context.records.rbegin(); it != g_context.records.rend(); ++it)
+        g_context.pending.push_front(PendingOp{OpKind::Remove, it->id});
+    g_pending_hint.store(static_cast<std::uint32_t>(g_context.pending.size()), std::memory_order_release);
 }
 
 void SetActorOption(const PendingOp& op) {
@@ -3548,7 +3983,7 @@ void SetActorOption(const PendingOp& op) {
     std::uintptr_t pointer{};
     {
         std::scoped_lock lock(g_context.mutex);
-        for (std::size_t i = 0; i < g_context.record_count; ++i) {
+        for (std::size_t i = 0; i < g_context.records.size(); ++i) {
             if (g_context.records[i].id == op.record_id) {
                 handle = g_context.records[i].handle;
                 pointer = g_context.records[i].pointer;
@@ -3587,7 +4022,7 @@ void SetActorOption(const PendingOp& op) {
 }
 
 
-void RefreshHealth() {
+void RefreshHealth(bool refresh_attributes) {
 
     struct HealthTarget {
         std::uint64_t id{};
@@ -3595,18 +4030,19 @@ void RefreshHealth() {
         std::uintptr_t pointer{};
         float previous_max_hp{};
     };
-    HealthTarget snapshot[kMaxRecords]{};
+    std::vector<HealthTarget> snapshot;
     std::size_t count{};
     std::uint64_t selected_id{};
     {
         std::scoped_lock lock(g_context.mutex);
-        count = g_context.record_count;
+        count = g_context.records.size();
+        snapshot.resize(count);
         selected_id = g_context.selected_record_id;
-        for (std::size_t i = 0; i < count && i < kMaxRecords; ++i)
+        for (std::size_t i = 0; i < count; ++i)
             snapshot[i] = {g_context.records[i].id, g_context.records[i].handle,
                            g_context.records[i].pointer, g_context.records[i].max_hp};
     }
-    for (std::size_t i = 0; i < count && i < kMaxRecords; ++i) {
+    for (std::size_t i = 0; i < count; ++i) {
         if (!IsActorAlive(snapshot[i].handle, snapshot[i].pointer)) {
             ForgetRecord(snapshot[i].id);
             continue;
@@ -3620,11 +4056,11 @@ void RefreshHealth() {
         }
         std::vector<AttributeValue> attributes;
         std::uintptr_t ability_system{}, attribute_set{};
-        const bool attributes_read = snapshot[i].id == selected_id &&
+        const bool attributes_read = refresh_attributes && snapshot[i].id == selected_id &&
             ResolveActorAttributeSet(snapshot[i].pointer, &ability_system, &attribute_set) &&
             ReadAttributeValues(attribute_set, &attributes);
         std::scoped_lock lock(g_context.mutex);
-        for (std::size_t k = 0; k < g_context.record_count; ++k) {
+        for (std::size_t k = 0; k < g_context.records.size(); ++k) {
             auto& record = g_context.records[k];
             if (record.id != snapshot[i].id) continue;
             record.hp = hp;
@@ -3643,7 +4079,7 @@ bool MaintainBattles(const std::vector<std::uint64_t>& changed = {}) {
     {
         std::scoped_lock lock(g_context.mutex);
         graph = g_context.battles;
-        for (std::size_t i = 0; i < g_context.record_count; ++i) {
+        for (std::size_t i = 0; i < g_context.records.size(); ++i) {
             const auto& record = g_context.records[i];
             if ((!graph.Contains(record.id) && !record.battle_tuned) ||
                 record.hp <= 0 || record.max_hp <= 0) continue;
@@ -3737,7 +4173,7 @@ void ApplyAggroSettings(const PendingOp& op) {
     std::vector<std::uint64_t> changed;
     {
         std::scoped_lock lock(g_context.mutex);
-        for (std::size_t i = 0; i < g_context.record_count; ++i) {
+        for (std::size_t i = 0; i < g_context.records.size(); ++i) {
             auto& record = g_context.records[i];
             if (record.pet || record.hp <= 0 || record.max_hp <= 0 ||
                 std::find(op.members.begin(), op.members.end(), record.id) == op.members.end()) continue;
@@ -3761,39 +4197,26 @@ void CancelSummonsLocked() {
     if (!SummonBusyLocked()) return;
     g_context.summon_batch->stopped = true;
     const auto end = std::remove_if(g_context.pending.begin(),
-        g_context.pending.begin() + g_context.pending_count,
+        g_context.pending.begin() + g_context.pending.size(),
         [](const PendingOp& op) { return op.kind == OpKind::Summon; });
-    std::fill(end, g_context.pending.begin() + g_context.pending_count, PendingOp{});
-    g_context.pending_count = static_cast<std::size_t>(end - g_context.pending.begin());
-    g_pending_hint.store(static_cast<std::uint32_t>(g_context.pending_count), std::memory_order_release);
-}
-
-bool QueueAvailableLocked(std::size_t count) {
-    if (count <= kMaxPending - g_context.pending_count) return true;
-    const auto message = g_context.localizer.Text("status.queue_full", "Operation queue full");
-    g_context.last_result_failed = true;
-    std::snprintf(g_context.last_result.data(), g_context.last_result.size(), "%s", message.c_str());
-    return false;
+    g_context.pending.erase(end, g_context.pending.end());
+    g_pending_hint.store(static_cast<std::uint32_t>(g_context.pending.size()), std::memory_order_release);
 }
 
 void AppendOpLocked(PendingOp op) {
-    g_context.pending[g_context.pending_count++] = std::move(op);
-    g_pending_hint.store(static_cast<std::uint32_t>(g_context.pending_count), std::memory_order_release);
+    g_context.pending.push_back(std::move(op));
+    g_pending_hint.store(static_cast<std::uint32_t>(g_context.pending.size()), std::memory_order_release);
 }
 
 bool PushOp(const PendingOp& op) {
     std::scoped_lock lock(g_context.mutex);
     if (op.kind == OpKind::ClearAll) CancelSummonsLocked();
-    if (!QueueAvailableLocked(1)) return false;
     AppendOpLocked(op);
     return true;
 }
 
 bool PushSelection(OpKind kind, const std::vector<std::uint64_t>& ids, bool enabled = false) {
     std::scoped_lock lock(g_context.mutex);
-    // Submit the complete selection or nothing; a full queue must not apply
-    // an action to just the first few members of a blueprint group.
-    if (!QueueAvailableLocked(ids.size())) return false;
     for (const auto id : ids) AppendOpLocked(PendingOp{kind, id, enabled});
     return true;
 }
@@ -3801,44 +4224,26 @@ bool PushSelection(OpKind kind, const std::vector<std::uint64_t>& ids, bool enab
 bool PushSummon(std::uint32_t count) {
     std::scoped_lock lock(g_context.mutex);
     if (SummonBusyLocked()) return false;
-    if (count == 0 || count > kMaxRecords - g_context.record_count) {
-        const auto available = std::to_string(kMaxRecords - g_context.record_count);
-        const std::array<std::string_view, 1> args{available};
-        const auto message = g_context.localizer.Format("summon.capacity", "Available slots: {0}", args);
-        g_context.last_result_failed = true;
-        std::snprintf(g_context.last_result.data(), g_context.last_result.size(), "%s", message.c_str());
-        return false;
-    }
-    if (!QueueAvailableLocked(count)) return false;
+    if (count == 0) return false;
     auto batch = std::make_shared<SummonBatch>();
     auto& settings = batch->settings;
-    settings.class_path = g_context.class_path.data();
-    settings.display_name = g_context.display_name.data();
+    settings = CaptureSettingsLocked();
     if (settings.display_name.empty()) {
         const auto found = g_context.blueprint_options.find(settings.class_path);
         if (found != g_context.blueprint_options.end())
             settings.display_name = found->second.default_display_name;
     }
-    settings.level = g_context.level;
-    settings.skill_level = g_context.skill_level;
-    settings.hostile = g_context.hostile != 0;
-    settings.pet = g_context.pet != 0;
-    settings.aggressive = g_context.aggressive != 0;
-    settings.ignore_player = g_context.ignore_player != 0;
-    settings.compatibility = g_context.ft_compatibility != 0 &&
+    settings.compatibility = settings.compatibility &&
         MonsterConfigName(settings.class_path).starts_with("FT_");
     if (settings.compatibility) settings.server_combat_blueprint = g_context.final_tower_combat_blueprint;
-    settings.presets = g_context.birth_presets;
     settings.count = count;
-    settings.spacing = g_context.summon_spacing;
     g_context.summon_batch = batch;
     g_context.last_result = {};
     g_context.last_result_failed = false;
-    for (std::uint32_t i = 0; i < count; ++i) {
-        PendingOp op{OpKind::Summon};
-        op.batch = batch;
-        AppendOpLocked(std::move(op));
-    }
+    // Keep one continuation per batch, independent of its requested count.
+    PendingOp op{OpKind::Summon};
+    op.batch = batch;
+    AppendOpLocked(std::move(op));
     return true;
 }
 
@@ -3890,16 +4295,14 @@ void DrainOne() {
     PendingOp op{};
     {
         std::scoped_lock lock(g_context.mutex);
-        if (g_context.pending_count == 0) {
+        if (g_context.pending.size() == 0) {
             g_pending_hint.store(0, std::memory_order_release);
             return;
         }
         op = std::move(g_context.pending[0]);
-        for (std::size_t i = 1; i < g_context.pending_count; ++i)
-            g_context.pending[i - 1] = std::move(g_context.pending[i]);
-        g_context.pending[--g_context.pending_count] = {};
+        g_context.pending.pop_front();
         if (op.batch) op.batch->in_progress = true;
-        g_pending_hint.store(static_cast<std::uint32_t>(g_context.pending_count),
+        g_pending_hint.store(static_cast<std::uint32_t>(g_context.pending.size()),
                              std::memory_order_release);
     }
 
@@ -3915,13 +4318,15 @@ void DrainOne() {
         {
             std::scoped_lock lock(g_context.mutex);
             if (result.ok) {
-                if (g_context.record_count < kMaxRecords) {
-                    auto& record = g_context.records[g_context.record_count++];
+                {
+                    auto& record = g_context.records.emplace_back();
                     record = {};
                     record.id = g_context.next_record_id++;
                     record.handle = result.handle;
                     record.pointer = result.pointer;
                     record.pet = result.pet;
+                    record.mute_boss_music = op.batch->settings.mute_boss_music;
+                    record.mute_boss_dialogue = op.batch->settings.mute_boss_dialogue;
                     record.hp = result.hp;
                     record.max_hp = result.max_hp;
                     record.registration = result.registration;
@@ -3933,7 +4338,7 @@ void DrainOne() {
                         g_context.selected_record_id = record.id;
                         g_context.management_blueprint = record.class_path;
                         const auto group_count = std::count_if(g_context.records.begin(),
-                            g_context.records.begin() + g_context.record_count,
+                            g_context.records.begin() + g_context.records.size(),
                             [&](const auto& member) { return member.class_path == record.class_path; });
                         g_context.management_page = (group_count - 1) / kManagementPageSize;
                     }
@@ -3945,6 +4350,8 @@ void DrainOne() {
                 CancelSummonsLocked();
             }
             op.batch->in_progress = false;
+            if (result.ok && !op.batch->stopped && op.batch->completed < op.batch->settings.count)
+                AppendOpLocked(op);
             std::snprintf(g_context.last_result.data(), g_context.last_result.size(), "%s",
                           result.detail);
         }
@@ -4014,6 +4421,8 @@ void EnsureServices() {
 namespace {
 
 void ResetState() {
+    g_context.preset_picker.Stop();
+    static_cast<void>(g_context.preset_picker.TakeResult());
     {
         std::scoped_lock lock(g_local_birth_mutex);
         g_local_births.clear();
@@ -4025,10 +4434,8 @@ void ResetState() {
     g_pending_local_births.clear();
     std::scoped_lock lock(g_context.mutex);
     g_context.records = {};
-    g_context.record_count = 0;
     g_context.next_record_id = 1;
     g_context.pending = {};
-    g_context.pending_count = 0;
     g_context.summon_batch.reset();
     g_context.session_world_ready = false;
     g_context.session_event_cursor = 0;
@@ -4045,6 +4452,7 @@ void ResetState() {
     g_context.monster_level_query = 0;
     g_layout = {};
     g_layout_ready = false;
+    g_profile_scans.Clear();
     g_context.mirror_getter_entry.clear();
     g_context.final_tower_scene_asset.clear();
     g_context.final_tower_aliases.clear();
@@ -4062,9 +4470,33 @@ void ResetState() {
     g_context.pet = 0;
     g_context.aggressive = 0;
     g_context.ignore_player = 0;
+    g_context.mute_boss_music = 0;
+    g_context.mute_boss_dialogue = 0;
     g_context.ft_compatibility = 0;
     g_context.summon_count = 1;
     g_context.summon_spacing = 5.0;
+    g_context.config = nullptr;
+    g_context.config_schema = {};
+    g_context.config_task = {};
+    g_context.preset_transfer_task = {};
+    g_context.config_writable = false;
+    g_context.config_dirty = false;
+    g_context.config_stopping = false;
+    g_context.config_revision = 0;
+    g_context.config_error.clear();
+    g_context.preset_message.clear();
+    g_context.saved_presets.clear();
+    g_context.selected_preset = summon_lab::kNoPreset;
+    g_context.new_preset_name = {};
+    g_context.preset_rename = {};
+    g_context.preset_filter = {};
+    g_context.preset_page = 0;
+    std::snprintf(g_context.preset_export_name.data(), g_context.preset_export_name.size(), "%s",
+        summon_lab::kDefaultPresetFileName.data());
+    g_context.preset_export_folder.clear();
+    g_context.preset_import_file.clear();
+    g_context.presets_current_blueprint = 1;
+    g_context.preset_transfer.reset();
     g_context.last_result = {};
     g_context.last_result_failed = false;
     g_context.catalog.clear();
@@ -4132,6 +4564,7 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* context) {
         ANOMALY_SCHEDULER_SERVICE_V1_ID, ANOMALY_SCHEDULER_SERVICE_V1_VERSION).get();
     g_context.storage = query.Query<AnomalyStorageServiceV1>(
         ANOMALY_STORAGE_SERVICE_V1_ID, ANOMALY_STORAGE_SERVICE_V1_VERSION).get();
+    InitializeConfiguration(query);
 
     TransferLocalBirths(false);
 
@@ -4143,21 +4576,42 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* context) {
     const auto loaded = anomaly::sdk::LoadProfile(query, "compatibility.profile.json");
     if (loaded && ValidateSummonProfile(loaded.value(), &g_layout)) {
         const auto& profile = loaded.value();
+        constexpr std::array<std::string_view, 15> symbols{
+            "story-boss-music", "story-multiple-voices", "story-debug-voices", "story-single-voice",
+            "duel-current-chase-range", "monster-scene-row", "monster-property-pack", "final-tower-property-pack",
+            "object-item-set-flags", "object-array-reference", "attribute-base-input", "summon-registration",
+            "local-attribute-mirror", "native-damage-report", "monster-default-level"};
+        const auto scan_started = std::chrono::steady_clock::now();
+        g_profile_scans.Prepare(query, profile, symbols);
+        const auto scan_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - scan_started).count();
+        if (g_context.core && g_context.core->log) {
+            char message[160]{};
+            std::snprintf(message, sizeof(message), "SummonLab: signatures mode=%s patterns=%zu elapsed_ms=%lld",
+                g_profile_scans.batched() ? "v3-batch" : "v1", g_profile_scans.size(), static_cast<long long>(scan_ms));
+            g_context.core->log(g_context.core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO, anomaly::sdk::StringView(message));
+        }
         g_layout_ready = true;
-        g_context.monster_level_query = ResolveMonsterLevelQuery(query, profile);
-        g_context.current_chase_range_offset = ResolveDuelChaseRange(query, profile);
+        g_context.monster_level_query = ResolveMonsterLevelQuery(profile);
+        g_context.current_chase_range_offset = ResolveDuelChaseRange(profile);
         const bool attributes_ready = InstallBirthAttributeHook(query, profile);
-        const bool combat_ready = attributes_ready && InstallLocalCombatHooks(query, profile);
+        const bool combat_ready = attributes_ready && InstallLocalCombatHooks(profile);
         g_context.birth_attributes_ready.store(attributes_ready && combat_ready, std::memory_order_release);
-        if (combat_ready && !InstallFinalTowerHooks(query, profile) && g_context.core != nullptr)
+        if (combat_ready && !InstallFinalTowerHooks(profile) && g_context.core != nullptr)
             g_context.core->log(g_context.core->user, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
                 anomaly::sdk::StringView("SummonLab: FinalTower config bridge unavailable"));
         if (combat_ready) {
+            const bool audio_ready = InstallStoryAudioHooks(profile);
+            g_context.core->log(g_context.core->user, audio_ready ? ANOMALY_CORE_LOG_LEVEL_V1_INFO :
+                ANOMALY_CORE_LOG_LEVEL_V1_WARNING, anomaly::sdk::StringView(audio_ready ?
+                    "SummonLab: instance boss music and dialogue control ready" :
+                    "SummonLab: instance boss music and dialogue control unavailable"));
             StartFinalTowerHealthObserver();
-            if (!InstallDamageReportObserver(query, profile))
+            if (!InstallDamageReportObserver(profile))
                 g_context.core->log(g_context.core->user, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
                     anomaly::sdk::StringView("SummonLab: native damage observer unavailable"));
         }
+        g_profile_scans.Clear();
     } else if (g_context.core != nullptr && g_context.core->log != nullptr) {
         g_context.core->log(g_context.core->user, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
             anomaly::sdk::StringView(loaded ? "Unsupported SummonLab profile contract or layout" : loaded.error()));
@@ -4172,6 +4626,21 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* context) {
 
 AnomalyStatusV1 ANOMALY_CALL Stop(void* context, std::uint32_t) {
     if (context != &g_context) return {ANOMALY_STATUS_V1_INVALID_ARGUMENT, 0, {}};
+    g_context.preset_picker.Stop();
+    {
+        std::scoped_lock lock(g_context.mutex);
+        g_context.config_stopping = true;
+        ConsumePresetPickerLocked();
+    }
+    // The host drains Worker callbacks before on_stop and retains config schemas
+    // through it, so the latest pending edit can be flushed on Lifecycle.
+    if (g_context.scheduler && g_context.config_task.id)
+        static_cast<void>(g_context.scheduler->cancel(g_context.scheduler->user, g_context.config_task));
+    if (g_context.scheduler && g_context.preset_transfer_task.id)
+        static_cast<void>(g_context.scheduler->cancel(g_context.scheduler->user, g_context.preset_transfer_task));
+    if (!SaveConfiguration() && g_context.core && g_context.core->log)
+        g_context.core->log(g_context.core->user, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
+            anomaly::sdk::StringView("SummonLab: configuration flush failed"));
     g_context.catalog_stop.store(true, std::memory_order_release);
     if (g_context.scheduler && g_context.catalog_task.id)
         static_cast<void>(g_context.scheduler->cancel(g_context.scheduler->user, g_context.catalog_task));
@@ -4185,6 +4654,8 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void* context, std::uint32_t) {
     g_context.events = nullptr;
     g_context.monster_level_query = 0;
     g_context.birth_attributes_ready.store(false, std::memory_order_release);
+    const auto audio_status = ReleaseStoryAudioHooks();
+    if (audio_status.code != ANOMALY_STATUS_V1_OK) return audio_status;
     const auto local_status = ReleaseLocalCombatHooks();
     if (local_status.code != ANOMALY_STATUS_V1_OK) return local_status;
     ReleaseFinalTowerData();
@@ -4232,14 +4703,22 @@ void ANOMALY_CALL Update(void* /*context*/, double delta_seconds) {
     bool spawning{};
     {
         std::scoped_lock lock(g_context.mutex);
-        spawning = g_context.pending_count != 0 && g_context.pending[0].kind == OpKind::Summon;
+        spawning = g_context.pending.size() != 0 && g_context.pending[0].kind == OpKind::Summon;
     }
     const bool refresh = (g_context.frame_counter % kHealthRefreshInterval) == 0;
     // Retire dead registrations before a spawn can reuse their native slots.
     // Battle maintenance must also keep running during a long summon batch.
-    if (spawning || refresh) RefreshHealth();
+    if (spawning || refresh) RefreshHealth(refresh);
     if (refresh) MaintainBattles();
-    if (g_pending_hint.load(std::memory_order_relaxed) != 0) DrainOne();
+    const auto work_started = std::chrono::steady_clock::now();
+    while (g_pending_hint.load(std::memory_order_relaxed) != 0) {
+        DrainOne();
+        // A summon is indivisible; check the frame budget between native calls.
+        // Finalize registration before starting the next member of the batch.
+        RestoreLocalBirthsOnGameThread();
+        ConfigureNativeBirthsOnGameThread();
+        if (std::chrono::steady_clock::now() - work_started >= std::chrono::milliseconds(4)) break;
+    }
 
 }
 
@@ -4311,6 +4790,7 @@ void DrawBlueprintConfig(const AnomalyUiServiceV1* ui) {
             std::scoped_lock lock(g_context.mutex);
             std::snprintf(g_context.class_path.data(), g_context.class_path.size(), "%s",
                 normal_combat_blueprint.c_str());
+        ConfigurationChangedLocked();
         }
     }
     if (state == BlueprintConfigState::Unavailable) {
@@ -4336,8 +4816,8 @@ void DrawBlueprintTab(const AnomalyUiServiceV1* ui) {
     if (ui->input_text != nullptr) {
         const std::string label = localizer.Text("target.title", "Class path");
         std::scoped_lock lock(g_context.mutex);
-        ui->input_text(ui->user, anomaly::sdk::StringView(label), g_context.class_path.data(),
-                       g_context.class_path.size(), 0);
+        if (ui->input_text(ui->user, anomaly::sdk::StringView(label), g_context.class_path.data(),
+                       g_context.class_path.size(), 0)) ConfigurationChangedLocked();
     }
 
     const auto rescan_label = localizer.Text("catalog.scan", "Refresh catalog");
@@ -4364,7 +4844,10 @@ void DrawBlueprintTab(const AnomalyUiServiceV1* ui) {
                 std::scoped_lock lock(g_context.mutex);
                 if (ui->input_text(ui->user, anomaly::sdk::StringView(filter_label),
                                    g_context.catalog_filter, sizeof(g_context.catalog_filter), 0))
+                {
                     g_context.catalog_page = 0;
+                    ConfigurationChangedLocked();
+                }
             }
         }
 
@@ -4456,6 +4939,7 @@ void DrawBlueprintTab(const AnomalyUiServiceV1* ui) {
                     std::scoped_lock lock(g_context.mutex);
                     std::snprintf(g_context.class_path.data(), g_context.class_path.size(), "%s",
                                   entry.path.c_str());
+                    ConfigurationChangedLocked();
                     g_context.last_result_failed = false;
                     std::snprintf(g_context.last_result.data(), g_context.last_result.size(), "%s",
                                   entry.path.c_str());
@@ -4472,10 +4956,12 @@ void DrawSettingsTab(const AnomalyUiServiceV1* ui) {
     std::scoped_lock lock(g_context.mutex);
     if (ui->input_uint32 != nullptr) {
         const auto level_label = localizer.Text("param.level", "Level (0 = default)");
-        ui->input_uint32(ui->user, anomaly::sdk::StringView(level_label), &g_context.level, 0, 0);
+        if (ui->input_uint32(ui->user, anomaly::sdk::StringView(level_label), &g_context.level, 0, 0))
+            ConfigurationChangedLocked();
         g_context.level = std::min(g_context.level, kMaxLevel);
         const auto skill_label = localizer.Text("param.skill_level", "Skill level (0 = default)");
-        ui->input_uint32(ui->user, anomaly::sdk::StringView(skill_label), &g_context.skill_level, 0, 0);
+        if (ui->input_uint32(ui->user, anomaly::sdk::StringView(skill_label), &g_context.skill_level, 0, 0))
+            ConfigurationChangedLocked();
         g_context.skill_level = std::min(g_context.skill_level, kMaxLevel);
     }
     WrappedText(ui, localizer.Text("settings.hint",
@@ -4483,12 +4969,13 @@ void DrawSettingsTab(const AnomalyUiServiceV1* ui) {
     if (ui->separator != nullptr) ui->separator(ui->user);
     if (ui->input_text != nullptr) {
         const auto label = localizer.Text("settings.filter", "Find attribute");
-        ui->input_text(ui->user, anomaly::sdk::StringView(label), g_context.attribute_filter.data(),
-                       g_context.attribute_filter.size(), 0);
+        if (ui->input_text(ui->user, anomaly::sdk::StringView(label), g_context.attribute_filter.data(),
+                       g_context.attribute_filter.size(), 0)) ConfigurationChangedLocked();
     }
     if (ui->checkbox != nullptr) {
         const auto label = localizer.Text("settings.only_overrides", "Only customized");
-        ui->checkbox(ui->user, anomaly::sdk::StringView(label), &g_context.only_overrides);
+        if (ui->checkbox(ui->user, anomaly::sdk::StringView(label), &g_context.only_overrides))
+            ConfigurationChangedLocked();
     }
     if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 10.0F);
     const auto reset = localizer.Text("settings.reset", "Reset all attributes");
@@ -4496,6 +4983,7 @@ void DrawSettingsTab(const AnomalyUiServiceV1* ui) {
         g_context.level = 0;
         g_context.skill_level = 0;
         g_context.birth_presets = {};
+        ConfigurationChangedLocked();
     }
 
     const auto enabled_count = std::count_if(g_context.birth_presets.begin(), g_context.birth_presets.end(),
@@ -4539,8 +5027,10 @@ void DrawSettingsTab(const AnomalyUiServiceV1* ui) {
             if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 6.0F);
             // The localized label never changes the reflected field or preset identity.
             const std::string label = description.label + "###birth-enabled-" + std::string(name);
-            if (ui->checkbox != nullptr)
-                ui->checkbox(ui->user, anomaly::sdk::StringView(label), &preset.enabled);
+            if (ui->checkbox != nullptr) {
+                if (ui->checkbox(ui->user, anomaly::sdk::StringView(label), &preset.enabled))
+                    ConfigurationChangedLocked();
+            }
             else
                 ui->text(ui->user, anomaly::sdk::StringView(description.label));
             if (table) ui->table_next_column(ui->user);
@@ -4549,7 +5039,8 @@ void DrawSettingsTab(const AnomalyUiServiceV1* ui) {
                         sizeof(ui->set_next_item_width) && ui->set_next_item_width != nullptr)
                     ui->set_next_item_width(ui->user, 160.0F);
                 const std::string value_id = "##birth-value-" + std::string(name);
-                ui->input_double(ui->user, anomaly::sdk::StringView(value_id), &preset.value, 0.0, 0.0);
+                if (ui->input_double(ui->user, anomaly::sdk::StringView(value_id), &preset.value, 0.0, 0.0))
+                    ConfigurationChangedLocked();
             } else {
                 ui->text(ui->user, anomaly::sdk::StringView(localizer.Text("settings.default", "Default")));
             }
@@ -4568,6 +5059,8 @@ void DrawSettingsTab(const AnomalyUiServiceV1* ui) {
     if (!error.empty()) WrappedText(ui, error);
 }
 
+void DrawPresetSaveArea(const AnomalyUiServiceV1* ui);
+
 void DrawSummonTab(const AnomalyUiServiceV1* ui, bool ready) {
     const auto& localizer = g_context.localizer;
     bool can_summon{};
@@ -4581,21 +5074,20 @@ void DrawSummonTab(const AnomalyUiServiceV1* ui, bool ready) {
         WrappedText(ui, localizer.Format("summon.target", "Blueprint: {0}", target_args));
         if (ui->input_text != nullptr) {
             const auto label = localizer.Text("param.name", "Name (blank = default)");
-            ui->input_text(ui->user, anomaly::sdk::StringView(label), g_context.display_name.data(),
-                           g_context.display_name.size(), 0);
+            if (ui->input_text(ui->user, anomaly::sdk::StringView(label), g_context.display_name.data(),
+                           g_context.display_name.size(), 0)) ConfigurationChangedLocked();
         }
         if (ui->input_uint32 != nullptr) {
             const auto label = localizer.Text("summon.count", "Count");
-            ui->input_uint32(ui->user, anomaly::sdk::StringView(label), &g_context.summon_count, 0, 0);
+            if (ui->input_uint32(ui->user, anomaly::sdk::StringView(label), &g_context.summon_count, 0, 0))
+                ConfigurationChangedLocked();
         }
         summon_count = g_context.summon_count;
         if (summon_count > 1 && ui->input_double != nullptr) {
             const auto label = localizer.Text("summon.spacing", "Spacing (m)");
-            ui->input_double(ui->user, anomaly::sdk::StringView(label), &g_context.summon_spacing, 0, 0);
+            if (ui->input_double(ui->user, anomaly::sdk::StringView(label), &g_context.summon_spacing, 0, 0))
+                ConfigurationChangedLocked();
         }
-        const auto capacity = std::to_string(kMaxRecords - g_context.record_count);
-        const std::array<std::string_view, 1> capacity_args{capacity};
-        WrappedText(ui, localizer.Format("summon.capacity", "Available slots: {0}", capacity_args));
         const bool spacing_valid = std::isfinite(g_context.summon_spacing) &&
             g_context.summon_spacing >= 0.0 && g_context.summon_spacing <= 100.0;
         if (summon_count > 1 && !spacing_valid)
@@ -4621,20 +5113,26 @@ void DrawSummonTab(const AnomalyUiServiceV1* ui, bool ready) {
         if (ui->separator != nullptr) ui->separator(ui->user);
         if (ui->checkbox != nullptr) {
             const auto hostile = localizer.Text("param.hostile", "Hostile");
-            ui->checkbox(ui->user, anomaly::sdk::StringView(hostile), &g_context.hostile);
+            if (ui->checkbox(ui->user, anomaly::sdk::StringView(hostile), &g_context.hostile)) ConfigurationChangedLocked();
             if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 12.0F);
             const auto pet = localizer.Text("param.pet", "Pet");
-            ui->checkbox(ui->user, anomaly::sdk::StringView(pet), &g_context.pet);
+            if (ui->checkbox(ui->user, anomaly::sdk::StringView(pet), &g_context.pet)) ConfigurationChangedLocked();
             if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 12.0F);
             const auto aggressive = localizer.Text("param.aggressive", "Aggressive");
-            ui->checkbox(ui->user, anomaly::sdk::StringView(aggressive), &g_context.aggressive);
+            if (ui->checkbox(ui->user, anomaly::sdk::StringView(aggressive), &g_context.aggressive)) ConfigurationChangedLocked();
+            if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 12.0F);
             const auto ignore_player = localizer.Text("param.ignore_player", "Do not target the player");
-            ui->checkbox(ui->user, anomaly::sdk::StringView(ignore_player), &g_context.ignore_player);
+            if (ui->checkbox(ui->user, anomaly::sdk::StringView(ignore_player), &g_context.ignore_player)) ConfigurationChangedLocked();
+            const auto mute_music = localizer.Text("param.mute_boss_music", "Disable boss music");
+            if (ui->checkbox(ui->user, anomaly::sdk::StringView(mute_music), &g_context.mute_boss_music)) ConfigurationChangedLocked();
+            if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 12.0F);
+            const auto mute_dialogue = localizer.Text("param.mute_boss_dialogue", "Disable boss dialogue");
+            if (ui->checkbox(ui->user, anomaly::sdk::StringView(mute_dialogue), &g_context.mute_boss_dialogue)) ConfigurationChangedLocked();
         }
         if (MonsterConfigName(path).starts_with("FT_")) {
             if (ui->checkbox != nullptr) {
                 const auto label = localizer.Text("summon.compatibility", "FT compatibility (experimental)");
-                ui->checkbox(ui->user, anomaly::sdk::StringView(label), &g_context.ft_compatibility);
+                if (ui->checkbox(ui->user, anomaly::sdk::StringView(label), &g_context.ft_compatibility)) ConfigurationChangedLocked();
             }
             if (g_context.ft_compatibility != 0) {
                 const auto source = MonsterConfigName(g_context.final_tower_combat_blueprint);
@@ -4647,7 +5145,7 @@ void DrawSummonTab(const AnomalyUiServiceV1* ui, bool ready) {
         const auto error = BirthPresetError(g_context.birth_presets);
         if (!error.empty()) WrappedText(ui, error);
         can_summon = ready && g_context.class_path[0] != '\0' &&
-            summon_count > 0 && summon_count <= kMaxRecords - g_context.record_count &&
+            summon_count > 0 &&
             (summon_count == 1 || spacing_valid) && !SummonBusyLocked() && error.empty();
         if (g_context.summon_batch && g_context.summon_batch->settings.count > 1) {
             const auto& batch = *g_context.summon_batch;
@@ -4672,6 +5170,7 @@ void DrawSummonTab(const AnomalyUiServiceV1* ui, bool ready) {
     const auto label = localizer.Text("action.summon", "Summon");
     if (ActionButton(ui, label.c_str(), can_summon, -1.0F))
         (void)PushSummon(summon_count);
+    DrawPresetSaveArea(ui);
 }
 
 std::string BlueprintLabel(std::string_view path) {
@@ -4684,8 +5183,184 @@ std::string BlueprintLabel(std::string_view path) {
     return std::string(name);
 }
 
+void DrawPresetSaveArea(const AnomalyUiServiceV1* ui) {
+    const auto& localizer = g_context.localizer;
+    std::scoped_lock lock(g_context.mutex);
+    if (ui->separator) ui->separator(ui->user);
+    WrappedText(ui, localizer.Text("presets.save_area", "Save to presets"));
+    if (ui->input_text) {
+        const auto label = localizer.Text("presets.name", "Preset name");
+        ui->input_text(ui->user, anomaly::sdk::StringView(label),
+            g_context.new_preset_name.data(), g_context.new_preset_name.size(), 0);
+    }
+    const bool valid = g_context.config_writable && !g_context.preset_transfer &&
+        summon_lab::ValidPresetName(g_context.new_preset_name.data()) &&
+        summon_lab::ValidBlueprintPath(g_context.class_path.data()) &&
+        g_context.summon_count > 0 && std::isfinite(g_context.summon_spacing) &&
+        g_context.summon_spacing >= 0 && g_context.summon_spacing <= 100 &&
+        BirthPresetError(g_context.birth_presets).empty();
+    const auto save = localizer.Text("presets.save_new", "Save new preset");
+    if (ActionButton(ui, save.c_str(), valid)) {
+        g_context.saved_presets.push_back({g_context.new_preset_name.data(), CaptureSettingsLocked()});
+        g_context.selected_preset = g_context.saved_presets.size() - 1;
+        g_context.preset_rename = g_context.new_preset_name;
+        g_context.preset_filter = {};
+        const auto matching = std::count_if(g_context.saved_presets.begin(), g_context.saved_presets.end(),
+            [](const SummonPreset& preset) {
+                return !g_context.presets_current_blueprint || preset.settings.class_path == g_context.class_path.data();
+            });
+        g_context.preset_page = (static_cast<std::size_t>(matching) - 1) / kPresetPageSize;
+        g_context.preset_message = localizer.Text("presets.added", "Preset added");
+        ConfigurationChangedLocked();
+    }
+    const bool selected = g_context.selected_preset < g_context.saved_presets.size();
+    if (selected) {
+        if (ui->same_line) ui->same_line(ui->user, 0, 10);
+        const auto replace = localizer.Text("presets.replace", "Update selected preset");
+        if (ActionButton(ui, replace.c_str(), valid &&
+                g_context.saved_presets[g_context.selected_preset].settings.class_path == g_context.class_path.data())) {
+            g_context.saved_presets[g_context.selected_preset] = {g_context.new_preset_name.data(), CaptureSettingsLocked()};
+            g_context.preset_rename = g_context.new_preset_name;
+            g_context.preset_message = localizer.Text("presets.updated", "Preset updated");
+            ConfigurationChangedLocked();
+        }
+    }
+    if (!g_context.preset_message.empty()) WrappedText(ui, g_context.preset_message);
+}
+
+void DrawPresetsTab(const AnomalyUiServiceV1* ui) {
+    const auto& localizer = g_context.localizer;
+    std::scoped_lock lock(g_context.mutex);
+    if (ui->input_text) {
+        const auto label = localizer.Text("presets.search", "Find preset");
+        if (ui->input_text(ui->user, anomaly::sdk::StringView(label),
+                g_context.preset_filter.data(), g_context.preset_filter.size(), 0))
+            g_context.preset_page = 0;
+    }
+    if (ui->checkbox) {
+        const auto label = localizer.Text("presets.current_blueprint", "Current blueprint only");
+        if (ui->checkbox(ui->user, anomaly::sdk::StringView(label), &g_context.presets_current_blueprint)) {
+            g_context.preset_page = 0;
+            ConfigurationChangedLocked();
+        }
+    }
+    std::vector<std::size_t> filtered;
+    for (std::size_t i = 0; i < g_context.saved_presets.size(); ++i) {
+        const auto& preset = g_context.saved_presets[i];
+        if (g_context.presets_current_blueprint && preset.settings.class_path != g_context.class_path.data()) continue;
+        const auto searchable = preset.name + "\n" + BlueprintLabel(preset.settings.class_path) + "\n" + preset.settings.class_path;
+        if (g_context.preset_filter[0] && !(ui->filter_match ?
+                ui->filter_match(ui->user, anomaly::sdk::StringView(g_context.preset_filter.data()), anomaly::sdk::StringView(searchable)) != 0 :
+                searchable.find(g_context.preset_filter.data()) != std::string::npos)) continue;
+        filtered.push_back(i);
+    }
+    const auto page_count = std::max<std::size_t>(1, (filtered.size() + kPresetPageSize - 1) / kPresetPageSize);
+    auto& page = g_context.preset_page;
+    page = std::min(page, page_count - 1);
+    const auto previous = localizer.Label("page.prev", "<", "preset-prev");
+    if (ActionButton(ui, previous.c_str(), page > 0)) --page;
+    if (ui->same_line) ui->same_line(ui->user, 0, 10);
+    const auto page_number = std::to_string(page + 1);
+    const auto pages = std::to_string(page_count);
+    const std::array<std::string_view, 2> page_args{page_number, pages};
+    ui->text(ui->user, anomaly::sdk::StringView(localizer.Format("page.indicator", "{0} / {1}", page_args)));
+    if (ui->same_line) ui->same_line(ui->user, 0, 10);
+    const auto next = localizer.Label("page.next", ">", "preset-next");
+    if (ActionButton(ui, next.c_str(), page + 1 < page_count)) ++page;
+    const auto first = page * kPresetPageSize;
+    const auto last = std::min(first + kPresetPageSize, filtered.size());
+    // Actions below the list always refer to a selection on the visible page.
+    if (std::find(filtered.begin() + first, filtered.begin() + last, g_context.selected_preset) == filtered.begin() + last)
+        g_context.selected_preset = summon_lab::kNoPreset;
+    const bool has_child = ui->begin_child && ui->end_child;
+    const bool visible = !has_child || ui->begin_child(ui->user,
+        anomaly::sdk::StringView("##summon-presets"), 0, 230, 0);
+    if (visible) {
+        for (std::size_t row = first; row < last; ++row) {
+            const auto i = filtered[row];
+            const auto& preset = g_context.saved_presets[i];
+            const auto label = std::string(g_context.selected_preset == i ? "> " : "") + preset.name + " | " +
+                BlueprintLabel(preset.settings.class_path) + "###summon-preset-" + std::to_string(i);
+            if (ActionButton(ui, label.c_str(), !g_context.preset_transfer, -1)) {
+                g_context.selected_preset = i;
+                std::snprintf(g_context.preset_rename.data(), g_context.preset_rename.size(), "%s", preset.name.c_str());
+                ApplySettingsLocked(preset.settings);
+                std::snprintf(g_context.new_preset_name.data(), g_context.new_preset_name.size(), "%s", preset.name.c_str());
+                g_context.preset_message = localizer.Text("presets.applied", "Preset applied");
+                ConfigurationChangedLocked();
+            }
+        }
+        if (filtered.empty()) WrappedText(ui, localizer.Text("presets.empty", "No matching presets"));
+    }
+    if (has_child) ui->end_child(ui->user);
+    const bool selected = g_context.selected_preset < g_context.saved_presets.size();
+    const bool editable = g_context.config_writable && !g_context.preset_transfer;
+    if (selected) {
+        if (ui->separator) ui->separator(ui->user);
+        if (ui->input_text) {
+            const auto label = localizer.Text("presets.rename_value", "New name");
+            ui->input_text(ui->user, anomaly::sdk::StringView(label), g_context.preset_rename.data(), g_context.preset_rename.size(), 0);
+        }
+        const auto rename = localizer.Text("presets.rename", "Rename");
+        if (ActionButton(ui, rename.c_str(), editable && summon_lab::ValidPresetName(g_context.preset_rename.data()))) {
+            g_context.saved_presets[g_context.selected_preset].name = g_context.preset_rename.data();
+            g_context.new_preset_name = g_context.preset_rename;
+            ConfigurationChangedLocked();
+        }
+        if (ui->same_line) ui->same_line(ui->user, 0, 10);
+        const auto remove = localizer.Text("presets.remove", "Delete preset");
+        if (ActionButton(ui, remove.c_str(), editable)) {
+            g_context.saved_presets.erase(g_context.saved_presets.begin() + g_context.selected_preset);
+            g_context.selected_preset = summon_lab::kNoPreset;
+            g_context.preset_message = localizer.Text("presets.removed", "Preset deleted");
+            ConfigurationChangedLocked();
+        }
+    }
+    if (ui->separator) ui->separator(ui->user);
+    ui->text(ui->user, anomaly::sdk::StringView(localizer.Text("presets.file_name", "File name")));
+    if (ui->same_line) ui->same_line(ui->user, 0, 6);
+    if (ui->input_text) {
+        if (ui->struct_size >= offsetof(AnomalyUiServiceV1, set_next_item_width) + sizeof(ui->set_next_item_width) &&
+                ui->set_next_item_width)
+            ui->set_next_item_width(ui->user, -368.0F);
+        if (ui->input_text(ui->user, anomaly::sdk::StringView("##preset-export-name"),
+                g_context.preset_export_name.data(), g_context.preset_export_name.size(), 0)) ConfigurationChangedLocked();
+    }
+    if (ui->same_line) ui->same_line(ui->user, 0, 6);
+    const auto choose_folder = localizer.Text("presets.choose_folder", "Choose folder");
+    if (ActionButton(ui, choose_folder.c_str(), !g_context.preset_transfer && !g_context.preset_picker.Busy(), 110))
+        OpenPresetPickerLocked(summon_lab::PresetFilePicker::Kind::Folder);
+    if (ui->same_line) ui->same_line(ui->user, 0, 6);
+    const bool can_export = !g_context.preset_transfer && !g_context.preset_picker.Busy() &&
+        !g_context.preset_export_folder.empty() && g_context.preset_export_name[0];
+    const auto export_selected = localizer.Text("presets.export_selected", "Export selected");
+    if (ActionButton(ui, export_selected.c_str(), can_export &&
+            g_context.selected_preset < g_context.saved_presets.size(), 130))
+        QueuePresetTransferLocked(false, false);
+    if (ui->same_line) ui->same_line(ui->user, 0, 6);
+    const auto export_all = localizer.Text("presets.export_all", "Export all");
+    if (ActionButton(ui, export_all.c_str(), can_export && !g_context.preset_transfer && !g_context.saved_presets.empty(), 110))
+        QueuePresetTransferLocked(false, true);
+    ui->text(ui->user, anomaly::sdk::StringView(localizer.Text("presets.import_file", "Import file")));
+    if (ui->same_line) ui->same_line(ui->user, 0, 6);
+    const auto choose_file = localizer.Text("presets.choose_file", "Choose file");
+    if (ActionButton(ui, choose_file.c_str(), !g_context.preset_transfer && !g_context.preset_picker.Busy(), 110))
+        OpenPresetPickerLocked(summon_lab::PresetFilePicker::Kind::ImportFile);
+    if (ui->same_line) ui->same_line(ui->user, 0, 6);
+    const auto import = localizer.Text("presets.import", "Import");
+    if (ActionButton(ui, import.c_str(), editable && !g_context.preset_transfer &&
+            !g_context.preset_picker.Busy() && !g_context.preset_import_file.empty())) QueuePresetTransferLocked(true, false);
+    if (!g_context.preset_import_file.empty()) {
+        if (ui->same_line) ui->same_line(ui->user, 0, 10);
+        const auto& file = g_context.preset_import_file;
+        const auto name = summon_lab::PathUtf8(std::filesystem::path(std::u8string(file.begin(), file.end())).filename());
+        ui->text(ui->user, anomaly::sdk::StringView(name));
+    }
+    if (!g_context.preset_message.empty()) WrappedText(ui, g_context.preset_message);
+}
+
 void DrawAggroEditor(const AnomalyUiServiceV1* ui, bool ready,
-                     const std::array<ManagementRecord, kMaxRecords>& records, std::size_t count,
+                     const std::vector<ManagementRecord>& records, std::size_t count,
                      const std::vector<std::uint64_t>& members, const summon_lab::BattleGraph& battles) {
     const auto& localizer = g_context.localizer;
     bool open{};
@@ -4866,7 +5541,7 @@ void DrawGroupActions(const AnomalyUiServiceV1* ui, bool ready,
 
 void DrawManagementTab(const AnomalyUiServiceV1* ui, bool ready) {
     const auto& localizer = g_context.localizer;
-    std::array<ManagementRecord, kMaxRecords> records{};
+    std::vector<ManagementRecord> records;
     std::vector<AttributeValue> attributes;
     std::string server_combat_source;
     std::string blueprint;
@@ -4879,7 +5554,8 @@ void DrawManagementTab(const AnomalyUiServiceV1* ui, bool ready) {
     const ManagementRecord* selected{};
     {
         std::scoped_lock lock(g_context.mutex);
-        count = g_context.record_count;
+        count = g_context.records.size();
+        records.resize(count);
         group_ready = ready && !SummonBusyLocked();
         page = g_context.management_page;
         blueprint = g_context.management_blueprint;
@@ -4993,7 +5669,7 @@ void DrawManagementTab(const AnomalyUiServiceV1* ui, bool ready) {
                 selected = nullptr;
                 attributes.clear();
                 // Copy the selected entity's snapshot; no game reads happen in Draw.
-                for (std::size_t k = 0; k < g_context.record_count; ++k) {
+                for (std::size_t k = 0; k < g_context.records.size(); ++k) {
                     if (g_context.records[k].id != record.id) continue;
                     g_context.selected_record_id = record.id;
                     selected = &record;
@@ -5138,20 +5814,26 @@ void ANOMALY_CALL Draw(void* /*context*/, const AnomalyUiServiceV1* ui) {
     std::array<char, kTextCapacity> last_result{};
     {
         std::scoped_lock lock(g_context.mutex);
+        ConsumePresetPickerLocked();
         world_ready = g_context.session_world_ready;
         invoke_ready = g_context.has_invoke;
         failed = g_context.last_result_failed;
         last_result = g_context.last_result;
-        pending = static_cast<std::uint32_t>(g_context.pending_count);
+        pending = static_cast<std::uint32_t>(g_context.pending.size());
     }
     if (ui->begin_tab_bar(ui->user, anomaly::sdk::StringView("##summon-lab-tabs"),
                          ANOMALY_UI_TAB_BAR_V1_FITTING_POLICY_RESIZE_DOWN)) {
-        const auto blueprint = localizer.Label("tab.blueprint", "Blueprint", "blueprint");
+        const auto blueprint = localizer.Label("tab.blueprint", "Blueprints", "blueprint");
         if (ui->begin_tab_item(ui->user, anomaly::sdk::StringView(blueprint), nullptr, 0, 1)) {
             DrawBlueprintTab(ui);
             ui->end_tab_item(ui->user);
         }
         const auto settings = localizer.Label("tab.attributes", "Attributes", "attributes");
+        const auto presets = localizer.Label("tab.presets", "Presets", "presets");
+        if (ui->begin_tab_item(ui->user, anomaly::sdk::StringView(presets), nullptr, 0, 1)) {
+            DrawPresetsTab(ui);
+            ui->end_tab_item(ui->user);
+        }
         if (ui->begin_tab_item(ui->user, anomaly::sdk::StringView(settings), nullptr, 0, 1)) {
             DrawSettingsTab(ui);
             ui->end_tab_item(ui->user);
@@ -5169,6 +5851,10 @@ void ANOMALY_CALL Draw(void* /*context*/, const AnomalyUiServiceV1* ui) {
         ui->end_tab_bar(ui->user);
     }
     if (ui->separator != nullptr) ui->separator(ui->user);
+    {
+        std::scoped_lock lock(g_context.mutex);
+        if (!g_context.config_error.empty()) WrappedText(ui, g_context.config_error);
+    }
     ui->text(ui->user, anomaly::sdk::StringView(localizer.Text(
         world_ready ? "status.ready" : "status.not_ready", world_ready ? "World ready" : "World not ready")));
     if (pending != 0) {

@@ -54,6 +54,53 @@
   },
   "symbols": [
     {
+      "name": "story-boss-music",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 18 48 89 7C 24 20 55 48 8D 6C 24 C0 48 81 EC 40 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 30 48 8B B9 38 1D 00 00 48 8B D9 48 85 FF",
+          "entry": "48 89 5C 24 18 48 89 7C 24 20 55 48 8D 6C 24 C0 48 81 EC 40 01 00 00",
+          "values": {}
+        },
+        {
+          "pattern": "48 89 5C 24 18 48 89 7C 24 20 55 48 8D 6C 24 C0 48 81 EC 40 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 30 48 8B B9 78 1D 00 00 48 8B D9 48 85 FF",
+          "entry": "48 89 5C 24 18 48 89 7C 24 20 55 48 8D 6C 24 C0 48 81 EC 40 01 00 00",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "story-multiple-voices",
+      "candidates": [
+        {
+          "pattern": "48 8B 43 38 4C 8D 44 24 20 0F B6 54 24 48 48 85 C0 48 8B 4C 24 58 4C 0F 45 C0 48 8B 43 20 48 85 C0 40 0F 95 C7 48 03 F8 48 89 7B 20 E8 ?? ?? ?? ?? 8B 54 24 28 48 8B 4C 24 20 E8 ?? ?? ?? ?? 48 8B 4C 24 20 48 85 C9 74 05 E8 ?? ?? ?? ?? 48 8B 5C 24 40 48 83 C4 30 5F C3",
+          "callOffset": 44,
+          "entry": "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 0F B6 DA 49 8B F0 48 8B D1 45 33 C0",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "story-debug-voices",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 08 57 48 83 EC 20 48 8B FA 45 33 C0 48 8B D1 48 8B 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8B D8 48 85 C0 74 4A",
+          "entry": "48 89 5C 24 08 57 48 83 EC 20 48 8B FA 45 33 C0 48 8B D1",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "story-single-voice",
+      "candidates": [
+        {
+          "pattern": "48 8B 43 38 4C 8D 44 24 20 0F B6 54 24 48 48 85 C0 48 8B 4C 24 58 4C 0F 45 C0 48 8B 43 20 48 85 C0 40 0F 95 C7 48 03 F8 48 89 7B 20 E8 ?? ?? ?? ?? 48 8B 4C 24 20 48 85 C9 74 06 48 8B 01 FF 50 10 48 8B 5C 24 40 48 83 C4 30 5F C3",
+          "callOffset": 44,
+          "entry": "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 0F B6 DA 49 8B F0 48 8B D1 45 33 C0",
+          "values": {}
+        }
+      ]
+    },
+    {
       "name": "mirror-owner-getter",
       "candidates": [
         {
