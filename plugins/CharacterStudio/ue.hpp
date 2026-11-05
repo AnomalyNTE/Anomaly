@@ -59,6 +59,12 @@ struct Property {
     std::string type;
 };
 
+struct ResourceLayout {
+    std::size_t text_size{}, soft_object_size{}, instanced_size{};
+    std::size_t array_size{}, array_data{}, array_count{}, array_capacity{};
+    std::size_t map_size{}, child_stride{}, child_value{}, inline_flag_bits{};
+};
+
 class Engine {
 public:
     Engine(Process& process, anomaly::sdk::Profile resource, Address registry,
@@ -69,8 +75,33 @@ public:
         if (resource_.contract != "character-studio-v1" || resource_.game != "nte")
             throw std::runtime_error(
                 localizer.Text("error.layout_unsupported", "Unsupported model layout data"));
+        data_layout_ = {Offset("text.size"), Offset("softObject.size"),
+            Offset("instancedStruct.size"), Offset("array.size"), Offset("array.data"),
+            Offset("array.count"), Offset("array.capacity"), Offset("map.size"),
+            Offset("childMesh.elementStride"), Offset("childMesh.valueOffset"),
+            Offset("dataTable.rowMapInlineBits")};
+        const auto fits = [](std::size_t offset, std::size_t size, std::size_t total) {
+            return offset <= total && size <= total - offset;
+        };
+        const auto& d = data_layout_;
+        if (!d.text_size || !d.soft_object_size || !d.map_size || !d.child_stride ||
+            !d.inline_flag_bits || d.inline_flag_bits % 32 ||
+            d.soft_object_size != contracts_.at("/Script/Engine.KismetSystemLibrary.LoadAsset_Blocking")
+                                     .fields.front().size ||
+            !fits(d.array_data, sizeof(Address), d.array_size) ||
+            d.array_count < d.array_data + sizeof(Address) ||
+            !fits(d.array_count, sizeof(std::int32_t), d.array_size) ||
+            d.array_capacity < d.array_count + sizeof(std::int32_t) ||
+            !fits(d.array_capacity, sizeof(std::int32_t), d.array_size) ||
+            !fits(Offset("instancedStruct.scriptStruct"), sizeof(Address), d.instanced_size) ||
+            Offset("instancedStruct.memory") < Offset("instancedStruct.scriptStruct") + sizeof(Address) ||
+            !fits(Offset("instancedStruct.memory"), sizeof(Address), d.instanced_size) ||
+            d.child_value < sizeof(Name) || d.child_value >= d.child_stride)
+            throw std::runtime_error(
+                localizer.Text("error.layout_unsupported", "Unsupported model layout data"));
     }
     const FunctionContracts& contracts() const { return contracts_; }
+    const ResourceLayout& data_layout() const { return data_layout_; }
     std::size_t Offset(std::string_view key) const {
         const auto value = resource_.layout.at(std::string(key));
         if (value > 65536) throw std::runtime_error("unsupported reflection layout offset");
@@ -191,6 +222,28 @@ public:
         }
         return field;
     }
+    Property ExpectStruct(Address type, std::string_view name, std::string_view structure) {
+        auto field = PropertyAt(type, name);
+        if (field.type != "StructProperty" || !field.structure ||
+            ObjectName(field.structure) != structure ||
+            Layout<std::int32_t>(field.structure, "ustruct.propertiesSize") != field.size) {
+            const std::array arguments{std::string_view(name)};
+            throw std::runtime_error(localizer.Format("error.property_contract_mismatch",
+                "Property contract mismatch: {0}", arguments));
+        }
+        return field;
+    }
+    Property ExpectMember(const Property& parent, std::string_view name,
+                          std::string_view kind, std::size_t size) {
+        auto field = Expect(parent.structure, name, kind, size);
+        // Only these members are read; unrelated additions may grow the struct.
+        if (field.offset > parent.size || field.size > parent.size - field.offset) {
+            const std::array arguments{std::string_view(name)};
+            throw std::runtime_error(localizer.Format("error.property_layout_invalid",
+                "Property layout is invalid: {0}", arguments));
+        }
+        return field;
+    }
     template<class T> T Value(Address object, Address type, std::string_view name,
                               std::string_view kind) {
         return Read<T>(object + Expect(type, name, kind, sizeof(T)).offset);
@@ -201,7 +254,7 @@ public:
     struct Instance { Address type{}, data{}; };
     Instance Instanced(Address object, Address type, std::string_view name,
                        std::string_view expected) {
-        const auto field = Expect(type, name, "StructProperty", 16, "InstancedStruct");
+        const auto field = Expect(type, name, "StructProperty", data_layout_.instanced_size, "InstancedStruct");
         const auto address = object + field.offset;
         Instance value{Layout<Address>(address, "instancedStruct.scriptStruct"),
                        Layout<Address>(address, "instancedStruct.memory")};
@@ -223,7 +276,7 @@ public:
         auto flags = Layout<Address>(map, "dataTable.rowMapFlagsData");
         if (count < 0 || count > 65536 || capacity < count || capacity > 65536 ||
             free < 0 || free > count || bits < count || bits > 65536 || maximum < bits ||
-            (!flags && bits > 128) || (count && !data))
+            (!flags && static_cast<std::size_t>(bits) > data_layout_.inline_flag_bits) || (count && !data))
             throw std::runtime_error(
                 localizer.Text("error.sparse_table_layout", "Sparse table layout is invalid"));
         if (!flags) flags = map + Offset("dataTable.rowMapInlineFlags");
@@ -331,11 +384,14 @@ public:
         Parameters(Function& function, const anomaly::sdk::Localizer& l10n)
             : function_(function), localizer(l10n) {}
         template<class T> void Put(std::string_view name, const T& value) {
+            PutBytes(name, &value, sizeof(T));
+        }
+        void PutBytes(std::string_view name, const void* value, std::size_t size) {
             const auto& f = function_.fields.at(std::string(name));
-            if (sizeof(T) != static_cast<std::size_t>(f.size))
+            if (size != static_cast<std::size_t>(f.size))
                 throw std::runtime_error(
                     localizer.Text("error.argument_size_mismatch", "Argument type size mismatch"));
-            std::memcpy(data.data() + f.offset, &value, sizeof(T));
+            std::memcpy(data.data() + f.offset, value, size);
         }
         template<class T> T Get(std::string_view name) const {
             const auto& f = function_.fields.at(std::string(name));
@@ -393,6 +449,7 @@ private:
     Process& process_;
     anomaly::sdk::Profile resource_;
     FunctionContracts contracts_;
+    ResourceLayout data_layout_;
     Address registry_{};
     std::map<std::string, Function, std::less<>> functions_;
     const anomaly::sdk::Localizer& localizer;

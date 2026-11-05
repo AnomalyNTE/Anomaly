@@ -66,7 +66,7 @@ public:
         if (rows.rows.empty())
             throw std::runtime_error(localizer.Text("error.character_table_not_loaded",
                 "The character data table is not loaded; refresh the complete catalog"));
-        const auto text = ue_.Expect(rows.type, "ItemName", "TextProperty", 16);
+        const auto text = ue_.Expect(rows.type, "ItemName", "TextProperty", ue_.data_layout().text_size);
         // A whole catalog is published atomically. No inventory, ownership, unlock,
         // IsCharacterShow, time-gate, or loaded-Blueprint filter is applied.
         std::vector<Character> next;
@@ -323,13 +323,8 @@ private:
         }
     }
     Address LoadAppearance(Address soft, Address type, std::string_view field) {
-        const auto property = ue_.Expect(type, field, "SoftObjectProperty", 40);
-        std::array<std::uint8_t, 40> reference{};
-        ue_.Bytes(soft + property.offset, reference.data(), reference.size());
-        const auto library = ue_.Find("/Script/Engine.Default__KismetSystemLibrary");
-        const auto asset = ue_.Call("/Script/Engine.KismetSystemLibrary.LoadAsset_Blocking",
-            library, [&](Engine::Parameters& p) { p.Put("Asset", reference); })
-            .Get<Address>("ReturnValue");
+        const auto property = ue_.Expect(type, field, "SoftObjectProperty", ue_.data_layout().soft_object_size);
+        const auto asset = SoftAsset(soft + property.offset);
         if (!ue_.IsA(asset, "HTPlayerAppearance"))
             throw std::runtime_error(localizer.Text("error.appearance_unavailable",
                 "This character has no usable local appearance asset"));
@@ -387,24 +382,24 @@ private:
         }
         Appearance recipe;
         const auto type = ue_.Class(appearance);
-        const auto mesh_data = ue_.Expect(type, "FashionMeshData", "StructProperty",
-                                          16, "CharacterMeshData");
+        const auto mesh_data = ue_.ExpectStruct(type, "FashionMeshData", "CharacterMeshData");
+        const auto mesh_field = ue_.ExpectMember(mesh_data, "CharacterMesh", "ObjectProperty", sizeof(Address));
         Part body;
-        body.mesh = ue_.Value<Address>(appearance + mesh_data.offset, mesh_data.structure,
-                                       "CharacterMesh", "ObjectProperty");
+        body.mesh = ue_.Read<Address>(appearance + mesh_data.offset + mesh_field.offset);
         if (!ue_.IsA(body.mesh, "SkeletalMesh"))
             throw std::runtime_error(localizer.Text("error.body_mesh_missing",
                 "The character's main mesh is missing, so no empty model was created"));
         recipe.parts.push_back(body);
-        ReadIdle(appearance + mesh_data.offset, mesh_data.structure, body.mesh, recipe);
-        const auto attached = ue_.Expect(type, "ArrayFashionAttachedMeshData", "ArrayProperty", 16);
+        ReadIdle(appearance + mesh_data.offset, mesh_data, body.mesh, recipe);
+        const auto& layout = ue_.data_layout();
+        const auto attached = ue_.Expect(type, "ArrayFashionAttachedMeshData", "ArrayProperty", layout.array_size);
         const auto inner = ue_.Layout<Address>(attached.field, "farrayProperty.inner");
         const auto inner_type = ue_.Layout<Address>(inner, "fstructProperty.struct");
         const auto stride = ue_.Layout<std::int32_t>(inner, "fproperty.elementSize");
         const auto array = appearance + attached.offset;
-        const auto count = ue_.Read<std::int32_t>(array + 8);
-        const auto capacity = ue_.Read<std::int32_t>(array + 12);
-        const auto data = ue_.Read<Address>(array);
+        const auto count = ue_.Read<std::int32_t>(array + layout.array_count);
+        const auto capacity = ue_.Read<std::int32_t>(array + layout.array_capacity);
+        const auto data = ue_.Read<Address>(array + layout.array_data);
         if (!inner_type || ue_.ObjectName(inner_type) != "AttachedMeshData" ||
             stride <= 0 || stride > 65536 || count < 0 || count > 4096 ||
             capacity < count || (count && !data))
@@ -433,11 +428,13 @@ private:
             recipe.parts.push_back(part);
         }
         // Facial/secondary meshes are authored as a separate sparse map.
-        const auto child = ue_.Expect(type, "ChildMeshDataMap", "MapProperty", 80);
-        for (const auto item : ue_.Sparse(appearance + child.offset, 32)) {
+        const auto child = ue_.Expect(type, "ChildMeshDataMap", "MapProperty", layout.map_size);
+        if (static_cast<std::size_t>(mesh_data.size) > layout.child_stride - layout.child_value)
+            throw std::runtime_error(localizer.Text("error.child_mesh_type",
+                "The child mesh asset type does not match"));
+        for (const auto item : ue_.Sparse(appearance + child.offset, layout.child_stride)) {
             Part part;
-            part.mesh = ue_.Value<Address>(item + 8, mesh_data.structure,
-                                           "CharacterMesh", "ObjectProperty");
+            part.mesh = ue_.Read<Address>(item + layout.child_value + mesh_field.offset);
             if (!part.mesh) continue;
             if (!ue_.IsA(part.mesh, "SkeletalMesh"))
                 throw std::runtime_error(localizer.Text("error.child_mesh_type",
@@ -487,11 +484,11 @@ private:
         return ue_.IsA(object, base) ? object : 0;
     }
     Address SoftAsset(Address address) {
-        std::array<std::uint8_t, 40> soft{};
+        std::vector<std::uint8_t> soft(ue_.data_layout().soft_object_size);
         ue_.Bytes(address, soft.data(), soft.size());
         return ue_.Call("/Script/Engine.KismetSystemLibrary.LoadAsset_Blocking",
             ue_.Find("/Script/Engine.Default__KismetSystemLibrary"),
-            [&](Engine::Parameters& p) { p.Put("Asset", soft); }).Get<Address>("ReturnValue");
+            [&](Engine::Parameters& p) { p.PutBytes("Asset", soft.data(), soft.size()); }).Get<Address>("ReturnValue");
     }
     bool IdleCandidate(Address sequence, Address mesh, Appearance& recipe) {
         if (!ue_.IsA(sequence, "AnimSequence")) return false;
@@ -506,8 +503,9 @@ private:
         recipe.duration = length;
         return true;
     }
-    void ReadIdle(Address mesh_data, Address type, Address mesh, Appearance& recipe) {
-        const auto cls = ue_.Value<Address>(mesh_data, type, "AnimInstance", "ClassProperty");
+    void ReadIdle(Address mesh_data, const Property& type, Address mesh, Appearance& recipe) {
+        const auto anim = ue_.ExpectMember(type, "AnimInstance", "ClassProperty", sizeof(Address));
+        const auto cls = ue_.Read<Address>(mesh_data + anim.offset);
         const auto defaults = ClassDefault(cls, "HTAnimInstance");
         if (!defaults) return;
         // These are authored resources on CDOs, not initialized gameplay instances.
@@ -515,20 +513,22 @@ private:
         const auto layer_cls = ue_.Value<Address>(defaults, ue_.Class(defaults),
                                                   "HTNotMovingAnimLayer", "ClassProperty");
         if (const auto layer = ClassDefault(layer_cls, "HTNotMovingAnimLayer")) {
-            const auto assets = ue_.Expect(ue_.Class(layer), "NotMovingAnimAssets",
-                                           "StructProperty", 184, "NotMovingAnimAssets");
+            const auto assets = ue_.ExpectStruct(ue_.Class(layer), "NotMovingAnimAssets",
+                                                 "NotMovingAnimAssets");
             const auto data = layer + assets.offset;
-            if (IdleCandidate(ue_.Value<Address>(data, assets.structure,
-                              "base_stand_pe", "ObjectProperty"), mesh, recipe)) return;
-            const auto exclusive = ue_.Expect(assets.structure, "base_stand_exclusive",
-                                                "SoftObjectProperty", 40);
+            const auto idle = ue_.ExpectMember(assets, "base_stand_pe",
+                                               "ObjectProperty", sizeof(Address));
+            if (IdleCandidate(ue_.Read<Address>(data + idle.offset), mesh, recipe)) return;
+            const auto exclusive = ue_.ExpectMember(assets, "base_stand_exclusive",
+                                                     "SoftObjectProperty", ue_.data_layout().soft_object_size);
             if (IdleCandidate(SoftAsset(data + exclusive.offset), mesh, recipe)) return;
         }
         if (ue_.IsA(defaults, "HTPlayerAnimInstance")) {
-            const auto assets = ue_.Expect(ue_.Class(defaults), "PlayerAnims",
-                                           "StructProperty", 2112, "HTPlayerAnim");
-            IdleCandidate(ue_.Value<Address>(defaults + assets.offset, assets.structure,
-                          "base_stand_pe", "ObjectProperty"), mesh, recipe);
+            const auto assets = ue_.ExpectStruct(ue_.Class(defaults), "PlayerAnims",
+                                                 "HTPlayerAnim");
+            const auto idle = ue_.ExpectMember(assets, "base_stand_pe",
+                                               "ObjectProperty", sizeof(Address));
+            IdleCandidate(ue_.Read<Address>(defaults + assets.offset + idle.offset), mesh, recipe);
         }
     }
     void StartIdle(Address component, Address sequence) {
