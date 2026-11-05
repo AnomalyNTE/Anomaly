@@ -96,6 +96,7 @@
     "nte-session-snapshot",
     "nte-player-snapshot",
     "memory-read",
+    "memory-write",
     "interop-signature",
     "interop-hook",
     "ue5-assets",

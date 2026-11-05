@@ -31,6 +31,21 @@ inline std::string NameIdentity(std::string_view name) {
     return value;
 }
 
+// Asset Registry paths provide candidates without loading their classes. Keep
+// phase folders separate and require a suffix boundary (Boss_3 != Boss_38).
+// This narrows the normal source menu; advanced selection uses the full catalog.
+inline bool IsCombatConfigCandidate(std::string_view base, std::string_view candidate) {
+    if (base == candidate) return false;
+    const auto base_slash = base.rfind('/'), candidate_slash = candidate.rfind('/');
+    const auto base_dot = base.rfind('.'), candidate_dot = candidate.rfind('.');
+    if (base_slash == std::string_view::npos || candidate_slash == std::string_view::npos ||
+        base_dot == std::string_view::npos || candidate_dot == std::string_view::npos ||
+        base.substr(0, base_slash) != candidate.substr(0, candidate_slash)) return false;
+    const auto identity = NameIdentity(base.substr(base_dot + 1));
+    const auto variant = NameIdentity(candidate.substr(candidate_dot + 1));
+    return !identity.empty() && variant.starts_with(identity + "_");
+}
+
 inline BlueprintNames ResolveBlueprintNames(std::string_view name, const ActorNameTable& table) {
     const auto identity = NameIdentity(name);
     BlueprintNames result;

@@ -15,6 +15,7 @@
 #include "native_layout.hpp"
 #include "blueprint_names.hpp"
 #include "presets.hpp"
+#include "blueprint_editor_state.hpp"
 #include "preset_file_picker.hpp"
 #include "profile_symbols.hpp"
 
@@ -35,6 +36,7 @@
 #include <set>
 #include <chrono>
 #include <mutex>
+#include <type_traits>
 
 #include <nlohmann/json.hpp>
 
@@ -147,11 +149,28 @@ struct BlueprintOptions {
 };
 
 enum class BlueprintConfigState { Pending, Unavailable, NotApplicable, NoHealth, Available };
+enum class BlueprintConfigStage { Native, Candidates, Borrowed, Complete };
+
+struct CombatConfigChoice {
+    std::string path;
+    float hp{};
+};
 
 struct BlueprintConfigCheck {
     std::string path;
     BlueprintConfigState state{BlueprintConfigState::Pending};
     std::string source;
+    std::string requested_source;
+    BlueprintConfigStage stage{BlueprintConfigStage::Native};
+    std::vector<std::string> candidates;
+    std::size_t next_candidate{};
+    std::vector<CombatConfigChoice> sources;
+};
+
+struct AdvancedConfigCheck {
+    std::string path;
+    BlueprintConfigState state{BlueprintConfigState::Pending};
+    float hp{};
 };
 
 struct AttributeValue {
@@ -203,6 +222,9 @@ struct Record {
     std::uint64_t current_target_id{};
     bool target_paused{};
     std::vector<AttributeValue> attributes;
+    std::shared_ptr<summon_lab::EditorRuntime> editor;
+    std::string editor_warning;
+    std::string editor_rule_warning;
     char label[96]{};
 };
 
@@ -313,6 +335,12 @@ struct Context {
 
     // 可编辑参数
     std::array<char, kPathCapacity> class_path{};
+    std::string combat_config_blueprint;
+    std::string advanced_combat_blueprint;
+    int advanced_combat_source{};
+    std::array<char, 64> combat_source_filter{};
+    std::size_t combat_source_page{};
+    AdvancedConfigCheck advanced_config;
     BlueprintConfigCheck blueprint_config;
     double blueprint_check_delay{};
     std::array<char, kDisplayNameCapacity> display_name{};
@@ -329,6 +357,7 @@ struct Context {
     int ignore_player{};
     int mute_boss_music{};
     int mute_boss_dialogue{};
+    int skip_cutscenes{};
     int ft_compatibility{};
     std::uint32_t summon_count{1};
     double summon_spacing{5.0};
@@ -353,6 +382,7 @@ struct Context {
 
     std::array<char, kTextCapacity> last_result{};
     bool last_result_failed{};
+    summon_lab::EditorState editor;
 } g_context;
 
 std::atomic<std::uint32_t> g_pending_hint{0};
@@ -361,6 +391,9 @@ std::atomic<std::uint32_t> g_pending_hint{0};
 SummonSettings CaptureSettingsLocked() {
     SummonSettings settings;
     settings.class_path = g_context.class_path.data();
+    settings.combat_config_blueprint = g_context.combat_config_blueprint;
+    settings.advanced_combat_blueprint = g_context.advanced_combat_blueprint;
+    settings.advanced_combat_source = g_context.advanced_combat_source != 0;
     settings.display_name = g_context.display_name.data();
     settings.level = g_context.level;
     settings.skill_level = g_context.skill_level;
@@ -370,15 +403,22 @@ SummonSettings CaptureSettingsLocked() {
     settings.ignore_player = g_context.ignore_player != 0;
     settings.mute_boss_music = g_context.mute_boss_music != 0;
     settings.mute_boss_dialogue = g_context.mute_boss_dialogue != 0;
+    settings.skip_cutscenes = g_context.skip_cutscenes != 0;
     settings.compatibility = g_context.ft_compatibility != 0;
     settings.presets = g_context.birth_presets;
     settings.count = g_context.summon_count;
     settings.spacing = g_context.summon_spacing;
+    if (const auto it = g_context.editor.blueprints.find(settings.class_path); it != g_context.editor.blueprints.end())
+        settings.editor = it->second;
     return settings;
 }
 
 void ApplySettingsLocked(const SummonSettings& settings) {
     std::snprintf(g_context.class_path.data(), g_context.class_path.size(), "%s", settings.class_path.c_str());
+    g_context.combat_config_blueprint = settings.combat_config_blueprint;
+    g_context.advanced_combat_blueprint = settings.advanced_combat_blueprint;
+    g_context.advanced_combat_source = settings.advanced_combat_source;
+    g_context.advanced_config = {};
     std::snprintf(g_context.display_name.data(), g_context.display_name.size(), "%s", settings.display_name.c_str());
     g_context.level = settings.level;
     g_context.skill_level = settings.skill_level;
@@ -388,10 +428,12 @@ void ApplySettingsLocked(const SummonSettings& settings) {
     g_context.ignore_player = settings.ignore_player;
     g_context.mute_boss_music = settings.mute_boss_music;
     g_context.mute_boss_dialogue = settings.mute_boss_dialogue;
+    g_context.skip_cutscenes = settings.skip_cutscenes;
     g_context.ft_compatibility = settings.compatibility;
     g_context.birth_presets = settings.presets;
     g_context.summon_count = settings.count;
     g_context.summon_spacing = settings.spacing;
+    g_context.editor.blueprints.insert_or_assign(settings.class_path, settings.editor);
     g_context.blueprint_config = {};
     g_context.blueprint_check_delay = 0;
 }
@@ -400,6 +442,7 @@ SavedConfiguration CaptureConfigurationLocked() {
     SavedConfiguration saved;
     saved.current = CaptureSettingsLocked();
     saved.presets = g_context.saved_presets;
+    saved.editor_blueprints = g_context.editor.blueprints;
     saved.catalog_filter = g_context.catalog_filter;
     saved.attribute_filter = g_context.attribute_filter.data();
     saved.only_overrides = g_context.only_overrides != 0;
@@ -492,6 +535,7 @@ bool LoadConfiguration() noexcept {
         SavedConfiguration saved;
         if (!summon_lab::ParseConfiguration(text, saved)) return false;
         std::scoped_lock lock(g_context.mutex);
+        g_context.editor.blueprints = std::move(saved.editor_blueprints);
         ApplySettingsLocked(saved.current);
         g_context.saved_presets = std::move(saved.presets);
         std::snprintf(g_context.catalog_filter, sizeof(g_context.catalog_filter), "%s", saved.catalog_filter.c_str());
@@ -926,6 +970,8 @@ bool PublishCatalog(CatalogCollection& collection) {
         g_context.catalog.swap(parsed);
         g_context.blueprint_options.swap(options);
         g_context.catalog_loaded = true;
+        g_context.blueprint_config = {};
+        g_context.advanced_config = {};
         g_context.catalog_labels.store(std::move(labels), std::memory_order_release);
     }
     return true;
@@ -1401,14 +1447,16 @@ struct BirthAttribute {
 struct CombatConfigSource {
     std::string config_name;
     std::string row_name;
+    std::string server_blueprint;
     std::uint64_t config{};
+    std::uint64_t row_alias{};
     std::uint64_t pack{};
     std::uintptr_t row{};
     std::uintptr_t property_pack{};
     std::int32_t level{};
 };
 
-CombatConfigSource PrepareFinalTowerConfig(std::string_view config_name);
+CombatConfigSource PrepareCombatConfig(std::string_view config_name, std::string_view source_blueprint = {});
 
 struct BirthInitialization {
     std::uintptr_t actor_class{};
@@ -1422,7 +1470,11 @@ struct BirthInitialization {
     std::uintptr_t registration_cdo{};
     bool registration_substituted{};
     bool mute_boss_music{}, mute_boss_dialogue{};
+    bool skip_cutscenes{};
     std::uintptr_t story_audio_actor{};
+    std::vector<summon_lab::EditorField> editor_fields;
+    std::uintptr_t editor_actor{};
+    bool editor_attempted{}, editor_applied{};
 };
 
 using AttributeBaseInputFn = void (ANOMALY_CALL*)(void*, const void*, float);
@@ -1493,8 +1545,14 @@ void ClearSummonedState() {
     g_context.pending = {};
     g_context.summon_batch.reset();
     g_context.blueprint_config = {};
+    g_context.advanced_config = {};
     g_context.blueprint_check_delay = 0;
     g_pending_hint.store(0, std::memory_order_release);
+    g_context.editor.scan = {};
+    g_context.editor.snapshot = {};
+    g_context.editor.requested_path.clear();
+    g_context.editor.load_requested = false;
+    g_context.editor.record_cursor = 0;
 }
 
 void RegisterLocalBirth(AnomalyGenerationHandleV1 handle, std::uintptr_t actor,
@@ -1809,7 +1867,8 @@ void TransferLocalBirths(bool save) noexcept {
                         {"actor", binding.actor}, {"abilitySystem", binding.ability_system},
                         {"attributeSet", binding.attribute_set},
                         {"exactHP", binding.exact_hp},
-                        {"combatConfig", binding.combat_config.config_name}});
+                        {"combatConfig", binding.combat_config.config_name},
+                        {"combatSource", binding.combat_config.server_blueprint}});
             }
             std::ofstream file(path, std::ios::binary | std::ios::trunc);
             file << nlohmann::json{{"schemaVersion", 1}, {"pid", GetCurrentProcessId()},
@@ -1831,6 +1890,7 @@ void TransferLocalBirths(bool save) noexcept {
                 item.value("attributeSet", static_cast<std::uintptr_t>(0)),
                 item.value("exactHP", 0.0F)};
             binding.combat_config.config_name = item.value("combatConfig", std::string{});
+            binding.combat_config.server_blueprint = item.value("combatSource", std::string{});
             g_pending_local_births.push_back(std::move(binding));
         }
         g_restore_local_births.store(!g_pending_local_births.empty(), std::memory_order_release);
@@ -1852,7 +1912,7 @@ void RestoreLocalBirthsOnGameThread() {
             ResolveActorAttributeSet(binding.actor, &asc, &set) && asc == binding.ability_system)
         {
             RegisterLocalBirth(current, binding.actor, asc, set, binding.exact_hp,
-                PrepareFinalTowerConfig(binding.combat_config.config_name));
+                PrepareCombatConfig(binding.combat_config.config_name, binding.combat_config.server_blueprint));
         }
     }
     g_pending_local_births.clear();
@@ -2043,7 +2103,7 @@ void ANOMALY_CALL LocalRegistrationDetour(void* controller, const void* leader,
                         birth->registration_leader.data(), birth->registration_leader.size())) {
                     birth->registration_controller = reinterpret_cast<std::uintptr_t>(controller);
                     birth->registration_index = index;
-                    // Only this explicit FT birth may borrow a server CDO.
+                    // Only this birth's configured source may supply a server CDO.
                     // Keep the actor class, leader bytes and summon index intact.
                     if (birth->registration_cdo != 0) {
                         class_cdo = reinterpret_cast<void*>(birth->registration_cdo);
@@ -2280,6 +2340,8 @@ public:
     }
 };
 
+#include "blueprint_editor_runtime.hpp"
+
 // These native leaves are called directly by Blueprint VM instructions, which
 // do not pass through UObject::ProcessEvent. Filter the source instance here;
 // shared scripts, CDOs, FText arrays and global audio state remain engine-owned.
@@ -2407,6 +2469,7 @@ bool InstallStoryAudioHooks(const anomaly::sdk::Profile& profile) {
     return true;
 }
 
+
 bool DismissSummoned(AnomalyGenerationHandleV1 handle, std::uintptr_t pointer,
                      float previous_max_hp = 0.0F);
 void RefreshHealth(bool refresh_attributes = true);
@@ -2424,6 +2487,8 @@ struct SummonResult {
     SummonIdentity registration;
     std::string server_combat_source;
     std::vector<AttributeValue> attributes;
+    std::shared_ptr<summon_lab::EditorRuntime> editor;
+    std::string editor_warning;
     char label[96]{};
     char detail[kTextCapacity]{};
 };
@@ -2472,15 +2537,8 @@ std::string MonsterConfigName(std::string_view path) {
     path = path.substr(0, path.find_first_of(":' \t\r\n"));
     const auto separator = path.find_last_of("/.");
     auto name = path.substr(separator + 1);
-    const auto starts_with = [](std::string_view value, std::string_view prefix) {
-        return value.size() >= prefix.size() &&
-            _strnicmp(value.data(), prefix.data(), prefix.size()) == 0;
-    };
-    // FinalTower bosses inherit BossCharacterBase but live under Maps_4N.
-    // Their FT-prefixed config IDs belong to the scene's own monster table.
-    if (!starts_with(path, "/Game/Blueprints/Character/Monster/") &&
-        !starts_with(path, "/Game/Maps_4N/Blueprints/Character/Monster/") &&
-        !starts_with(name, "Boss_") && !starts_with(name, "mon_")) return {};
+    // NPCs in the HTAICharacter catalog use the same generated-class identity.
+    // Their lack of a monster row is a preflight hint, never a naming filter.
     if (name.size() >= 2 && _strnicmp(name.data() + name.size() - 2, "_C", 2) == 0)
         name.remove_suffix(2);
     return std::string(name);
@@ -2560,19 +2618,33 @@ public:
     }
 };
 
-std::uintptr_t FindLocalCombatConfig(std::uint64_t name, bool pack) {
+struct LocalCombatConfigLookup {
+    std::uintptr_t value{};
+    std::uint64_t row_alias{};
+};
+
+LocalCombatConfigLookup FindLocalCombatConfig(std::uint64_t name, bool pack) {
     const auto matches = [&](const CombatConfigSource& config) {
         return name != 0 && name == (pack ? config.pack : config.config);
     };
+    const auto select = [pack](const CombatConfigSource& config) {
+        return LocalCombatConfigLookup{pack ? config.property_pack : config.row,
+            pack ? 0 : config.row_alias};
+    };
     if (g_config_thread.load(std::memory_order_acquire) == GetCurrentThreadId() &&
         g_scoped_config != nullptr && matches(*g_scoped_config))
-        return pack ? g_scoped_config->property_pack : g_scoped_config->row;
+        return select(*g_scoped_config);
     std::scoped_lock lock(g_local_birth_mutex);
     for (const auto& binding : g_local_births) {
-        if (matches(binding.combat_config))
-            return pack ? binding.combat_config.property_pack : binding.combat_config.row;
+        // Aliased births retain their donor ID on the individual actor. Only
+        // FT needs a persistent scene fallback; different donors must not leak
+        // into other actors of the same base class.
+        const auto& config = binding.combat_config;
+        if ((pack || config.row_alias == 0) && matches(config)) return select(config);
+        if (!pack && config.row_alias != 0 && name == config.row_alias && config.row != 0)
+            return {config.row, 0};
     }
-    return 0;
+    return {};
 }
 
 using MonsterRowFn = std::uintptr_t (ANOMALY_CALL*)(std::uintptr_t, std::uint64_t);
@@ -2582,8 +2654,16 @@ std::uintptr_t ANOMALY_CALL FinalTowerMonsterRow(std::uintptr_t scene, std::uint
     try {
         LocalCombatLease lease(2);
         const auto original = reinterpret_cast<MonsterRowFn>(g_context.local_combat_hooks[2].original);
-        const auto row = original != nullptr ? original(scene, name) : 0;
-        return row != 0 || !lease ? row : FindLocalCombatConfig(name, false);
+        if (original == nullptr) return 0;
+        const auto configured = lease ? FindLocalCombatConfig(name, false) : LocalCombatConfigLookup{};
+        // Resolve the donor in this scene, through the original query. Do not
+        // cache a scene-owned row or recursively alias unrelated monsters.
+        if (configured.row_alias != 0) {
+            const auto row = original(scene, configured.row_alias);
+            return row != 0 ? row : configured.value;
+        }
+        const auto row = original(scene, name);
+        return row != 0 ? row : configured.value;
     } catch (...) { return 0; }
 }
 
@@ -2593,7 +2673,7 @@ std::uintptr_t ANOMALY_CALL FinalTowerPropertyPack(std::uintptr_t data, std::uin
         LocalCombatLease lease(3);
         const auto original = reinterpret_cast<PropertyPackFn>(g_context.local_combat_hooks[3].original);
         const auto pack = original != nullptr ? original(data, name, kind, context) : 0;
-        return pack != 0 || kind != 1 || !lease ? pack : FindLocalCombatConfig(name, true);
+        return pack != 0 || kind != 1 || !lease ? pack : FindLocalCombatConfig(name, true).value;
     } catch (...) { return 0; }
 }
 
@@ -2710,6 +2790,20 @@ CombatConfigSource PrepareFinalTowerConfig(std::string_view config_name) {
     return source;
 }
 
+CombatConfigSource PrepareCombatConfig(std::string_view config_name, std::string_view source_blueprint) {
+    if (source_blueprint.empty()) return PrepareFinalTowerConfig(config_name);
+    if (!g_final_tower.ready) return {};
+    const auto donor = MonsterConfigName(source_blueprint);
+    if (donor.empty()) return {};
+    auto source = PrepareFinalTowerConfig(donor);
+    source.config_name = config_name;
+    source.server_blueprint = source_blueprint;
+    if (source.row_name.empty()) source.row_name = donor;
+    if (!MakeConfigName(source.config_name, &source.config) ||
+        !MakeConfigName(donor, &source.row_alias)) return {};
+    return source;
+}
+
 bool InstallFinalTowerHooks(const anomaly::sdk::Profile& profile) {
     if (g_context.hooks == nullptr) return false;
     try {
@@ -2805,13 +2899,16 @@ bool ResolveSummonLevel(AnomalyGenerationHandleV1 pawn, std::string_view path,
 }
 
 BlueprintConfigState CheckBlueprintConfig(std::string_view path, CombatConfigSource* source = nullptr,
-                                         AnomalyGenerationHandleV1 pawn = {}, float* default_hp = nullptr) {
+                                         AnomalyGenerationHandleV1 pawn = {}, float* default_hp = nullptr,
+                                         std::string_view source_blueprint = {}) {
     if (default_hp != nullptr) *default_hp = 0.0F;
     const auto config_name = MonsterConfigName(path);
     if (config_name.empty()) return BlueprintConfigState::NotApplicable;
 
-    const auto prepared = PrepareFinalTowerConfig(config_name);
+    const auto prepared = PrepareCombatConfig(config_name, source_blueprint);
     if (source != nullptr) *source = prepared;
+    if (!source_blueprint.empty() && prepared.row_alias == 0)
+        return BlueprintConfigState::Unavailable;
     CombatConfigScope config_scope(prepared);
     AnomalyGenerationHandleV1 ht_util{};
     std::uint64_t config{};
@@ -2849,29 +2946,84 @@ BlueprintConfigState CheckBlueprintConfig(std::string_view path, CombatConfigSou
 }
 
 void UpdateBlueprintConfig(double delta_seconds) {
-    std::string path;
+    BlueprintConfigCheck check;
     {
         std::scoped_lock lock(g_context.mutex);
-        auto& check = g_context.blueprint_config;
-        if (check.path != g_context.class_path.data()) {
-            check = {g_context.class_path.data(), BlueprintConfigState::Pending};
+        auto& current = g_context.blueprint_config;
+        if (current.path != g_context.class_path.data() ||
+            current.requested_source != g_context.combat_config_blueprint) {
+            current = {g_context.class_path.data(), BlueprintConfigState::Pending};
+            current.requested_source = g_context.combat_config_blueprint;
             // Do not create FNames for every intermediate keystroke.
             g_context.blueprint_check_delay = 0.25;
             return;
         }
-        if (check.state != BlueprintConfigState::Pending || check.path.empty()) return;
+        if (current.stage == BlueprintConfigStage::Complete || current.path.empty()) return;
         g_context.blueprint_check_delay -= delta_seconds;
         if (g_context.blueprint_check_delay > 0) return;
+        check = current;
+    }
+    const auto requested = check.requested_source;
+    // At most one native health query per update. Candidates come from the
+    // cached Asset Registry catalog; checking them does not load blueprints.
+    switch (check.stage) {
+    case BlueprintConfigStage::Native: {
+        CombatConfigSource source;
+        check.state = CheckBlueprintConfig(check.path, &source);
+        check.source = source.row_name;
+        check.stage = check.requested_source.empty()
+            ? BlueprintConfigStage::Complete : BlueprintConfigStage::Borrowed;
+        if (check.state == BlueprintConfigState::NoHealth) {
+            std::scoped_lock lock(g_context.mutex);
+            for (const auto& entry : g_context.catalog)
+                if (summon_lab::IsCombatConfigCandidate(check.path, entry.path))
+                    check.candidates.push_back(entry.path);
+            check.stage = BlueprintConfigStage::Candidates;
+        }
+        break;
+    }
+    case BlueprintConfigStage::Candidates:
+        if (check.next_candidate < check.candidates.size()) {
+            const auto& candidate = check.candidates[check.next_candidate++];
+            float hp{};
+            if (CheckBlueprintConfig(candidate, nullptr, {}, &hp) == BlueprintConfigState::Available)
+                check.sources.push_back({candidate, hp});
+        }
+        if (check.next_candidate == check.candidates.size())
+            check.stage = check.requested_source.empty()
+                ? BlueprintConfigStage::Complete : BlueprintConfigStage::Borrowed;
+        break;
+    case BlueprintConfigStage::Borrowed: {
+        CombatConfigSource source;
+        check.state = CheckBlueprintConfig(check.path, &source, {}, nullptr, check.requested_source);
+        check.source = source.row_name;
+        check.stage = BlueprintConfigStage::Complete;
+        break;
+    }
+    case BlueprintConfigStage::Complete:
+        break;
+    }
+    std::scoped_lock lock(g_context.mutex);
+    if (check.path == g_context.class_path.data() && requested == g_context.combat_config_blueprint)
+        g_context.blueprint_config = std::move(check);
+}
+
+void UpdateAdvancedConfig() {
+    std::string path;
+    {
+        std::scoped_lock lock(g_context.mutex);
+        if (!g_context.advanced_combat_source || g_context.advanced_combat_blueprint.empty()) return;
+        auto& check = g_context.advanced_config;
+        if (check.path != g_context.advanced_combat_blueprint)
+            check = {g_context.advanced_combat_blueprint};
+        if (check.state != BlueprintConfigState::Pending) return;
         path = check.path;
     }
-    CombatConfigSource source;
-    const auto state = CheckBlueprintConfig(path, &source);
+    float hp{};
+    const auto state = CheckBlueprintConfig(path, nullptr, {}, &hp);
     std::scoped_lock lock(g_context.mutex);
-    // A render callback may have selected another blueprint during the query.
-    if (path == g_context.class_path.data()) {
-        g_context.blueprint_config.state = state;
-        g_context.blueprint_config.source = source.row_name;
-    }
+    if (path == g_context.advanced_combat_blueprint)
+        g_context.advanced_config = {path, state, hp};
 }
 
 std::string BirthPresetError(const std::array<BirthPreset, kBirthAttributeNames.size()>& presets) {
@@ -2913,7 +3065,45 @@ std::uintptr_t LoadServerCombatCdo(AnomalyGenerationHandleV1 library, const std:
         cdo == 0 || !ReadValue(cdo + g_layout.objectClass, &cdo_class) || cdo_class != uclass ||
         !ReadValue(cdo + g_layout.objectFlags, &flags) || (flags & 0x10U) == 0 ||
         !HandleFromPointer(cdo, &handle)) return 0;
-    return cdo;
+    // The native registration accepts AI character defaults. Advanced sources
+    // may come from a different family, but cannot be arbitrary UObject CDOs.
+    AnomalyGenerationHandleV1 ai_class{};
+    if (!FindHandle("/Script/HTGame.HTAICharacter", &ai_class)) return 0;
+    auto type = uclass;
+    for (int depth = 0; depth < 64 && type != 0; ++depth) {
+        AnomalyGenerationHandleV1 current{};
+        if (!HandleFromPointer(type, &current)) return 0;
+        if (current.id == ai_class.id && current.generation == ai_class.generation)
+            return cdo;
+        if (!ReadValue(type + g_layout.structSuper, &type)) return 0;
+    }
+    return 0;
+}
+
+bool SetActorCombatConfig(AnomalyGenerationHandleV1 handle, std::uintptr_t actor, std::uint64_t config) {
+    if (!IsActorUsable(handle, actor)) return false;
+    std::uintptr_t type{}, field_class{};
+    std::uint32_t type_id{};
+    std::uint64_t property_name{};
+    std::int32_t offset{}, size{}, dimension{}, owner_size{};
+    char name[64]{};
+    if (!ReadValue(actor + g_layout.objectClass, &type)) return false;
+    const auto property = FindProperty(type, "m_CharacterConfigID");
+    if (property == 0 || !ReadValue(property + g_layout.fieldClass, &field_class) ||
+        !ReadValue(field_class + g_layout.fieldClassName, &type_id) || !ResolveName(type_id, name, sizeof(name)) ||
+        std::strcmp(name, "NameProperty") != 0 ||
+        !ReadValue(property + g_layout.propertyElementSize, &size) || size != sizeof(config) ||
+        !ReadValue(property + g_layout.propertyArrayDim, &dimension) || dimension != 1 ||
+        !ReadValue(property + g_layout.propertyOffset, &offset) || offset < 0 ||
+        !ReadValue(type + g_layout.structSize, &owner_size) ||
+        offset > owner_size || size > owner_size - offset ||
+        !ReadValue(property + g_layout.fieldName, &property_name)) return false;
+    AnomalyGenerationHandleV1 library{};
+    summon_lab::NameProperty params{actor, property_name, config};
+    std::uint64_t actual{};
+    return FindHandle("/Script/Engine.Default__KismetSystemLibrary", &library) &&
+        InvokeByPath(library, "/Script/Engine.KismetSystemLibrary:SetNamePropertyByName", &params, sizeof(params)) &&
+        ReadValue(actor + offset, &actual) && actual == config;
 }
 
 summon_lab::Vector BatchSpawnOffset(const SummonSettings& settings, std::uint64_t index) {
@@ -3008,9 +3198,16 @@ bool FinishBatchPlacement(AnomalyGenerationHandleV1 actor, SummonBatch& batch,
     return false;
 }
 
+#include "cutscenes.hpp"
+
 SummonResult SummonOne(SummonBatch& batch) {
     SummonResult result;
     const auto& settings = batch.settings;
+    if (settings.skip_cutscenes && !g_cutscenes.ready.load(std::memory_order_acquire)) {
+        const auto message = g_context.localizer.Text("summon.cutscenes_unavailable", "Cutscene control unavailable");
+        std::snprintf(result.detail, sizeof(result.detail), "%s", message.c_str());
+        return result;
+    }
     if ((settings.mute_boss_music || settings.mute_boss_dialogue) &&
         !g_context.story_audio_ready.load(std::memory_order_acquire)) {
         const auto message = g_context.localizer.Text("summon.story_audio_unavailable",
@@ -3046,32 +3243,43 @@ SummonResult SummonOne(SummonBatch& batch) {
         return result;
     }
 
-    const auto& server_combat_blueprint = settings.server_combat_blueprint;
-    const bool compatibility = settings.compatibility;
+    const auto selected_source = summon_lab::SelectedCombatBlueprint(settings);
+    const bool advanced_source = settings.advanced_combat_source && !settings.advanced_combat_blueprint.empty();
+    const bool compatibility = settings.compatibility && !advanced_source;
     auto presets = settings.presets;
 
     CombatConfigSource combat_config;
-    const auto config_state = CheckBlueprintConfig(path, &combat_config, pawn);
-    if (config_state == BlueprintConfigState::NoHealth) {
-        const auto message = g_context.localizer.Text("summon.config_missing",
-            "Combat config missing in this scene; HP overrides cannot initialize it");
+    if (!advanced_source && !selected_source.empty() &&
+        !summon_lab::IsCombatConfigCandidate(path, selected_source)) {
+        const auto message = g_context.localizer.Text("summon.config_source_invalid", "Choose a combat config from this blueprint's variants");
         std::snprintf(result.detail, sizeof(result.detail), "%s", message.c_str());
         return result;
     }
-    if (compatibility) {
+    // Preflight is advisory. NPCs and other noncombat blueprints can legitimately
+    // have no monster row; the spawn must not depend on a positive HP lookup.
+    combat_config = PrepareCombatConfig(MonsterConfigName(path), selected_source);
+    if (!selected_source.empty() && combat_config.row_alias == 0) {
+        const auto message = g_context.localizer.Text("summon.compat_source_unavailable",
+            "Server combat source unavailable in this scene");
+        std::snprintf(result.detail, sizeof(result.detail), "%s", message.c_str());
+        return result;
+    }
+    const auto& server_combat_blueprint = compatibility
+        ? settings.server_combat_blueprint : combat_config.server_blueprint;
+    if (compatibility || !server_combat_blueprint.empty()) {
         float source_hp{};
-        if (server_combat_blueprint.empty() || g_layout.classDefaultObject == 0 ||
+        if (compatibility && (server_combat_blueprint.empty() ||
             MonsterConfigName(server_combat_blueprint).starts_with("FT_") ||
             CheckBlueprintConfig(server_combat_blueprint, nullptr, pawn, &source_hp) !=
-                BlueprintConfigState::Available) {
+                BlueprintConfigState::Available)) {
             const auto message = g_context.localizer.Text("summon.compat_source_unavailable",
                 "Server combat source unavailable in this scene");
             std::snprintf(result.detail, sizeof(result.detail), "%s", message.c_str());
             return result;
         }
         auto& hp = presets[kMaxHpAttribute];
-        if (!hp.enabled) hp = {1, source_hp};
-        if (hp.value > source_hp) {
+        if (compatibility && !hp.enabled) hp = {1, source_hp};
+        if (compatibility && hp.value > source_hp) {
             char capacity[48]{};
             std::snprintf(capacity, sizeof(capacity), "%.9g", source_hp);
             const std::array<std::string_view, 1> args{capacity};
@@ -3084,16 +3292,12 @@ SummonResult SummonOne(SummonBatch& batch) {
     }
     CombatConfigScope config_scope(combat_config);
     std::int32_t ai_level{};
-    if (!ResolveSummonLevel(pawn, path, settings.level, &ai_level)) {
-        const auto message = g_context.localizer.Text("summon.level_unavailable",
-            "Default level unavailable; enter a level");
-        std::snprintf(result.detail, sizeof(result.detail), "%s", message.c_str());
-        return result;
-    }
+    if (!ResolveSummonLevel(pawn, path, settings.level, &ai_level)) ai_level = 0;
 
     BirthInitialization birth;
     birth.mute_boss_music = settings.mute_boss_music;
     birth.mute_boss_dialogue = settings.mute_boss_dialogue;
+    birth.skip_cutscenes = settings.skip_cutscenes;
     const auto preset_error = BirthPresetError(presets);
     if (!preset_error.empty()) {
         std::snprintf(result.detail, sizeof(result.detail), "%s", preset_error.c_str());
@@ -3132,7 +3336,14 @@ SummonResult SummonOne(SummonBatch& batch) {
             return result;
         }
     }
-    if (compatibility) {
+    if (!ResolveEditorFields(birth.actor_class, settings.editor, birth.editor_fields) ||
+        (!birth.editor_fields.empty() && g_context.editor.birth_observer.id == 0) ||
+        !PrepareEditorRules(settings.editor, result.editor)) {
+        const auto message = g_context.localizer.Text("editor.prepare_failed", "Editor settings could not be resolved");
+        std::snprintf(result.detail, sizeof(result.detail), "%s", message.c_str());
+        return result;
+    }
+    if (!server_combat_blueprint.empty()) {
         birth.registration_cdo = LoadServerCombatCdo(lib_cdo, server_combat_blueprint);
         if (birth.registration_cdo == 0) {
             const auto message = g_context.localizer.Text("summon.compat_source_unavailable",
@@ -3157,8 +3368,8 @@ SummonResult SummonOne(SummonBatch& batch) {
     bool summoned{};
     {
         // SummonAI itself defers construction, configures level/leader/camp,
-        // then finishes spawning. GAS receives our inputs inside that call;
-        // no actor attributes or HP caches are patched after it returns.
+        // then finishes spawning. GAS receives custom base attributes inside
+        // that call; the native registration is configured after ownership.
         BirthScope scope(birth);
         summoned = InvokeByPath(pawn, kPathSummonAI, &parms, sizeof(parms));
     }
@@ -3186,11 +3397,8 @@ SummonResult SummonOne(SummonBatch& batch) {
     }
     result.handle = ai_handle;
     result.pointer = ai_pointer;
-    if (result.registration.controller.id == 0 || result.registration.index < 0) {
-        static_cast<void>(InvokeByPath(ai_handle, kPathDestroyActor, nullptr, 0));
-        std::snprintf(result.detail, sizeof(result.detail), "summon: native registration unresolved");
-        return result;
-    }
+    if (!birth.editor_fields.empty() && (!birth.editor_applied || birth.editor_actor != ai_pointer))
+        result.editor_warning = g_context.localizer.Text("editor.birth_failed", "Field overrides were not applied before BeginPlay");
     if (birth.registration_cdo != 0 && !birth.registration_substituted) {
         static_cast<void>(InvokeByPath(ai_handle, kPathDestroyActor, nullptr, 0));
         const auto message = g_context.localizer.Text("summon.compat_registration_failed",
@@ -3199,14 +3407,8 @@ SummonResult SummonOne(SummonBatch& batch) {
         return result;
     }
 
-    if (!ResolveActorAttributeSet(ai_pointer, &result.ability_system, &result.attribute_set) ||
-        result.ability_system == 0) {
-        static_cast<void>(InvokeByPath(ai_handle, kPathDestroyActor, nullptr, 0));
-        std::snprintf(result.detail, sizeof(result.detail), "summon: local combat attributes unresolved");
-        return result;
-    }
-    RegisterLocalBirth(ai_handle, ai_pointer, result.ability_system,
-                       result.attribute_set, birth.exact_hp, combat_config, result.registration);
+    const bool attributes_resolved = ResolveActorAttributeSet(ai_pointer, &result.ability_system,
+        &result.attribute_set) && result.ability_system != 0;
 
     // 未登记进召唤列表的 AI 没有归属，敌对化之后会在 AI tick 触发访问违例
     {
@@ -3216,6 +3418,15 @@ SummonResult SummonOne(SummonBatch& batch) {
                           "summon: AddSummonedAI failed");
             return result;
         }
+    }
+
+    // Preserve the chosen source on this instance so later native lookups use
+    // its donor even when another instance of the same class uses a different one.
+    if (combat_config.row_alias != 0 && !SetActorCombatConfig(ai_handle, ai_pointer, combat_config.row_alias)) {
+        static_cast<void>(DismissSummoned(ai_handle, ai_pointer));
+        const auto message = g_context.localizer.Text("summon.config_source_failed", "Combat config could not be applied; summon removed");
+        std::snprintf(result.detail, sizeof(result.detail), "%s", message.c_str());
+        return result;
     }
 
     if (settings.ignore_player) {
@@ -3266,16 +3477,40 @@ SummonResult SummonOne(SummonBatch& batch) {
     result.pet = settings.pet;
     float initial_hp{}, initial_max{};
     if (!ReadHealth(ai_handle, &initial_hp, &initial_max) || !std::isfinite(initial_hp) ||
-        !std::isfinite(initial_max) || initial_hp <= 0 || initial_max <= 0) {
+        !std::isfinite(initial_max)) {
         static_cast<void>(DismissSummoned(ai_handle, ai_pointer));
         const auto message = g_context.localizer.Text("summon.health_uninitialized",
             "Combat health was not initialized; summon removed");
         std::snprintf(result.detail, sizeof(result.detail), "%s", message.c_str());
         return result;
     }
+    const bool registered = result.registration.controller.id != 0 && result.registration.index >= 0;
+    // A real combat entity needs a native identity and an ability system.
+    // An entity born at 0/0 can still be managed and removed without either.
+    if (initial_max > 0.0F && (!registered || !attributes_resolved)) {
+        static_cast<void>(DismissSummoned(ai_handle, ai_pointer));
+        std::snprintf(result.detail, sizeof(result.detail), "summon: native combat initialization unresolved");
+        return result;
+    }
+    // These unconfigured base classes can inherit a scripted partial-health
+    // birth. Complete the new instance through the native setter after spawn
+    // and ownership registration, before validating custom HP or exposing it.
+    // This runs once; later damage and native health replies remain untouched.
+    if (combat_config.row_alias != 0 && initial_hp > 0.0F && initial_hp < initial_max) {
+        summon_lab::SetHealth health{initial_max};
+        if (!InvokeByPath(ai_handle, "/Script/HTGame.HTAbilityCharacter:SetHP", &health, sizeof(health)) ||
+            !ReadMatchingHealth(ai_handle, initial_max, &initial_hp, &initial_max)) {
+            static_cast<void>(DismissSummoned(ai_handle, ai_pointer));
+            const auto message = g_context.localizer.Text("summon.health_uninitialized",
+                "Combat health was not initialized; summon removed");
+            std::snprintf(result.detail, sizeof(result.detail), "%s", message.c_str());
+            return result;
+        }
+    }
     result.hp = initial_hp;
     result.max_hp = initial_max;
     bool birth_ok = true;
+    float applied_hp{};
     if (!birth.attributes.empty()) {
         birth_ok = birth.actor == ai_pointer && birth.attribute_set == result.attribute_set &&
                    result.attribute_set != 0;
@@ -3285,6 +3520,10 @@ SummonResult SummonOne(SummonBatch& batch) {
                 [&](const AttributeValue& value) { return value.name == preset.name; });
             birth_ok = birth_ok && preset.applied && found != result.attributes.end() &&
                        HealthMatches(found->base, preset.value);
+            if (preset.name == "HPMaxBase" && preset.applied && found != result.attributes.end() &&
+                birth.actor == ai_pointer && birth.attribute_set == result.attribute_set &&
+                HealthMatches(found->base, preset.value) && HealthMatches(initial_max, birth.exact_hp))
+                applied_hp = birth.exact_hp;
         }
         if (birth.exact_hp > 0) {
             float hp{}, max_hp{};
@@ -3295,14 +3534,10 @@ SummonResult SummonOne(SummonBatch& batch) {
         // full attribute list when selected; birth overrides are always verified above.
         static_cast<void>(ReadAttributeValues(result.attribute_set, &result.attributes));
     }
-    if (!birth_ok) {
-        static_cast<void>(DismissSummoned(ai_handle, ai_pointer));
-        result.ok = false;
-        std::snprintf(result.detail, sizeof(result.detail),
-                      "summon rejected: birth attributes were not initialized; actor removed");
-        return result;
-    }
-    if (birth.registration_controller != 0) {
+    if (attributes_resolved)
+        RegisterLocalBirth(ai_handle, ai_pointer, result.ability_system,
+            result.attribute_set, applied_hp, combat_config, result.registration);
+    if (registered && initial_max > 0.0F) {
         // SummonAI registers the server ability data, but unlike the native
         // opponent-summoner path it does not configure the resulting camp.
         // Mirror that native second step using the actual finished actor's camp.
@@ -3311,10 +3546,10 @@ SummonResult SummonOne(SummonBatch& batch) {
         ConfigureSummon configuration{birth.registration_leader, birth.registration_index, 0, 1.0F};
         bool configured = ReadCamp(ai_pointer, &camp);
         configuration.camp = camp;
-        if (configured && birth.exact_hp > 0.0F) {
+        if (configured && applied_hp > 0.0F) {
             std::scoped_lock lock(g_local_birth_mutex);
             g_birth_configurations.push_back({ai_handle, controller, result.ability_system,
-                configuration, birth.exact_hp, 0.0F, false, birth.registration_substituted});
+                configuration, applied_hp, 0.0F, false, compatibility});
         } else {
             configured = configured && InvokeByPath(controller,
                 "/Script/HTGame.HTPlayerController:ServerConfigureSummonedAI_HybridMode",
@@ -3331,7 +3566,7 @@ SummonResult SummonOne(SummonBatch& batch) {
             std::snprintf(message, sizeof(message),
                 "SummonLab native-configuration: actor=%p index=%d camp=%u %s",
                 reinterpret_cast<void*>(ai_pointer), birth.registration_index, static_cast<unsigned>(camp),
-                birth.exact_hp > 0.0F ? "waiting for native maximum" : "initialHPPercent=1 submitted");
+                applied_hp > 0.0F ? "waiting for native maximum" : "initialHPPercent=1 submitted");
             g_context.core->log(g_context.core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
                 anomaly::sdk::StringView(message));
         }
@@ -3339,7 +3574,7 @@ SummonResult SummonOne(SummonBatch& batch) {
     if (birth.registration_substituted && g_context.core != nullptr) {
         char message[kPathCapacity + 160]{};
         std::snprintf(message, sizeof(message),
-            "SummonLab FT-compatibility: actor=%p index=%d blueprint=%s serverSource=%s requestedHP=%.9g",
+            "SummonLab combat-source: actor=%p index=%d blueprint=%s serverSource=%s requestedHP=%.9g",
             reinterpret_cast<void*>(ai_pointer), birth.registration_index, path,
             result.server_combat_source.c_str(), birth.exact_hp);
         g_context.core->log(g_context.core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
@@ -3352,7 +3587,12 @@ SummonResult SummonOne(SummonBatch& batch) {
     const bool named = SetSpawnDisplayName(ai_handle, ai_pointer, settings.display_name.c_str());
     std::snprintf(result.label, sizeof(result.label), "%s",
                   named && !settings.display_name.empty() ? settings.display_name.c_str() : name);
-    if (!named) {
+    if (!birth_ok || initial_max <= 0.0F) {
+        const auto message = !birth_ok
+            ? g_context.localizer.Text("summon.attributes_unapplied", "Summoned; some custom attributes were not applied")
+            : g_context.localizer.Text("summon.no_combat_health", "Summoned without combat health");
+        std::snprintf(result.detail, sizeof(result.detail), "%s", message.c_str());
+    } else if (!named) {
         const auto message = g_context.localizer.Text("summon.name_failed",
             "Summoned, but the name could not be set");
         std::snprintf(result.detail, sizeof(result.detail), "%s", message.c_str());
@@ -4281,6 +4521,8 @@ void ConsumeSpawnRequest() {
         std::scoped_lock lock(g_context.mutex);
         std::snprintf(g_context.class_path.data(), g_context.class_path.size(),
                       "%s", class_path.c_str());
+        g_context.combat_config_blueprint.clear();
+        g_context.advanced_combat_source = 0;
         g_context.birth_presets[kMaxHpAttribute] = {hp != 0 ? 1 : 0, static_cast<double>(hp)};
         g_context.level = static_cast<std::uint32_t>(level);
         g_context.hostile = request["hostile"].get<bool>() ? 1 : 0;
@@ -4327,12 +4569,16 @@ void DrainOne() {
                     record.pet = result.pet;
                     record.mute_boss_music = op.batch->settings.mute_boss_music;
                     record.mute_boss_dialogue = op.batch->settings.mute_boss_dialogue;
+                    if (op.batch->settings.skip_cutscenes)
+                        g_cutscenes.sources[result.pointer] = result.handle;
                     record.hp = result.hp;
                     record.max_hp = result.max_hp;
                     record.registration = result.registration;
                     record.class_path = op.batch->settings.class_path;
                     record.server_combat_source = result.server_combat_source;
                     record.attributes = std::move(result.attributes);
+                    record.editor = std::move(result.editor);
+                    record.editor_warning = std::move(result.editor_warning);
                     std::snprintf(record.label, sizeof(record.label), "%s", result.label);
                     if (op.batch->completed == 0) {
                         g_context.selected_record_id = record.id;
@@ -4421,6 +4667,7 @@ void EnsureServices() {
 namespace {
 
 void ResetState() {
+    ResetCutscenes();
     g_context.preset_picker.Stop();
     static_cast<void>(g_context.preset_picker.TakeResult());
     {
@@ -4442,6 +4689,12 @@ void ResetState() {
     g_context.frame_counter = 0;
 
     g_context.class_path = {};
+    g_context.combat_config_blueprint.clear();
+    g_context.advanced_combat_blueprint.clear();
+    g_context.advanced_combat_source = 0;
+    g_context.combat_source_filter = {};
+    g_context.combat_source_page = 0;
+    g_context.advanced_config = {};
     g_context.blueprint_config = {};
     g_context.blueprint_check_delay = 0;
     g_context.display_name = {};
@@ -4472,6 +4725,7 @@ void ResetState() {
     g_context.ignore_player = 0;
     g_context.mute_boss_music = 0;
     g_context.mute_boss_dialogue = 0;
+    g_context.skip_cutscenes = 0;
     g_context.ft_compatibility = 0;
     g_context.summon_count = 1;
     g_context.summon_spacing = 5.0;
@@ -4499,6 +4753,22 @@ void ResetState() {
     g_context.preset_transfer.reset();
     g_context.last_result = {};
     g_context.last_result_failed = false;
+    g_context.editor.blueprints.clear();
+    g_context.editor.snapshot = {};
+    g_context.editor.requested_path.clear();
+    g_context.editor.load_requested = false;
+    g_context.editor.field_filter = {};
+    g_context.editor.skill_filter = {};
+    g_context.editor.effect_filter = {};
+    g_context.editor.field_page = g_context.editor.skill_page = g_context.editor.effect_page = 0;
+    g_context.editor.customized_only = g_context.editor.skills_selected_only = g_context.editor.effects_selected_only = 0;
+    g_context.editor.catalog.store({}, std::memory_order_release);
+    g_context.editor.catalog_requested.store(false, std::memory_order_release);
+    g_context.editor.catalog_busy.store(false, std::memory_order_release);
+    g_context.editor.catalog_task = {};
+    g_context.editor.birth_observer = {};
+    g_context.editor.scan = {};
+    g_context.editor.record_cursor = 0;
     g_context.catalog.clear();
     g_context.blueprint_options.clear();
     g_context.catalog_filter[0] = '\0';
@@ -4592,6 +4862,9 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* context) {
             g_context.core->log(g_context.core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO, anomaly::sdk::StringView(message));
         }
         g_layout_ready = true;
+        g_cutscenes.profile = profile;
+        g_cutscenes.pending = true;
+        StartBlueprintEditor();
         g_context.monster_level_query = ResolveMonsterLevelQuery(profile);
         g_context.current_chase_range_offset = ResolveDuelChaseRange(profile);
         const bool attributes_ready = InstallBirthAttributeHook(query, profile);
@@ -4644,6 +4917,13 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void* context, std::uint32_t) {
     g_context.catalog_stop.store(true, std::memory_order_release);
     if (g_context.scheduler && g_context.catalog_task.id)
         static_cast<void>(g_context.scheduler->cancel(g_context.scheduler->user, g_context.catalog_task));
+    if (g_context.scheduler && g_context.editor.catalog_task.id)
+        static_cast<void>(g_context.scheduler->cancel(g_context.scheduler->user, g_context.editor.catalog_task));
+    if (g_context.events && g_context.editor.birth_observer.id) {
+        const auto status = g_context.events->unsubscribe(g_context.events->user, g_context.editor.birth_observer);
+        if (status.code != ANOMALY_STATUS_V1_OK && status.code != ANOMALY_STATUS_V1_NOT_FOUND) return status;
+    }
+    g_context.editor.birth_observer = {};
     if (g_context.events != nullptr && g_context.health_observer.id != 0) {
         const auto status = g_context.events->unsubscribe(g_context.events->user, g_context.health_observer);
         if (status.code != ANOMALY_STATUS_V1_OK && status.code != ANOMALY_STATUS_V1_NOT_FOUND) return status;
@@ -4654,6 +4934,8 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void* context, std::uint32_t) {
     g_context.events = nullptr;
     g_context.monster_level_query = 0;
     g_context.birth_attributes_ready.store(false, std::memory_order_release);
+    const auto cutscene_status = ReleaseCutsceneHooks();
+    if (cutscene_status.code != ANOMALY_STATUS_V1_OK) return cutscene_status;
     const auto audio_status = ReleaseStoryAudioHooks();
     if (audio_status.code != ANOMALY_STATUS_V1_OK) return audio_status;
     const auto local_status = ReleaseLocalCombatHooks();
@@ -4693,6 +4975,7 @@ void ANOMALY_CALL Update(void* /*context*/, double delta_seconds) {
     UpdateSessionState();
     if (g_context.session_world_ready) AdvanceCatalogPreparation();
     if (!g_context.session_world_ready || !g_layout_ready) return;
+    UpdateCutscenes();
     ResolveFinalTowerHealthEvents();
     // The host runs on_update at its Game tick boundary. Do not invoke spawn
     // or configuration from arbitrary ProcessEvent callbacks: those may be
@@ -4700,6 +4983,10 @@ void ANOMALY_CALL Update(void* /*context*/, double delta_seconds) {
     RestoreLocalBirthsOnGameThread();
     ConfigureNativeBirthsOnGameThread();
     UpdateBlueprintConfig(delta_seconds);
+    UpdateAdvancedConfig();
+    UpdateEditorFields();
+    AdvanceEditorCatalog();
+    MaintainBlueprintEdits();
     bool spawning{};
     {
         std::scoped_lock lock(g_context.mutex);
@@ -4741,17 +5028,25 @@ void WrappedText(const AnomalyUiServiceV1* ui, std::string_view text) {
         ui->text(ui->user, anomaly::sdk::StringView(text));
 }
 
-void DrawBlueprintConfig(const AnomalyUiServiceV1* ui) {
+void DrawBlueprintConfig(const AnomalyUiServiceV1* ui, bool select_source) {
     BlueprintConfigState state;
     std::string source;
     std::string normal_combat_blueprint;
+    std::string selected_source;
+    std::vector<CombatConfigChoice> sources;
     {
         std::scoped_lock lock(g_context.mutex);
         if (g_context.class_path[0] == '\0') return;
         const auto& check = g_context.blueprint_config;
         state = !g_context.session_world_ready ? BlueprintConfigState::Unavailable :
-            check.path != g_context.class_path.data() ? BlueprintConfigState::Pending : check.state;
-        if (check.path == g_context.class_path.data()) source = check.source;
+            check.path != g_context.class_path.data() ||
+            check.requested_source != g_context.combat_config_blueprint
+                ? BlueprintConfigState::Pending : check.state;
+        if (check.path == g_context.class_path.data()) {
+            sources = check.sources;
+            selected_source = g_context.combat_config_blueprint;
+            if (check.requested_source == selected_source) source = check.source;
+        }
         const auto entry = g_context.blueprint_options.find(g_context.class_path.data());
         if (entry != g_context.blueprint_options.end())
             normal_combat_blueprint = entry->second.normal_combat_blueprint;
@@ -4769,7 +5064,9 @@ void DrawBlueprintConfig(const AnomalyUiServiceV1* ui) {
         text = localizer.Text("catalog.config_not_applicable", "Combat config check is not supported for this blueprint");
         break;
     case BlueprintConfigState::NoHealth:
-        text = localizer.Text("catalog.config_no_health", "No valid HP config found in the current scene");
+        text = sources.empty()
+            ? localizer.Text("catalog.config_no_health", "No valid HP config found in the current scene")
+            : localizer.Text("catalog.config_choose", "No default HP; a variant's combat config can be selected");
         break;
     case BlueprintConfigState::Available:
         text = localizer.Text("catalog.config_available", "Combat config found");
@@ -4778,7 +5075,33 @@ void DrawBlueprintConfig(const AnomalyUiServiceV1* ui) {
     WrappedText(ui, text);
     if (!source.empty()) {
         const std::array<std::string_view, 1> args{source};
-        WrappedText(ui, localizer.Format("catalog.config_source", "FT config: {0}", args));
+        WrappedText(ui, localizer.Format("catalog.config_source", "Combat config: {0}", args));
+    }
+    if (select_source && (!sources.empty() || !selected_source.empty()) &&
+        ui->begin_menu != nullptr && ui->end_menu != nullptr) {
+        const auto label = localizer.Text("catalog.config_select", "Select source");
+        if (ui->begin_menu(ui->user, anomaly::sdk::StringView(label), 1)) {
+            const auto native = localizer.Text("catalog.config_native", "Blueprint defaults");
+            if (ActionButton(ui, native.c_str(), !selected_source.empty())) {
+                std::scoped_lock lock(g_context.mutex);
+                g_context.combat_config_blueprint.clear();
+                ConfigurationChangedLocked();
+            }
+            for (const auto& choice : sources) {
+                const auto name = MonsterConfigName(choice.path);
+                char hp[48]{};
+                std::snprintf(hp, sizeof(hp), "%.9g", choice.hp);
+                const std::array<std::string_view, 2> args{name, hp};
+                const auto item = localizer.Format("catalog.config_choice", "{0} | HP {1}", args) +
+                    "##combat-source-" + choice.path;
+                if (ActionButton(ui, item.c_str(), choice.path != selected_source)) {
+                    std::scoped_lock lock(g_context.mutex);
+                    g_context.combat_config_blueprint = choice.path;
+                    ConfigurationChangedLocked();
+                }
+            }
+            ui->end_menu(ui->user);
+        }
     }
     if (!normal_combat_blueprint.empty()) {
         WrappedText(ui, localizer.Text("catalog.story_balance",
@@ -4790,7 +5113,8 @@ void DrawBlueprintConfig(const AnomalyUiServiceV1* ui) {
             std::scoped_lock lock(g_context.mutex);
             std::snprintf(g_context.class_path.data(), g_context.class_path.size(), "%s",
                 normal_combat_blueprint.c_str());
-        ConfigurationChangedLocked();
+            g_context.combat_config_blueprint.clear();
+            ConfigurationChangedLocked();
         }
     }
     if (state == BlueprintConfigState::Unavailable) {
@@ -4817,7 +5141,10 @@ void DrawBlueprintTab(const AnomalyUiServiceV1* ui) {
         const std::string label = localizer.Text("target.title", "Class path");
         std::scoped_lock lock(g_context.mutex);
         if (ui->input_text(ui->user, anomaly::sdk::StringView(label), g_context.class_path.data(),
-                       g_context.class_path.size(), 0)) ConfigurationChangedLocked();
+                       g_context.class_path.size(), 0)) {
+            g_context.combat_config_blueprint.clear();
+            ConfigurationChangedLocked();
+        }
     }
 
     const auto rescan_label = localizer.Text("catalog.scan", "Refresh catalog");
@@ -4939,6 +5266,7 @@ void DrawBlueprintTab(const AnomalyUiServiceV1* ui) {
                     std::scoped_lock lock(g_context.mutex);
                     std::snprintf(g_context.class_path.data(), g_context.class_path.size(), "%s",
                                   entry.path.c_str());
+                    g_context.combat_config_blueprint.clear();
                     ConfigurationChangedLocked();
                     g_context.last_result_failed = false;
                     std::snprintf(g_context.last_result.data(), g_context.last_result.size(), "%s",
@@ -4948,7 +5276,7 @@ void DrawBlueprintTab(const AnomalyUiServiceV1* ui) {
         }
         if (has_child) ui->end_child(ui->user);
     }
-    DrawBlueprintConfig(ui);
+    DrawBlueprintConfig(ui, false);
 }
 
 void DrawSettingsTab(const AnomalyUiServiceV1* ui) {
@@ -5060,6 +5388,92 @@ void DrawSettingsTab(const AnomalyUiServiceV1* ui) {
 }
 
 void DrawPresetSaveArea(const AnomalyUiServiceV1* ui);
+std::string BlueprintLabel(std::string_view path);
+
+#include "blueprint_editor_ui.hpp"
+
+bool DrawAdvancedSummonOptions(const AnomalyUiServiceV1* ui) {
+    const auto& localizer = g_context.localizer;
+    std::scoped_lock lock(g_context.mutex);
+    if (ui->checkbox) {
+        const auto enabled = localizer.Text("summon.advanced_source", "Use any blueprint's combat attributes");
+        if (ui->checkbox(ui->user, anomaly::sdk::StringView(enabled), &g_context.advanced_combat_source)) {
+            if (g_context.advanced_combat_source && g_context.advanced_combat_blueprint.empty())
+                g_context.advanced_combat_blueprint = g_context.combat_config_blueprint.empty()
+                    ? g_context.class_path.data() : g_context.combat_config_blueprint;
+            ConfigurationChangedLocked();
+        }
+    }
+    if (!g_context.advanced_combat_source) return false;
+
+    const auto source = g_context.advanced_combat_blueprint.empty()
+        ? localizer.Text("catalog.config_native", "Blueprint defaults")
+        : BlueprintLabel(g_context.advanced_combat_blueprint);
+    const std::array<std::string_view, 1> source_args{source};
+    WrappedText(ui, localizer.Format("summon.advanced_selected", "Attribute source: {0}", source_args));
+    if (ui->begin_menu && ui->end_menu) {
+        const auto select = localizer.Label("catalog.config_select", "Select source", "advanced-source");
+        if (ui->begin_menu(ui->user, anomaly::sdk::StringView(select), 1)) {
+            if (ui->input_text) {
+                const auto search = localizer.Label("catalog.filter", "Search", "combat-source-filter");
+                if (ui->input_text(ui->user, anomaly::sdk::StringView(search), g_context.combat_source_filter.data(),
+                        g_context.combat_source_filter.size(), 0)) g_context.combat_source_page = 0;
+            }
+            std::vector<const ClassEntry*> matches;
+            for (const auto& entry : g_context.catalog) {
+                const auto filter = g_context.combat_source_filter.data();
+                if (*filter && !(ui->filter_match
+                    ? ui->filter_match(ui->user, anomaly::sdk::StringView(filter), anomaly::sdk::StringView(entry.search_text)) != 0
+                    : entry.search_text.find(filter) != std::string::npos)) continue;
+                matches.push_back(&entry);
+            }
+            constexpr std::size_t page_size = 10;
+            const auto pages = std::max<std::size_t>(1, (matches.size() + page_size - 1) / page_size);
+            auto& page = g_context.combat_source_page;
+            page = std::min(page, pages - 1);
+            const auto previous = localizer.Label("page.prev", "<", "combat-source-prev");
+            if (ActionButton(ui, previous.c_str(), page > 0)) --page;
+            if (ui->same_line) ui->same_line(ui->user, 0, 10);
+            const auto number = std::to_string(page + 1), count = std::to_string(pages);
+            const std::array<std::string_view, 2> page_args{number, count};
+            ui->text(ui->user, anomaly::sdk::StringView(localizer.Format("page.indicator", "{0} / {1}", page_args)));
+            if (ui->same_line) ui->same_line(ui->user, 0, 10);
+            const auto next = localizer.Label("page.next", ">", "combat-source-next");
+            if (ActionButton(ui, next.c_str(), page + 1 < pages)) ++page;
+            const auto end = std::min(matches.size(), (page + 1) * page_size);
+            for (auto i = page * page_size; i < end; ++i) {
+                const auto& entry = *matches[i];
+                const auto label = entry.label + "###advanced-combat-source-" + entry.path;
+                if (ActionButton(ui, label.c_str(), entry.path != g_context.advanced_combat_blueprint)) {
+                    g_context.advanced_combat_blueprint = entry.path;
+                    ConfigurationChangedLocked();
+                    if (ui->close_current_popup) ui->close_current_popup(ui->user);
+                }
+            }
+            if (matches.empty()) WrappedText(ui, localizer.Text("catalog.no_match", "No matching blueprints"));
+            ui->end_menu(ui->user);
+        }
+    }
+    if (g_context.advanced_combat_blueprint.empty()) return true;
+    const auto& check = g_context.advanced_config;
+    const auto state = check.path == g_context.advanced_combat_blueprint
+        ? check.state : BlueprintConfigState::Pending;
+    if (state == BlueprintConfigState::Available) {
+        char hp[48]{};
+        std::snprintf(hp, sizeof(hp), "%.9g", check.hp);
+        const std::array<std::string_view, 1> args{hp};
+        WrappedText(ui, localizer.Format("summon.source_hp", "Source default HP: {0}", args));
+    } else if (state == BlueprintConfigState::Pending) {
+        WrappedText(ui, localizer.Text("catalog.config_pending", "Checking combat config..."));
+    } else if (state == BlueprintConfigState::NoHealth || state == BlueprintConfigState::NotApplicable) {
+        WrappedText(ui, localizer.Text("catalog.config_no_health", "No valid HP config found in the current scene"));
+    } else {
+        WrappedText(ui, localizer.Text("catalog.config_unavailable", "Combat config check unavailable"));
+        const auto retry = localizer.Label("catalog.config_retry", "Recheck", "advanced-source-retry");
+        if (ActionButton(ui, retry.c_str(), true)) g_context.advanced_config = {};
+    }
+    return true;
+}
 
 void DrawSummonTab(const AnomalyUiServiceV1* ui, bool ready) {
     const auto& localizer = g_context.localizer;
@@ -5128,8 +5542,12 @@ void DrawSummonTab(const AnomalyUiServiceV1* ui, bool ready) {
             if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 12.0F);
             const auto mute_dialogue = localizer.Text("param.mute_boss_dialogue", "Disable boss dialogue");
             if (ui->checkbox(ui->user, anomaly::sdk::StringView(mute_dialogue), &g_context.mute_boss_dialogue)) ConfigurationChangedLocked();
+            ui->same_line(ui->user, 0.0f, -1.0f);
+            const auto skip_cutscenes = localizer.Text("param.skip_cutscenes", "Disable cutscenes");
+            if (ui->checkbox(ui->user, anomaly::sdk::StringView(skip_cutscenes), &g_context.skip_cutscenes)) ConfigurationChangedLocked();
         }
-        if (MonsterConfigName(path).starts_with("FT_")) {
+        if (MonsterConfigName(path).starts_with("FT_") &&
+            !(g_context.advanced_combat_source && !g_context.advanced_combat_blueprint.empty())) {
             if (ui->checkbox != nullptr) {
                 const auto label = localizer.Text("summon.compatibility", "FT compatibility (experimental)");
                 if (ui->checkbox(ui->user, anomaly::sdk::StringView(label), &g_context.ft_compatibility)) ConfigurationChangedLocked();
@@ -5161,7 +5579,7 @@ void DrawSummonTab(const AnomalyUiServiceV1* ui, bool ready) {
             if (ActionButton(ui, cancel.c_str(), true)) CancelSummonsLocked();
         }
     }
-    DrawBlueprintConfig(ui);
+    if (!DrawAdvancedSummonOptions(ui)) DrawBlueprintConfig(ui, true);
     if (!g_context.birth_attributes_ready.load(std::memory_order_acquire)) {
         WrappedText(ui, localizer.Text("param.birth_unavailable",
             "The native summon initializer is unavailable"));
@@ -5544,6 +5962,8 @@ void DrawManagementTab(const AnomalyUiServiceV1* ui, bool ready) {
     std::vector<ManagementRecord> records;
     std::vector<AttributeValue> attributes;
     std::string server_combat_source;
+    std::string editor_warning;
+    std::string editor_rule_warning;
     std::string blueprint;
     std::map<std::string, std::vector<std::uint64_t>> groups, combat_groups;
     std::size_t count{};
@@ -5577,6 +5997,8 @@ void DrawManagementTab(const AnomalyUiServiceV1* ui, bool ready) {
                 selected = &records[i];
                 attributes = source.attributes;
                 server_combat_source = source.server_combat_source;
+                editor_warning = source.editor_warning;
+                editor_rule_warning = source.editor_rule_warning;
             }
         }
     }
@@ -5590,6 +6012,8 @@ void DrawManagementTab(const AnomalyUiServiceV1* ui, bool ready) {
         selected = nullptr;
         attributes.clear();
         server_combat_source.clear();
+        editor_warning.clear();
+        editor_rule_warning.clear();
         std::scoped_lock lock(g_context.mutex);
         g_context.management_blueprint = path;
         g_context.management_page = 0;
@@ -5675,6 +6099,8 @@ void DrawManagementTab(const AnomalyUiServiceV1* ui, bool ready) {
                     selected = &record;
                     attributes = g_context.records[k].attributes;
                     server_combat_source = g_context.records[k].server_combat_source;
+                    editor_warning = g_context.records[k].editor_warning;
+                    editor_rule_warning = g_context.records[k].editor_rule_warning;
                     break;
                 }
             }
@@ -5704,6 +6130,8 @@ void DrawManagementTab(const AnomalyUiServiceV1* ui, bool ready) {
         "manage.selected", "Manage entity #{0}", selected_args)));
     WrappedText(ui, selected->label.data());
     WrappedText(ui, BlueprintLabel(selected->class_path));
+    if (!editor_warning.empty()) WrappedText(ui, editor_warning);
+    if (!editor_rule_warning.empty()) WrappedText(ui, editor_rule_warning);
     if (!server_combat_source.empty()) {
         const std::array<std::string_view, 1> source_args{server_combat_source};
         WrappedText(ui, localizer.Format("summon.server_source", "Server combat: {0}", source_args));
@@ -5836,6 +6264,11 @@ void ANOMALY_CALL Draw(void* /*context*/, const AnomalyUiServiceV1* ui) {
         }
         if (ui->begin_tab_item(ui->user, anomaly::sdk::StringView(settings), nullptr, 0, 1)) {
             DrawSettingsTab(ui);
+            ui->end_tab_item(ui->user);
+        }
+        const auto editor = localizer.Label("tab.editor", "Editor", "editor");
+        if (ui->begin_tab_item(ui->user, anomaly::sdk::StringView(editor), nullptr, 0, 1)) {
+            DrawBlueprintEditor(ui, world_ready && invoke_ready);
             ui->end_tab_item(ui->user);
         }
         const auto summon = localizer.Label("tab.summon", "Summon", "summon");

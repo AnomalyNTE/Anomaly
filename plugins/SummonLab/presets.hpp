@@ -1,12 +1,14 @@
 #pragma once
 
 #include "attribute_catalog.hpp"
+#include "blueprint_edits.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <initializer_list>
 #include <stdexcept>
 #include <string>
@@ -36,14 +38,24 @@ struct BirthPreset {
 struct SummonSettings {
     std::string class_path;
     std::string display_name;
+    std::string combat_config_blueprint; // Optional same-family source, selected by the user.
+    std::string advanced_combat_blueprint;
+    bool advanced_combat_source{};
     std::string server_combat_blueprint; // Resolved from the active Profile, never imported.
     std::uint32_t level{}, skill_level{};
     bool hostile{}, pet{}, aggressive{}, ignore_player{}, compatibility{};
     bool mute_boss_music{}, mute_boss_dialogue{};
+    bool skip_cutscenes{};
     std::array<BirthPreset, kBirthAttributeNames.size()> presets{};
+    BlueprintEdits editor;
     std::uint32_t count{1};
     double spacing{5.0};
 };
+
+inline std::string_view SelectedCombatBlueprint(const SummonSettings& settings) {
+    return settings.advanced_combat_source && !settings.advanced_combat_blueprint.empty()
+        ? settings.advanced_combat_blueprint : settings.combat_config_blueprint;
+}
 
 struct SummonPreset {
     std::string name;
@@ -53,6 +65,7 @@ struct SummonPreset {
 struct SavedConfiguration {
     SummonSettings current;
     std::vector<SummonPreset> presets;
+    std::map<std::string, BlueprintEdits, std::less<>> editor_blueprints;
     std::string catalog_filter, attribute_filter;
     std::string export_name{kDefaultPresetFileName}, export_folder, import_file;
     bool only_overrides{}, only_current_blueprint{true};
@@ -69,6 +82,17 @@ inline bool ValidBlueprintPath(std::string_view path) {
         path.find('.') != std::string_view::npos && path.find('\0') == std::string_view::npos;
 }
 
+inline nlohmann::json EditorJson(const BlueprintEdits& edits) {
+    auto fields = nlohmann::json::array();
+    for (const auto& field : edits.fields) {
+        if (!ValidFieldValue(field.kind, field.value)) throw std::invalid_argument("blueprint field value");
+        fields.push_back({{"owner", field.owner}, {"name", field.name},
+            {"type", FieldKindName(field.kind)}, {"value", field.value}});
+    }
+    return {{"fields", std::move(fields)}, {"disabledSkills", edits.disabled_skills},
+        {"removedEffects", edits.removed_effects}};
+}
+
 inline nlohmann::json SettingsJson(const SummonSettings& value) {
     nlohmann::json attributes = nlohmann::json::object();
     for (std::size_t i = 0; i < value.presets.size(); ++i) {
@@ -82,11 +106,16 @@ inline nlohmann::json SettingsJson(const SummonSettings& value) {
     }
     if (!std::isfinite(value.spacing)) throw std::invalid_argument("spacing");
     return {{"blueprint", value.class_path}, {"displayName", value.display_name},
+        {"combatConfigBlueprint", value.combat_config_blueprint},
+        {"advancedCombatBlueprint", value.advanced_combat_blueprint},
+        {"advancedCombatSource", value.advanced_combat_source},
         {"level", value.level}, {"skillLevel", value.skill_level},
         {"hostile", value.hostile}, {"pet", value.pet}, {"aggressive", value.aggressive},
         {"ignorePlayer", value.ignore_player}, {"ftCompatibility", value.compatibility},
         {"muteBossMusic", value.mute_boss_music}, {"muteBossDialogue", value.mute_boss_dialogue},
-        {"count", value.count}, {"spacing", value.spacing}, {"attributes", std::move(attributes)}};
+        {"skipCutscenes", value.skip_cutscenes},
+        {"count", value.count}, {"spacing", value.spacing}, {"attributes", std::move(attributes)},
+        {"editor", EditorJson(value.editor)}};
 }
 
 inline std::string ReadText(const nlohmann::json& value, std::size_t capacity) {
@@ -111,12 +140,63 @@ inline void CheckKeys(const nlohmann::json& value, std::initializer_list<std::st
             throw std::invalid_argument("unknown setting");
 }
 
+inline BlueprintEdits ReadEditor(const nlohmann::json& json) {
+    CheckKeys(json, {"fields", "disabledSkills", "removedEffects"});
+    BlueprintEdits result;
+    if (!json.at("fields").is_array()) throw std::invalid_argument("blueprint fields");
+    for (const auto& item : json.at("fields")) {
+        CheckKeys(item, {"owner", "name", "type", "value"});
+        BlueprintFieldEdit field;
+        field.owner = ReadText(item.at("owner"), 512);
+        field.name = ReadText(item.at("name"), 256);
+        if (!ValidBlueprintPath(field.owner) || field.name.empty()) throw std::invalid_argument("blueprint field identity");
+        const auto type = item.at("type").get<std::string>();
+        if (type == "bool") field.kind = BlueprintFieldKind::Boolean;
+        else if (type == "int") field.kind = BlueprintFieldKind::Integer;
+        else if (type == "float") field.kind = BlueprintFieldKind::Float;
+        else if (type == "double") field.kind = BlueprintFieldKind::Double;
+        else throw std::invalid_argument("blueprint field type");
+        field.value = item.at("value").get<double>();
+        if (!ValidFieldValue(field.kind, field.value) || std::any_of(result.fields.begin(), result.fields.end(),
+                [&](const auto& other) { return other.owner == field.owner && other.name == field.name; }))
+            throw std::invalid_argument("blueprint field value or duplicate");
+        result.fields.push_back(std::move(field));
+    }
+    const auto paths = [](const nlohmann::json& items) {
+        if (!items.is_array()) throw std::invalid_argument("blueprint class list");
+        std::vector<std::string> result;
+        for (const auto& item : items) {
+            auto path = ReadText(item, 512);
+            if (!ValidBlueprintPath(path) || std::find(result.begin(), result.end(), path) != result.end())
+                throw std::invalid_argument("blueprint class identity");
+            result.push_back(std::move(path));
+        }
+        return result;
+    };
+    result.disabled_skills = paths(json.at("disabledSkills"));
+    result.removed_effects = paths(json.at("removedEffects"));
+    return result;
+}
+
 inline SummonSettings ReadSettings(const nlohmann::json& json) {
     CheckKeys(json, {"blueprint", "displayName", "level", "skillLevel", "hostile", "pet", "aggressive",
-        "ignorePlayer", "ftCompatibility", "muteBossMusic", "muteBossDialogue", "count", "spacing", "attributes"});
+        "ignorePlayer", "ftCompatibility", "muteBossMusic", "muteBossDialogue", "count", "spacing", "attributes",
+        "combatConfigBlueprint", "advancedCombatBlueprint", "advancedCombatSource", "editor", "skipCutscenes"});
     SummonSettings result;
     result.class_path = ReadText(json.at("blueprint"), 512);
     result.display_name = ReadText(json.at("displayName"), 96);
+    if (json.contains("combatConfigBlueprint")) {
+        result.combat_config_blueprint = ReadText(json.at("combatConfigBlueprint"), 512);
+        if (!result.combat_config_blueprint.empty() && !ValidBlueprintPath(result.combat_config_blueprint))
+            throw std::invalid_argument("combat config blueprint");
+    }
+    if (json.contains("advancedCombatBlueprint")) {
+        result.advanced_combat_blueprint = ReadText(json.at("advancedCombatBlueprint"), 512);
+        if (!result.advanced_combat_blueprint.empty() && !ValidBlueprintPath(result.advanced_combat_blueprint))
+            throw std::invalid_argument("advanced combat blueprint");
+    }
+    result.advanced_combat_source = json.value("advancedCombatSource", false);
+    if (json.contains("editor")) result.editor = ReadEditor(json.at("editor"));
     result.level = ReadUnsigned(json.at("level"), kMaximumLevel);
     result.skill_level = ReadUnsigned(json.at("skillLevel"), kMaximumLevel);
     result.hostile = json.at("hostile").get<bool>();
@@ -126,6 +206,7 @@ inline SummonSettings ReadSettings(const nlohmann::json& json) {
     result.compatibility = json.at("ftCompatibility").get<bool>();
     result.mute_boss_music = json.at("muteBossMusic").get<bool>();
     result.mute_boss_dialogue = json.at("muteBossDialogue").get<bool>();
+    result.skip_cutscenes = json.value("skipCutscenes", false);
     result.count = ReadUnsigned(json.at("count"), std::numeric_limits<std::uint32_t>::max());
     result.spacing = json.at("spacing").get<double>();
     if (result.count == 0 || !std::isfinite(result.spacing) || result.spacing < 0 || result.spacing > 100)
@@ -175,8 +256,11 @@ inline std::string BoundedDocument(const nlohmann::json& json) {
 }
 
 inline std::string ConfigurationJson(const SavedConfiguration& value) {
+    auto editors = nlohmann::json::object();
+    for (const auto& [path, edits] : value.editor_blueprints)
+        if (!edits.empty()) editors[path] = EditorJson(edits);
     return BoundedDocument({{"schemaVersion", kSettingsSchemaVersion}, {"current", SettingsJson(value.current)},
-        {"presets", PresetsJson(value.presets)}, {"ui", {
+        {"presets", PresetsJson(value.presets)}, {"editorBlueprints", std::move(editors)}, {"ui", {
             {"catalogFilter", value.catalog_filter}, {"attributeFilter", value.attribute_filter},
             {"onlyOverrides", value.only_overrides}, {"onlyCurrentBlueprint", value.only_current_blueprint},
             {"exportName", value.export_name}, {"exportFolder", value.export_folder},
@@ -187,11 +271,19 @@ inline bool ParseConfiguration(std::string_view text, SavedConfiguration& output
     try {
         if (text.size() > kMaximumSettingsBytes) return false;
         const auto json = nlohmann::json::parse(text);
-        CheckKeys(json, {"schemaVersion", "current", "presets", "ui"});
+        CheckKeys(json, {"schemaVersion", "current", "presets", "ui", "editorBlueprints"});
         if (ReadUnsigned(json.at("schemaVersion"), kSettingsSchemaVersion) != kSettingsSchemaVersion) return false;
         SavedConfiguration parsed;
         parsed.current = ReadSettings(json.at("current"));
         parsed.presets = ReadPresets(json.at("presets"));
+        if (json.contains("editorBlueprints")) {
+            const auto& editors = json.at("editorBlueprints");
+            if (!editors.is_object()) return false;
+            for (const auto& [path, edits] : editors.items()) {
+                if (!ValidBlueprintPath(path)) return false;
+                parsed.editor_blueprints.emplace(path, ReadEditor(edits));
+            }
+        }
         const auto& ui = json.at("ui");
         CheckKeys(ui, {"catalogFilter", "attributeFilter", "onlyOverrides", "onlyCurrentBlueprint",
             "exportName", "exportFolder", "importFile"});
@@ -237,13 +329,28 @@ inline std::string ConfigurationSchema() {
                 {"value", {{"type", "number"}, {"minimum", -std::numeric_limits<float>::max()},
                     {"maximum", std::numeric_limits<float>::max()}}}}}};
     const Json level{{"type", "integer"}, {"minimum", 0}, {"maximum", kMaximumLevel}};
+    const Json path{{"type", "string"}, {"maxLength", 511}};
+    const Json class_list{{"type", "array"}, {"items", path}, {"uniqueItems", true}};
+    const Json editor{{"type", "object"}, {"additionalProperties", false},
+        {"required", {"fields", "disabledSkills", "removedEffects"}},
+        {"properties", {{"disabledSkills", class_list}, {"removedEffects", class_list},
+            {"fields", {{"type", "array"}, {"items", {{"type", "object"}, {"additionalProperties", false},
+                {"required", {"owner", "name", "type", "value"}},
+                {"properties", {{"owner", path}, {"name", {{"type", "string"}, {"minLength", 1}, {"maxLength", 255}}},
+                    {"type", {{"type", "string"}, {"enum", {"bool", "int", "float", "double"}}}},
+                    {"value", {{"type", "number"}}}}}}}}}}}};
     const Json settings{{"type", "object"}, {"additionalProperties", false},
         {"required", {"blueprint", "displayName", "level", "skillLevel", "hostile", "pet", "aggressive",
             "ignorePlayer", "ftCompatibility", "muteBossMusic", "muteBossDialogue", "count", "spacing", "attributes"}},
         {"properties", {{"blueprint", {{"type", "string"}, {"maxLength", 511}}},
+            {"combatConfigBlueprint", {{"type", "string"}, {"maxLength", 511}}},
+            {"advancedCombatBlueprint", {{"type", "string"}, {"maxLength", 511}}},
+            {"advancedCombatSource", boolean},
+            {"editor", editor},
             {"displayName", {{"type", "string"}, {"maxLength", 95}}}, {"level", level}, {"skillLevel", level},
             {"hostile", boolean}, {"pet", boolean}, {"aggressive", boolean}, {"ignorePlayer", boolean},
             {"ftCompatibility", boolean}, {"muteBossMusic", boolean}, {"muteBossDialogue", boolean},
+            {"skipCutscenes", boolean},
             {"count", {{"type", "integer"}, {"minimum", 1}, {"maximum", std::numeric_limits<std::uint32_t>::max()}}},
             {"spacing", {{"type", "number"}, {"minimum", 0}, {"maximum", 100}}},
             {"attributes", {{"type", "object"}, {"additionalProperties", false}, {"properties", attributes}}}}}};
@@ -251,6 +358,7 @@ inline std::string ConfigurationSchema() {
         {"required", {"schemaVersion", "current", "presets", "ui"}},
         {"properties", {{"schemaVersion", {{"type", "integer"}, {"enum", {kSettingsSchemaVersion}}}},
             {"current", {{"$ref", "#/definitions/settings"}}},
+            {"editorBlueprints", {{"type", "object"}, {"additionalProperties", editor}}},
             {"presets", {{"type", "array"}, {"items", {
                 {"type", "object"}, {"additionalProperties", false}, {"required", {"name", "settings"}},
                 {"properties", {{"name", {{"type", "string"}, {"minLength", 1}, {"maxLength", kPresetNameCapacity - 1}}},

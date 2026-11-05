@@ -29,6 +29,11 @@ struct MakeSoftClassPath { NativeString input; SoftClassPath result{}; };
 struct ConvertSoftClass { SoftClassPath input{}; SoftClassRef result{}; };
 struct LoadClass { SoftClassRef input{}; std::uintptr_t result{}; };
 struct HealthMaximum { std::uint8_t fixed{}; float result{}; };
+struct SetHealth {
+    float hp{};
+    std::uint8_t damage_reason{}, real_dead_damage{};
+    float real_damage{};
+};
 #ifdef _MSC_VER
 #pragma warning(push)
 #pragma warning(disable: 4324) // The native FTransform parameter requires 16-byte alignment.
@@ -55,10 +60,13 @@ struct ConfigureSummon {
 struct ObjectBool { std::uintptr_t object{}; std::uint8_t value{}; };
 struct TextProperty { std::uintptr_t object{}; std::uint64_t name{}; std::array<std::uint8_t, 16> value{}; };
 struct BoolProperty { std::uintptr_t object{}; std::uint64_t name{}; std::uint8_t value{}; };
+struct NameProperty { std::uintptr_t object{}; std::uint64_t name{}, value{}; };
 static_assert(sizeof(SummonParameters) == 208 && sizeof(ConfigureSummon) == 52);
 static_assert(sizeof(MakeSoftClassPath) == 48 && sizeof(ConvertSoftClass) == 72 && sizeof(LoadClass) == 48);
 static_assert(sizeof(HealthMaximum) == 8 && sizeof(Transform) == 96 && sizeof(TextProperty) == 32);
 static_assert(sizeof(ObjectBool) == 16 && sizeof(BoolProperty) == 24);
+static_assert(sizeof(NameProperty) == 24);
+static_assert(sizeof(SetHealth) == 12 && offsetof(SetHealth, real_damage) == 8);
 static_assert(offsetof(Transform, translation) == 32 && offsetof(Transform, scale) == 64);
 static_assert(offsetof(SummonParameters, offset) == 48 && offsetof(SummonParameters, transform) == 96);
 static_assert(sizeof(TeleportParameters) == 56 && offsetof(TeleportParameters, result) == 48);
@@ -70,6 +78,10 @@ static_assert(sizeof(TeleportParameters) == 56 && offsetof(TeleportParameters, r
     X(objectClass, std::uintptr_t) \
     X(objectName, std::uint64_t) \
     X(objectOuter, std::uintptr_t) \
+    X(functionFlags, std::uint32_t) \
+    X(functionParameterSize, std::uint16_t) \
+    X(functionExec, std::uintptr_t) \
+    X(scriptFrameObject, std::uintptr_t) \
     X(classDefaultObject, std::uintptr_t) \
     X(characterAbilitySystem, std::uintptr_t) \
     X(characterAttributeSet, std::uintptr_t) \
@@ -85,6 +97,10 @@ static_assert(sizeof(TeleportParameters) == 56 && offsetof(TeleportParameters, r
     X(propertyArrayDim, std::int32_t) \
     X(propertyElementSize, std::int32_t) \
     X(propertyOffset, std::int32_t) \
+    X(propertyFlags, std::uint64_t) \
+    X(boolByteOffset, std::uint8_t) \
+    X(boolByteMask, std::uint8_t) \
+    X(boolFieldMask, std::uint8_t) \
     X(propertyStruct, std::uintptr_t) \
     X(arrayInner, std::uintptr_t) \
     X(attributeProperty, std::uintptr_t) \
@@ -148,6 +164,12 @@ inline bool LoadNativeLayout(const anomaly::sdk::Profile& profile, NativeLayout*
 #define LOAD_BUFFER(name) parsed.name = values.at(#name);
         SUMMON_BUFFER_FIELDS(LOAD_BUFFER)
 #undef LOAD_BUFFER
+        if (!ValidBuffer(parsed.propertyStruct, {{parsed.propertyArrayDim, sizeof(std::int32_t)},
+                {parsed.propertyElementSize, sizeof(std::int32_t)}, {parsed.propertyFlags, sizeof(std::uint64_t)},
+                {parsed.propertyOffset, sizeof(std::int32_t)}}) ||
+            parsed.boolByteOffset < parsed.propertyStruct ||
+            parsed.boolByteMask != parsed.boolByteOffset + sizeof(std::uint8_t) ||
+            parsed.boolFieldMask != parsed.boolByteMask + sizeof(std::uint8_t)) return false;
         if (parsed.characterForNetSize != sizeof(NativeIdentity) ||
             parsed.diagnosticSummonIndex != sizeof(NativeIdentity) - sizeof(std::int32_t) ||
             parsed.attributeDataSize > 64 ||

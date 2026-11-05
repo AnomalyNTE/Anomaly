@@ -27,6 +27,10 @@
     "propertyArrayDim": 48,
     "propertyElementSize": 52,
     "propertyOffset": 68,
+    "propertyFlags": 56,
+    "boolByteOffset": 113,
+    "boolByteMask": 114,
+    "boolFieldMask": 115,
     "propertyStruct": 112,
     "arrayInner": 120,
     "containerOwner": 264,
@@ -50,7 +54,11 @@
     "objectItemSize": 24,
     "objectItemObject": 0,
     "objectItemFlags": 8,
-    "objectRootFlag": 1073741824
+    "objectRootFlag": 1073741824,
+    "functionFlags": 176,
+    "functionParameterSize": 182,
+    "functionExec": 216,
+    "scriptFrameObject": 24
   },
   "symbols": [
     {
@@ -116,7 +124,9 @@
         {
           "pattern": "F3 0F 11 89 08 08 00 00 C3",
           "entry": "F3 0F 11 89 08 08 00 00 C3",
-          "values": { "currentChaseRange": 2056 }
+          "values": {
+            "currentChaseRange": 2056
+          }
         }
       ]
     },
@@ -254,6 +264,100 @@
           "callOffset": 9,
           "entry": "48 89 5C 24 10 48 89 74 24 20 4C 89 44 24 18 57 48 83 EC 40 48 8B F2 48 8B F9 48 85 D2",
           "values": {}
+        }
+      ]
+    },
+    {
+      "name": "cutscene-exec-world",
+      "candidates": [
+        {
+          "pattern": "4C 8B DC 55 53 57 41 54 41 57 49 8D AB 08 FE FF FF 48 81 EC D0 02 00 00",
+          "entry": "4C 8B DC 55 53 57 41 54 41 57 49 8D AB 08 FE FF FF 48 81 EC D0 02 00 00",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "cutscene-exec-soft",
+      "candidates": [
+        {
+          "pattern": "48 8B C4 48 89 58 18 48 89 70 20 55 57 41 56 48 8D A8 58 FD FF FF 48 81 EC 90 03 00 00",
+          "entry": "48 8B C4 48 89 58 18 48 89 70 20 55 57 41 56 48 8D A8 58 FD FF FF 48 81 EC 90 03 00 00",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "cutscene-exec-play",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 18 55 56 57 48 8D AC 24 F0 FE FF FF 48 81 EC 10 02 00 00",
+          "entry": "48 89 5C 24 18 55 56 57 48 8D AC 24 F0 FE FF FF 48 81 EC 10 02 00 00",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "cutscene-exec-create",
+      "candidates": [
+        {
+          "pattern": "48 8B C4 48 89 58 08 48 89 70 20 55 57 41 56 48 8D A8 78 FD FF FF 48 81 EC 70 03 00 00",
+          "entry": "48 8B C4 48 89 58 08 48 89 70 20 55 57 41 56 48 8D A8 78 FD FF FF 48 81 EC 70 03 00 00",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "cutscene-exec-async-play",
+      "candidates": [
+        {
+          "pattern": "48 8B C4 48 89 58 08 48 89 70 20 55 57 41 56 48 8D A8 78 FD FF FF 48 81 EC 70 03 00 00",
+          "entry": "48 8B C4 48 89 58 08 48 89 70 20 55 57 41 56 48 8D A8 78 FD FF FF 48 81 EC 70 03 00 00",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "cutscene-play-soft",
+      "candidates": [
+        {
+          "pattern": "E8 ?? ?? ?? ??",
+          "callOffset": 0,
+          "entry": "40 55 53 56 41 56 41 57 48 8D AC 24 40 FF FF FF 48 81 EC C0 01 00 00 48 83 7A 08 00",
+          "values": { "execCallsite": 1035 }
+        }
+      ]
+    },
+    {
+      "name": "cutscene-play",
+      "candidates": [
+        {
+          "pattern": "E8 ?? ?? ?? ??",
+          "callOffset": 0,
+          "entry": "40 55 53 56 57 41 56 48 8D 6C 24 D0 48 81 EC 30 01 00 00",
+          "values": { "execCallsite": 695 }
+        }
+      ]
+    },
+    {
+      "name": "cutscene-create",
+      "candidates": [
+        {
+          "pattern": "E8 ?? ?? ?? ??",
+          "callOffset": 0,
+          "entry": "48 89 5C 24 18 48 89 6C 24 20 56 57 41 56 48 81 EC B0 00 00 00",
+          "values": { "execCallsite": 1092 }
+        }
+      ]
+    },
+    {
+      "name": "cutscene-async-play",
+      "candidates": [
+        {
+          "pattern": "E8 ?? ?? ?? ??",
+          "callOffset": 0,
+          "entry": "48 89 5C 24 18 48 89 6C 24 20 56 57 41 56 48 81 EC B0 00 00 00",
+          "values": { "execCallsite": 1092 }
         }
       ]
     }
