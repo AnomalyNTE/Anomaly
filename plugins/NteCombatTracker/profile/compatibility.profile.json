@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "game": "nte",
+  "module": "HTGame.exe",
+  "section": ".text",
+  "contract": "nte-combat-tracker-v1",
+  "layout": {
+    "kGObjectsAddendMagnitude": 16,
+    "kObjectNameOffset": 24,
+    "kObjectRegistryItemsOffset": 16,
+    "kObjectCountOffset": 36,
+    "kObjectMaxCountOffset": 32,
+    "kObjectMaxChunksOffset": 40,
+    "kObjectNumChunksOffset": 44,
+    "kObjectChunkSize": 65536,
+    "kObjectItemStride": 24,
+    "kObjectItemSerialOffset": 16,
+    "kTextFieldOffset": 392,
+    "kSetTextVtableOffset": 856,
+    "kInstancedStructData": 8,
+    "kStructSuperStruct": 64,
+    "kStructChildProperties": 112,
+    "kFieldName": 32,
+    "kFieldClass": 8,
+    "kFieldNext": 72,
+    "kPropertyElementSize": 52,
+    "kPropertyOffsetInternal": 68,
+    "kDataTableRowStruct": 40,
+    "kDataTableRowMap": 48,
+    "kRowMapCount": 8,
+    "kRowMapMax": 12,
+    "kRowStride": 24,
+    "kRowKeyNumber": 4,
+    "kRowData": 8,
+    "kDiagnosticSlotStart": 96,
+    "kDiagnosticSlotEnd": 152,
+    "kDiagnosticSlotStep": 8
+  },
+  "symbols": [
+    {
+      "name": "kSetTextPattern",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 10 48 89 74 24 18 57 48 83 EC 50 48 8B F9 48 8B F2 48 8B 0A 48 8B 9F 88 01 00 00 48 3B D9 74 25 48 89 8F 88 01 00 00 48 85 C9 74 0B 48 8B 01 48 8D 54 24 60 FF 50 08 48 85 DB 74 09 48 8B 03 48 8B CB FF 50 10 8B 46 08 48 8D 54 24 60",
+          "entry": "48 89 5C 24 10 48 89 74 24 18 57 48 83 EC 50 48 8B F9 48 8B F2 48 8B 0A 48 8B 9F 88 01 00 00 48 3B D9 74 25 48 89 8F 88 01 00 00 48 85 C9 74 0B 48 8B 01 48 8D 54 24 60 FF 50 08 48 85 DB 74 09 48 8B 03 48 8B CB FF 50 10 8B 46 08 48 8D 54 24 60",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kFreeStringPattern",
+      "candidates": [
+        {
+          "pattern": "48 85 C9 74 2E 53 48 83 EC 20 48 8B D9 48 8B 0D ?? ?? ?? ?? 48 85 C9 75 0C E8 ?? ?? ?? ?? 48 8B 0D ?? ?? ?? ?? 48 8B 01 48 8B D3 FF 50 48 48 83 C4 20 5B C3",
+          "entry": "48 85 C9 74 2E 53 48 83 EC 20 48 8B D9 48 8B 0D",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kTextToStringPattern",
+      "candidates": [
+        {
+          "pattern": "40 53 48 83 EC 20 48 8B D9 48 8B CA E8 ?? ?? ?? ?? 48 8B D0 48 8B CB E8 ?? ?? ?? ?? 48 8B C3 48 83 C4 20 5B C3",
+          "entry": "40 53 48 83 EC 20 48 8B D9 48 8B CA E8",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "kGObjectsPattern",
+      "candidates": [
+        {
+          "pattern": "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3 33 C0 48 8B 00 C3",
+          "entry": "48 8B 05",
+          "values": {}
+        }
+      ]
+    }
+  ]
+}
