@@ -474,7 +474,9 @@ target_include_directories(
     anomaly_i18n PUBLIC include PRIVATE "${GENERATED_DIR}")
 target_compile_definitions(
     anomaly_i18n PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-target_compile_options(anomaly_i18n PRIVATE /W4 /permissive- /EHsc)
+# The embedded catalog is a raw string literal holding UTF-8; without /utf-8 MSVC decodes it
+# with the local code page and the bytes become ill-formed at parse time.
+target_compile_options(anomaly_i18n PRIVATE /W4 /permissive- /EHsc /utf-8)
 target_link_libraries(anomaly_i18n PRIVATE nlohmann_json::nlohmann_json)
 
 add_library(anomaly_config STATIC src/platform/windows/config.cpp)
