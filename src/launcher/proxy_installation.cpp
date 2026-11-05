@@ -3,6 +3,7 @@
 #include "anomaly/artifact_crypto.hpp"
 
 #include <Windows.h>
+#include <TlHelp32.h>
 
 #include <algorithm>
 #include <array>
@@ -48,6 +49,27 @@ bool IsTransientMoveFailure(DWORD error) noexcept {
 }
 
 // Filesystem filters can briefly deny delete sharing after Runtime inventory reads.
+
+// A running game keeps Anomaly.Core.dll mapped, which makes the runtime directory impossible to
+// rename (MoveFileEx then fails with ERROR_ACCESS_DENIED instead of a sharing violation).
+bool GameExecutableRunning() noexcept {
+    const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) return false;
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    bool running = false;
+    if (Process32FirstW(snapshot, &entry) != FALSE) {
+        do {
+            if (::_wcsicmp(entry.szExeFile, L"HTGame.exe") == 0) {
+                running = true;
+                break;
+            }
+        } while (Process32NextW(snapshot, &entry) != FALSE);
+    }
+    CloseHandle(snapshot);
+    return running;
+}
+
 DWORD MovePath(
     const std::filesystem::path& source,
     const std::filesystem::path& destination) noexcept {
@@ -456,6 +478,14 @@ ProxyInstallationStatus InstallProxyRuntime(
         }
     };
     if (replace_runtime && has_runtime) {
+        if (GameExecutableRunning()) {
+            std::filesystem::remove_all(runtime_staging, error);
+            std::filesystem::remove(proxy_staging, error);
+            return Failure(
+                game_directory, ProxyInstallationState::Unavailable,
+                ProxyInstallationError::IoFailure,
+                "the game is still running; close HTGame.exe before updating the runtime");
+        }
         const DWORD move_error = MovePath(runtime_target, runtime_backup);
         if (move_error != ERROR_SUCCESS) {
             std::filesystem::remove_all(runtime_staging, error);
@@ -464,7 +494,8 @@ ProxyInstallationStatus InstallProxyRuntime(
                 game_directory, ProxyInstallationState::Unavailable,
                 ProxyInstallationError::IoFailure,
                 Win32Failure(
-                    "installed runtime could not be prepared for update", move_error));
+                    "installed runtime could not be prepared for update "
+                    "(close the game and anything else using the runtime folder)", move_error));
         }
         runtime_backed_up = true;
     }
