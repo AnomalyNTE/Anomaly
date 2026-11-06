@@ -245,6 +245,19 @@ The plugin adjusts two existing sets of knobs directly and does not add or repla
 
 When checked, it first reads the **current values** of these fields as the initial values and writes them to disk, then pushes them to the minimum; it only writes once when checking and once when unchecking, with no periodic polling or write-back. Disabling or reloading the plugin also restores the initial values, so the world is not left with empty streets. The window hotkey is fixed at F8, the toggle hotkey is changeable and unbound by default; the checked state and the initial values persist in the plugin storage directory.
 
+## NTE Vehicle
+
+| | |
+| --- | --- |
+| **ID** | `anomaly.nte-vehicle` |
+| **Purpose** | Vehicle catalog, plain and customized summons, current driving state, 0.05–100x speed, torque, wheel friction, land-vehicle durability protection, and batch tuning of loaded non-player vehicles. Identification, reflection validation, summoning and parameter access all run in the plugin. |
+| **Required services** | Generic memory, Profile/JSON, UE5 names/objects/ProcessEvent/Game-thread services, plus player snapshots, UI, input, windows, localization and plugin state. |
+| **Requires Profile** | Yes; the host loads the package's `profile/compatibility.profile.json`. Vehicle fields are validated by reflected name, type and size; unavailable or incompatible bindings disable the affected operation. |
+
+Enable the plugin on the **Plugins** page, then press **K** to open the vehicle menu. Developer mode is not required. Select a model for a plain summon, or choose modules and a skin before using **Summon customized vehicle**; models without available skins use the game's default materials. The menu displays summon results and failure reasons.
+
+Disabling the plugin stops ongoing speed and durability maintenance. To restore the current vehicle's parameters, use **Restore defaults** before disabling it. Vehicle functionality is owned and called entirely within the plugin.
+
 ## Developer-mode debugging plugins
 
 After you enable session developer mode, the plugin catalog also shows `Teleport Landmarks Probe` (`anomaly.teleport-landmarks-probe`). It enumerates every teleportable landmark the framework provides, showing `TeleportID`, owning world, world coordinates, floor, type and override destination coordinates for each entry, and it lets you submit a `Normal` or `SellingIndulgences` teleport from the options. The plugin only consumes `anomaly.nte.map-landmarks`: it stores no signatures or offsets and does not scan objects, parse DataTables or call UE `ProcessEvent` itself; after developer mode is turned off it no longer appears in the installed plugin view and does not execute teleport requests.
@@ -274,18 +287,6 @@ In developer mode you can also use `Map Spawn Exporter` (`anomaly.map-spawn-expo
 | **Requires Profile** | No |
 
 The default target is `dumper-7.dll`. Put the target DLL into `Anomaly\plugins\DllLoader\` and enable the plugin to load it; you can also enter a package-relative or absolute path in the plugin window. A path change is only kept in memory during the render callback, so reload the plugin from the **Plugins** page afterwards, and the lifecycle saves the settings, releases the old DLL and then loads the new path. Clearing the path and reloading disables DLL loading.
-
-
-### NTE Vehicle
-
-| | |
-| --- | --- |
-| **ID** | `anomaly.nte-vehicle` |
-| **Purpose** | Provide the current driven vehicle snapshot, a vehicle catalog and summoning, speed multiplier, engine torque, wheel friction tuning, and target speed control for loaded non-player vehicles. The default 10x speed, 0.5–10x fine range, 70 km/h baseline and batch target range are all managed by the plugin; Core only validates values, identifies target objects and performs the actual reads and writes. Disabling the plugin requests restoration of the current vehicle's original parameters. |
-| **Required services** | `anomaly.ui`, `anomaly.nte.vehicle` v6, `anomaly.nte.player` |
-| **Requires Profile** | Yes; Core publishes the vehicle service only when the active Profile's native symbols, layout validation, Game thread and reflection bindings pass. |
-
-The debug key and the fixed SHA-256 digest check are held by the plugin, and Core keeps no key or unlock state. The plugin does not record what you type, the input box uses password masking, and fine speed tuning stays locked when verification fails. Do not write the key into logs, issues, PRs or public screenshots.
 
 ### Time Accel
 
