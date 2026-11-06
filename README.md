@@ -8,6 +8,8 @@
 
 qq交流群: 1037114140
 
+<a href="https://discord.gg/tfeh8QQ9Vy"><img src="https://img.shields.io/badge/Discord-Join%20the%20community-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Join the Anomaly Discord" /></a>
+
 <p align="center">
   <strong>简体中文</strong> · <a href="README.en.md">English</a>
 </p>
