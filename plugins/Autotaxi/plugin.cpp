@@ -13,7 +13,9 @@
 #include <map>
 #include <memory>
 #include <span>
+#include <set>
 #include <string>
+#include <vector>
 #include "plan.hpp"
 #include "access.hpp"
 
@@ -204,10 +206,16 @@ bool EnabledButton(const Reader& r, uintptr_t button) {
 bool CurrentIntent(uint64_t token) { return enabled.load() && intent.load() == token; }
 bool SameOrder(const Runtime& a, const Runtime& b) {
     return a.observation.identity == b.observation.identity && a.observation.order == b.observation.order &&
-        a.observation.stage == b.observation.stage;
+        a.observation.stage == b.observation.stage && Pack(a.data.character)==Pack(b.data.character);
+}
+bool ReadDialogue(const Reader& r,uintptr_t controller,bool& active) {
+    const auto fn=Checked(r,"HTGame","HTPlayerController","IsInDialogue",1,1,{{"ReturnValue",0,1,"BoolProperty"}});
+    uint8_t value{};
+    if(!r.IsA(controller,"HTPlayerController") || !fn || !Invoke(r,controller,fn,&value) || value>1) return false;
+    active=value!=0;return true;
 }
 // A missing/disabled settlement widget is a wait, not an accepted completion.
-enum class Dispatch { Waiting, Sent, Failed, Stale };
+enum class Dispatch { Waiting, Sent, Failed, Stale, Dialogue };
 Dispatch Submit(const Reader& r, const Runtime& value, taxi::Action action, uint64_t token) {
     uintptr_t receiver = value.player, fn{}, button{};
     StateParameters parameters{};
@@ -228,11 +236,18 @@ Dispatch Submit(const Reader& r, const Runtime& value, taxi::Action action, uint
     if (!fn) return Dispatch::Failed;
     Runtime current;
     if (!CurrentIntent(token) || !ReadRuntime(r, current) || !SameOrder(value, current)) return Dispatch::Stale;
+    if(current.data.character.id) {
+        bool dialogue{};
+        if(!ReadDialogue(r,current.controller,dialogue)) return Dispatch::Failed;
+        if(dialogue) return Dispatch::Dialogue;
+    }
     if (action == taxi::Action::Continue && (!ActiveWidget(r, receiver, "HTUI_TaxiGameplaySettleMain") ||
         Child(r, receiver, "BtnContinueTaxiGameplay") != button || !EnabledButton(r, button))) return Dispatch::Stale;
     if (!CurrentIntent(token)) return Dispatch::Stale;
     return Invoke(r, receiver, fn, action == taxi::Action::Continue ? static_cast<void*>(&button) : static_cast<void*>(&parameters)) ? Dispatch::Sent : Dispatch::Failed;
 }
+
+#include "encounters.hpp"
 
 bool EnsureWindow() noexcept {
     if (window_handle.id) return true;
@@ -243,9 +258,9 @@ bool EnsureWindow() noexcept {
     spec.id = StringView("b1ank-autotaxi-main");
     const auto title = localizer.Text("window.title", "AutoTaxi");
     spec.title = StringView(title);
-    spec.initial_width = 470; spec.initial_height = 230;
-    spec.minimum_width = 320; spec.minimum_height = 180;
-    spec.maximum_width = 900; spec.maximum_height = 500;
+    spec.initial_width = 650; spec.initial_height = 560;
+    spec.minimum_width = 440; spec.minimum_height = 300;
+    spec.maximum_width = 900; spec.maximum_height = 760;
     spec.default_open = 1;
     return window_service->register_window(window_service->user, &spec, &window_handle).code == ANOMALY_STATUS_V1_OK && window_handle.id;
 }
@@ -277,6 +292,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
         const Host services(host);
         window_service=services.Query<AnomalyWindowServiceV1>(ANOMALY_WINDOW_SERVICE_V1_ID).get();
         core=services.Query<AnomalyCoreServiceV1>(ANOMALY_CORE_SERVICE_V1_ID).get();
+        encounter_hooks=services.Query<AnomalyHookServiceV1>(ANOMALY_HOOK_SERVICE_V1_ID).get();
         RefreshRuntimeServices();
         return core ? Ok() : AnomalyStatusV1{ANOMALY_STATUS_V1_NOT_FOUND,0,{}};
     } catch (...) { return {ANOMALY_STATUS_V1_FAILED,0,{}}; }
@@ -284,15 +300,20 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
 AnomalyStatusV1 ANOMALY_CALL Start(void*) noexcept {
     try {
         enabled = false; applied_intent = ++intent; registry = world_slot = 0; next_poll = {};
-        functions.clear(); missing_functions.clear(); offsets.clear(); run.Reset(); confirmed.Reset(); published.store({}); next_services = {};
+        ResetBindings(); run.Reset(); confirmed.Reset(); published.store({}); next_services = {};
         fallback_open = 1;
         registry=taxi::profile::snapshot.registry; world_slot=taxi::profile::snapshot.world;
+        StartEncounters();
         Publish(localizer.Text("status.startup", "Drive a taxi and start taking orders in the game, then enable automatic completion."));
         static_cast<void>(EnsureWindow()); return Ok();
     } catch (...) { return {ANOMALY_STATUS_V1_FAILED,0,{}}; }
 }
-AnomalyStatusV1 ANOMALY_CALL Stop(void*, uint32_t) noexcept { enabled = false; ++intent; registry = world_slot = 0; ReleaseWindow(); return Ok(); }
-void ANOMALY_CALL Unload(void*) noexcept { registry = world_slot = 0; taxi::profile::snapshot={}; ReleaseWindow(); }
+AnomalyStatusV1 ANOMALY_CALL Stop(void*, uint32_t) noexcept {
+    enabled=false;++intent;
+    if(!StopEncounters()) return {ANOMALY_STATUS_V1_UNAVAILABLE,0,{}};
+    registry=world_slot=0;ReleaseWindow();return Ok();
+}
+void ANOMALY_CALL Unload(void*) noexcept { registry = world_slot = 0; taxi::profile::snapshot={}; encounter_hooks=nullptr; ReleaseWindow(); }
 void ANOMALY_CALL Update(void*, double) noexcept {
     try {
         if (!names || !objects || !framework || !build_service) {
@@ -301,6 +322,7 @@ void ANOMALY_CALL Update(void*, double) noexcept {
             if (!names || !objects || !framework || !build_service) { Publish(localizer.Text("status.game_services", "Waiting for the game taxi interfaces.")); return; }
         }
         if (!framework || !framework->is_game_thread || !framework->is_game_thread(framework->user)) return;
+        if(registry && world_slot && MissingRuntimeFeature(build_service).empty()) UpdateEncounters(Reader{names});
         const auto token = intent.load();
         if (applied_intent != token) { run.Reset(); applied_intent = token; next_poll = {}; }
         if (!enabled.load()) { run.Reset(); return; }
@@ -310,16 +332,32 @@ void ANOMALY_CALL Update(void*, double) noexcept {
         if (!missing.empty()) { Publish(localizer.Format("status.interface_missing", "Waiting for taxi interface: {0}", std::array<std::string_view, 1>{missing})); next_poll = now + std::chrono::seconds(2); return; }
         const Reader r{names};
         if (!registry || !world_slot) { Publish(localizer.Text("status.signatures", "Taxi signatures could not be resolved. Reload the plugin after the framework is ready.")); next_poll = now + std::chrono::seconds(2); return; }
+        const auto milliseconds = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count());
         Runtime value;
         // Keep only request identity/ack state across a temporary read failure. No
         // native work is performed; a recovered same order must not be resubmitted.
-        if (!ReadRuntime(r, value)) { Publish(localizer.Text("status.driver", "Drive a taxi and start taking orders; waiting for mission data.")); return; }
+        if (!ReadRuntime(r, value)) {
+            bool dialogue{};
+            if(run.bound && value.controller && ReadDialogue(r,value.controller,dialogue) && dialogue) {
+                run.Suspend(milliseconds);Publish(localizer.Text("status.dialogue","Waiting for the game dialogue to finish; automatic completion will resume afterwards."));return;
+            }
+            Publish(localizer.Text("status.driver", "Drive a taxi and start taking orders; waiting for mission data.")); return;
+        }
         confirmed.Observe({value.observation.identity[2], value.observation.identity[3]}, value.finished);
         if (value.data.stage != taxi::Stage::Idle && value.data.stage != taxi::Stage::Waiting &&
             (!value.data.order.id || !value.data.pickup.id || !value.data.destination.id)) {
             Publish(localizer.Text("status.order_data", "Waiting for complete taxi order information.")); return;
         }
-        const auto milliseconds = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count());
+        if(value.data.character.id || encounter_pending.load()) {
+            bool dialogue{};
+            if(!ReadDialogue(r,value.controller,dialogue)) {
+                Publish(localizer.Text("status.dialogue_interface","Waiting for the character dialogue interface."),r.Name(value.data.order));return;
+            }
+            if(dialogue) {
+                run.Suspend(milliseconds);static_cast<void>(run.Next(value.observation,milliseconds));
+                Publish(localizer.Text("status.dialogue","Waiting for the game dialogue to finish; automatic completion will resume afterwards."),r.Name(value.data.order));return;
+            }
+        }
         const auto action = run.Next(value.observation, milliseconds);
         const auto order = r.Name(value.data.order);
         if (run.failed) { Publish(localizer.Text("status.unconfirmed", "This order was not confirmed. Retries stopped; toggle the option off and on to retry."), order); return; }
@@ -335,9 +373,21 @@ void ANOMALY_CALL Update(void*, double) noexcept {
             }
             Publish(text, order); return;
         }
+        if(action==taxi::Action::Pickup) {
+            const auto preparation=PrepareEncounterPickup(r,value,token);
+            if(preparation==EncounterPreparation::Stale) return;
+            if(preparation==EncounterPreparation::Prepared) {
+                Publish(localizer.Text("status.character_prepared","The game assigned the preferred character; automatic pickup will resume."),order);return;
+            }
+            if(preparation==EncounterPreparation::Failed) {
+                run.Submitted(false,milliseconds);
+                Publish(localizer.Text("status.character_failed","Character assignment was not confirmed. This order is paused; complete or end it in the game before selecting again."),order);return;
+            }
+        }
         const auto result = Submit(r, value, action, token);
         if (result == Dispatch::Stale) return;
         if (result == Dispatch::Waiting) { Publish(localizer.Text("status.settlement_ui", "Waiting for the settlement screen and Continue Taking Orders button."), order); return; }
+        if(result==Dispatch::Dialogue) {run.Suspend(milliseconds);Publish(localizer.Text("status.dialogue","Waiting for the game dialogue to finish; automatic completion will resume afterwards."),order);return;}
         run.Submitted(result == Dispatch::Sent, milliseconds);
         if (result == Dispatch::Failed) Publish(localizer.Text("status.interface_rejected", "The native taxi interface did not match; this order has stopped."), order);
         else Publish(action == taxi::Action::Pickup ? localizer.Text("status.pickup_pending", "Pickup requested; waiting for game confirmation.") :
@@ -357,6 +407,7 @@ void DrawControls(const AnomalyUiServiceV1* ui) noexcept {
             const auto completed = std::to_string(view->completed);
             ui->text(ui->user, StringView(localizer.Format("label.completed", "Game-confirmed new orders: {0}", std::array<std::string_view, 1>{completed})));
         }
+        DrawEncounters(ui);
     } catch (...) {}
 }
 void ANOMALY_CALL Draw(void*, const AnomalyUiServiceV1* ui) noexcept {
@@ -381,6 +432,6 @@ void ANOMALY_CALL Draw(void*, const AnomalyUiServiceV1* ui) noexcept {
 ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(AnomalyPluginDescriptorV1* descriptor) {
     if (!descriptor || descriptor->struct_size < sizeof(*descriptor)) return {ANOMALY_STATUS_V1_INVALID_ARGUMENT, 0, {}};
     *descriptor = {sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
-        StringView("b1ank.autotaxi"), StringView("AutoTaxi"), StringView("b1ank"), StringView("0.1.4"), Load, Start, Stop, Unload, Update, Draw};
+        StringView("b1ank.autotaxi"), StringView("AutoTaxi"), StringView("b1ank"), StringView("0.1.11"), Load, Start, Stop, Unload, Update, Draw};
     return Ok();
 }

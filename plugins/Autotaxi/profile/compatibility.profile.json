@@ -38,7 +38,26 @@
     "PlayerFinished": 0,
     "PlayerInitialized": 24,
     "FieldClass": 8,
-    "FieldClassName": 0
+    "FieldClassName": 0,
+    "EncounterFunctionNative": 216,
+    "EncounterOverride": 44648,
+    "EncounterGetterCall": 37,
+    "EncounterFreeCallA": 58,
+    "EncounterFreeCallB": 106,
+    "EncounterFreeAllocatorLoadA": 13,
+    "EncounterFreeAllocatorLoadB": 30,
+    "EncounterOffsetProbeA": 1054,
+    "EncounterOffsetProbeB": 1155,
+    "EncounterOffsetProbeC": 1569,
+    "EncounterOffsetProbeD": 1650,
+    "DataTableRows": 48,
+    "EncounterGetterCleanup": 205,
+    "EncounterGetterFreeCall": 213,
+    "EncounterResultSize": 40,
+    "EncounterSubPathOffset": 24,
+    "EncounterResultPathWitness": 32,
+    "EncounterFreeAllocatorCheck": 20,
+    "EncounterFreeDispatch": 37
   },
   "symbols": [
     {
@@ -72,6 +91,76 @@
         {
           "pattern": "48 89 5C 24 10 48 89 6C 24 18 57 48 83 EC 20 F7 82 B0 00 00 00 00 04 00 00 49 8B E8 48 8B DA 48 8B F9 75 06 83 7A 68 00 74 4D 48 89 74 24 30 0F B6 35 ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 85 C0 74 11 48 8B C8 E8 ?? ?? ?? ?? 84 C0 75 0F",
           "entry": "48 89 5C 24 10 48 89 6C 24 18 57 48 83 EC 20 F7 82 B0 00 00 00 00 04 00 00 49 8B E8 48 8B DA 48 8B F9 75 06 83 7A 68 00 74 4D 48 89 74 24 30 0F B6 35",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "Encounter.exec",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 08 57 48 83 EC 30 4C 8B 4A 20 33 C0 4D 85 C9 49 8B F8 0F 95 C0 49 03 C1 48 89 42 20 48 8D 54 24 20",
+          "entry": "48 89 5C 24 08 57 48 83 EC 30 4C 8B 4A 20 33 C0 4D 85 C9 49 8B F8 0F 95 C0 49 03 C1 48 89 42 20 48 8D 54 24 20",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "Encounter.getter",
+      "candidates": [
+        {
+          "pattern": "48 89 6C 24 18 48 89 74 24 20 57 48 83 EC 30 33 C0 48 8B E9 48 89 02 48 8B FA 48 89 42 08 48 8B 89 68 27 00 00 48 85 C9",
+          "entry": "48 89 6C 24 18 48 89 74 24 20 57 48 83 EC 30 33 C0 48 8B E9 48 89 02 48 8B FA 48 89 42 08 48 8B 89 68 27 00 00 48 85 C9",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "Encounter.selector",
+      "candidates": [
+        {
+          "pattern": "48 89 54 24 10 55 41 54 41 55 41 56 41 57 48 8D 6C 24 D0 48 81 EC 30 01 00 00 45 33 E4 4C 8B F1 48 8D 4A 18 4C 89 22",
+          "entry": "48 89 54 24 10 55 41 54 41 55 41 56 41 57 48 8D 6C 24 D0 48 81 EC 30 01 00 00 45 33 E4 4C 8B F1 48 8D 4A 18 4C 89 22",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "Encounter.free",
+      "candidates": [
+        {
+          "pattern": "48 85 C9 74 2E 53 48 83 EC 20 48 8B D9 48 8B 0D ?? ?? ?? ?? 48 85 C9 75 0C E8 ?? ?? ?? ?? 48 8B 0D ?? ?? ?? ?? 48 8B 01 48 8B D3 FF 50 48 48 83 C4 20 5B C3",
+          "entry": "48 85 C9 74 2E 53 48 83 EC 20 48 8B D9",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "Encounter.getterCleanup",
+      "candidates": [
+        {
+          "pattern": "48 85 DB 74 08 48 8B CB E8 ?? ?? ?? ??",
+          "entry": "48 85 DB 74 08 48 8B CB",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "Encounter.freeAllocatorCheck",
+      "candidates": [
+        {
+          "pattern": "48 85 C9 75 0C E8",
+          "entry": "48 85 C9 75 0C E8",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "Encounter.freeDispatch",
+      "candidates": [
+        {
+          "pattern": "48 8B 01 48 8B D3 FF 50 48 48 83 C4 20 5B C3",
+          "entry": "48 8B 01 48 8B D3 FF 50 48 48 83 C4 20 5B C3",
           "values": {}
         }
       ]
