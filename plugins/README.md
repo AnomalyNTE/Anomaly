@@ -5,6 +5,7 @@
 - `NtePosition`
 - `EntityESP`
 - `PinkPawHeistESP`
+- `NteVehicle`
 - `FakeUID`
 - `CameraTools`
 - `CameraBlurFix`
@@ -33,7 +34,6 @@
 - `NteTeleport`
 - `DllLoader`
 - `TimeAccel`
-- `NteVehicle`
 - `MemoryDump`
 
 开发者测试插件：默认不构建、不安装，只有 `build.cmd testplugins`（或

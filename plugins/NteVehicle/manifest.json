@@ -5,8 +5,8 @@
   "description": "Vehicle control: plain vehicle summoning, per-model customized summoning, performance tuning, wheel friction, full durability for the current land vehicle, and diagnostics.",
   "author": "Anomaly",
   "license": "AGPL-3.0-only",
-  "audience": "developer",
-  "version": "0.10.6",
+  "audience": "user",
+  "version": "0.11.1",
   "entry": "plugin.dll",
   "api": {
     "major": 1,
@@ -34,10 +34,6 @@
       "minVersion": 1
     },
     {
-      "id": "anomaly.nte.vehicle",
-      "minVersion": 8
-    },
-    {
       "id": "anomaly.nte.player",
       "minVersion": 1
     },
@@ -48,14 +44,52 @@
     {
       "id": "anomaly.localization",
       "minVersion": 1
+    },
+    {
+      "id": "anomaly.core",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.profile",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.json",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.ue5.names",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.ue5.objects",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.ue5.process-event",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.ue5.framework",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.interop.signature",
+      "minVersion": 1
     }
   ],
   "capabilities": [
     "ui",
     "ui-window",
     "input",
-    "nte-vehicle",
     "nte-player-snapshot",
-    "configuration"
+    "configuration",
+    "memory-read",
+    "memory-write",
+    "json",
+    "ue5-names",
+    "ue5-objects",
+    "game-events",
+    "interop-signature"
   ]
 }

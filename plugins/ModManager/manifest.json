@@ -79,10 +79,6 @@
     {
       "id": "anomaly.nte.player",
       "minVersion": 1
-    },
-    {
-      "id": "anomaly.nte.vehicle",
-      "minVersion": 1
     }
   ],
   "capabilities": [
@@ -98,7 +94,6 @@
     "game-events",
     "nte-session-snapshot",
     "nte-actor-snapshot",
-    "nte-player-snapshot",
-    "nte-vehicle"
+    "nte-player-snapshot"
   ]
 }

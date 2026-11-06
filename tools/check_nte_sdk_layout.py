@@ -42,7 +42,6 @@ CORE_FIELDS = {
     "gameData.characterDataAsset": ("UHTGameData", "CharacterDataAsset"),
     "gameData.survivalGamePlayDataAsset": ("UHTGameData", "SurvivalGamePlayDataAsset"),
     "gameData.teleportPointDataTable": ("UHTGameData", "TeleportPointDataTable"),
-    "vehicle.comfortTopSpeedInKmH": ("UHTVehicleMovementComponent", "ComfortTopSpeedInKmH"),
 }
 CORE_SIZES = {
     "gameData.size": "UHTGameData",
@@ -52,7 +51,6 @@ CORE_SIZES = {
     "playerState.size": "AHottaPlayerState",
     "abilitySystem.size": "UHTAbilitySystemComponent",
     "abilitySpawnActor.size": "AHTAbilitySpawnActor",
-    "vehicle.movementComponentSize": "UHTVehicleMovementComponent",
     "dataTable.size": "UDataTable",
 }
 

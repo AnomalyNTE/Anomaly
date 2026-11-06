@@ -15,7 +15,6 @@ public:
         const AnomalyNtePlayerServiceV1* player{};
         const AnomalyNteActorsServiceV1* actors{};
         const AnomalyNteSessionServiceV1* session{};
-        const AnomalyNteVehicleServiceV1* vehicle{};
         NativeAccess* native{};
     };
     void Bind(Services services) { services_ = services; Cancel(); }
@@ -54,14 +53,11 @@ public:
         if (!Actors(actors)) return result_ = Result::Unavailable;
         if (!actors.empty() && !destroy_only_) return result_ = Result::ActorPresent;
         if (!actors.empty()) {
-            Handle pawn{};
-            AnomalyNteVehicleSnapshotV1 vehicle{sizeof(vehicle)};
-            if (services_.player->get_object_handles(services_.player->user, &pawn, nullptr).code)
+            Handle pawn{}, vehicle{};
+            if (!services_.native->PlayerVehicle(pawn, vehicle))
                 return result_ = Result::Unavailable;
-            const auto driving = services_.vehicle->snapshot(services_.vehicle->user, &vehicle);
-            if (driving.code != 0 && driving.code != ANOMALY_STATUS_V1_NOT_FOUND) return result_ = Result::Unavailable;
             for (const auto& [handle, name] : actors) {
-                if (handle.id == pawn.id || (driving.code == 0 && handle.id == vehicle.vehicle.id)) return result_ = Result::Occupied;
+                if (handle.id == pawn.id || handle.id == vehicle.id) return result_ = Result::Occupied;
                 if (!services_.native->Actor(handle, name)) return result_ = Result::Unavailable;
             }
             for (const auto& [handle, name] : actors) {
@@ -109,8 +105,7 @@ private:
             services_.actors && services_.actors->struct_size >= offsetof(AnomalyNteActorsServiceV1, bool_property) + sizeof(services_.actors->bool_property) && services_.actors->frame &&
             services_.actors->snapshot_at && services_.actors->class_name_utf8 && services_.actors->bool_property && services_.player &&
             services_.player->struct_size >= offsetof(AnomalyNtePlayerServiceV1, get_object_handles) + sizeof(services_.player->get_object_handles) &&
-            services_.player->get_object_handles && services_.vehicle &&
-            services_.vehicle->struct_size >= offsetof(AnomalyNteVehicleServiceV1, snapshot) + sizeof(services_.vehicle->snapshot) && services_.vehicle->snapshot;
+            services_.player->get_object_handles;
     }
     bool Actors(std::vector<std::pair<Handle, std::string>>& out) const {
         AnomalyNteEntityFrameV1 frame{sizeof(frame)};

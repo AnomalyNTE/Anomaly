@@ -61,7 +61,7 @@ This project is distributed under the [**GNU Affero General Public License v3.0 
 - 🧭 **Status and troubleshooting**: plugin incompatibility, missing dependencies, or a Profile that is not ready are reported with the reason directly; full status is available under **Diagnostics** and in the logs.
 - 🧩 **Open plugin framework**: a pure C ABI v1 SDK and unified V1 services, so a plugin project needs neither the runtime source nor the C++ ABI.
 - 🔄 **Complete plugin lifecycle**: Manifest, SemVer, dependency and capability validation, package validation, file-watch hot reload, and rollback on failure.
-- 🧬 **UE5 / NTE adaptation**: validated UE5 symbol resolution plus high-level services for session, player, camera, entity, map landmarks, teleport, and vehicles; a feature degrades when its conditions are not met.
+- 🧬 **UE5 / NTE adaptation**: validated UE5 symbol resolution plus high-level services for session, player, camera, entity, map landmarks, and teleport; a feature degrades when its conditions are not met.
 - 🔍 **Memory analysis and developer tools**: inspect process modules, PE sections, and memory regions, with a byte signature scan, an offline TestHost, and other developer tools.
 - 🛡️ **Fault isolation**: a single failing plugin is isolated, and a failed new version rolls back to the previous generation automatically.
 
@@ -75,7 +75,7 @@ The runtime package contains the following common built-in plugins (see [built-i
 | **Entity ESP** | Draws entity bounding boxes and labels |
 | **Deserted** | Prevents pedestrian and traffic spawns without affecting stationary NPCs |
 | **Pink Paw Heist ESP** | Shows Pink Paw Heist loot and extraction points, with value filtering, bank loop pickup, count limits, and entry animation skip |
-| **NTE Vehicle (developer mode)** | Inspect, summon, and tune the current vehicle: vehicle catalog, display name, speed, torque, wheel friction, and non-player vehicle control |
+| **NTE Vehicle** | Browse the vehicle catalog, summon plain or customized vehicles, adjust speed, torque and wheel friction, maintain land-vehicle durability, and batch-tune non-player vehicles |
 | **999 Nights Script** | Loops enemy farming in Red Dragon Castle in 999 Nights for a set number of runs: camp respawn and automatic combat at two combat points |
 | **NTE Damage Dashboard** | Live statistics for player damage, hits, crits, team and skill distribution, and recent hit records |
 | **Summon Lab** | Spawns entities from blueprints with preset levels and attributes, hostile or pet modes, paginated management, attribute inspection, and cleanup |

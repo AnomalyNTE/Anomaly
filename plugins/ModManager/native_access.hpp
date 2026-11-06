@@ -272,6 +272,33 @@ public:
             objects && objects->struct_size >= sizeof(*objects) && events && events->struct_size >= sizeof(*events) && events->invoke &&
             player && player->struct_size >= offsetof(AnomalyNtePlayerServiceV1, get_object_handles) + sizeof(player->get_object_handles) && player->get_object_handles;
     }
+    bool PlayerVehicle(Handle& pawn, Handle& vehicle) const {
+        vehicle = {};
+        Handle controller{};
+        if (!ready || player->get_object_handles(player->user, &pawn, &controller).code) return false;
+        // Use the same reflected getters as NteVehicle, without depending on that plugin.
+        // A successful null return means unoccupied; failed calls cannot establish that.
+        struct Getter { Handle receiver; std::string_view path; };
+        const std::array<Getter, 3> getters{{
+            {controller, "/Script/HTGame.HTPlayerController:BP_GetCurrentDriveVehicle"},
+            {pawn, "/Script/HTGame.HTPlayerCharacter:BP_GetCurrentDirvingVehicle"},
+            {pawn, "/Script/HTGame.HTPlayerCharacter:GetBoardWaterVehicle"}
+        }};
+        bool queried{};
+        for (const auto& getter : getters) {
+            uintptr_t object{};
+            if (!Invoke(getter.receiver, getter.path, &object, sizeof(object), "ReturnValue", "ObjectProperty", true)) continue;
+            queried = true;
+            if (!object) continue;
+            uint32_t index{};
+            AnomalyUe5ObjectSnapshotV1 snapshot{sizeof(snapshot)};
+            if (!IsA(object, Resolve(Find("/Script/Engine.Actor"))) || !Read(object + l.ObjectIndex, index) ||
+                objects->snapshot_at(objects->user, index, &snapshot).code || Resolve(snapshot.handle) != object) return false;
+            vehicle = snapshot.handle;
+            return true;
+        }
+        return queried;
+    }
     bool Actor(Handle handle, std::string_view expected_class) {
         const auto object = Resolve(handle); uintptr_t cls{}, level{}, player_level{}, world{}, player_world{}; Handle pawn{}; uint32_t flags{};
         return object && Read(object + l.ObjectFlags, flags) && !(flags & 0x30u) && // CDO / archetype cannot be a world instance.

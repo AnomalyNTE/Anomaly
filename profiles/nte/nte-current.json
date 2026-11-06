@@ -635,13 +635,6 @@
       "ue5.FNamePool",
       "ue5.GObjects"
     ],
-    "nte.vehicle": [
-      "ue5.GWorld",
-      "ue5.GameTick",
-      "ue5.FNamePool",
-      "ue5.GObjects",
-      "ue5.ProcessEvent"
-    ],
     "ue5.assets": [
       "ue5.AssetRegistry.GetDerivedClassNames",
       "ue5.FMemory.Free"
@@ -678,7 +671,6 @@
     "nte.skills",
     "nte.skill-invocation",
     "ue5.streaming-source",
-    "nte.vehicle",
     "ue5.assets",
     "ue5.pak"
   ],
@@ -743,9 +735,6 @@
     ],
     "ue5.streaming-source": [
       "ue5-streaming-source-layout-v1"
-    ],
-    "nte.vehicle": [
-      "nte-vehicle-layout-v1"
     ],
     "ue5.assets": [
       "ue5-assets-abi-v1"
@@ -837,12 +826,6 @@
     ],
     "ue5.streaming-source": [
       "nte.player"
-    ],
-    "nte.vehicle": [
-      "nte.player",
-      "ue5.names",
-      "ue5.objects",
-      "ue5.process-event"
     ],
     "ue5.assets": [
       "ue5.names",
@@ -1119,14 +1102,6 @@
     "htuiRadioBox.radioText": 4968,
     "htuiRadioBox.blockButton": 4976,
     "htuiListItem.clickButton": 1616,
-    "vehicle.movementComponent": 888,
-    "vehicle.maxEngineTorque": 2616,
-    "vehicle.maxEngineRPM": 2620,
-    "vehicle.maxLinearVelocity": 4580,
-    "vehicle.topSpeedInKmH": 4588,
-    "vehicle.reverseTopSpeedInKmH": 4596,
-    "vehicle.enableTopSpeedLimit": 4600,
-    "vehicle.topSpeedRatio": 4640,
     "abilitySpawnActor.size": 1192,
     "dataTable.size": 176,
     "skillDamage.size": 120,
@@ -1174,11 +1149,7 @@
         "playerCharacter.currentDisplayCharacterId": 10724,
         "playerCharacter.defaultCharacterId": 10664,
         "playerState.roleName": 1120,
-        "playerState.size": 4952,
-        "vehicle.comfortMaxEngineRPM": 5732,
-        "vehicle.comfortMaxEngineTorque": 5728,
-        "vehicle.comfortTopSpeedInKmH": 5936,
-        "vehicle.movementComponentSize": 6160
+        "playerState.size": 4952
       },
       "symbolPatterns": {
         "nte.ClientIgnoreGameAndUiInput": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 20 41 0F B6 F8 0F B6 EA 40 0F B6 D7 41 B0 01 41 0F B6 F1 48 8B D9 E8 ?? ?? ?? ?? 48 8B 03 48 8B CB FF 90 98 14 00 00",
@@ -1211,11 +1182,7 @@
         "playerCharacter.currentDisplayCharacterId": 10956,
         "playerCharacter.defaultCharacterId": 10896,
         "playerState.roleName": 1136,
-        "playerState.size": 4968,
-        "vehicle.comfortMaxEngineRPM": 5804,
-        "vehicle.comfortMaxEngineTorque": 5800,
-        "vehicle.comfortTopSpeedInKmH": 6008,
-        "vehicle.movementComponentSize": 6224
+        "playerState.size": 4968
       },
       "symbolPatterns": {
         "nte.ClientIgnoreGameAndUiInput": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 20 41 0F B6 F8 0F B6 EA 40 0F B6 D7 41 B0 01 41 0F B6 F1 48 8B D9 E8 ?? ?? ?? ?? 48 8B 03 48 8B CB FF 90 C8 14 00 00 48 8B D8 48 85 C0 74 ?? 40 84 ED",

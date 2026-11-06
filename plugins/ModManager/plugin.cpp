@@ -108,9 +108,8 @@ void ANOMALY_CALL Worker(void*, AnomalyGenerationHandleV1) noexcept {
                 host.Query<AnomalyUe5ObjectsServiceV1>(ANOMALY_UE5_OBJECTS_SERVICE_V1_ID).get(),
                 host.Query<AnomalyNtePlayerServiceV1>(ANOMALY_NTE_PLAYER_SERVICE_V1_ID).get(),
                 host.Query<AnomalyNteActorsServiceV1>(ANOMALY_NTE_ACTORS_SERVICE_V1_ID).get(),
-                host.Query<AnomalyNteSessionServiceV1>(ANOMALY_NTE_SESSION_SERVICE_V1_ID).get(),
-                host.Query<AnomalyNteVehicleServiceV1>(ANOMALY_NTE_VEHICLE_SERVICE_V1_ID).get(), &g.native};
-            if (services.objects && services.player && services.actors && services.session && services.vehicle && g.native.BindServices(g.api)) {
+                host.Query<AnomalyNteSessionServiceV1>(ANOMALY_NTE_SESSION_SERVICE_V1_ID).get(), &g.native};
+            if (services.objects && services.player && services.actors && services.session && g.native.BindServices(g.api)) {
                 std::scoped_lock lock(g.mutex);
                 g.bindings = services;
             }
