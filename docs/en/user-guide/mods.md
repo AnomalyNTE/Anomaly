@@ -173,11 +173,17 @@ rebuild the Asset Registry, refresh materials/audio, or replace resident assets.
 not mean existing resources have been reloaded. Resident assets, outstanding asynchronous loads and full
 replacement behavior still need in-game validation. Restart when a clean resource replacement is needed.
 
-The independent **Mod Manager** plugin reads `.pak` and `.utoc` directory indices to classify vehicle mods by actual resource paths.
+The independent **Mod Manager** plugin and Launcher classify mods from `.pak` and `.utoc` directory indices.
+Player resource directories identify characters: Akane outfits use `Player_057`, Elyms uses `Player_090`,
+and the pendant replacement uses `Pendant_07`. Different outfits for one character share a group;
+borrowed texture filenames do not change ownership. Other resources use their content directory,
+such as `/game/wwiseaudio` for audio. Unreadable indices remain unclassified.
+Grouping alone does not make mods mutually exclusive: non-overlapping outfits can coexist.
+Resource cleanup remains limited to vehicles.
 GT3 RS and P1 cover `Vehicle_037`; Tourbillon covers `Vehicle_026`. Mods conflict when they override the same resource
 or replace the body/blueprint of the same vehicle. Enabling one disables conflicting variants in the same saved selection.
 Sound add-ons are exclusive only when their resources actually overlap. Encrypted, missing or unsupported indices are
-reported as incomplete; filenames are not used to guess the vehicle. Launcher and the plugin share parsing and selection logic.
+reported as incomplete; archive and mod folder names are not used to guess the category. Launcher and the plugin share parsing and selection logic.
 Known conflicts introduced by manual configuration edits preserve existing mounts and produce an error until resolved.
 
 The alternative wheel finishes in the example P1 archive should be imported individually. All containers inside one mod
@@ -232,7 +238,7 @@ The fourth launcher tab, **Browse**, talks to GameBanana's Neverness To Everness
 | Page | Opens the mod's GameBanana page in the browser |
 | Installed | Mods installed by this launcher show "installed" and the button becomes "reinstall" |
 
-Install flow: resolve the file (`ProfilePage`, falling back to `/Mod/<id>/Files` when the page hides files) -> download -> detect ZIP / 7z / RAR / RAR5 by content (bundled decoders; no 7-Zip installation required) -> extract -> **copy the whole tree** into `~mods\<name>\` -> write the cover as `icon.png` -> write `.aurora-source.json`.
+Install flow: resolve the file (`ProfilePage`, falling back to `/Mod/<id>/Files` when the page hides files) -> download -> detect ZIP / 7z / RAR / RAR5 by content (bundled decoders; no 7-Zip installation required) -> extract -> **copy the whole tree** into `~mods\<name>\` -> write the cover as `icon.png` -> write `anomaly-source.json`.
 
 Extraction uses a unique temporary directory with automatic cleanup and Unicode paths. Unsafe paths, links, duplicate files and encrypted archives are rejected; extraction is limited to 16 GiB / 20000 entries. The download Cancel button also cancels extraction.
 
@@ -244,14 +250,13 @@ Network: the system proxy is preferred (measured ~5 MB/s through the proxy vs ~1
 | --- | --- | --- |
 | Asset replacement | `.pak/.utoc/.ucas` triplet | ✅ mounted by the engine once mod loading is enabled |
 | Asset + companion files | triplet plus image/script folders (e.g. loading screens: pak + 45 jpgs) | ⚠️ the pak mounts, but the companion assets need their tool (NTEUiSwap Plus) to be visible |
-| Aurora scripts / modules | only `.lua`, `.dll` or a module manifest | ❌ needs the Aurora runtime |
 
-The installer checks for a pak triplet and rejects script-only archives with an explicit message.
+The installer checks for pak/utoc/ucas asset files and reports missing assets when none are found.
 
 ## Update checks
 
-- Reads `.aurora-source.json` (same name and schema as Aurora) from each mod folder.
-- A change of `file_id` **or** `md5` means a new version; mods without a source record are not tracked (same as Aurora).
+- Reads only `anomaly-source.json` from each mod folder: `schemaVersion: 1`, `provider: "gamebanana"`, `modId`, `fileId`, `fileName`, `fileMd5`, `author`, and `displayName`. Both IDs are strings.
+- A change of `fileId` **or** `fileMd5` means a new version; mods without a source record are not tracked.
 - First run adopts the current newest file as the baseline when `mod.json` carries a `modLink`.
 - Rows with an update show `↑ new version vX` plus an Update button that replaces the files and keeps `icon.png`.
 ## Launcher preferences
@@ -283,8 +288,7 @@ The in-game Mod Manager and Launcher show 10 mods per page, with paging controls
 - Without runtime loading, every change needs a game restart — paks are mounted at start-up only.
   With it, containers can be added, released and replaced at runtime
   (see [Runtime loading and hot swap](#runtime-loading-and-hot-replacement)).
-- Lua script mods do nothing: this framework has no Lua runtime. Archives containing `.lua`, or pages mentioning Lua/UE4SS/NTEUiSwap, get a `needsLua` flag and the mods page shows a banner.
-- Aurora modules (dll/packages) are unusable: they need Aurora's own module loader.
+- The launcher mounts asset containers and does not execute Lua scripts shipped with a mod.
 
 ## RE-UE4SS experiment (recorded outcome)
 

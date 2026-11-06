@@ -12,9 +12,12 @@ typedef struct AnomalyModEntryV1 {
     uint32_t index_complete;
     AnomalyStringViewV1 key;
     AnomalyStringViewV1 name;
-    // Comma-separated resource identifiers, derived from container paths.
+    // Comma-separated vehicle identifiers, derived from container paths; vehicle cleanup only.
     AnomalyStringViewV1 vehicles;
     AnomalyStringViewV1 analysis_error;
+    // Optional tail: comma-separated classification identifiers from resource directories.
+    // Presentation only; a shared group does not imply a conflict or support for cleanup.
+    AnomalyStringViewV1 resource_groups;
 } AnomalyModEntryV1;
 typedef int (ANOMALY_CALL *AnomalyModVisitorV1)(void* user, const AnomalyModEntryV1* entry);
 typedef int (ANOMALY_CALL *AnomalyModAssetVisitorV1)(void* user, AnomalyStringViewV1 package_path);

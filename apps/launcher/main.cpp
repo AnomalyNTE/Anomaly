@@ -71,6 +71,7 @@ namespace {
 using Microsoft::WRL::ComPtr;
 
 constexpr int kLogoResourceId = 101;
+constexpr int kModPlaceholderResourceId = 102;
 constexpr int kIconResourceId = 201;
 // Sized for the launcher's 17px font. These were laid out for 13px text, and a
 // child that cannot fit its own contents grows a scrollbar instead of clipping,
@@ -1062,6 +1063,7 @@ struct Graphics final {
     ComPtr<IDCompositionVisual> composition_visual;
     ComPtr<ID3D11RenderTargetView> render_target;
     ComPtr<ID3D11ShaderResourceView> logo;
+    ComPtr<ID3D11ShaderResourceView> mod_placeholder;
     ComPtr<ID3D11ShaderResourceView> theme_background;
     std::uint32_t theme_background_width{};
     std::uint32_t theme_background_height{};
@@ -1254,18 +1256,18 @@ ComPtr<ID3D11ShaderResourceView> CreateTextureFromThemeImage(
     return view;
 }
 
-void LoadLogo(Graphics& graphics) {
+ComPtr<ID3D11ShaderResourceView> LoadEmbeddedTexture(Graphics& graphics, const int resource_id) {
     const HRSRC resource = FindResourceW(
-        GetModuleHandleW(nullptr), MAKEINTRESOURCEW(kLogoResourceId), RT_RCDATA);
-    if (resource == nullptr) return;
+        GetModuleHandleW(nullptr), MAKEINTRESOURCEW(resource_id), RT_RCDATA);
+    if (resource == nullptr) return {};
     const HGLOBAL loaded = LoadResource(GetModuleHandleW(nullptr), resource);
     const DWORD size = SizeofResource(GetModuleHandleW(nullptr), resource);
     const void* data = loaded == nullptr ? nullptr : LockResource(loaded);
-    if (data == nullptr || size == 0) return;
+    if (data == nullptr || size == 0) return {};
     const auto* bytes = static_cast<const std::uint8_t*>(data);
     const auto decoded = anomaly::DecodeUiImageRgba8(std::span(bytes, size));
-    if (!decoded) return;
-    graphics.logo = CreateTextureFromPixels(graphics, decoded.image.pixels,
+    if (!decoded) return {};
+    return CreateTextureFromPixels(graphics, decoded.image.pixels,
         decoded.image.width, decoded.image.height);
 }
 
@@ -1952,7 +1954,6 @@ struct LauncherModEntry final {
     std::string version;
     std::string link;          // mod.json "modLink" / "link" / "supportLink"
     std::string group;         // mod.json "character" / "category"
-    bool needs_lua{};          // sidecar says the mod needs a Lua runtime
     std::string custom_name;   // user override stored in mod-notes.json
     std::string custom_group;
     std::string notes;         // free-form note stored in mod-notes.json
@@ -1972,6 +1973,8 @@ struct LauncherModEntry final {
 struct LauncherModIconCache {
     std::filesystem::file_time_type stamp{};
     ComPtr<ID3D11ShaderResourceView> texture;
+    std::uint32_t width{};
+    std::uint32_t height{};
 };
 std::map<std::filesystem::path, LauncherModIconCache> g_mod_icons;
 // Remote versions learned by the update check, keyed by mod name: a refresh rebuilds the
@@ -1982,11 +1985,11 @@ std::map<std::string, std::string> g_mod_remote_versions;
 // for a whole page at once stutters. One image per frame keeps the UI smooth.
 int g_decode_budget{1};
 
-ID3D11ShaderResourceView* LauncherModIcon(const LauncherModEntry& entry) {
+const LauncherModIconCache* LauncherModIcon(const LauncherModEntry& entry) {
     if (g_graphics == nullptr || entry.cover.empty()) return nullptr;
     const auto cached = g_mod_icons.find(entry.cover);
     if (cached != g_mod_icons.end() && cached->second.stamp == entry.cover_stamp)
-        return cached->second.texture.Get();
+        return &cached->second;
     if (g_decode_budget <= 0) return nullptr;
     --g_decode_budget;
     auto& value = g_mod_icons[entry.cover];
@@ -1997,21 +2000,64 @@ ID3D11ShaderResourceView* LauncherModIcon(const LauncherModEntry& entry) {
         (std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
     if (!bytes.empty()) {
         const auto decoded = anomaly::DecodeUiImageRgba8(bytes);
-        if (decoded) value.texture = CreateTextureFromPixels(*g_graphics, decoded.image.pixels,
-            decoded.image.width, decoded.image.height);
+        if (decoded) {
+            value.texture = CreateTextureFromPixels(*g_graphics, decoded.image.pixels,
+                decoded.image.width, decoded.image.height);
+            value.width = decoded.image.width;
+            value.height = decoded.image.height;
+        }
     }
-    return value.texture.Get();
+    return &value;
+}
+
+void DrawLauncherModCover(const LauncherModEntry& entry) {
+    const ImVec2 cover_size(Scale(160.0f), Scale(90.0f));
+    ImGui::Dummy(cover_size);
+    if (!ImGui::IsItemVisible() || g_graphics == nullptr) return;
+    auto* texture = g_graphics->mod_placeholder.Get();
+    ImVec2 image_size = cover_size;
+    if (const auto* icon = LauncherModIcon(entry); icon != nullptr && icon->texture != nullptr) {
+        texture = icon->texture.Get();
+        const float scale = (std::min)(cover_size.x / icon->width, cover_size.y / icon->height);
+        image_size = ImVec2(icon->width * scale, icon->height * scale);
+    }
+    if (texture == nullptr) return;
+    const ImVec2 slot = ImGui::GetItemRectMin();
+    const ImVec2 top_left(slot.x + (cover_size.x - image_size.x) * 0.5f,
+        slot.y + (cover_size.y - image_size.y) * 0.5f);
+    ImGui::GetWindowDrawList()->AddImage(reinterpret_cast<ImTextureID>(texture), top_left,
+        ImVec2(top_left.x + image_size.x, top_left.y + image_size.y));
 }
 
 
 
 
-
 std::wstring LauncherWiden(const std::string& utf8);
-std::string LauncherJsonNumber(const std::string& text, const std::string_view key);
 
+constexpr wchar_t kLauncherModSourceFile[] = L"anomaly-source.json";
 
-// Per-mod user metadata lives in its own file so the Aurora-compatible sidecar stays untouched.
+struct LauncherModSource final {
+    std::string mod_id;
+    std::string file_id;
+    std::string file_md5;
+};
+
+LauncherModSource LauncherReadModSource(const std::filesystem::path& folder) {
+    if (folder.empty()) return {};
+    std::ifstream stream(folder / kLauncherModSourceFile);
+    if (!stream) return {};
+    const auto source = nlohmann::json::parse(stream, nullptr, false);
+    if (!source.is_object()) return {};
+    try {
+        if (source.at("schemaVersion") != 1 || source.at("provider") != "gamebanana") return {};
+        return {source.at("modId").get<std::string>(), source.at("fileId").get<std::string>(),
+            source.value("fileMd5", std::string{})};
+    } catch (const nlohmann::json::exception&) {
+        return {};
+    }
+}
+
+// User notes are separate from the download source and survive source updates.
 std::filesystem::path LauncherModNotesPath(const LauncherModEntry& entry) {
     return entry.directory ? entry.path / L"mod-notes.json"
         : entry.path.parent_path() / LauncherWiden(entry.name + ".mod-notes.json");
@@ -2136,44 +2182,8 @@ bool LauncherIsModFile(const std::filesystem::path& path) {
 // JSON strings escape "/" as "\/" and may carry \uXXXX sequences; the raw slice would keep those
 // escapes and produce unusable URLs (WinHttpCrackUrl then answers 12005).
 std::string LauncherJsonUnescape(const std::string& text) {
-    std::string out;
-    out.reserve(text.size());
-    for (std::size_t i = 0; i < text.size(); ++i) {
-        if (text[i] != '\\' || i + 1 >= text.size()) {
-            out.push_back(text[i]);
-            continue;
-        }
-        const char next = text[++i];
-        switch (next) {
-        case 'n': out.push_back('\n'); break;
-        case 't': out.push_back('\t'); break;
-        case 'r': out.push_back('\r'); break;
-        case 'b': out.push_back('\b'); break;
-        case 'f': out.push_back('\f'); break;
-        case 'u': {
-            if (i + 4 >= text.size()) { out.push_back('u'); break; }
-            unsigned code = 0;
-            bool valid = true;
-            for (int k = 0; k < 4; ++k) {
-                const char c = text[i + 1 + k];
-                code <<= 4;
-                if (c >= '0' && c <= '9') code |= static_cast<unsigned>(c - '0');
-                else if (c >= 'a' && c <= 'f') code |= static_cast<unsigned>(c - 'a' + 10);
-                else if (c >= 'A' && c <= 'F') code |= static_cast<unsigned>(c - 'A' + 10);
-                else { valid = false; break; }
-            }
-            if (!valid) { out.push_back('u'); break; }
-            i += 4;
-            const wchar_t wide = static_cast<wchar_t>(code);
-            char utf8[4]{};
-            const int length = WideCharToMultiByte(CP_UTF8, 0, &wide, 1, utf8, sizeof(utf8), nullptr, nullptr);
-            out.append(utf8, length > 0 ? static_cast<std::size_t>(length) : 0);
-            break;
-        }
-        default: out.push_back(next); break;
-        }
-    }
-    return out;
+    const auto decoded = nlohmann::json::parse('"' + text + '"', nullptr, false);
+    return decoded.is_string() ? decoded.get<std::string>() : std::string{};
 }
 
 std::string LauncherJsonField(const std::string& text, const std::string_view key) {
@@ -2314,25 +2324,9 @@ void LauncherRefreshMods(
             }
             // Mods installed from the browse page have no mod.json; their source record still knows
             // the GameBanana id, which is enough to offer the "来源" button.
-            {
-                std::ifstream source(item.path() / L".aurora-source.json");
-                if (source) {
-                    const std::string text((std::istreambuf_iterator<char>(source)),
-                        std::istreambuf_iterator<char>());
-                    entry.needs_lua = text.find("\"needsLua\": true") != std::string::npos;
-                }
-            }
-            if (entry.link.empty()) {
-                std::ifstream source(item.path() / L".aurora-source.json");
-                if (source) {
-                    const std::string text((std::istreambuf_iterator<char>(source)),
-                        std::istreambuf_iterator<char>());
-                    const std::string id = LauncherJsonNumber(text, "mod_id");
-                    if (!id.empty()) {
-                        entry.link = "https://gamebanana.com/mods/" + id;
-                    }
-                }
-            }
+            const auto source = LauncherReadModSource(item.path());
+            if (entry.link.empty() && !source.mod_id.empty())
+                entry.link = "https://gamebanana.com/mods/" + source.mod_id;
             for (const auto& file : std::filesystem::recursive_directory_iterator(item.path(), error)) {
                 if (!file.is_regular_file(error)) continue;
                 LauncherFindModCover(entry, file.path());
@@ -2384,11 +2378,11 @@ void LauncherRefreshMods(
             const auto key = anomaly::NormalizePakModKey(LauncherModStateKey(entry));
             for (const auto& row : *catalog) if (anomaly::NormalizePakModKey(row.key) == key) {
                 if (!anomaly::PakModCompatibilityMode(settings)) entry.enabled = row.enabled;
-                if (!row.vehicles.empty()) {
+                if (!row.resource_groups.empty()) {
                     entry.group.clear();
-                    for (const auto& vehicle : row.vehicles) {
+                    for (const auto& group : row.resource_groups) {
                         if (!entry.group.empty()) entry.group += ", ";
-                        entry.group += vehicle;
+                        entry.group += group;
                     }
                 }
             }
@@ -2763,9 +2757,9 @@ std::string LauncherGameBananaFileName(const std::string& profile_body);
 std::string LauncherGameBananaAuthor(const std::string& profile_body);
 std::string LauncherGameBananaFileMd5(const std::string& profile_body);
 std::string LauncherMd5OfFile(const std::filesystem::path& path);
-void LauncherWriteAuroraSource(const std::filesystem::path& folder, const std::string& mod_id,
+void LauncherWriteModSource(const std::filesystem::path& folder, const std::string& mod_id,
     const std::string& file_id, const std::string& file_name, const std::string& md5,
-    const std::string& author, const std::string& name, bool needs_lua = false);
+    const std::string& author, const std::string& name);
 
 // --- import / rename -------------------------------------------------------
 std::optional<std::filesystem::path> LauncherChooseArchive(HWND window) {
@@ -2857,14 +2851,12 @@ std::string LauncherImportArchive(
         std::set<std::filesystem::path> containers;
         std::size_t copied{};
         std::size_t pak_files{};
-        std::size_t lua_files{};
         for (const auto& item : std::filesystem::recursive_directory_iterator(staging, error)) {
             if (!item.is_regular_file(error)) continue;
             std::wstring extension = item.path().extension().wstring();
             std::transform(extension.begin(), extension.end(), extension.begin(),
                 [](const wchar_t c) { return static_cast<wchar_t>(c >= L'A' && c <= L'Z' ? c + 32 : c); });
             if (extension == L".pak" || extension == L".utoc" || extension == L".ucas") ++pak_files;
-            if (extension == L".lua") ++lua_files;
             const auto relative = std::filesystem::relative(item.path(), staging, error);
             if (error || relative.empty()) return Tr(anomaly::MessageId::LauncherMsgNoCopiedFiles);
             auto destination = target / relative;
@@ -2904,9 +2896,9 @@ std::string LauncherImportArchive(
                 L"/ProfilePage";
             const std::string body = LauncherHttpGet(L"gamebanana.com", path);
             if (!body.empty()) {
-                LauncherWriteAuroraSource(target, mod_id, LauncherGameBananaFileId(body),
+                LauncherWriteModSource(target, mod_id, LauncherGameBananaFileId(body),
                     LauncherGameBananaFileName(body), LauncherGameBananaFileMd5(body),
-                    LauncherGameBananaAuthor(body), display_name, lua_files > 0);
+                    LauncherGameBananaAuthor(body), display_name);
             }
         }
 
@@ -2918,8 +2910,6 @@ std::string LauncherImportArchive(
             {std::to_string(copied), display_name});
         if (pak_files == 0) {
             message = Tr(anomaly::MessageId::LauncherMsgNoPakImported);
-        } else if (lua_files > 0) {
-            message += Tr(anomaly::MessageId::LauncherMsgLuaNotRun, {std::to_string(lua_files)});
         }
         return message;
     } catch (...) { return Tr(anomaly::MessageId::LauncherModsFileChangeFailed); }
@@ -2996,21 +2986,7 @@ bool LauncherRenameMod(
 
 
 
-std::string LauncherJsonNumber(const std::string& text, const std::string_view key) {
-    const std::string needle = "\"" + std::string(key) + "\"";
-    const auto key_at = text.find(needle);
-    if (key_at == std::string::npos) return {};
-    const auto colon = text.find(':', key_at + needle.size());
-    if (colon == std::string::npos) return {};
-    auto at = text.find_first_of("0123456789", colon + 1);
-    if (at == std::string::npos) return {};
-    std::string digits;
-    while (at < text.size() && text[at] >= '0' && text[at] <= '9') digits.push_back(text[at++]);
-    return digits;
-}
-
-// The first file entry of the mod page: GameBanana lists newest first, and that id is what Aurora
-// compares against instead of the (often empty) version string.
+// Compare the newest file id because the page's version string is often empty.
 std::string LauncherGameBananaFileId(const std::string& profile_body) {
     const auto files = profile_body.find("\"_aFiles\"");
     if (files == std::string::npos) return {};
@@ -3029,8 +3005,6 @@ std::string LauncherGameBananaFileId(const std::string& profile_body) {
 
 
 
-// Aurora-compatible source record. Same file name and fields as Aurora's `.aurora-source.json`,
-// so a mod installed by either tool is recognised by the other.
 std::string LauncherMd5OfFile(const std::filesystem::path& path) {
     std::ifstream stream(path, std::ios::binary);
     if (!stream) return {};
@@ -3067,84 +3041,37 @@ std::string LauncherMd5OfFile(const std::filesystem::path& path) {
     return hex;
 }
 
-void LauncherWriteAuroraSource(const std::filesystem::path& folder, const std::string& mod_id,
+void LauncherWriteModSource(const std::filesystem::path& folder, const std::string& mod_id,
     const std::string& file_id, const std::string& file_name, const std::string& md5,
-    const std::string& author, const std::string& name, const bool needs_lua) {
+    const std::string& author, const std::string& name) {
     if (folder.empty() || mod_id.empty() || file_id.empty()) return;
     std::error_code error;
     std::filesystem::create_directories(folder, error);
-    std::ofstream out(folder / L".aurora-source.json");
-    out << "{\n"
-        << "  \"mod_id\": " << mod_id << ",\n"
-        << "  \"file_id\": " << file_id << ",\n"
-        << "  \"file_name\": \"" << file_name << "\",\n"
-        << "  \"md5\": \"" << md5 << "\",\n"
-        << "  \"author\": \"" << author << "\",\n"
-        << "  \"name\": \"" << name << "\"";
-    if (needs_lua) {
-        out << ",\n  \"needsLua\": true";
-    }
-    out << "\n}\n";
-    std::filesystem::remove(folder / L"gb-source.json", error);
+    const nlohmann::json source{
+        {"schemaVersion", 1}, {"provider", "gamebanana"}, {"modId", mod_id},
+        {"fileId", file_id}, {"fileName", file_name}, {"fileMd5", md5},
+        {"author", author}, {"displayName", name}};
+    std::ofstream(folder / kLauncherModSourceFile) << source.dump(2) << '\n';
 }
 
 
 std::string LauncherGameBananaFileName(const std::string& profile_body) {
     const auto files = profile_body.find("\"_aFiles\"");
     if (files == std::string::npos) return {};
-    const auto file_key = profile_body.find("\"_sFile\"", files);
-    if (file_key == std::string::npos) return {};
-    const auto first = profile_body.find('"', profile_body.find(':', file_key) + 1);
-    const auto second = first == std::string::npos ? std::string::npos : profile_body.find('"', first + 1);
-    if (second == std::string::npos) return {};
-    return profile_body.substr(first + 1, second - first - 1);
+    return LauncherJsonField(profile_body.substr(files), "_sFile");
 }
 
 
 std::string LauncherGameBananaFileMd5(const std::string& profile_body) {
     const auto files = profile_body.find("\"_aFiles\"");
     if (files == std::string::npos) return {};
-    const auto key = profile_body.find("\"_sMd5Checksum\"", files);
-    if (key == std::string::npos) return {};
-    const auto first = profile_body.find('"', profile_body.find(':', key) + 1);
-    const auto second = first == std::string::npos ? std::string::npos : profile_body.find('"', first + 1);
-    if (second == std::string::npos) return {};
-    return profile_body.substr(first + 1, second - first - 1);
+    return LauncherJsonField(profile_body.substr(files), "_sMd5Checksum");
 }
 
 std::string LauncherGameBananaAuthor(const std::string& profile_body) {
     const auto submitter = profile_body.find("\"_aSubmitter\"");
     if (submitter == std::string::npos) return {};
-    const auto name_key = profile_body.find("\"_sName\"", submitter);
-    if (name_key == std::string::npos) return {};
-    const auto first = profile_body.find('"', profile_body.find(':', name_key) + 1);
-    const auto second = first == std::string::npos ? std::string::npos : profile_body.find('"', first + 1);
-    if (second == std::string::npos) return {};
-    return profile_body.substr(first + 1, second - first - 1);
-}
-
-
-std::string LauncherRecordedMd5(const std::filesystem::path& folder) {
-    if (folder.empty()) return {};
-    std::ifstream stream(folder / L".aurora-source.json");
-    if (!stream) return {};
-    const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
-    return LauncherJsonField(text, "md5");
-}
-
-std::string LauncherRecordedFileId(const std::filesystem::path& folder) {
-    if (folder.empty()) return {};
-    for (const wchar_t* name : {L".aurora-source.json", L"gb-source.json"}) {
-        std::ifstream stream(folder / name);
-        if (!stream) continue;
-        const std::string text((std::istreambuf_iterator<char>(stream)),
-            std::istreambuf_iterator<char>());
-        const std::string id = LauncherJsonNumber(text, "file_id");
-        if (!id.empty()) return id;
-        const std::string legacy = LauncherJsonField(text, "fileId");
-        if (!legacy.empty()) return legacy;
-    }
-    return {};
+    return LauncherJsonField(profile_body.substr(submitter), "_sName");
 }
 
 // --- update check ----------------------------------------------------------
@@ -3247,20 +3174,17 @@ std::string LauncherCheckUpdates(std::vector<LauncherModEntry>& mods,
     int checked{}, updated{}, unchanged{}, failed{}, skipped{}, unrecorded{}, adopted{};
     for (auto& entry : mods) {
         const std::string id = LauncherGameBananaId(entry.link);
+        const auto source = LauncherReadModSource(entry.icon_path);
         LauncherUpdateLog("check: '" + entry.name + "' link=" + entry.link + " id=" + id +
-            " recorded=" + LauncherRecordedFileId(entry.icon_path));
+            " recorded=" + source.file_id);
         if (id.empty()) {
             ++skipped;
             continue;
         }
-        if (LauncherRecordedFileId(entry.icon_path).empty()) {
+        if (source.file_id.empty()) {
             // No record yet: if mod.json names a GameBanana page, adopt the current file as the
             // baseline so later checks can tell whether it changed. Mods without a link stay
-            // untracked, exactly like Aurora.
-            if (id.empty()) {
-                ++skipped;
-                continue;
-            }
+            // untracked.
             const std::wstring adopt_path = std::wstring(L"/apiv11/Mod/") +
                 std::wstring(id.begin(), id.end()) + L"/ProfilePage";
             const std::string adopt_body = LauncherHttpGet(L"gamebanana.com", adopt_path);
@@ -3269,7 +3193,7 @@ std::string LauncherCheckUpdates(std::vector<LauncherModEntry>& mods,
                 ++failed;
                 continue;
             }
-            LauncherWriteAuroraSource(entry.icon_path, id, adopted_file,
+            LauncherWriteModSource(entry.icon_path, id, adopted_file,
                 LauncherGameBananaFileName(adopt_body), LauncherGameBananaFileMd5(adopt_body),
                 LauncherGameBananaAuthor(adopt_body), entry.display_name);
             ++adopted;
@@ -3301,8 +3225,8 @@ std::string LauncherCheckUpdates(std::vector<LauncherModEntry>& mods,
                 }
             }
         }
-        const std::string local_file = LauncherRecordedFileId(entry.icon_path);
-        const std::string local_md5 = LauncherRecordedMd5(entry.icon_path);
+        const std::string& local_file = source.file_id;
+        const std::string& local_md5 = source.file_md5;
         if (!remote_file.empty() && !local_file.empty()) {
             // File identity wins: versions are optional, file ids are not. A same-id file replaced
             // in place is caught by the checksum.
@@ -3316,8 +3240,7 @@ std::string LauncherCheckUpdates(std::vector<LauncherModEntry>& mods,
             }
             continue;
         }
-        // No recorded file id means the mod was not installed by this launcher: like Aurora, such
-        // mods get no update tracking at all instead of a version guess.
+        // Missing file identity cannot establish whether the installed archive changed.
         ++unrecorded;
     }
     char summary[320]{};
@@ -3418,7 +3341,7 @@ std::string LauncherUpdateMod(
             if (!LauncherRemoveMod(snapshot, entry)) return Tr(anomaly::MessageId::LauncherModsFileChangeFailed);
         }
         std::filesystem::remove(archive, error);
-        LauncherWriteAuroraSource(target, id, LauncherGameBananaFileId(body),
+        LauncherWriteModSource(target, id, LauncherGameBananaFileId(body),
             LauncherGameBananaFileName(body), LauncherGameBananaFileMd5(body),
             LauncherGameBananaAuthor(body), entry.display_name);
         if (!LauncherFinishModWrite(snapshot, target_mod, enable_after))
@@ -3768,7 +3691,7 @@ ID3D11ShaderResourceView* LauncherThumbTexture(const std::string& url) {
 bool LauncherLoadGbPage(const int page, const std::string& query, const std::string& sort,
     const std::string& category_id, std::vector<LauncherGbItem>& items) {
     // Empty query browses the game feed; a query goes through the search endpoint. The game filter
-    // is `_idGameRow` (Aurora uses the same one; `_idGame` is silently ignored).
+    // is `_idGameRow`; `_idGame` is silently ignored.
     std::string path_text;
     // Browsing uses apiv13's index, the only endpoint that orders the whole game's mods by
     // downloads; keyword search only exists on apiv11, which has no sort parameter at all.
@@ -3825,7 +3748,7 @@ bool LauncherLoadGbPage(const int page, const std::string& query, const std::str
                 item.category_id = url.substr(slash + 1);
             }
         }
-        // Same three signals Aurora uses: content-rating flag, explicit NSFW flag, and an NSFW
+        // Check the content-rating flag, explicit NSFW flag, and an NSFW
         // category name (root or sub) — the category is what most NTE mods rely on.
         {
             const auto contains_nsfw = [](const nlohmann::json& node) {
@@ -3989,23 +3912,6 @@ std::string LauncherInstallFromGameBanana(
             LauncherUpdateLog("install: page fetch (direct) empty for mod " + mod_id);
             return Tr(anomaly::MessageId::LauncherMsgFetchPageFailed);
         }
-        // Some packs are only a shell: the pak mounts, but the actual effect comes from a Lua script the
-        // page tells you to use. The description is the only place that says so, so check it.
-        bool needs_lua_runtime = false;
-        if (const auto parsed = nlohmann::json::parse(body, nullptr, false); parsed.is_object()) {
-            const std::string text = parsed.value("_sText", std::string{});
-            std::string lower = text;
-            std::transform(lower.begin(), lower.end(), lower.begin(),
-                [](const unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            // "aurora" alone is too broad (many pak-only mods mention it); only Lua/UE4SS mean the
-            // mod needs a script runtime we do not have.
-            // "aurora" alone is too broad, but the tool names that actually imply a script runtime are
-            // specific enough to match: NTEUiSwap ships its Lua separately.
-            needs_lua_runtime = lower.find("lua") != std::string::npos ||
-                lower.find("ue4ss") != std::string::npos ||
-                lower.find("uiswap") != std::string::npos ||
-                lower.find("script") != std::string::npos;
-        }
         LauncherGbFile file;
         std::string author;
         std::string version;
@@ -4054,7 +3960,6 @@ std::string LauncherInstallFromGameBanana(
         std::set<std::filesystem::path> containers;
         std::size_t copied{};
         std::size_t pak_files{};
-        std::size_t lua_files{};
         for (const auto& item : std::filesystem::recursive_directory_iterator(staging, error)) {
             if (!item.is_regular_file(error)) continue;
             std::wstring extension = item.path().extension().wstring();
@@ -4064,8 +3969,6 @@ std::string LauncherInstallFromGameBanana(
                 });
             if (extension == L".pak" || extension == L".utoc" || extension == L".ucas") {
                 ++pak_files;
-            } else if (extension == L".lua") {
-                ++lua_files;
             }
             auto relative = std::filesystem::relative(item.path(), staging, error);
             if (error || relative.empty()) return Tr(anomaly::MessageId::LauncherMsgNoCopiedFiles);
@@ -4082,16 +3985,8 @@ std::string LauncherInstallFromGameBanana(
         std::filesystem::remove(archive, error);
         if (copied == 0 || pak_files == 0) {
             if (!target_existed) std::filesystem::remove_all(target, error);
-            if (pak_files == 0 && lua_files == 0) {
-                return Tr(anomaly::MessageId::LauncherMsgNoPakAurora);
-            }
-            // A Lua-only pack still gets installed so it can be tracked and flagged; it just will not
-            // do anything until a Lua runtime exists.
-            if (pak_files == 0 && lua_files > 0) {
-                needs_lua_runtime = true;
-            }
             return pak_files == 0
-                ? Tr(anomaly::MessageId::LauncherMsgNoPakAurora)
+                ? Tr(anomaly::MessageId::LauncherMsgNoPakFiles)
                 : Tr(anomaly::MessageId::LauncherMsgNoCopiedFiles);
         }
         // Archives rarely ship an icon; use the GameBanana cover so the mod list has a thumbnail.
@@ -4111,8 +4006,7 @@ std::string LauncherInstallFromGameBanana(
                 }
             }
         }
-        LauncherWriteAuroraSource(target, mod_id, file.id, file.name, file.md5, author, display_name,
-            needs_lua_runtime);
+        LauncherWriteModSource(target, mod_id, file.id, file.name, file.md5, author, display_name);
         if (!containers.empty() && !LauncherRemoveObsoleteContainers(target_mod, containers))
             return Tr(anomaly::MessageId::LauncherModsFileChangeFailed);
         if (!LauncherFinishModWrite(snapshot, target_mod, enable_after))
@@ -4130,14 +4024,8 @@ std::set<std::string> LauncherInstalledModIds(const LauncherSnapshot& snapshot) 
     if (!std::filesystem::is_directory(directory, error)) return ids;
     for (const auto& entry : std::filesystem::directory_iterator(directory, error)) {
         if (!entry.is_directory(error)) continue;
-        std::ifstream stream(entry.path() / L".aurora-source.json");
-        if (!stream) continue;
-        const std::string text((std::istreambuf_iterator<char>(stream)),
-            std::istreambuf_iterator<char>());
-        const auto parsed = nlohmann::json::parse(text, nullptr, false);
-        if (!parsed.is_object()) continue;
-        const int id = parsed.value("mod_id", 0);
-        if (id > 0) ids.insert(std::to_string(id));
+        const auto source = LauncherReadModSource(entry.path());
+        if (!source.mod_id.empty()) ids.insert(source.mod_id);
     }
     return ids;
 }
@@ -4293,7 +4181,7 @@ void DrawBrowseMode(
         if (category_ids[i] == active_category) category_index = static_cast<int>(i) + 1;
     }
     // The search endpoint ignores category filters, so the control simply disappears while a query
-    // is active (Aurora treats search and category as two separate modes as well).
+    // is active.
     if (!mature_loaded) {
         hide_mature = LauncherLoadPrefs().value("hideMature", true);
         mature_loaded = true;
@@ -4622,15 +4510,6 @@ void DrawModsMode(
     // own: path, controls, the signature switch and the list do not fit at once on smaller windows.
     ImGui::BeginChild("ModsPage", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None,
         ImGuiWindowFlags_AlwaysVerticalScrollbar);
-    std::size_t needs_lua_count{};
-    for (const auto& entry : mods) {
-        if (entry.needs_lua) ++needs_lua_count;
-    }
-    if (needs_lua_count != 0) {
-        ImGui::TextColored(ImVec4(0.95f, 0.55f, 0.15f, 1.0f), "%s",
-            Tr(anomaly::MessageId::LauncherModsNeedsLuaBanner,
-                {std::to_string(needs_lua_count)}).c_str());
-    }
     ImGui::TextDisabled("%s", LauncherNarrow(directory).c_str());
     if (ImGui::Button(Text(translator, anomaly::MessageId::LauncherModsRefresh))) {
         refresh_mods();
@@ -4801,15 +4680,7 @@ void DrawModsMode(
             ImGui::Separator();
         }
         if (hide_group) continue;
-        ImGui::BeginGroup();
-        draw_switch(entry);
-        const ImVec2 icon_size(Scale(56.0f), Scale(56.0f));
-        if (auto* icon = LauncherModIcon(entry); icon != nullptr) {
-            ImGui::Image(reinterpret_cast<ImTextureID>(icon), icon_size);
-        } else {
-            ImGui::Dummy(icon_size);
-        }
-        ImGui::EndGroup();
+        DrawLauncherModCover(entry);
         ImGui::SameLine();
         ImGui::BeginGroup();
         std::string title = entry.display_name.empty() ? entry.name : entry.display_name;
@@ -4823,13 +4694,17 @@ void DrawModsMode(
         ImGui::TextWrapped("%s", title.c_str());
         ImGui::TextDisabled("%zu  ·  %.1f MB%s", entry.files,
             static_cast<double>(entry.bytes) / (1024.0 * 1024.0), meta.c_str());
-        if (entry.needs_lua) {
-            ImGui::SameLine();
-            ImGui::TextColored(ImVec4(0.95f, 0.55f, 0.15f, 1.0f), "· %s",
-                Text(translator, anomaly::MessageId::LauncherModsNeedsLua));
-        }
         // Every action is a button inside a disabled scope: the click is evaluated first and the
         // action runs afterwards, so a disabled scope never spans an early return.
+        const float actions_right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+        const auto next_action = [&](const char* label) {
+            const auto& style = ImGui::GetStyle();
+            const float width = ImGui::CalcTextSize(label).x + style.FramePadding.x * 2.0f;
+            if (ImGui::GetItemRectMax().x + style.ItemSpacing.x + width <= actions_right)
+                ImGui::SameLine();
+        };
+        draw_switch(entry);
+        next_action(Text(translator, anomaly::MessageId::LauncherModsUninstall));
         ImGui::BeginDisabled(game_running && entry.enabled);
         const bool uninstall_clicked = ImGui::Button(
             (std::string(Text(translator, anomaly::MessageId::LauncherModsUninstall)) +
@@ -4839,7 +4714,7 @@ void DrawModsMode(
             pending_uninstall = entry.name;
             ImGui::OpenPopup("confirm-uninstall");
         }
-        ImGui::SameLine();
+        next_action(Text(translator, anomaly::MessageId::LauncherModsNotes));
         const bool notes_clicked = ImGui::Button(
             (std::string(Text(translator, anomaly::MessageId::LauncherModsNotes)) + "##notes" +
                 entry.name).c_str());
@@ -4854,19 +4729,12 @@ void DrawModsMode(
             notes_id_buffer[0] = '\0';
             // Show the already bound GameBanana id so the field is not misleadingly empty.
             if (entry.directory) {
-                std::ifstream source(entry.icon_path / L".aurora-source.json");
-                if (source) {
-                    const std::string text((std::istreambuf_iterator<char>(source)),
-                        std::istreambuf_iterator<char>());
-                    const std::string id = LauncherJsonNumber(text, "mod_id");
-                    if (!id.empty()) {
-                        std::snprintf(notes_id_buffer, sizeof(notes_id_buffer), "%s", id.c_str());
-                    }
-                }
+                const auto source = LauncherReadModSource(entry.icon_path);
+                std::snprintf(notes_id_buffer, sizeof(notes_id_buffer), "%s", source.mod_id.c_str());
             }
             ImGui::OpenPopup("mod-notes");
         }
-        ImGui::SameLine();
+        next_action(Text(translator, anomaly::MessageId::LauncherModsRename));
         ImGui::BeginDisabled(game_running && entry.enabled);
         const bool rename_clicked = ImGui::Button(
             (std::string(Text(translator, anomaly::MessageId::LauncherModsRename)) +
@@ -4879,7 +4747,7 @@ void DrawModsMode(
         }
         if (!entry.remote_version.empty() &&
             (entry.version.empty() || entry.remote_version != entry.version)) {
-            ImGui::SameLine();
+            next_action(Text(translator, anomaly::MessageId::LauncherModsUpdate));
             ImGui::BeginDisabled(game_running && entry.enabled);
             const bool update_clicked = ImGui::Button(
                 (std::string(Text(translator, anomaly::MessageId::LauncherModsUpdate)) + "##u" +
@@ -4894,7 +4762,7 @@ void DrawModsMode(
             }
         }
         if (!entry.link.empty()) {
-            ImGui::SameLine();
+            next_action(Text(translator, anomaly::MessageId::LauncherModsOpenSource));
             if (ImGui::Button((std::string(Text(translator, anomaly::MessageId::LauncherModsOpenSource)) +
                     "##" + entry.name).c_str())) {
                 const std::wstring url(entry.link.begin(), entry.link.end());
@@ -4967,9 +4835,9 @@ void DrawModsMode(
                             std::wstring(id.begin(), id.end()) + L"/ProfilePage";
                         const std::string body = LauncherHttpGet(L"gamebanana.com", path);
                         if (!body.empty()) {
-                            LauncherWriteAuroraSource(entry.icon_path, id, LauncherGameBananaFileId(body),
+                            LauncherWriteModSource(entry.icon_path, id, LauncherGameBananaFileId(body),
                                 LauncherGameBananaFileName(body), LauncherGameBananaFileMd5(body),
-                                LauncherGameBananaAuthor(body), entry.display_name, entry.needs_lua);
+                                LauncherGameBananaAuthor(body), entry.display_name);
                             import_message = Tr(anomaly::MessageId::LauncherModsLinked, {id});
                         } else {
                             import_message = Tr(anomaly::MessageId::LauncherModsLinkFailed);
@@ -5417,7 +5285,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
     static_cast<void>(ImGui_ImplDX11_CreateDeviceObjects());
     ue5mem::ReleasePlatformUiFontAtlas(ue5mem::PlatformUiFontRetention::Minimal);
     ApplyLauncherDpiScale();
-    LoadLogo(graphics);
+    graphics.logo = LoadEmbeddedTexture(graphics, kLogoResourceId);
+    graphics.mod_placeholder = LoadEmbeddedTexture(graphics, kModPlaceholderResourceId);
     LauncherController controller(ExecutableDirectory());
     LauncherMode mode = LauncherMode::Proxy;
 

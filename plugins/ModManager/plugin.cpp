@@ -9,7 +9,7 @@ using namespace anomaly::sdk;
 using Refresh = mod_manager::AssetRefresh;
 using Result = Refresh::Result;
 struct Row {
-    std::string key, name, vehicles;
+    std::string key, name, vehicles, groups;
     bool enabled{}, disabled{}, complete{};
     bool operator==(const Row&) const = default;
 };
@@ -65,8 +65,12 @@ std::string ErrorText(AnomalyStatusV1 status) {
 int ANOMALY_CALL Collect(void* user, const AnomalyModEntryV1* entry) noexcept {
     auto& result = *static_cast<RowCollection*>(user);
     try {
-        if (!entry || entry->struct_size < sizeof(*entry)) { result.failed = true; return 0; }
+        if (!entry || entry->struct_size < offsetof(AnomalyModEntryV1, resource_groups)) {
+            result.failed = true; return 0;
+        }
         result.values.push_back({Copy(entry->key), Copy(entry->name), Copy(entry->vehicles),
+            Copy(entry->struct_size >= offsetof(AnomalyModEntryV1, resource_groups) + sizeof(entry->resource_groups)
+                ? entry->resource_groups : entry->vehicles),
             entry->enabled != 0, entry->disabled_files != 0, entry->index_complete != 0});
         return 1;
     } catch (...) { result.failed = true; return 0; }
@@ -133,7 +137,7 @@ void ANOMALY_CALL Worker(void*, AnomalyGenerationHandleV1) noexcept {
         auto rows = std::move(collection.values);
         if (!listed) { rows.clear(); LocalizedStatus("status.catalog_failed", "Read failed: {0}", ErrorText(listing)); }
         std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) {
-            return std::tie(a.vehicles, a.name) < std::tie(b.vehicles, b.name);
+            return std::tie(a.groups, a.name) < std::tie(b.groups, b.name);
         });
         if (listed && !g.compatibility) {
             if (g.catalog_seen) for (const auto& row : rows) {
@@ -286,11 +290,11 @@ void ANOMALY_CALL Draw(void*, const AnomalyUiServiceV1* ui) noexcept {
         std::optional<std::string> group;
         for (size_t i = g.page * page_size; i < std::min(rows.size(), (g.page + 1) * page_size); ++i) {
             const auto& row = rows[i];
-            if (!group || row.vehicles != *group) {
-                ui->separator(ui->user); group = row.vehicles;
+            if (!group || row.groups != *group) {
+                ui->separator(ui->user); group = row.groups;
                 if (group->empty()) TextLocalized("group.unknown", "Unclassified resources");
-                else {
-                    ui->text(ui->user, StringView(*group));
+                else ui->text(ui->user, StringView(*group));
+                if (!row.vehicles.empty()) {
                     const bool can_release = !busy && !g.compatibility && native_ready;
                     const auto ScopedLabel = [&](std::string_view key, std::string_view fallback, std::string_view suffix) {
                         return ui->button_enabled(ui->user, StringView(g.localizer.Label(key, fallback,

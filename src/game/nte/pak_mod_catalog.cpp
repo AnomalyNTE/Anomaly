@@ -205,6 +205,42 @@ void AddAsset(PakModCatalogEntry& row, std::string path) {
             path.find("/blueprints/vehicle/") != std::string::npos)) row.model_vehicles.insert(token);
     }
 }
+void ClassifyResources(PakModCatalogEntry& row) {
+    row.resource_groups = row.vehicles;
+    std::set<std::string> directories;
+    for (const auto& asset : row.assets) {
+        const std::string_view path = asset;
+        if (!path.starts_with("/game/")) continue;
+        const auto top = path.find('/', 6);
+        if (top == std::string_view::npos) continue;
+        directories.emplace(path.substr(0, top));
+
+        // Ownership comes from the directory, not texture names borrowed from another character.
+        constexpr std::string_view players = "/game/characters/player/";
+        if (path.starts_with(players)) {
+            const auto rest = path.substr(players.size());
+            const auto slash = rest.find('/');
+            if (slash == std::string_view::npos) continue;
+            const auto owner = rest.substr(0, slash);
+            const auto digits = owner.find_first_not_of("0123456789");
+            const auto length = digits == std::string_view::npos ? owner.size() : digits;
+            if (length > 0 && length <= 6 && (digits == std::string_view::npos || owner[digits] == '_'))
+                row.resource_groups.insert("Player_" + std::string(owner.substr(0, length)));
+            else row.resource_groups.emplace(path.substr(0, players.size() + slash));
+            continue;
+        }
+        constexpr std::string_view pendant = "/game/characters/pendant_";
+        if (path.starts_with(pendant)) {
+            const auto rest = path.substr(pendant.size());
+            const auto slash = rest.find('/');
+            if (slash != std::string_view::npos && slash > 0 && slash <= 6 &&
+                rest.substr(0, slash).find_first_not_of("0123456789") == std::string_view::npos)
+                row.resource_groups.insert("Pendant_" + std::string(rest.substr(0, slash)));
+        }
+    }
+    // Companion materials and custom folders do not split a known character or vehicle group.
+    if (row.resource_groups.empty()) row.resource_groups = std::move(directories);
+}
 bool Intersects(const std::set<std::string>& a, const std::set<std::string>& b) {
     auto x = a.begin(), y = b.begin();
     while (x != a.end() && y != b.end()) { if (*x == *y) return true; if (*x < *y) ++x; else ++y; }
@@ -300,6 +336,7 @@ std::vector<PakModCatalogEntry> ReadPakModCatalog(const std::filesystem::path& d
     }
     std::vector<PakModCatalogEntry> result;
     for (auto& [key, row] : found) {
+        ClassifyResources(row);
         result.push_back(std::move(row));
     }
     return result;

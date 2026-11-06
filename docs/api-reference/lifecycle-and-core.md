@@ -187,4 +187,7 @@ C++ 侧直接用 SDK 的 `anomaly::sdk::Localizer`（`include/anomaly/sdk/locali
 `AnomalyModEntryV1` 包含 `enabled`、`disabled_files`、`index_complete`、相对选择 key、名称、
 以逗号和空格分隔的车型资源标识以及原始分析错误。字符串视图仅在回调内有效；宿主不保留回调，
 调用者不得跨 C ABI 抛出异常。非 OK 时丢弃本次部分枚举。已标记 `.disabled` 的文件须先在 Launcher 恢复。
+尾字段 `resource_groups` 是从资源目录识别出的分组标识，以逗号和空格分隔；读取前检查
+`struct_size >= offsetof(AnomalyModEntryV1, resource_groups) + sizeof(entry.resource_groups)`，旧宿主没有该字段时可使用 `vehicles` 展示。
+该字段只用于分类，不改变资源冲突判断；非载具分组不能用于车辆清理。
 兼容模式拒绝 `set_enabled` 与 `synchronize`。完整资源索引仅描述覆盖路径，不代表已加载对象或所有依赖关系。

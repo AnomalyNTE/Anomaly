@@ -9,7 +9,7 @@
 namespace anomaly {
 struct PakModCatalogEntry {
     std::string key, name;
-    std::set<std::string> assets, vehicles, model_vehicles;
+    std::set<std::string> assets, vehicles, model_vehicles, resource_groups;
     bool enabled{}, disabled_files{}, index_complete{true};
     std::string analysis_error;
 };
