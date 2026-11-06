@@ -1,3 +1,5 @@
+#include "backend.hpp"
+#include "runtime.hpp"
 #include "anomaly/sdk/cpp.hpp"
 #include "anomaly/sdk/services/nte.h"
 #include "anomaly/sdk/services/ui.h"
@@ -22,9 +24,9 @@
 
 namespace {
 
-// 车速倍率直接调节，无需额外启用/关闭；范围 0x–100x。
+// 车速倍率直接调节，无需额外启用/关闭；范围 0.05x–100x。
 constexpr float kDefaultSpeedRatio = 1.0F;
-constexpr float kMinimumSpeedRatio = 0.0F;
+constexpr float kMinimumSpeedRatio = 0.05F;
 constexpr float kMaximumSpeedRatio = 100.0F;
 
 struct Snapshot {
@@ -47,7 +49,7 @@ struct CustomizationOption {
 };
 
 struct Context {
-    const AnomalyNteVehicleServiceV1* vehicle{};
+    nte_vehicle::Runtime* vehicle{};
     const AnomalyNtePlayerServiceV1* player{};
     const AnomalyInputServiceV1* input{};
     const AnomalyWindowServiceV1* window_service{};
@@ -238,7 +240,7 @@ std::string StatusDescription(std::string_view prefix, const AnomalyStatusV1& st
     const std::string code = std::to_string(status.code);
     const std::array arguments{prefix, std::string_view(code)};
     return g_context.localizer.Format(
-        "text.status_with_code", "{0} (host status code {1})", arguments);
+        "text.status_with_code", "{0} (status code {1})", arguments);
 }
 
 void SetLastSummon(std::string text) {
@@ -246,24 +248,23 @@ void SetLastSummon(std::string text) {
     g_context.last_summon = std::move(text);
 }
 
-// 目录内容来自当前 Host 已核验的实时 FNamePool；读取前后序号相同才发布完整目录。
+// 目录由插件读取实时 DataTable；读取前后序号相同才发布完整目录。
 void RefreshCatalogOnGameThread() {
-    const auto* vehicle = g_context.vehicle;
-    if (!vehicle || !vehicle->catalog_snapshot || !vehicle->vehicle_id_at ||
-        !vehicle->catalog_label_at) {
+    auto* vehicle = g_context.vehicle;
+    if (!vehicle) {
         SetStatus(g_context.localizer.Text("status.catalog_interface_missing",
-            "Catalog read failed: this host does not publish the Vehicle V3 catalog label interface."));
+            "The vehicle catalog backend is unavailable."));
         std::scoped_lock lock(g_context.mutex);
         g_context.vehicle_ids.clear();
         g_context.vehicle_labels.clear();
         return;
     }
 
-    AnomalyNteVehicleCatalogSnapshotV1 before{};
-    before.struct_size = sizeof(before);
-    const auto before_status = vehicle->catalog_snapshot(vehicle->user, &before);
+    nte_vehicle::CatalogSnapshot before{};
+
+    const auto before_status = vehicle->VehicleCatalogSnapshot(&before);
     if (before_status.code != ANOMALY_STATUS_V1_OK ||
-        (before.flags & ANOMALY_NTE_VEHICLE_CATALOG_V1_VALID) == 0 ||
+        (before.flags & nte_vehicle::kCatalogValid) == 0 ||
         before.entry_count > 8192U) {
         SetStatus(StatusDescription(
             g_context.localizer.Text("status.catalog_read_failed", "Catalog read failed"),
@@ -279,10 +280,10 @@ void RefreshCatalogOnGameThread() {
     ids.reserve(before.entry_count);
     labels.reserve(before.entry_count);
     for (std::uint32_t i = 0; i < before.entry_count; ++i) {
-        std::array<char, ANOMALY_NTE_VEHICLE_ID_MAX_UTF8_BYTES + 1U> id_buffer{};
-        std::array<char, ANOMALY_NTE_VEHICLE_ID_MAX_UTF8_BYTES * 2U + 8U> label_buffer{};
+        std::array<char, nte_vehicle::kVehicleIdMaxBytes + 1U> id_buffer{};
+        std::array<char, nte_vehicle::kVehicleIdMaxBytes * 2U + 8U> label_buffer{};
         std::size_t id_size = id_buffer.size();
-        const auto id_status = vehicle->vehicle_id_at(vehicle->user, i, id_buffer.data(), &id_size);
+        const auto id_status = vehicle->VehicleIdAt(i, id_buffer.data(), &id_size);
         if (id_status.code != ANOMALY_STATUS_V1_OK || id_size <= 1U || id_size > id_buffer.size()) {
             const std::string index = std::to_string(i);
             const std::array arguments{std::string_view(index)};
@@ -297,8 +298,7 @@ void RefreshCatalogOnGameThread() {
         }
 
         std::size_t label_size = label_buffer.size();
-        const auto label_status = vehicle->catalog_label_at(
-            vehicle->user, i, label_buffer.data(), &label_size);
+        const auto label_status = vehicle->VehicleCatalogLabelAt(i, label_buffer.data(), &label_size);
         if (label_status.code != ANOMALY_STATUS_V1_OK ||
             label_size <= 1U || label_size > label_buffer.size()) {
             const std::string index = std::to_string(i);
@@ -324,11 +324,11 @@ void RefreshCatalogOnGameThread() {
         }
     }
 
-    AnomalyNteVehicleCatalogSnapshotV1 after{};
-    after.struct_size = sizeof(after);
-    const auto after_status = vehicle->catalog_snapshot(vehicle->user, &after);
+    nte_vehicle::CatalogSnapshot after{};
+
+    const auto after_status = vehicle->VehicleCatalogSnapshot(&after);
     if (after_status.code != ANOMALY_STATUS_V1_OK ||
-        (after.flags & ANOMALY_NTE_VEHICLE_CATALOG_V1_VALID) == 0 ||
+        (after.flags & nte_vehicle::kCatalogValid) == 0 ||
         after.sequence != before.sequence || after.entry_count != ids.size()) {
         SetStatus(StatusDescription(
             g_context.localizer.Text("status.catalog_changed",
@@ -358,37 +358,26 @@ void RefreshCatalogOnGameThread() {
             "status.catalog_loaded", "Loaded {0} DT_VehicleData records.", arguments);
     }
 
-    // Always synchronize the current UI selection with Host state. Otherwise the
+    // Always synchronize the current UI selection with the plugin runtime. Otherwise the
     // default item can look selected while selected_summon_vehicle_id is still empty.
     if (!selected_id.empty()) {
-        const auto selected_status = vehicle->set_summon_vehicle_id(
-            vehicle->user, anomaly::sdk::StringView(selected_id));
+        const auto selected_status = vehicle->VehicleSetSummonVehicleId(anomaly::sdk::StringView(selected_id));
         if (selected_status.code != ANOMALY_STATUS_V1_OK)
             SetStatus(StatusDescription(
                 g_context.localizer.Text("status.catalog_selection_rejected",
-                    "The catalog was read, but the host did not accept the current RowName"),
+                    "The catalog was read, but the selected RowName was not accepted"),
                 selected_status));
     }
 }
 
 void RefreshCustomizationCatalogOnGameThread() {
-    const auto* vehicle = g_context.vehicle;
+    auto* vehicle = g_context.vehicle;
     std::string selected_id;
     {
         std::scoped_lock lock(g_context.mutex);
         selected_id = g_context.selected_vehicle_id;
     }
-    const bool callbacks_available =
-        vehicle != nullptr &&
-        HasField<AnomalyNteVehicleServiceV1,
-            decltype(AnomalyNteVehicleServiceV1::customization_catalog_snapshot)>(
-                vehicle, offsetof(AnomalyNteVehicleServiceV1, customization_catalog_snapshot)) &&
-        vehicle->customization_catalog_snapshot != nullptr &&
-        HasField<AnomalyNteVehicleServiceV1,
-            decltype(AnomalyNteVehicleServiceV1::customization_option_at)>(
-                vehicle, offsetof(AnomalyNteVehicleServiceV1, customization_option_at)) &&
-        vehicle->customization_option_at != nullptr;
-    if (!callbacks_available || selected_id.empty()) {
+    if (!vehicle || selected_id.empty()) {
         std::scoped_lock lock(g_context.mutex);
         g_context.customization_options.clear();
         g_context.customization_vehicle_id.clear();
@@ -398,17 +387,16 @@ void RefreshCustomizationCatalogOnGameThread() {
             ? g_context.localizer.Text("status.customization_pick_vehicle",
                 "Select a vehicle from the summon list first.")
             : g_context.localizer.Text("status.customization_interface_missing",
-                "This core does not publish the V7 customization catalog interface; update the runtime.");
+                "The vehicle customization backend is unavailable.");
         g_context.customization_status_failure = false;
         return;
     }
 
-    AnomalyNteVehicleCustomizationCatalogSnapshotV1 before{};
-    before.struct_size = sizeof(before);
-    const auto before_status = vehicle->customization_catalog_snapshot(
-        vehicle->user, anomaly::sdk::StringView(selected_id), &before);
+    nte_vehicle::CatalogSnapshot before{};
+
+    const auto before_status = vehicle->VehicleCustomizationCatalogSnapshot(anomaly::sdk::StringView(selected_id), &before);
     if (before_status.code != ANOMALY_STATUS_V1_OK ||
-        (before.flags & ANOMALY_NTE_VEHICLE_CATALOG_V1_VALID) == 0 ||
+        (before.flags & nte_vehicle::kCatalogValid) == 0 ||
         before.entry_count > 8192U) {
         std::scoped_lock lock(g_context.mutex);
         g_context.customization_options.clear();
@@ -426,12 +414,11 @@ void RefreshCustomizationCatalogOnGameThread() {
     std::vector<CustomizationOption> options;
     options.reserve(before.entry_count);
     for (std::uint32_t index = 0; index < before.entry_count; ++index) {
-        AnomalyNteVehicleCustomizationOptionV1 native_option{};
-        native_option.struct_size = sizeof(native_option);
-        const auto option_status = vehicle->customization_option_at(
-            vehicle->user, anomaly::sdk::StringView(selected_id), index, &native_option);
+        nte_vehicle::CustomizationEntry native_option{};
+
+        const auto option_status = vehicle->VehicleCustomizationOptionAt(anomaly::sdk::StringView(selected_id), index, &native_option);
         if (option_status.code != ANOMALY_STATUS_V1_OK ||
-            (native_option.flags & ANOMALY_NTE_VEHICLE_CUSTOMIZATION_OPTION_V1_VALID) == 0) {
+            (native_option.flags & nte_vehicle::kOptionValid) == 0) {
             std::scoped_lock lock(g_context.mutex);
             g_context.customization_options.clear();
             g_context.customization_vehicle_id = selected_id;
@@ -446,18 +433,12 @@ void RefreshCustomizationCatalogOnGameThread() {
             g_context.customization_status_failure = true;
             return;
         }
-        const auto id_end = std::find(
-            std::begin(native_option.option_id), std::end(native_option.option_id), '\0');
-        const auto label_end = std::find(
-            std::begin(native_option.label), std::end(native_option.label), '\0');
-        if (id_end == std::end(native_option.option_id) ||
-            label_end == std::end(native_option.label) ||
-            id_end == std::begin(native_option.option_id) ||
-            (native_option.kind != ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_MODULE &&
-             native_option.kind != ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_SKIN) ||
-            (native_option.kind == ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_MODULE &&
+        if (native_option.option_id.empty() ||
+            (native_option.kind != nte_vehicle::kCustomizationModule &&
+             native_option.kind != nte_vehicle::kCustomizationSkin) ||
+            (native_option.kind == nte_vehicle::kCustomizationModule &&
              (native_option.module_type == 0 || native_option.module_type >= 27)) ||
-            (native_option.kind == ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_SKIN &&
+            (native_option.kind == nte_vehicle::kCustomizationSkin &&
              native_option.module_type != 0)) {
             std::scoped_lock lock(g_context.mutex);
             g_context.customization_options.clear();
@@ -466,28 +447,25 @@ void RefreshCustomizationCatalogOnGameThread() {
             g_context.selected_module_overrides.clear();
             g_context.customization_status = g_context.localizer.Text(
                 "status.customization_option_invalid",
-                "The customization catalog contains an invalid ID, kind, or unterminated ABI string.");
+                "The customization catalog contains an invalid ID or module type.");
             g_context.customization_status_failure = true;
             return;
         }
         CustomizationOption option{};
-        option.id.assign(native_option.option_id, static_cast<std::size_t>(
-            id_end - std::begin(native_option.option_id)));
-        option.label.assign(native_option.label, static_cast<std::size_t>(
-            label_end - std::begin(native_option.label)));
+        option.id = std::move(native_option.option_id);
+        option.label = std::move(native_option.label);
         option.kind = native_option.kind;
         option.module_type = native_option.module_type;
         option.is_default =
-            (native_option.flags & ANOMALY_NTE_VEHICLE_CUSTOMIZATION_OPTION_V1_DEFAULT) != 0;
+            (native_option.flags & nte_vehicle::kOptionDefault) != 0;
         options.push_back(std::move(option));
     }
 
-    AnomalyNteVehicleCustomizationCatalogSnapshotV1 after{};
-    after.struct_size = sizeof(after);
-    const auto after_status = vehicle->customization_catalog_snapshot(
-        vehicle->user, anomaly::sdk::StringView(selected_id), &after);
+    nte_vehicle::CatalogSnapshot after{};
+
+    const auto after_status = vehicle->VehicleCustomizationCatalogSnapshot(anomaly::sdk::StringView(selected_id), &after);
     if (after_status.code != ANOMALY_STATUS_V1_OK ||
-        (after.flags & ANOMALY_NTE_VEHICLE_CATALOG_V1_VALID) == 0 ||
+        (after.flags & nte_vehicle::kCatalogValid) == 0 ||
         after.sequence != before.sequence || after.entry_count != options.size()) {
         std::scoped_lock lock(g_context.mutex);
         g_context.customization_options.clear();
@@ -504,7 +482,7 @@ void RefreshCustomizationCatalogOnGameThread() {
     std::string default_skin;
     std::string fallback_skin;
     for (const auto& option : options) {
-        if (option.kind != ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_SKIN) continue;
+        if (option.kind != nte_vehicle::kCustomizationSkin) continue;
         if (fallback_skin.empty()) fallback_skin = option.id;
         if (option.is_default) {
             default_skin = option.id;
@@ -523,11 +501,11 @@ void RefreshCustomizationCatalogOnGameThread() {
         g_context.customization_catalog_tick = after.sequence;
         const auto module_count = std::ranges::count_if(
             g_context.customization_options, [](const CustomizationOption& option) {
-                return option.kind == ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_MODULE;
+                return option.kind == nte_vehicle::kCustomizationModule;
             });
         const auto skin_count = std::ranges::count_if(
             g_context.customization_options, [](const CustomizationOption& option) {
-                return option.kind == ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_SKIN;
+                return option.kind == nte_vehicle::kCustomizationSkin;
             });
         const std::string module_text = std::to_string(module_count);
         const std::string skin_text = std::to_string(skin_count);
@@ -546,7 +524,7 @@ void RefreshCustomizationCatalogOnGameThread() {
         } else if (g_context.customization_skin_id.empty() && skin_count == 0) {
             g_context.customization_status += g_context.localizer.Text(
                 "status.customization_no_skins",
-                "; this vehicle has no skin options, so customized summoning keeps the game-generated paint");
+                "; this vehicle has no skin options, so customized summoning uses the game default materials");
         } else if (g_context.customization_skin_id.empty()) {
             g_context.customization_status += g_context.localizer.Text(
                 "status.customization_choose_skin",
@@ -571,15 +549,10 @@ void Update() {
     }
 
     // Keep the current wheeled vehicle at maximum durability by calling Dump-validated
-    // RepairSelf(true) on every Game Update. Core resolves and validates the current vehicle
+    // RepairSelf(true) on every Game Update. The plugin resolves and validates the current vehicle
     // each time; the plugin does not keep a stale actor pointer.
-    if (HasField<AnomalyNteVehicleServiceV1,
-            decltype(AnomalyNteVehicleServiceV1::repair_current_vehicle)>(
-                g_context.vehicle,
-                offsetof(AnomalyNteVehicleServiceV1, repair_current_vehicle)) &&
-        g_context.vehicle->repair_current_vehicle != nullptr) {
-        const auto durability_status = g_context.vehicle->repair_current_vehicle(
-            g_context.vehicle->user);
+    {
+        const auto durability_status = g_context.vehicle->VehicleRepairCurrentDurability();
         const auto previous_code = g_context.durability_last_status_code.exchange(
             durability_status.code, std::memory_order_acq_rel);
         if (durability_status.code != ANOMALY_STATUS_V1_OK &&
@@ -600,42 +573,19 @@ void Update() {
     // Explicit refresh runs on Game thread; a failed scan waits for another user request
     // instead of rescanning UObject/DataTable every frame.
     if (g_context.refresh_catalog_requested.exchange(false, std::memory_order_acq_rel)) {
-        if (!g_context.vehicle->refresh_catalog) {
-            SetStatus(g_context.localizer.Text("status.catalog_refresh_interface_missing",
-                "Catalog refresh failed: this host does not publish the Vehicle V3 refresh_catalog interface."));
+        const auto refresh_status = g_context.vehicle->VehicleCatalogRefresh();
+        if (refresh_status.code == ANOMALY_STATUS_V1_OK) {
+            RefreshCatalogOnGameThread();
         } else {
-            const auto refresh_status = g_context.vehicle->refresh_catalog(g_context.vehicle->user);
-            if (refresh_status.code == ANOMALY_STATUS_V1_OK) {
-                RefreshCatalogOnGameThread();
-            } else {
-                {
-                    std::scoped_lock lock(g_context.mutex);
-                    g_context.vehicle_ids.clear();
-                    g_context.vehicle_labels.clear();
-                }
-                SetStatus(StatusDescription(
-                    g_context.localizer.Text("status.catalog_refresh_failed",
-                        "Catalog refresh failed"),
-                    refresh_status));
+            {
+                std::scoped_lock lock(g_context.mutex);
+                g_context.vehicle_ids.clear();
+                g_context.vehicle_labels.clear();
             }
-        }
-    }
-
-    // 一次性目录转储：顺序与游戏目录一致，用于名称对照（写在工作目录）。
-    static std::uint64_t dumped_catalog_tick = 0;
-    {
-        std::scoped_lock lock(g_context.mutex);
-        if (dumped_catalog_tick != g_context.catalog_tick && !g_context.vehicle_ids.empty()) {
-            dumped_catalog_tick = g_context.catalog_tick;
-            std::ofstream out("ntvehicle_catalog.txt", std::ios::trunc);
-            if (out) {
-                for (std::size_t i = 0; i < g_context.vehicle_ids.size(); ++i) {
-                    const std::string& label =
-                        i < g_context.vehicle_labels.size() && !g_context.vehicle_labels[i].empty()
-                            ? g_context.vehicle_labels[i] : g_context.vehicle_ids[i];
-                    out << i << "\t" << label << "\t" << g_context.vehicle_ids[i] << "\n";
-                }
-            }
+            SetStatus(StatusDescription(
+                g_context.localizer.Text("status.catalog_refresh_failed",
+                    "Catalog refresh failed"),
+                refresh_status));
         }
     }
 
@@ -647,8 +597,7 @@ void Update() {
         g_context.pending_vehicle_id.clear();
     }
     if (!pending_vehicle_id.empty()) {
-        const auto status = g_context.vehicle->set_summon_vehicle_id(
-            g_context.vehicle->user, anomaly::sdk::StringView(pending_vehicle_id));
+        const auto status = g_context.vehicle->VehicleSetSummonVehicleId(anomaly::sdk::StringView(pending_vehicle_id));
         if (status.code == ANOMALY_STATUS_V1_OK) {
             {
                 std::scoped_lock lock(g_context.mutex);
@@ -666,7 +615,7 @@ void Update() {
                 }
             }
             // 记住当前选择，下次启动/热重载后恢复。
-            SaveSelection(pending_vehicle_id);
+            g_context.saved_vehicle_id = pending_vehicle_id;
         } else {
             SetStatus(StatusDescription(
                 g_context.localizer.Text("status.vehicle_select_failed",
@@ -702,13 +651,12 @@ void Update() {
         }
         g_context.saved_selection_pending = false;
     }
-    if (catalog_loaded && g_context.vehicle->catalog_snapshot) {
-        AnomalyNteVehicleCatalogSnapshotV1 catalog{};
-        catalog.struct_size = sizeof(catalog);
-        const auto catalog_status = g_context.vehicle->catalog_snapshot(
-            g_context.vehicle->user, &catalog);
+    if (catalog_loaded) {
+        nte_vehicle::CatalogSnapshot catalog{};
+
+        const auto catalog_status = g_context.vehicle->VehicleCatalogSnapshot(&catalog);
         if (catalog_status.code == ANOMALY_STATUS_V1_OK &&
-            (catalog.flags & ANOMALY_NTE_VEHICLE_CATALOG_V1_VALID) != 0) {
+            (catalog.flags & nte_vehicle::kCatalogValid) != 0) {
             bool need_refresh{};
             {
                 std::scoped_lock lock(g_context.mutex);
@@ -747,7 +695,7 @@ void Update() {
     }
 
     if (g_context.reset.exchange(false, std::memory_order_acq_rel)) {
-        const auto status = g_context.vehicle->reset(g_context.vehicle->user);
+        const auto status = g_context.vehicle->VehicleReset();
         {
             std::scoped_lock lock(g_context.mutex);
             g_context.speed_ratio = kDefaultSpeedRatio;
@@ -768,8 +716,7 @@ void Update() {
                 kMinimumSpeedRatio, kMaximumSpeedRatio);
             g_context.speed_ratio = ratio;
         }
-        const auto status = g_context.vehicle->set_top_speed_ratio(
-            g_context.vehicle->user, ratio);
+        const auto status = g_context.vehicle->VehicleSetTopSpeedRatio(ratio);
         if (status.code == ANOMALY_STATUS_V1_OK) {
             const std::string ratio_text = std::to_string(ratio);
             const std::array arguments{std::string_view(ratio_text)};
@@ -784,7 +731,7 @@ void Update() {
             const std::string code = std::to_string(status.code);
             const std::array arguments{std::string_view(code)};
             SetStatus(g_context.localizer.Format("status.speed_apply_failed_code",
-                "Applying the speed ratio failed, host status code {0}", arguments));
+                "Applying the speed ratio failed, status code {0}", arguments));
         }
     }
 
@@ -794,34 +741,22 @@ void Update() {
             std::scoped_lock lock(g_context.mutex);
             ratio = g_context.engine_torque_ratio;
         }
-        const bool has_torque_ratio_service =
-            HasField<AnomalyNteVehicleServiceV1,
-                decltype(AnomalyNteVehicleServiceV1::set_engine_torque_ratio)>(
-                    g_context.vehicle,
-                    offsetof(AnomalyNteVehicleServiceV1, set_engine_torque_ratio)) &&
-            g_context.vehicle->set_engine_torque_ratio != nullptr;
-        if (!has_torque_ratio_service) {
-            SetStatus(g_context.localizer.Text("status.torque_interface_missing",
-                "The engine torque ratio is unavailable: this host runtime does not publish that extension interface."));
+        const auto status = g_context.vehicle->VehicleSetEngineTorqueRatio(ratio);
+        if (status.code == ANOMALY_STATUS_V1_OK) {
+            const std::string ratio_text = std::to_string(ratio);
+            const std::array arguments{std::string_view(ratio_text)};
+            SetStatus(g_context.localizer.Format("status.torque_applied",
+                "Engine torque ratio applied: {0}x", arguments));
+        } else if (status.message.data != nullptr && status.message.size != 0) {
+            const std::array arguments{
+                std::string_view(status.message.data, status.message.size)};
+            SetStatus(g_context.localizer.Format("status.torque_apply_failed",
+                "Applying the engine torque ratio failed: {0}", arguments));
         } else {
-            const auto status = g_context.vehicle->set_engine_torque_ratio(
-                g_context.vehicle->user, ratio);
-            if (status.code == ANOMALY_STATUS_V1_OK) {
-                const std::string ratio_text = std::to_string(ratio);
-                const std::array arguments{std::string_view(ratio_text)};
-                SetStatus(g_context.localizer.Format("status.torque_applied",
-                    "Engine torque ratio applied: {0}x", arguments));
-            } else if (status.message.data != nullptr && status.message.size != 0) {
-                const std::array arguments{
-                    std::string_view(status.message.data, status.message.size)};
-                SetStatus(g_context.localizer.Format("status.torque_apply_failed",
-                    "Applying the engine torque ratio failed: {0}", arguments));
-            } else {
-                const std::string code = std::to_string(status.code);
-                const std::array arguments{std::string_view(code)};
-                SetStatus(g_context.localizer.Format("status.torque_apply_failed_code",
-                    "Applying the engine torque ratio failed, host status code {0}", arguments));
-            }
+            const std::string code = std::to_string(status.code);
+            const std::array arguments{std::string_view(code)};
+            SetStatus(g_context.localizer.Format("status.torque_apply_failed_code",
+                "Applying the engine torque ratio failed, status code {0}", arguments));
         }
     }
 
@@ -833,47 +768,23 @@ void Update() {
             ratio = g_context.other_speed_ratio;
             floor_ratio = g_context.other_speed_floor_ratio;
         }
-        const bool floor_available =
-            HasField<AnomalyNteVehicleServiceV1,
-                decltype(AnomalyNteVehicleServiceV1::set_other_vehicles_min_speed_ratio)>(
-                    g_context.vehicle,
-                    offsetof(AnomalyNteVehicleServiceV1, set_other_vehicles_min_speed_ratio)) &&
-            g_context.vehicle->set_other_vehicles_min_speed_ratio != nullptr;
-        if (!floor_available) {
-            SetStatus(g_context.localizer.Text("status.other_min_speed_interface_missing",
-                "The non-player vehicle minimum speed ratio is unavailable: the host runtime does not publish that extension interface."));
+        const auto floor_status = g_context.vehicle->VehicleSetOtherVehiclesMinSpeedRatio(floor_ratio);
+        if (floor_status.code != ANOMALY_STATUS_V1_OK) {
+            SetStatus(StatusDescription(
+                g_context.localizer.Text("status.other_min_speed_failed",
+                    "Setting the non-player vehicle minimum speed ratio failed"),
+                floor_status));
         } else {
-            const auto floor_status = g_context.vehicle->set_other_vehicles_min_speed_ratio(
-                g_context.vehicle->user, floor_ratio);
-            if (floor_status.code != ANOMALY_STATUS_V1_OK) {
-                SetStatus(StatusDescription(
-                    g_context.localizer.Text("status.other_min_speed_failed",
-                        "Setting the non-player vehicle minimum speed ratio failed"),
-                    floor_status));
-            } else {
-                const bool available =
-                    HasField<AnomalyNteVehicleServiceV1,
-                        decltype(AnomalyNteVehicleServiceV1::set_other_vehicles_top_speed_ratio)>(
-                            g_context.vehicle,
-                            offsetof(AnomalyNteVehicleServiceV1, set_other_vehicles_top_speed_ratio)) &&
-                    g_context.vehicle->set_other_vehicles_top_speed_ratio != nullptr;
-                if (!available) {
-                    SetStatus(g_context.localizer.Text("status.other_speed_interface_missing",
-                        "The non-player vehicle speed ratio is unavailable: the host runtime does not publish the Vehicle V4 interface."));
-                } else {
-                    const auto status = g_context.vehicle->set_other_vehicles_top_speed_ratio(
-                        g_context.vehicle->user, ratio);
-                    SetStatus(status.code == ANOMALY_STATUS_V1_OK
-                        ? StatusDescription(
-                              g_context.localizer.Text("status.other_speed_applied",
-                                  "Non-player vehicle speed and floor updated"),
-                              status)
-                        : StatusDescription(
-                              g_context.localizer.Text("status.other_speed_partial",
-                                  "Non-player vehicle speed update did not fully succeed"),
-                              status));
-                }
-            }
+            const auto status = g_context.vehicle->VehicleSetOtherVehiclesTopSpeedRatio(ratio);
+            SetStatus(status.code == ANOMALY_STATUS_V1_OK
+                ? StatusDescription(
+                      g_context.localizer.Text("status.other_speed_applied",
+                          "Non-player vehicle speed and floor updated"),
+                      status)
+                : StatusDescription(
+                      g_context.localizer.Text("status.other_speed_partial",
+                          "Non-player vehicle speed update did not fully succeed"),
+                      status));
         }
     }
 
@@ -883,44 +794,32 @@ void Update() {
             std::scoped_lock lock(g_context.mutex);
             ratio = g_context.other_torque_ratio;
         }
-        const bool available =
-            HasField<AnomalyNteVehicleServiceV1,
-                decltype(AnomalyNteVehicleServiceV1::set_other_vehicles_engine_torque_ratio)>(
-                    g_context.vehicle,
-                    offsetof(AnomalyNteVehicleServiceV1, set_other_vehicles_engine_torque_ratio)) &&
-            g_context.vehicle->set_other_vehicles_engine_torque_ratio != nullptr;
-        if (!available) {
-            SetStatus(g_context.localizer.Text("status.other_torque_interface_missing",
-                "The non-player vehicle torque ratio is unavailable: the host runtime does not publish the Vehicle V4 interface."));
-        } else {
-            const auto status = g_context.vehicle->set_other_vehicles_engine_torque_ratio(
-                g_context.vehicle->user, ratio);
-            SetStatus(status.code == ANOMALY_STATUS_V1_OK
-                ? StatusDescription(
-                      g_context.localizer.Text("status.other_torque_applied",
-                          "Non-player vehicle torque updated"),
-                      status)
-                : StatusDescription(
-                      g_context.localizer.Text("status.other_torque_partial",
-                          "Non-player vehicle torque update did not fully succeed"),
-                      status));
-        }
+        const auto status = g_context.vehicle->VehicleSetOtherVehiclesEngineTorqueRatio(ratio);
+        SetStatus(status.code == ANOMALY_STATUS_V1_OK
+            ? StatusDescription(
+                  g_context.localizer.Text("status.other_torque_applied",
+                      "Non-player vehicle torque updated"),
+                  status)
+            : StatusDescription(
+                  g_context.localizer.Text("status.other_torque_partial",
+                      "Non-player vehicle torque update did not fully succeed"),
+                  status));
     }
 
     const bool summon_requested = g_context.summon.exchange(false, std::memory_order_acq_rel);
     const bool summon_customized_requested = g_context.summon_customized.exchange(false, std::memory_order_acq_rel);
     if (summon_requested || summon_customized_requested) {
-        AnomalyNteVehicleSummonRequestV1 request{};
-        request.struct_size = sizeof(request);
-        request.flags = ANOMALY_NTE_VEHICLE_SUMMON_V1_HAS_POSITION |
-            ANOMALY_NTE_VEHICLE_SUMMON_V1_SET_OWNER_TO_PLAYER;
+        nte_vehicle::SummonRequest request{};
+
+        request.flags = nte_vehicle::kSummonHasPosition |
+            nte_vehicle::kSummonSetOwnerToPlayer;
 
         std::string selected_id;
         std::string selected_label;
         std::string selected_skin_id;
         std::string customization_vehicle_id;
         std::vector<std::pair<std::uint32_t, std::string>> module_overrides;
-        std::vector<AnomalyNteVehicleModuleSelectionV1> module_selections;
+        std::vector<nte_vehicle::ModuleSelection> module_selections;
         bool position_valid{};
         {
             std::scoped_lock lock(g_context.mutex);
@@ -957,15 +856,15 @@ void Update() {
                     "status.customization_vehicle_mismatch",
                     "Customized summon failed: the customization list does not match the selected vehicle, reopen the list.");
             } else {
-                request.flags |= ANOMALY_NTE_VEHICLE_SUMMON_V1_APPLY_CUSTOM_CONFIGURATION;
+                request.flags |= nte_vehicle::kSummonCustomConfiguration;
                 if (!selected_skin_id.empty()) {
                     request.skin_id = anomaly::sdk::StringView(std::string_view(
                         selected_skin_id.data(), selected_skin_id.size()));
                 }
                 module_selections.reserve(module_overrides.size());
                 for (const auto& override_entry : module_overrides) {
-                    AnomalyNteVehicleModuleSelectionV1 selection{};
-                    selection.struct_size = sizeof(selection);
+                    nte_vehicle::ModuleSelection selection{};
+
                     selection.module_type = override_entry.first;
                     selection.module_id = anomaly::sdk::StringView(std::string_view(
                         override_entry.second.data(), override_entry.second.size()));
@@ -986,48 +885,25 @@ void Update() {
                 ? g_context.localizer.Text("status.summon_position_invalid",
                       "Summon failed: the player position is currently invalid.")
                 : g_context.localizer.Text("status.summon_selection_unsynced",
-                      "Summon failed: the current selection is not synchronized with the host vehicle catalog.");
+                      "Summon failed: the current selection is not synchronized with the vehicle catalog.");
             SetStatus(reason);
             SetLastSummon(reason);
         } else {
-            const auto status = g_context.vehicle->summon_vehicle(
-                g_context.vehicle->user, &request);
+            const auto status = g_context.vehicle->VehicleSummon(&request);
             if (status.code == ANOMALY_STATUS_V1_OK) {
-                const std::string label = selected_label.empty() ? selected_id : selected_label;
                 const std::string detail = status.message.data != nullptr && status.message.size != 0
                     ? std::string(status.message.data, status.message.size)
                     : std::string{};
-                // Mirrors the post-condition marker the Core appends to its summon message
-                // (src/game/ue5/ue5_nte_adapter.cpp); it is a host protocol marker, not copy.
-                constexpr std::string_view verified_prefix =
-                    "\u53ec\u5524\u5df2\u5b9e\u9645\u751f\u6210\u5e76\u901a\u8fc7"
-                    "\u540e\u7f6e\u9a8c\u8bc1\uff1a";
-                const bool postcondition_verified =
-                    !detail.empty() && detail.find(verified_prefix) == 0;
                 std::string result;
-                if (postcondition_verified && summon_customized_requested) {
+                if (summon_customized_requested) {
                     const std::array arguments{std::string_view(detail)};
                     result = g_context.localizer.Format("status.summon_customized_ok",
                         "Customized vehicle summoned: {0}", arguments);
                     SetStatus(result);
                     SetLastSummon(result);
-                } else if (postcondition_verified) {
-                    SetStatus({});
-                    SetLastSummon({});
                 } else {
-                    const std::array arguments{
-                        std::string_view(label), std::string_view(selected_id)};
-                    result = g_context.localizer.Format("status.summon_unverified",
-                        "Summon state unverified: {0} ({1}); the host returned OK but without an "
-                        "explicit spawn or post-check marker",
-                        arguments);
-                    if (!detail.empty()) {
-                        const std::array detail_arguments{std::string_view(detail)};
-                        result += g_context.localizer.Format("status.summon_unverified_detail",
-                            "; host message: {0}", detail_arguments);
-                    }
-                    SetStatus(result);
-                    SetLastSummon(result);
+                    SetStatus(detail);
+                    SetLastSummon(detail);
                 }
             } else {
                 const auto reason = StatusDescription(
@@ -1048,8 +924,7 @@ void Update() {
             std::scoped_lock lock(g_context.mutex);
             enabled = !g_context.friction_enabled;
         }
-        const auto status = g_context.vehicle->set_wheel_friction_enabled(
-            g_context.vehicle->user, enabled ? 1u : 0u);
+        const auto status = g_context.vehicle->VehicleSetWheelFriction(enabled);
         if (status.code == ANOMALY_STATUS_V1_OK) {
             std::scoped_lock lock(g_context.mutex);
             g_context.friction_enabled = enabled;
@@ -1062,8 +937,8 @@ void Update() {
         }
     }
 
-    AnomalyNteVehicleSnapshotV1 snapshot{sizeof(snapshot)};
-    const auto status = g_context.vehicle->snapshot(g_context.vehicle->user, &snapshot);
+    nte_vehicle::StateSnapshot snapshot{};
+    const auto status = g_context.vehicle->VehicleSnapshot(&snapshot);
     std::scoped_lock lock(g_context.mutex);
     if (status.code == ANOMALY_STATUS_V1_OK) {
         g_context.snapshot.flags = snapshot.flags;
@@ -1071,20 +946,8 @@ void Update() {
         g_context.snapshot.top_speed_ratio = snapshot.top_speed_ratio;
         g_context.snapshot.engine_torque_ratio = snapshot.engine_torque_ratio;
         g_context.snapshot.friction = snapshot.wheel_friction_enabled != 0;
-        if (snapshot.struct_size >= offsetof(AnomalyNteVehicleSnapshotV1, vehicle_entity_id) +
-                sizeof(snapshot.vehicle_entity_id))
-            g_context.snapshot.vehicle_entity_id = snapshot.vehicle_entity_id;
-        else
-            g_context.snapshot.vehicle_entity_id = 0;
-        if (snapshot.struct_size >= offsetof(AnomalyNteVehicleSnapshotV1, vehicle_class_name) +
-                sizeof(snapshot.vehicle_class_name)) {
-            g_context.snapshot.vehicle_class_name.assign(
-                snapshot.vehicle_class_name,
-                std::find(snapshot.vehicle_class_name,
-                    snapshot.vehicle_class_name + sizeof(snapshot.vehicle_class_name), '\0'));
-        } else {
-            g_context.snapshot.vehicle_class_name.clear();
-        }
+        g_context.snapshot.vehicle_entity_id = snapshot.vehicle_entity_id;
+        g_context.snapshot.vehicle_class_name = snapshot.vehicle_class_name;
         g_context.snapshot.vehicle_snapshot_status.clear();
     } else {
         g_context.snapshot.flags = 0;
@@ -1097,7 +960,7 @@ void Update() {
             const std::string code = std::to_string(status.code);
             const std::array arguments{std::string_view(code)};
             g_context.snapshot.vehicle_snapshot_status = g_context.localizer.Format(
-                "status.snapshot_status_code", "Host vehicle snapshot status code {0}", arguments);
+                "status.snapshot_status_code", "Vehicle snapshot status code {0}", arguments);
         }
     }
 }
@@ -1253,11 +1116,11 @@ std::string VehicleDisplayName(std::string_view vehicle_id) {
     return {};
 }
 
-// 优先使用对照表里的名称；缺失时退回 Host 标签并去掉 " (VehicleID)"。
-std::string VehicleShownName(const std::string& vehicle_id, const std::string& host_label) {
+// 优先使用对照表里的名称；缺失时退回目录标签并去掉 " (VehicleID)"。
+std::string VehicleShownName(const std::string& vehicle_id, const std::string& catalog_label) {
     const std::string mapped = VehicleDisplayName(vehicle_id);
     if (!mapped.empty()) return mapped;
-    std::string label = host_label.empty() ? vehicle_id : host_label;
+    std::string label = catalog_label.empty() ? vehicle_id : catalog_label;
     if (!label.empty() && label.back() == ')') {
         const std::size_t suffix = label.rfind(" (");
         if (suffix != std::string::npos && suffix > 0U) label.resize(suffix);
@@ -1272,7 +1135,7 @@ std::string VehicleDedupeKey(const std::string& name) {
     for (char c : name) {
         key.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
     }
-    // 匹配 Host 标签里的中文备注/配色后缀，以及本地化目录里的英文等价写法。
+    // 匹配目录标签里的中文备注/配色后缀，以及本地化目录里的英文等价写法。
     static constexpr std::string_view kSuffixes[] = {
         "\uff08\u548cgriffin\u76f8\u540c\uff09", "\uff08\u7d2b\u914d\u8272\uff09",
         "\uff08\u76f8\u540c\uff09", "(\u76f8\u540c)",
@@ -1313,8 +1176,8 @@ void DrawSummonTab(
     const std::string& last_summon,
     bool player_position_valid) {
     const auto label_at = [&labels, &ids](std::size_t i) -> std::string {
-        const std::string host_label = i < labels.size() ? labels[i] : std::string{};
-        return VehicleShownName(ids[i], host_label);
+        const std::string catalog_label = i < labels.size() ? labels[i] : std::string{};
+        return VehicleShownName(ids[i], catalog_label);
     };
     const bool has_selected = std::ranges::find(ids, selected) != ids.end();
     if (!last_summon.empty()) {
@@ -1380,7 +1243,7 @@ void DrawSummonTab(
             const bool current = id == selected;
             std::string display_label(label_at(index));
 
-            // Host label format may append " (VehicleID)" after the user-facing
+            // Catalog labels may append " (VehicleID)" after the user-facing
             // VehicleData.Name text. Keep the game display name as the visible label.
             if (!display_label.empty() && display_label.back() == ')') {
                 const std::size_t suffix = display_label.rfind(" (");
@@ -1500,6 +1363,16 @@ void DrawCustomizationDetail(
     const std::array title_arguments{std::string_view(selected_label)};
     DrawText(ui, g_context.localizer.Format(
         "text.customization_title", "Customize / {0}", title_arguments));
+    if (!last_summon.empty()) {
+        const std::array arguments{std::string_view(last_summon)};
+        DrawText(ui, g_context.localizer.Format(
+            "text.last_summon", "Last summon: {0}", arguments));
+    }
+    const auto summon_label = g_context.localizer.Text("action.summon", "Summon");
+    if (DrawButtonEnabled(ui, summon_label, has_selected && player_position_valid)) {
+        SetLastSummon(g_context.localizer.Text("status.summon_submitted", "Summon request submitted."));
+        g_context.summon.store(true, std::memory_order_release);
+    }
     const auto reload_label =
         g_context.localizer.Text("action.reload_customization", "Reload customization data");
     if (DrawButtonEnabled(ui, reload_label, true)) {
@@ -1532,7 +1405,7 @@ void DrawCustomizationDetail(
     if (options.empty()) {
         DrawText(ui, g_context.localizer.Text("text.customization_no_options",
             "No usable customization options were returned. Read again; if it still fails, "
-            "check the catalog validation diagnostics returned by the core."));
+            "check the vehicle catalog validation diagnostics."));
         return;
     }
 
@@ -1564,7 +1437,7 @@ void DrawCustomizationDetail(
     };
     const auto has_options_for_type = [&](const std::uint32_t type) {
         return std::ranges::any_of(options, [type](const CustomizationOption& option) {
-            return option.kind == ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_MODULE &&
+            return option.kind == nte_vehicle::kCustomizationModule &&
                 option.module_type == type;
         });
     };
@@ -1613,7 +1486,7 @@ void DrawCustomizationDetail(
         DrawText(ui, g_context.localizer.Text("section.skins", "Choose a skin"));
         bool has_default_skin = false;
         for (const auto& option : options) {
-            if (option.kind != ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_SKIN) continue;
+            if (option.kind != nte_vehicle::kCustomizationSkin) continue;
             has_default_skin = has_default_skin || option.is_default;
             const bool current = skin_id == option.id;
             std::string label = option.label.empty() ? option.id : option.label;
@@ -1635,7 +1508,7 @@ void DrawCustomizationDetail(
                 "##custom-reset-skin";
             if (DrawButtonEnabled(ui, reset_skin_label, true)) {
                 const auto found = std::ranges::find_if(options, [](const CustomizationOption& option) {
-                    return option.kind == ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_SKIN &&
+                    return option.kind == nte_vehicle::kCustomizationSkin &&
                         option.is_default;
                 });
                 if (found != options.end()) {
@@ -1655,7 +1528,7 @@ void DrawCustomizationDetail(
         DrawText(ui, g_context.localizer.Text("section.options", "Available options"));
         bool has_default = false;
         for (const auto& option : options) {
-            if (option.kind != ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_MODULE ||
+            if (option.kind != nte_vehicle::kCustomizationModule ||
                 option.module_type != type) continue;
             has_default = has_default || option.is_default;
             const std::string_view selected_option_id = override_for_type(type);
@@ -1747,7 +1620,7 @@ void DrawCustomizationDetail(
         }
     }
 
-    const bool can_summon_customized = has_selected &&
+    const bool can_summon_customized = has_selected && player_position_valid &&
         customization_vehicle_id == selected && !options.empty();
     const auto summon_customized_label =
         g_context.localizer.Text("action.summon_customized", "Summon customized vehicle");
@@ -1939,7 +1812,7 @@ void DrawCustomizationTab(
     if (!player_position_valid) {
         DrawText(ui, g_context.localizer.Text("hint.position_invalid",
             "The current player position snapshot is invalid; you can still submit the "
-            "request, but the host rejects summons with unverified coordinates."));
+            "request, but the plugin rejects summons with unverified coordinates."));
     }
 }
 
@@ -1948,7 +1821,7 @@ void DrawPerformanceTab(
     const AnomalyUiServiceV1* ui, const Snapshot& snap,
     float speed_ratio, float torque_ratio, float other_speed_ratio,
     float other_speed_floor_ratio, float other_torque_ratio) {
-    if ((snap.flags & ANOMALY_NTE_VEHICLE_V1_VALID) == 0) {
+    if ((snap.flags & nte_vehicle::kSnapshotValid) == 0) {
         DrawText(ui, g_context.localizer.Text("text.current_vehicle_none",
             "Current vehicle: not identified"));
     } else {
@@ -1977,7 +1850,7 @@ void DrawPerformanceTab(
 
     DrawDivider(ui);
     DrawText(ui, g_context.localizer.Text("hint.speed_slider",
-        "Speed ratio of the current vehicle (applied right after dragging, 0.0x-100.0x)"));
+        "Speed ratio of the current vehicle (applied right after dragging, 0.05x-100.0x)"));
     const auto speed_ratio_label =
         g_context.localizer.Text("label.speed_ratio", "Speed ratio");
     if (ui->slider_float(ui->user, anomaly::sdk::StringView(speed_ratio_label),
@@ -2077,9 +1950,9 @@ void DrawDebugPanel(
     const std::string& status, const std::string& selected,
     std::size_t catalog_size, bool player_position_valid) {
     DrawText(ui, g_context.localizer.Text("detail.build_marker",
-        "Build marker: NTE Vehicle 0.10.6 / 2026-10-21-clickable-display-names"));
+        "Build marker: NTE Vehicle 0.11.1"));
     DrawText(ui, g_context.localizer.Text("detail.build_marker_abi",
-        "Build marker: manifest schema v2 / Plugin API v1 / Vehicle service v8"));
+        "Build marker: manifest schema v2 / Plugin API v1"));
     const std::array plugin_id_arguments{
         std::string_view("anomaly.nte-vehicle")};
     DrawText(ui, g_context.localizer.Format("detail.plugin_id", "Plugin ID: {0}",
@@ -2088,37 +1961,35 @@ void DrawDebugPanel(
         "Manifest: schemaVersion=2 / entry=plugin.dll / loadPhase=game-ready / games=nte "
         "/ builds=nte-*"));
     DrawText(ui, g_context.localizer.Text("detail.required_services",
-        "Required services: anomaly.ui v1 / anomaly.input v1 / anomaly.window v1 / "
-        "anomaly.localization v1 / anomaly.nte.vehicle v8 / anomaly.nte.player v1"));
+        "Vehicle execution: plugin-owned profile, reflection and Game-thread operations"));
     DrawText(ui, g_context.localizer.Text("detail.capabilities",
-        "Capabilities: ui / input / nte-vehicle / nte-player-snapshot "
-        "/ per-vehicle-customization-catalog / selected-modification-summon"));
+        "Capabilities: vehicle catalog, customized summons, speed, torque and durability"));
     DrawText(ui, g_context.localizer.Text("detail.created", "Created: 2026-10-14"));
     DrawText(ui, g_context.localizer.Text("detail.status_note",
-        "Modification state: standalone K menu, customized vehicle summon, 0-10x speed "
+        "Modification state: standalone K menu, customized vehicle summon, 0.05-100x speed "
         "sliders and automatic full durability for the current land vehicle; in-game "
         "results still pending."));
     const std::string status_text = status.empty()
         ? g_context.localizer.Text("text.no_status_message", "No status message yet")
         : status;
     const std::array status_arguments{std::string_view(status_text)};
-    DrawText(ui, g_context.localizer.Format("detail.host_status", "Host status: {0}",
+    DrawText(ui, g_context.localizer.Format("detail.host_status", "Vehicle status: {0}",
         status_arguments));
-    // An empty diagnostic string means the Host snapshot callback returned OK.
+    // An empty diagnostic string means the plugin runtime snapshot returned OK.
     // Do not label this success path as a missing snapshot status; use the validity flag
     // to distinguish a valid current vehicle from a successful-but-empty snapshot.
     const std::string snapshot_status = !snap.vehicle_snapshot_status.empty()
         ? snap.vehicle_snapshot_status
-        : (((snap.flags & ANOMALY_NTE_VEHICLE_V1_VALID) != 0)
+        : (((snap.flags & nte_vehicle::kSnapshotValid) != 0)
             ? g_context.localizer.Text("text.snapshot_ok_identified",
-                  "Host snapshot OK: the current vehicle was identified")
+                  "Vehicle snapshot OK: the current vehicle was identified")
             : g_context.localizer.Text("text.snapshot_ok_unidentified",
-                  "Host snapshot call succeeded, but no vehicle is identified right now"));
+                  "Vehicle snapshot call succeeded, but no vehicle is identified right now"));
     const std::array snapshot_arguments{std::string_view(snapshot_status)};
     DrawText(ui, g_context.localizer.Format("detail.snapshot_status",
         "Vehicle snapshot status: {0}", snapshot_arguments));
     const std::string driving_object =
-        ((snap.flags & ANOMALY_NTE_VEHICLE_V1_VALID) != 0)
+        ((snap.flags & nte_vehicle::kSnapshotValid) != 0)
             ? (snap.vehicle_class_name.empty()
                 ? g_context.localizer.Text("text.identified_unknown_class",
                       "Identified, class name unknown")
@@ -2140,7 +2011,7 @@ void DrawDebugPanel(
     DrawText(ui, g_context.localizer.Format("detail.vehicle_id", "VehicleID: {0}",
         selected_arguments));
     const std::string top_speed_text =
-        ((snap.flags & ANOMALY_NTE_VEHICLE_V1_VALID) != 0)
+        ((snap.flags & nte_vehicle::kSnapshotValid) != 0)
             ? std::to_string(snap.top_speed_ratio)
             : g_context.localizer.Text("text.unavailable", "Unavailable");
     const std::array top_speed_arguments{std::string_view(top_speed_text)};
@@ -2161,7 +2032,7 @@ void DrawDebugPanel(
 
     DrawDivider(ui);
     DrawText(ui, g_context.localizer.Text("detail.speed_ratio_note",
-        "Speed ratio: 0.0x-100.0x; drag the slider to apply it automatically"));
+        "Speed ratio: 0.05x-100.0x; drag the slider to apply it automatically"));
 }
 
 void DrawContents(const AnomalyUiServiceV1* ui) {
@@ -2280,11 +2151,13 @@ void Draw(const AnomalyUiServiceV1* ui) {
     }
 }
 
-AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_context) {
+AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_context) try {
     if (!host || !plugin_context) return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
     g_context.localizer = anomaly::sdk::Localizer(host);
-    const auto* vehicle = QueryService<AnomalyNteVehicleServiceV1>(
-        host, ANOMALY_NTE_VEHICLE_SERVICE_V1_ID, ANOMALY_NTE_VEHICLE_SERVICE_V1_VERSION);
+    if (!nte_vehicle::LoadBackend(host, g_context.localizer))
+        return FailureStatus(ANOMALY_STATUS_V1_UNAVAILABLE, "status.backend_unavailable",
+            "Vehicle compatibility profile or required engine services are unavailable.");
+    auto* vehicle = nte_vehicle::Backend();
     const auto* player = QueryService<AnomalyNtePlayerServiceV1>(
         host, ANOMALY_NTE_PLAYER_SERVICE_V1_ID, ANOMALY_NTE_PLAYER_SERVICE_V1_VERSION);
     const auto* input = QueryService<AnomalyInputServiceV1>(
@@ -2296,45 +2169,6 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
     if (!vehicle || !player || !InputReady(input) || !WindowReady(window_service)) {
         return FailureStatus(ANOMALY_STATUS_V1_UNAVAILABLE, "status.services_missing",
             "The vehicle menu requires the anomaly.input and anomaly.window services.");
-    }
-
-    if (!vehicle->snapshot || !vehicle->set_top_speed_ratio ||
-        !vehicle->summon_vehicle || !vehicle->set_wheel_friction_enabled ||
-        !vehicle->reset || !vehicle->catalog_snapshot || !vehicle->vehicle_id_at ||
-        !vehicle->set_summon_vehicle_id ||
-        !HasField<AnomalyNteVehicleServiceV1,
-            decltype(AnomalyNteVehicleServiceV1::refresh_catalog)>(
-                vehicle, offsetof(AnomalyNteVehicleServiceV1, refresh_catalog)) ||
-        !vehicle->refresh_catalog ||
-        !HasField<AnomalyNteVehicleServiceV1,
-            decltype(AnomalyNteVehicleServiceV1::catalog_label_at)>(
-                vehicle, offsetof(AnomalyNteVehicleServiceV1, catalog_label_at)) ||
-        !vehicle->catalog_label_at ||
-        !HasField<AnomalyNteVehicleServiceV1,
-            decltype(AnomalyNteVehicleServiceV1::set_other_vehicles_top_speed_ratio)>(
-                vehicle, offsetof(AnomalyNteVehicleServiceV1, set_other_vehicles_top_speed_ratio)) ||
-        !vehicle->set_other_vehicles_top_speed_ratio ||
-        !HasField<AnomalyNteVehicleServiceV1,
-            decltype(AnomalyNteVehicleServiceV1::set_other_vehicles_min_speed_ratio)>(
-                vehicle, offsetof(AnomalyNteVehicleServiceV1, set_other_vehicles_min_speed_ratio)) ||
-        !vehicle->set_other_vehicles_min_speed_ratio ||
-        !HasField<AnomalyNteVehicleServiceV1,
-            decltype(AnomalyNteVehicleServiceV1::set_other_vehicles_engine_torque_ratio)>(
-                vehicle, offsetof(AnomalyNteVehicleServiceV1, set_other_vehicles_engine_torque_ratio)) ||
-        !vehicle->set_other_vehicles_engine_torque_ratio ||
-        !HasField<AnomalyNteVehicleServiceV1,
-            decltype(AnomalyNteVehicleServiceV1::customization_catalog_snapshot)>(
-                vehicle, offsetof(AnomalyNteVehicleServiceV1, customization_catalog_snapshot)) ||
-        !vehicle->customization_catalog_snapshot ||
-        !HasField<AnomalyNteVehicleServiceV1,
-            decltype(AnomalyNteVehicleServiceV1::customization_option_at)>(
-                vehicle, offsetof(AnomalyNteVehicleServiceV1, customization_option_at)) ||
-        !vehicle->customization_option_at ||
-        !HasField<AnomalyNteVehicleServiceV1,
-            decltype(AnomalyNteVehicleServiceV1::repair_current_vehicle)>(
-                vehicle, offsetof(AnomalyNteVehicleServiceV1, repair_current_vehicle)) ||
-        !vehicle->repair_current_vehicle || !player->snapshot) {
-        return Status(ANOMALY_STATUS_V1_UNAVAILABLE);
     }
 
     AnomalyWindowSpecV1 window_spec{};
@@ -2403,7 +2237,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
     g_context.snapshot = {};
     g_context.snapshot.vehicle_snapshot_status = g_context.localizer.Text(
         "status.snapshot_pending",
-        "The host has not returned the current driving vehicle state yet.");
+        "The current driving vehicle state has not been read yet.");
     g_context.selected_vehicle_id = "Vehicle007";
     g_context.saved_vehicle_id = LoadSavedSelection();
     g_context.saved_selection_pending = !g_context.saved_vehicle_id.empty();
@@ -2426,15 +2260,15 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
     g_context.customization_catalog_tick = 0;
     g_context.last_summon.clear();
     g_context.status = g_context.localizer.Text("status.catalog_reading",
-        "Reading the host-verified runtime Vehicle catalog.");
+        "Reading and validating the runtime vehicle catalog.");
     g_context.player_position_valid = false;
     g_context.player_snapshot = {};
     g_context.catalog_tick = 0;
     *plugin_context = &g_context;
     return anomaly::sdk::Ok();
-}
+} catch (...) { return Status(ANOMALY_STATUS_V1_FAILED); }
 
-AnomalyStatusV1 ANOMALY_CALL Start(void* plugin_context) {
+AnomalyStatusV1 ANOMALY_CALL Start(void* plugin_context) try {
     if (plugin_context != &g_context) return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
     if (!InputReady(g_context.input) || !WindowReady(g_context.window_service) ||
         g_context.menu_window_handle.id == 0) {
@@ -2468,12 +2302,14 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* plugin_context) {
     g_context.apply_speed.store(true, std::memory_order_release);
     g_context.started.store(true, std::memory_order_release);
     return anomaly::sdk::Ok();
-}
+} catch (...) { return Status(ANOMALY_STATUS_V1_FAILED); }
 
-AnomalyStatusV1 ANOMALY_CALL Stop(void* plugin_context, std::uint32_t) {
+AnomalyStatusV1 ANOMALY_CALL Stop(void* plugin_context, std::uint32_t) try {
     if (plugin_context != &g_context) return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
     g_context.started.store(false, std::memory_order_release);
     g_context.toggle_menu_requested.store(false, std::memory_order_release);
+    nte_vehicle::StopBackend();
+    SaveSelection(g_context.saved_vehicle_id);
     ReleaseMenuHotkey(g_context);
     if (g_context.window_service && g_context.menu_window_handle.id != 0) {
         static_cast<void>(g_context.window_service->set_open(
@@ -2484,31 +2320,37 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void* plugin_context, std::uint32_t) {
         g_context.speed_ratio = kDefaultSpeedRatio;
     }
     return anomaly::sdk::Ok();
-}
+} catch (...) { return Status(ANOMALY_STATUS_V1_FAILED); }
 
-void ANOMALY_CALL Unload(void* plugin_context) {
+void ANOMALY_CALL Unload(void* plugin_context) try {
     if (plugin_context != &g_context) return;
     g_context.started.store(false, std::memory_order_release);
     g_context.toggle_menu_requested.store(false, std::memory_order_release);
+    nte_vehicle::StopBackend();
+    SaveSelection(g_context.saved_vehicle_id);
     ReleaseMenuHotkey(g_context);
     if (g_context.window_service && g_context.menu_window_handle.id != 0) {
         static_cast<void>(g_context.window_service->release_window(
             g_context.window_service->user, g_context.menu_window_handle));
     }
     g_context.menu_window_handle = {};
+    nte_vehicle::UnloadBackend();
     g_context.vehicle = nullptr;
     g_context.player = nullptr;
     g_context.input = nullptr;
     g_context.window_service = nullptr;
-}
+} catch (...) {  }
 
-void ANOMALY_CALL UpdateCallback(void* plugin_context, double) {
-    if (plugin_context == &g_context) Update();
-}
+void ANOMALY_CALL UpdateCallback(void* plugin_context, double) try {
+    if (plugin_context == &g_context && g_context.started.load(std::memory_order_acquire)) {
+        nte_vehicle::TickBackend();
+        Update();
+    }
+} catch (...) {  }
 
-void ANOMALY_CALL DrawCallback(void* plugin_context, const AnomalyUiServiceV1* ui) {
+void ANOMALY_CALL DrawCallback(void* plugin_context, const AnomalyUiServiceV1* ui) try {
     if (plugin_context == &g_context) Draw(ui);
-}
+} catch (...) {  }
 
 } // namespace
 
@@ -2520,6 +2362,6 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         anomaly::sdk::StringView("anomaly.nte-vehicle"),
         anomaly::sdk::StringView("Vehicle Control"), anomaly::sdk::StringView("Anomaly"),
-        anomaly::sdk::StringView("0.10.6"), Load, Start, Stop, Unload, UpdateCallback, DrawCallback};
+        anomaly::sdk::StringView("0.11.1"), Load, Start, Stop, Unload, UpdateCallback, DrawCallback};
     return anomaly::sdk::Ok();
 }

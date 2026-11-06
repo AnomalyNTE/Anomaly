@@ -1316,7 +1316,8 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         PACKAGE_NAME NteTeleport
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteTeleport")
     anomaly_add_plugin(anomaly_builtin_nte_vehicle
-        SOURCES plugins/NteVehicle/plugin.cpp
+        SOURCES plugins/NteVehicle/plugin.cpp plugins/NteVehicle/runtime.cpp
+            plugins/NteVehicle/native_access.cpp
         MANIFEST plugins/NteVehicle/manifest.json
         PACKAGE_NAME NteVehicle
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteVehicle")
