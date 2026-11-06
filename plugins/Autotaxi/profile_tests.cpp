@@ -27,7 +27,7 @@ int main() {
             Check(host.OutstandingHandles()==0,"Profile leaked JSON handles");
             return ok;
         };
-        Check(load(),"recorded taxi instructions did not match the production Profile");
+        if(!load()) throw std::runtime_error("recorded taxi instructions did not match the production Profile: "+host.error);
         Check(taxi::profile::snapshot.registry==0x11000 && taxi::profile::snapshot.world==0x11800,
             "Profile did not resolve the independent fixture targets");
         void* context=reinterpret_cast<void*>(1);

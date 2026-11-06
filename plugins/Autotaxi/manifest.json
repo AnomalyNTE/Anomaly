@@ -2,10 +2,10 @@
   "schemaVersion": 2,
   "id": "b1ank.autotaxi",
   "name": "AutoTaxi",
-  "description": "Automatically request taxi pickup, delivery, settlement and the next order; show game-confirmed completions.",
+  "description": "Automatically complete taxi orders with an optional preferred eligible character passenger.",
   "author": "b1ank",
   "license": "AGPL-3.0-only",
-  "version": "0.1.4",
+  "version": "0.1.11",
   "entry": "plugin.dll",
   "api": {
     "major": 1,
@@ -62,6 +62,11 @@
       "minVersion": 1
     },
     {
+      "id": "anomaly.interop.hook",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
       "id": "anomaly.profile",
       "minVersion": 1
     },
@@ -74,6 +79,8 @@
     "ui",
     "ui-window",
     "memory-read",
+    "memory-write",
+    "interop-hook",
     "ue5-names",
     "ue5-objects",
     "ue5-build",

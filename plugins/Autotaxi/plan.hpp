@@ -37,8 +37,10 @@ struct Run {
         if (order != value.order) {
             order = value.order; stage = value.stage; submitted = failed = false;
         } else if (stage != value.stage) {
-            // A regression without an intervening order boundary is not a new request.
-            if (static_cast<uint8_t>(value.stage) < static_cast<uint8_t>(stage)) failed = true;
+            // A completed TalkSelf event can return to the delivery leg. Other
+            // regressions without an order boundary are not a new request.
+            const bool event_finished=stage==Stage::SpecialEvent && value.stage==Stage::Destination;
+            if (static_cast<uint8_t>(value.stage) < static_cast<uint8_t>(stage) && !event_finished) failed = true;
             stage = value.stage; submitted = false;
         }
         if (submitted && now >= submitted_at && now - submitted_at >= 15000) failed = true;
@@ -54,6 +56,7 @@ struct Run {
         // Dispatch success only means the native call ran, not that the order was accepted.
         submitted = true; submitted_at = now; failed = !success;
     }
+    void Suspend(uint64_t now) { if(submitted) submitted_at=now; }
 };
 
 struct ConfirmedOrders {

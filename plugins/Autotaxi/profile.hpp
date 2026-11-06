@@ -2,6 +2,7 @@
 #include <anomaly/sdk/profile.hpp>
 #include <algorithm>
 #include <array>
+#include "encounter_profile.hpp"
 
 namespace taxi::profile {
 struct Layout {
@@ -41,8 +42,9 @@ struct Layout {
 };
 struct Snapshot {
     Layout layout;
-    anomaly::sdk::Profile document;
+    anomaly::sdk::ProfileSnapshot compatibility;
     std::uintptr_t registry{}, world{};
+    taxi::encounter::Resolved encounter;
 };
 inline Snapshot snapshot;
 
@@ -64,12 +66,12 @@ inline bool Load(const AnomalyHostApiV1* api) noexcept {
     snapshot={};
     try {
         const anomaly::sdk::Host host(api);
-        auto loaded=anomaly::sdk::LoadProfile(host,"compatibility.profile.json",
-            {"nte", "HTGame.exe", ".text", "autotaxi-v1"});
-        if (!loaded) return false;
         Snapshot parsed;
-        parsed.document=std::move(loaded).value();
-        const auto& doc=parsed.document;
+        if (!parsed.compatibility.Load(api,"compatibility.profile.json",
+            {"nte", "HTGame.exe", ".text", "autotaxi-v1"},
+            {"ProcessEvent.entry", "Encounter.exec", "Encounter.free", "Encounter.getterCleanup",
+             "Encounter.freeAllocatorCheck", "Encounter.freeDispatch"}, true)) return false;
+        const auto& doc=parsed.compatibility.Document();
         const auto value=[&](std::string_view key) {
             return doc.Value(key, 65536);
         };
@@ -115,19 +117,22 @@ inline bool Load(const AnomalyHostApiV1* api) noexcept {
             v.PlayerFinished+sizeof(std::int32_t)>v.PlayerSaveSize || v.PlayerInitialized>=v.PlayerSaveSize) return false;
         if (doc.symbol("ProcessEvent.entry").candidates.empty()) return false;
         const auto core=host.Query<AnomalyCoreServiceV1>(ANOMALY_CORE_SERVICE_V1_ID);
-        const auto sig=host.Query<AnomalySignatureServiceV1>(ANOMALY_SIGNATURE_SERVICE_V1_ID);
         if (!core || core->struct_size<offsetof(AnomalyCoreServiceV1,read_memory)+sizeof(core->read_memory) || !core->read_memory) return false;
-        const auto objects=anomaly::sdk::ResolveProfileSymbol(sig.get(),core.get(),doc,"Objects");
-        const auto world=anomaly::sdk::ResolveProfileSymbol(sig.get(),core.get(),doc,"World");
+        const auto objects=parsed.compatibility.Address("Objects");
+        const auto world=parsed.compatibility.Address("World");
         if (!objects || !world) return false;
-        parsed.registry=RipTarget(core.get(),objects.address+v.RegistryLoad,0x05,v.RegistrySubtract);
-        parsed.world=RipTarget(core.get(),world.address,0x1D,0);
+        parsed.registry=RipTarget(core.get(),objects+v.RegistryLoad,0x05,v.RegistrySubtract);
+        parsed.world=RipTarget(core.get(),world,0x1D,0);
         if (!parsed.registry || !parsed.world) return false;
+        // Native/allocator drift disables character selection only; ordinary
+        // taxi completion keeps its independent contract.
+        parsed.encounter=taxi::encounter::ValidateSelection(core.get(),doc,
+            parsed.compatibility.Address("Encounter.getter"),parsed.compatibility.Address("Encounter.selector"));
         snapshot=std::move(parsed);
         return true;
     } catch (...) { return false; }
 }
 inline bool ProcessEventEntry(const AnomalyCoreServiceV1* core,std::uintptr_t address) noexcept {
-    return anomaly::sdk::MatchesProfileEntry(core, snapshot.document, "ProcessEvent.entry", address, true);
+    return snapshot.compatibility.MatchesEntry(core,"ProcessEvent.entry",address,true);
 }
 }

@@ -47,6 +47,15 @@ int main() {
     observed.order={101,201,301};observed.stage=static_cast<Stage>(6);
     Check(run.Next(observed,29000)==Action::None, "an unknown gameplay state was treated as a valid order");
 
+    run.Reset();observed.order={101,201,301};observed.stage=Stage::Destination;
+    Check(run.Next(observed,30000)==Action::Deliver,"event fixture could not reach delivery");run.Submitted(true,30000);
+    observed.stage=Stage::SpecialEvent;Check(run.Next(observed,31000)==Action::None,"talk event emitted a delivery request");
+    observed.stage=Stage::Destination;
+    Check(run.Next(observed,80000)==Action::Deliver && !run.failed,"a finished event returning to delivery was treated as stale replication");
+    run.Reset();observed.stage=Stage::Pickup;run.Next(observed,90000);run.Submitted(true,90000);
+    run.Suspend(150000);
+    Check(run.Next(observed,150500)==Action::None && !run.failed,"dialogue suspension expired an unacknowledged request");
+
     ConfirmedOrders count;
     count.Observe({20,1},100);
     Check(count.added==0, "historical account total was displayed as new automatic completions");
