@@ -31,22 +31,37 @@ jobs:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
+      - name: Restore dependency sources
+        id: dependency-sources
+        uses: actions/cache/restore@v4
+        with:
+          path: .build/windows-vs2022/_deps/*-src
+          key: windows-2022-dependency-sources-v1-${{ hashFiles('CMakeLists.txt', 'cmake/**/*.cmake', 'CMakePresets.json', '.github/workflows/windows.yml') }}
       - name: Configure
         shell: pwsh
         env:
           # Fixtures and test plugin packages are opt-in; a normal run
           # builds only the Runtime, Tools and SDK targets.
           ANOMALY_BUILD_OPTIONAL: ${{ inputs.fixtures == true && 'ON' || 'OFF' }}
+          # Exact source-cache hits can skip both downloading and extracting.
+          ANOMALY_DEPENDENCIES_CACHED: ${{ steps.dependency-sources.outputs.cache-hit == 'true' && 'ON' || 'OFF' }}
         run: |
           $arguments = @(
             '--preset', 'windows-vs2022',
             "-DANOMALY_BUILD_TEST_FIXTURES=$env:ANOMALY_BUILD_OPTIONAL",
-            "-DANOMALY_BUILD_TEST_PLUGINS=$env:ANOMALY_BUILD_OPTIONAL"
+            "-DANOMALY_BUILD_TEST_PLUGINS=$env:ANOMALY_BUILD_OPTIONAL",
+            "-DFETCHCONTENT_FULLY_DISCONNECTED=$env:ANOMALY_DEPENDENCIES_CACHED"
           )
           if ($env:GITHUB_REF_TYPE -eq 'tag') {
             $arguments += "-DANOMALY_RELEASE_VERSION=$env:GITHUB_REF_NAME"
           }
           cmake @arguments
+      - name: Save dependency sources
+        if: steps.dependency-sources.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .build/windows-vs2022/_deps/*-src
+          key: ${{ steps.dependency-sources.outputs.cache-primary-key }}
       - name: Build
         run: cmake --build --preset windows-relwithdebinfo --parallel
       - name: Stage CI runtime and tools
