@@ -184,6 +184,7 @@ void __fastcall Native(void* object,void* function,void* parameters) {
 
 }
 
+#ifndef TAXI_RUNTIME_FIXTURE_ONLY
 int main() {
     using fixture::Check;
     LoadTestProfile();
@@ -257,7 +258,7 @@ int main() {
     Check(AnomalyPluginEntryV1(&descriptor).code==0 && descriptor.on_draw==Draw && descriptor.on_update==Update,
         "standalone entry did not expose the taxi lifecycle");
     Check(std::string_view(descriptor.id.data,descriptor.id.size)=="b1ank.autotaxi" &&
-        std::string_view(descriptor.version.data,descriptor.version.size)=="0.1.4" &&
+        std::string_view(descriptor.version.data,descriptor.version.size)=="0.1.11" &&
         std::string_view(descriptor.name.data,descriptor.name.size)=="AutoTaxi","standalone metadata did not match its manifest");
     anomaly::testing::ProfileHost profile_host("Autotaxi");PrepareProfileHost(profile_host);
     struct WaitingServices {fixture::Game* game;anomaly::testing::ProfileHost* profile;} waiting_services{&f,&profile_host};
@@ -314,3 +315,4 @@ int main() {
     Check(localizer.Format("fixture","Order {0} {{ready}}",std::array<std::string_view,1>{"A"})=="Order A {ready}","English fallback placeholders/braces did not format correctly");
     std::cout << "Taxi runtime ABI, driver/world guards, real callback dispatch and disabled lifecycle checks passed\n";
 }
+#endif

@@ -1764,7 +1764,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         target_compile_features(anomaly_autotaxi_policy_fixture PRIVATE cxx_std_20)
         target_compile_options(anomaly_autotaxi_policy_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
         add_test(NAME autotaxi_order_progress_and_settlement COMMAND anomaly_autotaxi_policy_fixture)
-        foreach(suite IN ITEMS runtime profile)
+        foreach(suite IN ITEMS runtime profile encounter)
             add_executable(anomaly_autotaxi_${suite}_fixture plugins/Autotaxi/${suite}_tests.cpp)
             target_link_libraries(anomaly_autotaxi_${suite}_fixture PRIVATE
                 Anomaly::sdk anomaly_plugin_profile ue5mem_memory)
