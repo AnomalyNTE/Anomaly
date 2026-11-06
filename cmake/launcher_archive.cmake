@@ -48,6 +48,9 @@ function(anomaly_add_launcher_archive)
     set(WITHOUT_LZMA_API_STATIC FALSE)
     set(LZMA_API_STATIC TRUE)
     set(HAVE_LZMA_STREAM_ENCODER_MT FALSE)
+    # libarchive's older policy baseline lets set(CACHE) discard this override
+    # on the first configure. Preserve it even when no cache entry exists yet.
+    set(CMAKE_POLICY_DEFAULT_CMP0126 NEW)
     set(POSIX_REGEX_LIB NONE)
     set(ENABLE_ZLIB ON)
     set(ENABLE_LZMA ON)
