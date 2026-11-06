@@ -2,6 +2,8 @@
 # Keep third-party options local to this function and out of the Core build.
 function(anomaly_add_launcher_archive)
     set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
+    # Preserve local overrides when older dependencies first create cache entries.
+    set(CMAKE_POLICY_DEFAULT_CMP0126 NEW)
     set(BUILD_SHARED_LIBS OFF)
     set(BUILD_TESTING OFF)
     set(ZLIB_BUILD_TESTING OFF)
@@ -24,6 +26,10 @@ function(anomaly_add_launcher_archive)
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE
         SOURCE_SUBDIR anomaly-no-cmake)
     FetchContent_MakeAvailable(anomaly_zlib anomaly_lzma anomaly_libarchive)
+    if(WIN32 AND CMAKE_C_COMPILER_ID STREQUAL "MSVC"
+            AND CMAKE_C_COMPILER_ARCHITECTURE_ID STREQUAL "x64")
+        include("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/launcher_archive_msvc.cmake")
+    endif()
     add_subdirectory("${anomaly_zlib_SOURCE_DIR}" "${anomaly_zlib_BINARY_DIR}" EXCLUDE_FROM_ALL)
     foreach(option IN ITEMS XZ_TOOL_XZ XZ_TOOL_XZDEC XZ_TOOL_LZMADEC XZ_TOOL_LZMAINFO
             XZ_TOOL_SCRIPTS XZ_DOC XZ_NLS)
@@ -52,7 +58,7 @@ function(anomaly_add_launcher_archive)
     set(ENABLE_ZLIB ON)
     set(ENABLE_LZMA ON)
     foreach(option IN ITEMS ENABLE_TEST ENABLE_INSTALL ENABLE_WERROR ENABLE_COVERAGE
-            ENABLE_TAR ENABLE_CPIO ENABLE_CAT ENABLE_UNZIP ENABLE_OPENSSL ENABLE_MBEDTLS
+            ENABLE_TAR ENABLE_CPIO ENABLE_CAT ENABLE_UNZIP ENABLE_OPENSSL ENABLE_MBEDTLS ENABLE_MD
             ENABLE_NETTLE ENABLE_LIBB2 ENABLE_LZ4 ENABLE_LZO ENABLE_ZSTD ENABLE_BZip2
             ENABLE_LIBXML2 ENABLE_BSDXML ENABLE_EXPAT ENABLE_WIN32_XMLLITE
             ENABLE_PCREPOSIX ENABLE_PCRE2POSIX ENABLE_LIBGCC ENABLE_ICONV ENABLE_ACL ENABLE_XATTR)

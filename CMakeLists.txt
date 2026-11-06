@@ -91,6 +91,10 @@ target_include_directories(anomaly_sdk INTERFACE
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/sdk/AnomalyPlugin.cmake")
 
+# Populate dependencies directly instead of starting an MSBuild sub-build for each.
+if(POLICY CMP0168)
+    cmake_policy(SET CMP0168 NEW)
+endif()
 include(FetchContent)
 FetchContent_Declare(
     imgui
