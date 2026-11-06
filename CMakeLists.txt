@@ -1952,6 +1952,12 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/HiFiVehicleMusic/manifest.json
         PACKAGE_NAME HiFiVehicleMusic
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/HiFiVehicleMusic")
+    anomaly_add_plugin(anomaly_builtin_nte_tv_video
+        SOURCES plugins/NteTvVideo/plugin.cpp
+        MANIFEST plugins/NteTvVideo/manifest.json
+        PACKAGE_NAME NteTvVideo
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteTvVideo")
+    target_link_libraries(anomaly_builtin_nte_tv_video PRIVATE nlohmann_json::nlohmann_json)
     anomaly_add_plugin(anomaly_builtin_model_scale
         SOURCES plugins/ModelScale/plugin.cpp
         MANIFEST plugins/ModelScale/manifest.json
@@ -2081,7 +2087,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         anomaly_builtin_deserted anomaly_builtin_jelly anomaly_builtin_night999
         anomaly_builtin_npc_summon anomaly_builtin_training_dummy
         anomaly_builtin_summon_lab anomaly_builtin_memory_dump anomaly_builtin_nailong
-        anomaly_builtin_nte_combat_tracker)
+        anomaly_builtin_nte_tv_video anomaly_builtin_nte_combat_tracker)
 
     if(ANOMALY_BUILD_TEST_PLUGINS)
         list(APPEND ANOMALY_BUILTIN_PLUGIN_TARGETS
@@ -2115,6 +2121,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         target_compile_options(anomaly_builtin_ui_buttons PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_deserted PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_hifi_vehicle_music PRIVATE /utf-8)
+        target_compile_options(anomaly_builtin_nte_tv_video PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_night999 PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_npc_summon PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_nailong PRIVATE /utf-8)

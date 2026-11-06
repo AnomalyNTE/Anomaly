@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "locale": "zh-CN",
+  "messages": {
+    "plugin.description": "把住宅电视播放的视频替换为本地自定义视频。",
+    "window.title": "电视视频替换",
+    "option.enabled": "替换住宅电视视频",
+    "option.mute": "静音游戏原本的电视声音",
+    "action.browse": "选择视频...",
+    "action.recopy": "重新复制",
+    "text.none": "（未选择）",
+    "text.path": "视频文件：{0}",
+    "text.tv_hits": "已捕获电视播放：{0} 次",
+    "status.hooks_installed": "Hook：已安装",
+    "status.hooks_partial": "Hook：已安装（缺少音频 Hook）",
+    "status.hooks_missing": "Hook：未找到电视视频设置函数（当前游戏版本可能不支持）",
+    "status.video_none": "视频：未选择",
+    "status.video_copying": "视频：正在复制到游戏目录",
+    "status.video_ready": "视频：已就绪",
+    "status.video_idle": "视频：尚未复制",
+    "status.video_failed": "视频：复制失败（{0}）"
+  }
+}
