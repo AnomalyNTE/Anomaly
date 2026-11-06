@@ -2,6 +2,7 @@
 #include "anomaly/ue5_object_lookup.hpp"
 #include "anomaly/ue5_ftext.hpp"
 #include "anomaly/ue5_assets.hpp"
+#include "anomaly/ue5_pak.hpp"
 
 #include <Windows.h>
 
@@ -161,6 +162,7 @@ FeatureLayoutValidatorRegistry Ue5FeatureLayoutValidators() {
     RegisterUe5ObjectLookupValidator(validators);
     RegisterUe5FTextValidator(validators);
     RegisterUe5AssetsValidator(validators);
+    RegisterUe5PakValidator(validators);
     validators.Register(std::string(kUe5ProcessEventAbiValidator), ValidateProcessEventAbi);
     validators.Register(
         std::string(kUe5ActorProcessEventAbiValidator),

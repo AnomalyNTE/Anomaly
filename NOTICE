@@ -36,3 +36,16 @@ its full license is provided as third_party/licenses/noto-sans-cjk-LICENSE.txt.
 Windows, Direct3D, DXGI, Segoe UI, and Neverness to Everness are names or
 products of their respective owners. They are not redistributed as third-party
 source components by this repository.
+
+Launcher mod archive decoders:
+libarchive 3.8.11
+License: BSD-2-Clause (see libarchive-LICENSE.txt for per-file notices)
+Source: https://github.com/libarchive/libarchive/tree/v3.8.11
+
+XZ Utils liblzma 5.8.4 (library only)
+License: 0BSD
+Source: https://github.com/tukaani-project/xz/tree/v5.8.4
+
+zlib 1.4
+License: Zlib
+Source: https://zlib.net/

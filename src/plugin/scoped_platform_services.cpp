@@ -403,6 +403,8 @@ public:
         return cached;
     }
 
+    bool IsWorkerThread() const noexcept { return worker_.get_id() == std::this_thread::get_id(); }
+
     CoreMemoryServices memory_services_;
     std::mutex signature_mutex_;
     std::unordered_map<std::wstring, std::shared_ptr<SignatureUpdater>> signature_updaters_;
@@ -696,6 +698,10 @@ ScopedPlatformServices::ScopedPlatformServices(
           std::move(memory_services), std::move(ledger), std::move(hook_backend))) {}
 
 ScopedPlatformServices::~ScopedPlatformServices() = default;
+
+bool ScopedPlatformServices::IsWorkerThread() const noexcept {
+    return impl_ && impl_->IsWorkerThread();
+}
 
 AnomalyStatusV1 ScopedPlatformServices::RegisterConfigSchema(
     const ScopedPluginServiceOwner& owner,

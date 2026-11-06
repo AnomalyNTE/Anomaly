@@ -1384,6 +1384,34 @@
         "resolve_ftext_utf8": 24
       }
     },
+    "AnomalyModEntryV1": {
+      "size": 80,
+      "alignment": 8,
+      "offsets": {
+        "struct_size": 0,
+        "enabled": 4,
+        "disabled_files": 8,
+        "index_complete": 12,
+        "key": 16,
+        "name": 32,
+        "vehicles": 48,
+        "analysis_error": 64
+      }
+    },
+    "AnomalyModsServiceV1": {
+      "size": 56,
+      "alignment": 8,
+      "offsets": {
+        "struct_size": 0,
+        "service_version": 4,
+        "user": 8,
+        "compatibility_mode": 16,
+        "enumerate": 24,
+        "set_enabled": 32,
+        "assets": 40,
+        "synchronize": 48
+      }
+    },
     "AnomalyUe5AssetsServiceV1": {
       "size": 48,
       "alignment": 8,
@@ -2306,6 +2334,7 @@
     { "id": "anomaly.ue5.ahud", "version": 1, "table": "AnomalyUe5AhudServiceV1" },
     { "id": "anomaly.ue5.framework", "version": 1, "table": "AnomalyUe5FrameworkServiceV1" },
     { "id": "anomaly.ue5.process-event", "version": 1, "table": "AnomalyUe5ProcessEventServiceV1" },
+    { "id": "anomaly.mods", "version": 1, "table": "AnomalyModsServiceV1" },
     { "id": "anomaly.ue5.assets", "version": 1, "table": "AnomalyUe5AssetsServiceV1" },
     { "id": "anomaly.ue5.names", "version": 2, "table": "AnomalyUe5NamesServiceV1" },
     { "id": "anomaly.ue5.objects", "version": 1, "table": "AnomalyUe5ObjectsServiceV1" },

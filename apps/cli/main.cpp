@@ -92,6 +92,15 @@ constexpr char kUsageText[] =
     "    f64 <address> [count]       float64 values, count defaults to 3\n"
     "    snapshot [filename]         write a full JSON snapshot into the Anomaly directory\n"
     "\n"
+    "  runtime pak mods (mutates the mounted container set)\n"
+    "    pak                         same as \"pak status\": every container the runtime knows about\n"
+    "    pak status                  id, path, read order, size and state of each container\n"
+    "    pak reload                  rescan ~mods and the optional config/pak-mods.json now\n"
+    "    pak mount <path> [order]    mount one container; order defaults to the runtime base order\n"
+    "    pak release <id>            unmount one container; pending engine reads may retain handles\n"
+    "    pak unmountall              unmount everything the runtime mounted\n"
+    "    pak prime <id>              explicitly probe one mounted container and report the read stage\n"
+    "\n"
     "  writing memory (mutates the running game)\n"
     "    write <address> <hex bytes>       write into a page that is already writable\n"
     "    patch <address> <hex bytes>       switch to RWX, write, flush the instruction cache, restore\n"
@@ -186,15 +195,24 @@ int wmain(int argc, wchar_t** argv) {
             std::cerr << "arguments must not contain line breaks\n";
             return 2;
         }
+        // The shell removes quotes around a pak id/path. Preserve that argument boundary on the
+        // diagnostics wire, whose pak parser accepts quoted tokens. Other command grammars differ.
+        const bool quote_pak_argument = std::wstring_view(argv[3]) == L"pak" && index >= 5 &&
+            argument->find_first_of(" \t") != std::string::npos;
+        if (quote_pak_argument && argument->find('"') != std::string::npos) {
+            std::cerr << "quoted pak arguments must not contain a quote\n";
+            return 2;
+        }
+        const auto encoded = quote_pak_argument ? '"' + *argument + '"' : *argument;
         const std::size_t separator = request.empty() ? 0U : 1U;
         const std::size_t maximum_command_bytes = kMaximumRequestBytes - 1U;
         if (request.size() > maximum_command_bytes - separator ||
-            argument->size() > maximum_command_bytes - request.size() - separator) {
+            encoded.size() > maximum_command_bytes - request.size() - separator) {
             std::cerr << "request exceeds the 64 KiB diagnostics pipe limit\n";
             return 2;
         }
         if (separator != 0) request.push_back(' ');
-        request += *argument;
+        request += encoded;
     }
     if (request.empty()) {
         Usage(std::cerr);

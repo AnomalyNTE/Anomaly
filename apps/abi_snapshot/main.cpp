@@ -1678,6 +1678,24 @@ std::string BuildSnapshot() {
          {"resolve_utf8", offsetof(AnomalyUe5NamesServiceV1, resolve_utf8)},
          {"resolve_ftext_utf8", offsetof(AnomalyUe5NamesServiceV1, resolve_ftext_utf8)}},
         false);
+    AppendStruct(output, "AnomalyModEntryV1", sizeof(AnomalyModEntryV1), alignof(AnomalyModEntryV1),
+        {{"struct_size", offsetof(AnomalyModEntryV1, struct_size)},
+         {"enabled", offsetof(AnomalyModEntryV1, enabled)},
+         {"disabled_files", offsetof(AnomalyModEntryV1, disabled_files)},
+         {"index_complete", offsetof(AnomalyModEntryV1, index_complete)},
+         {"key", offsetof(AnomalyModEntryV1, key)},
+         {"name", offsetof(AnomalyModEntryV1, name)},
+         {"vehicles", offsetof(AnomalyModEntryV1, vehicles)},
+         {"analysis_error", offsetof(AnomalyModEntryV1, analysis_error)}}, false);
+    AppendStruct(output, "AnomalyModsServiceV1", sizeof(AnomalyModsServiceV1), alignof(AnomalyModsServiceV1),
+        {{"struct_size", offsetof(AnomalyModsServiceV1, struct_size)},
+         {"service_version", offsetof(AnomalyModsServiceV1, service_version)},
+         {"user", offsetof(AnomalyModsServiceV1, user)},
+         {"compatibility_mode", offsetof(AnomalyModsServiceV1, compatibility_mode)},
+         {"enumerate", offsetof(AnomalyModsServiceV1, enumerate)},
+         {"set_enabled", offsetof(AnomalyModsServiceV1, set_enabled)},
+         {"assets", offsetof(AnomalyModsServiceV1, assets)},
+         {"synchronize", offsetof(AnomalyModsServiceV1, synchronize)}}, false);
     AppendStruct(output, "AnomalyUe5AssetsServiceV1", sizeof(AnomalyUe5AssetsServiceV1),
         alignof(AnomalyUe5AssetsServiceV1),
         {{"struct_size", offsetof(AnomalyUe5AssetsServiceV1, struct_size)},
@@ -2641,6 +2659,7 @@ std::string BuildSnapshot() {
         ANOMALY_UE5_FRAMEWORK_SERVICE_V1_VERSION, "AnomalyUe5FrameworkServiceV1", false);
     AppendService(output, ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_ID,
         ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_VERSION, "AnomalyUe5ProcessEventServiceV1", false);
+    AppendService(output, ANOMALY_MODS_SERVICE_V1_ID, ANOMALY_MODS_SERVICE_V1_VERSION, "AnomalyModsServiceV1", false);
     AppendService(output, ANOMALY_UE5_ASSETS_SERVICE_V1_ID,
         ANOMALY_UE5_ASSETS_SERVICE_V1_VERSION, "AnomalyUe5AssetsServiceV1", false);
     AppendService(output, ANOMALY_UE5_NAMES_SERVICE_V1_ID,

@@ -14,4 +14,5 @@
 #include "anomaly/sdk/services/profile.h"
 #include "anomaly/sdk/services/ue5.h"
 #include "anomaly/sdk/services/nte.h"
+#include "anomaly/sdk/services/mods.h"
 #include "anomaly/sdk/plugin.h"

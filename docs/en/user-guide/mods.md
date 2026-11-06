@@ -2,7 +2,7 @@
 
 > 🌐 English · [简体中文](../../user-guide/mods.md)
 
-The launcher's **Mods** page manages pak mods inside the game folder: list, enable/disable, uninstall, rename, import a zip, and flip the switch that lets unsigned mods load at all.
+The launcher's **Mods** page manages pak mods inside the game folder: list, enable/disable, uninstall, rename, import an archive, and flip the switch that lets unsigned mods load at all.
 
 ## Where it is
 
@@ -20,16 +20,19 @@ The page shows the directory in use:
 
 | Action | Notes |
 | --- | --- |
-| List | One row per mod: display name · on/off · file count · size · author · version |
-| Enable / disable | Renames the folder or the loose files (adds/removes `.disabled`) |
+| List | Ten mods per page, with paging controls above the list; rows show switches, covers, names, file counts, sizes, authors and versions, reserving the cover space when no image is available |
+| Enable / disable | Hot mode saves a selection for runtime mount/unmount; compatibility mode adds/removes `.disabled` on container files while the game is closed |
+| Enable switch | Enabling a mod disables conflicting model/resource replacements and synchronizes with the in-game Mod Manager |
 | Uninstall | Deletes the mod's files or folder |
 | Rename | Inline dialog, renames on disk |
-| Import zip | Extracts the archive and copies `.pak/.utoc/.ucas/mod.json` into `~mods\<archive name>\` |
+| Import archive | Extracts ZIP, 7z or RAR archives and copies `.pak/.utoc/.ucas/mod.json` into `~mods\<archive name>\` |
 | Search | Matches display name, folder name and author |
-| Filter | All / enabled / disabled |
+| Filter | All / enabled / disabled tabs; changing the tab or search resets to page 1 |
 | Source | Opens the link from `mod.json` in the browser |
 
-**Every change needs a game restart**: pak containers are mounted at start-up and cannot be unmounted.
+**Whether a change needs a restart depends on runtime loading**: without it, paks are mounted at
+start-up only and every change needs a restart. With it, containers can be added, removed and
+replaced while the game runs; see [Runtime loading and hot swap](#runtime-loading-and-hot-replacement).
 
 ## Layout
 
@@ -60,63 +63,158 @@ Optional `mod.json`:
 }
 ```
 
-## Enabling mod loading (signature bypass)
+## Enabling mod loading
 
-The game refuses to mount pak files without a signature. The **Enable mod loading** switch makes the core turn that check into "always valid" before the engine mounts its paks.
+The switch writes `enabled` in `Anomaly\config\pak-mods.json` and defaults to on. Hot loading supports
+proxy startup, launch-and-attach and live attach when the active Profile passes the `ue5.pak` symbol,
+ABI and layout checks.
 
-It writes:
+- All three entry points and the in-game Mod Manager share `Binaries\Win64\Anomaly\config\pak-mods.json` in the game installation.
+- Until that file exists, the old Runtime-local file is a migration fallback. The first save establishes the shared file.
+- Launcher and the plugin serialize read/modify/atomic-write operations with the same file mutex, preserving custom `mods` arrays and other fields.
+- Invalid configuration causes a save error. The Runtime preserves existing mounts and reports `lastError`.
 
 ```json
-{
-  "schemaVersion": 1,
-  "enabled": true,
-  "verifiedFor": "1.4.18",
-  "module": "HTGame.exe",
-  "pattern": "48 8D ?? ?? ?? ?? ?? E9 ... E9",
-  "jumpOffset": 71
-}
+{ "schemaVersion": 1, "enabled": true, "mode": "hot",
+  "modStates": { "OldVehicle/": false, "NewVehicle/": true, "Sound.pak": true } }
 ```
 
-| Field | Meaning |
-| --- | --- |
-| `enabled` | Master switch, off by default. |
-| `pattern` | AOB that locates the check. **Game updates invalidate it.** |
-| `jumpOffset` | Offset from the match to the jump instruction (`0x47` on the tested build). |
-| `verifiedFor` | Game version the pattern was verified against (informational). |
-| `module` | Target module, normally `HTGame.exe`. |
+Directory keys in `modStates` end in `/`; loose containers use their relative `.pak` filename. Choices
+filter both directory discovery and explicit manifests. Hot disable leaves mounted filenames intact,
+and reenabling an unchanged file mounts it again.
+Loose containers retain the full stem: `foo` and `foo_P` are distinct mods.
 
-The file lives with the runtime that actually runs:
+**Compatibility mode** sets `mode` to `compatibility` and uses the previous proxy startup signature
+bypass so the engine loads mods itself. Close the game before changing modes, then start through the
+proxy. Compatibility mode installs no hot-loading cache hooks and rejects runtime mount, unmount and
+prime commands. Its selection changes require restarting the game. Mode conversion preserves selections
+through `.disabled` markers. The mode stays fixed for the game process, including Runtime restarts.
 
-- **Proxy mode**: `<game>\...\Binaries\Win64\Anomaly\config\pak-signature-bypass.json`
-- **Live attach**: `<launcher>\Anomaly\config\pak-signature-bypass.json`
+The compatibility switch preserves and enables an existing `pak-signature-bypass.json` recipe; saving
+fails if no signature recipe exists. Hot mode does not start this legacy path. Its `pattern` must match uniquely;
+`jumpOffset` identifies an E8/E9 branch. The supported legacy `patchBytes: "B0 01 C3"` form hooks a bool
+predicate directly. Other raw patch sequences are rejected. `verifiedFor` is descriptive only.
 
-The switch edits whichever exists (both are updated when both exist).
+## Runtime loading and hot replacement
 
-### After a game update
+The Runtime scans `Paks\~mods` every 750 ms by default, skipping `.disabled` files/directories and reparse
+entries. Each `.pak` is one container. Default read orders start at **100000** and increase; the engine's
+read-order rules determine which duplicate resource wins. Default ids are relative paths without the
+extension, such as `Outfit/Shared`, so equal basenames in different folders remain distinct.
 
-Symptom: no mod loads and `Anomaly\logs\pak-signature-bypass.log` contains
+An explicit manifest can select the mounted set:
 
+```json
+{ "schemaVersion": 1, "enabled": true,
+  "mods": [ "MyMod\\MyMod.pak", { "id": "Sound", "pak": "Sound.pak", "order": 100100 } ] }
 ```
-pattern not found within the wait window
+
+Relative paths resolve against `Paks\~mods`. A `mods` array is authoritative; without one the directory is
+scanned. `enabled: false` stops automatic mounting and attempts to unmount containers owned by this Runtime.
+Invalid configuration, missing manifest files or duplicate ids/paths preserve the current set. Failed unmounts remain tracked and
+block all new mounts in that pass, preventing two conflicting variants with different ids from becoming active together.
+Each pass also copies actual mounted filenames under the engine's mount-list lock and removes startup
+mounts under `~mods` that this Runtime does not own before applying the selection. Unmount uses the
+engine's original filename spelling so relative paths cannot leave an old or disabled container mounted.
+
+```text
+anomaly-cli --pid <game PID> pak status
+anomaly-cli --pid <game PID> pak release "My Mod/MyMod"
+anomaly-cli --pid <game PID> pak reload
+anomaly-cli --pid <game PID> pak mount "My Mod/MyMod.pak" 100100
+anomaly-cli --pid <game PID> pak unmountall
 ```
 
-Fix: obtain the pattern for the new build (community config or a read-only scan), update `verifiedFor`, save, and restart the game.
+- A successful `release` stays `released` until timestamps or sizes change for `.pak/.utoc/.ucas/.sig`.
+  `unmountall` also stays released on the next poll. Use an explicit `mount` to remount unchanged files.
+- Manual mounts remain subject to subsequent manifest/directory reconciliation. Add external paths to
+  the manifest to retain them.
+- **Successful unmount does not guarantee closed file handles.** UE can retain outstanding reads and
+  open resource handles. Do not force an overwrite while files are busy; wait or exit the game.
+- **Do not copy a multi-file container into an active watched location one file at a time.** Disable
+  automatic loading or temporarily remove the manifest entry, prepare the complete file set outside
+  the watched directory or in a `.disabled` folder, then publish it and restore the configuration.
+  Polling is not a multi-file transaction. Equal timestamps and sizes do not detect changed contents.
+  Use this full disable/enable workflow for partitioned or optional containers too.
 
-### Limits
+State is published to `Anomaly\state\pak-mods.json` and to the `pakMods` node in `diagnostics-summary.json`.
+`mode` identifies the process's loading strategy and `pid` identifies its owner. The explicit
+`residentAssetsReloaded: false` field means container switching did not refresh resident assets.
 
-- A **restart is mandatory** — mods cannot be toggled while the game runs.
-- **Proxy mode only**: live attach happens after the engine has mounted its paks, so mods do not load in that session.
-- The bypass modifies the game's runtime checks, which the game's anti-cheat may treat as tampering.
-- Logs: `Anomaly\logs\pak-signature-bypass.log` and `Anomaly\logs\mod-operations.log`.
+### Native calls and diagnostics
+
+Mounting validates the Profile, resolves `FPakPlatformFile`, installs cache verification routing and
+configures signature support before calling native `Mount(FPakMountArgs, FIoStatus, FPakListEntry)`.
+Pure pak files use `SkipContainerFile`; the presence of `.utoc` selects native IoStore mounting. File
+sizes do not determine the container type. The output entry transfers a strong reference that the
+Runtime releases after unmount or during shutdown. Every required signature step must succeed.
+
+The cache hook samples ownership while holding the engine's cache lock. Existing signature tables use
+the original verifier. A confirmed null table goes through native completion, which obtains the read
+results and maintains queues/counters. Unreadable state uses the original function. The hook does not
+manually transfer request buffers. Shutdown detaches and drains the diagnostic sink; the resident Core
+retains cache routing for late native I/O.
+Restarting the Runtime in the same process reuses the previously validated Pak binding, since installed
+patches change the bytes used by signature scanning.
+
+Signature tables come from `.sig`; **a diagnostic read does not create a missing signature table**.
+Mounting no longer runs automatic reads or global index optimization. An explicit `pak prime "<id>"`
+probes one owned file and reports its stage. It is a diagnostic, not a repair or proof that all assets
+will load. An IoStore-only container can lack data for this pak read path without its mount having failed.
+
+Signature changes affect the process. Disabling automatic loading or stopping the Runtime does not
+restore every signature setting; restart the game for full restoration. Missing symbols or incompatible
+layouts disable the feature rather than guessing addresses.
+
+### Asset reload limits
+
+This feature manages container mounts. Unmounting does not destroy loaded `UObject` / `UPackage` objects,
+rebuild the Asset Registry, refresh materials/audio, or replace resident assets. A `mounted` state does
+not mean existing resources have been reloaded. Resident assets, outstanding asynchronous loads and full
+replacement behavior still need in-game validation. Restart when a clean resource replacement is needed.
+
+The independent **Mod Manager** plugin reads `.pak` and `.utoc` directory indices to classify vehicle mods by actual resource paths.
+GT3 RS and P1 cover `Vehicle_037`; Tourbillon covers `Vehicle_026`. Mods conflict when they override the same resource
+or replace the body/blueprint of the same vehicle. Enabling one disables conflicting variants in the same saved selection.
+Sound add-ons are exclusive only when their resources actually overlap. Encrypted, missing or unsupported indices are
+reported as incomplete; filenames are not used to guess the vehicle. Launcher and the plugin share parsing and selection logic.
+Known conflicts introduced by manual configuration edits preserve existing mounts and produce an error until resolved.
+
+The alternative wheel finishes in the example P1 archive should be imported individually. All containers inside one mod
+folder form one unit; the manager does not choose between variants packed into the same folder.
+
+1. Open Mod Manager, confirm hot mode, and use the mutually exclusive switches shared with Launcher.
+2. After container changes, the plugin automatically attempts to release resources from all variants of the vehicle.
+   Each vehicle group keeps one **Release resources** button for manual retries.
+3. If instances remain, exit the vehicle and use the group's single **Force cleanup** button. The plugin validates object serials,
+   actor types and owning world, protects the current occupied vehicle, and calls the game's
+   `HTWheeledVehicleDrivable.SafeDestroyVehicle` to retire its Mass vehicle entity too.
+   This button only clears vehicles. If a previous mod switch was blocked by those vehicles, completion resumes one resource release.
+4. Resource release invalidates the target vehicle's old physics template lookup keys before dropping shared simulation parameters,
+   preventing later summons from accessing classes collected by GC. It then invokes `HTGameUserSettings.ClearCacheUIAndGC`,
+   waits for GC, and checks matching actors and original package handles again.
+5. Summon again to check the model. **Partial release; still resident** reports remaining old resources, not failure of the
+   entire mod switch. The shared `DT_vehicleModuleData` table is not forcibly released and its contents may remain unchanged.
+   Newly loaded packages at the same path do not count as retained old packages.
+
+Cleanup uses Profile and reflection-validated layouts and engine calls without changing UObject GC flags.
+Invalidated physics template allocations remain owned by the native subsystem until world teardown, preserving raw borrowers in other caches.
+Shared asset/UI caches are cleared and may briefly stall or rebuild UI. Container indices do not describe every cross-package
+reference; a scene reload or game restart may still be necessary. The GT3/P1 visual switch still requires live validation.
+The plugin reports the mode chosen for the actual process. Compatibility mode disables all hot operations; make changes in
+Launcher after closing the game. The new host service requires updating Core and restarting the game; plugin hot reload alone
+cannot add this interface to an older Core.
 
 ## Troubleshooting
 
 | Symptom | Check first |
 | --- | --- |
-| Mod does not load | Started through the proxy? `enabled` true? `hooked` line in the bypass log? |
-| Empty list | Directory path, file extensions, whether the game holds the containers open |
-| Disable button does nothing | Close the game first (files are locked while it runs) |
-| Import fails | Valid zip? `tar.exe` available (ships with Windows 10+)? |
+| Mod has no effect | `available`, `state`, `lastError` in `pak status`, and the engine reason in `pak_mods.mount_failed` |
+| Empty list | Directory path, `.disabled` markers, and the manifest's `mods` array |
+| Cannot overwrite/disable files | Release status and outstanding reads; exit the game if files remain busy |
+| Mounted but resources unchanged | Whether resources were already resident; mounts do not refresh them |
+| Read failure | Cache hook availability, Profile compatibility, complete file set; `pak prime` is diagnostic only |
+| Archive import fails | Check archive integrity, encryption and available disk space; see the extraction error |
 
 ## Browsing and installing online
 
@@ -124,15 +222,19 @@ The fourth launcher tab, **Browse**, talks to GameBanana's Neverness To Everness
 
 | Action | Notes |
 | --- | --- |
-| Search | Keyword + **Search**. Use **English** keywords (`loading`, `hair`, `outfit`): GameBanana barely filters CJK queries and returns unrelated mods |
+| Search | Filters loaded mods by name and author as you type |
 | Empty query | Browses the newest mods of the game |
+| Automatic loading | Opening Browse for the first time requests the first 15 mods |
+| Refresh list | Requests page 1 again and replaces the list on success; keeps the existing list while loading or on failure |
 | Load more | Appends one page at a time (the service forces 15 per page) |
-| Sort | Name / downloads / updated / size; click the same button again to flip the order |
+| Sort | Liquid glass tabs: name / downloads / size / time; click the same tab again to flip the order |
 | Thumbnail | 120x68 preview in the row; hover shows the 530px image (downloaded on first hover, cached after) |
 | Page | Opens the mod's GameBanana page in the browser |
 | Installed | Mods installed by this launcher show "installed" and the button becomes "reinstall" |
 
-Install flow: resolve the file (`ProfilePage`, falling back to `/Mod/<id>/Files` when the page hides files) -> download -> detect the archive by header (zip via `tar.exe`, 7z/rar via the local 7-Zip) -> extract -> **copy the whole tree** into `~mods\<name>\` -> write the cover as `icon.png` -> write `.aurora-source.json`.
+Install flow: resolve the file (`ProfilePage`, falling back to `/Mod/<id>/Files` when the page hides files) -> download -> detect ZIP / 7z / RAR / RAR5 by content (bundled decoders; no 7-Zip installation required) -> extract -> **copy the whole tree** into `~mods\<name>\` -> write the cover as `icon.png` -> write `.aurora-source.json`.
+
+Extraction uses a unique temporary directory with automatic cleanup and Unicode paths. Unsafe paths, links, duplicate files and encrypted archives are rejected; extraction is limited to 16 GiB / 20000 entries. The download Cancel button also cancels extraction.
 
 Network: the system proxy is preferred (measured ~5 MB/s through the proxy vs ~14 KB/s direct on the reference machine), direct is the fallback, and a failed download retries through `curl.exe`. Reasons land in `Anomaly\logs\launcher-update.log`.
 
@@ -160,24 +262,27 @@ Stored in `<launcher>\Anomaly\config\launcher-prefs.json`:
 | --- | --- |
 | `browseSort` | Download-page ordering (`default` / `new` / `downloads` / `views` / `likes`) |
 | `browseCategory` | Selected category id (empty = all) |
-| `hideMature` | "Hide NSFW" state |
-| `gridView` | Grid view for the mods page |
+| `hideMature` | "Hide NSFW" switch state, enabled by default |
 
 ## What the GameBanana API allows
 
 | Want | Reality | What we do |
 | --- | --- | --- |
 | Sort everything by downloads/views/likes | Only `apiv13/Mod/Index` supports it (`Generic_MostDownloaded` / `MostViewed` / `MostLiked` / `Newest`) | Use that endpoint and refetch page 1 on change |
-| Search + sorting | Search only accepts `_sOrder=best_match`; other values return 400 | Search is relevance-ordered; category and full-set sorting are hidden while searching |
-| Search + category | The search endpoint ignores category filters | Hide the category dropdown while a query is active |
+| Keyword filtering + sorting / category | The input filters the loaded list | Keep the current sort and category; no extra search request |
 | Download counts in the list | The feed omits `_nDownloadCount` | Fetch per mod from `/Mod/<id>/Files` (same request as the file size) |
 | Category filtering | `_aFilters[Generic_Category]` takes a numeric id | Take the id from the record's category URL (`…/cats/43029`) |
 | NSFW filtering | NTE records only populate `_bHasContentRatings` | Local filter; also honours `_bHasNsfwContent`, `_bIsNsfw` and an "nsfw" category name |
 
+The in-game Mod Manager and Launcher show 10 mods per page, with paging controls above the list. Launcher uses a list with covers and switches; Group / notes also supports ungrouped mods and loose files.
+
 ## Known limits
 
-- While the game runs, enable/disable/uninstall/rename/import/install are blocked: the engine holds `.ucas`/`.utoc` open. The UI greys those buttons and explains why.
-- Every change needs a game restart — paks are mounted at start-up only.
+- Import and download remain available while the game runs. Hot mode can switch mods; disabled mods can be updated, renamed or uninstalled once the engine releases their files. Compatibility mode cannot switch live; new imports stay disabled until enabled after exiting the game.
+- Import and update keep the target disabled until all container files have been copied. Failed operations leave it disabled.
+- Without runtime loading, every change needs a game restart — paks are mounted at start-up only.
+  With it, containers can be added, released and replaced at runtime
+  (see [Runtime loading and hot swap](#runtime-loading-and-hot-replacement)).
 - Lua script mods do nothing: this framework has no Lua runtime. Archives containing `.lua`, or pages mentioning Lua/UE4SS/NTEUiSwap, get a `needsLua` flag and the mods page shows a banner.
 - Aurora modules (dll/packages) are unusable: they need Aurora's own module loader.
 

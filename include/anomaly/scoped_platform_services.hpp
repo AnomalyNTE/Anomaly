@@ -136,6 +136,8 @@ public:
         AnomalyTaskCallbackV1 callback,
         void* callback_user,
         AnomalyGenerationHandleV1* handle) noexcept;
+    // Host-only identity check for callbacks dispatched by anomaly.scheduler.
+    [[nodiscard]] bool IsWorkerThread() const noexcept;
     [[nodiscard]] AnomalyStatusV1 CancelTask(
         const ScopedPluginServiceOwner& owner, AnomalyGenerationHandleV1 handle) noexcept;
 

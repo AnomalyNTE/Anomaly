@@ -1,6 +1,8 @@
 #include "anomaly/nte_pak_signature_bypass.hpp"
 
 #include "anomaly/hook_manager.hpp"
+#include "pattern.hpp"
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -8,7 +10,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
-#include <mutex>
+#include <span>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -25,8 +27,9 @@ constexpr std::string_view kConfigName = "pak-signature-bypass.json";
 constexpr std::string_view kLogName = "pak-signature-bypass.log";
 
 struct Pattern final {
-    std::vector<std::uint8_t> bytes;
-    std::vector<std::uint8_t> mask;  // 1 = compare, 0 = wildcard
+    ue5mem::Pattern signature;
+    // Legacy B0 01 C3 means a bool predicate at match + jumpOffset, installed as a hook.
+    bool direct_predicate{};
     std::uintptr_t jump_offset{};
 };
 
@@ -35,60 +38,18 @@ struct Settings final {
     std::string module;
     std::string pattern;
     std::uintptr_t jump_offset{};
+    std::string patch_bytes;
 };
 
-// Deliberately tiny JSON reader: the config only holds a handful of flat fields and this runs
-// before the regular configuration/JSON services exist.
-std::optional<std::string> ReadField(const std::string& text, const std::string_view key) {
-    const std::string needle = "\"" + std::string(key) + "\"";
-    const std::size_t key_at = text.find(needle);
-    if (key_at == std::string::npos) return std::nullopt;
-    const std::size_t colon = text.find(':', key_at + needle.size());
-    if (colon == std::string::npos) return std::nullopt;
-    std::size_t at = colon + 1;
-    while (at < text.size() && (text[at] == ' ' || text[at] == '\t' || text[at] == '\r' ||
-                                   text[at] == '\n')) {
-        ++at;
-    }
-    if (at >= text.size()) return std::nullopt;
-    if (text[at] == '"') {
-        const std::size_t end = text.find('"', at + 1);
-        if (end == std::string::npos) return std::nullopt;
-        return text.substr(at + 1, end - at - 1);
-    }
-    std::size_t end = at;
-    while (end < text.size() && text[end] != ',' && text[end] != '}' && text[end] != '\n') ++end;
-    std::string raw = text.substr(at, end - at);
-    while (!raw.empty() && (raw.back() == ' ' || raw.back() == '\r')) raw.pop_back();
-    return raw;
-}
-
 bool ParsePattern(const std::string_view text, Pattern& pattern) {
-    pattern.bytes.clear();
-    pattern.mask.clear();
-    const auto hex = [](const char c) -> int {
-        if (c >= '0' && c <= '9') return c - '0';
-        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-        return -1;
-    };
-    std::size_t index{};
-    while (index + 1 < text.size()) {
-        while (index < text.size() && text[index] == ' ') ++index;
-        if (index + 1 >= text.size()) break;
-        if (text[index] == '?' || text[index + 1] == '?') {
-            pattern.bytes.push_back(0);
-            pattern.mask.push_back(0);
-        } else {
-            const int high = hex(text[index]);
-            const int low = hex(text[index + 1]);
-            if (high < 0 || low < 0) return false;
-            pattern.bytes.push_back(static_cast<std::uint8_t>((high << 4) | low));
-            pattern.mask.push_back(1);
-        }
-        index += 2;
+    try {
+        pattern.signature = ue5mem::Pattern::Parse(text);
+        const auto bytes = pattern.signature.Bytes();
+        return bytes.size() >= 8 && bytes.size() <= 4096 &&
+            std::any_of(bytes.begin(), bytes.end(), [](const auto& byte) { return byte.mask != 0; });
+    } catch (...) {
+        return false;
     }
-    return pattern.bytes.size() >= 8;
 }
 
 void WriteDefaultConfig(const std::filesystem::path& path) {
@@ -108,23 +69,41 @@ void WriteDefaultConfig(const std::filesystem::path& path) {
 }
 
 std::optional<Settings> LoadSettings(const std::filesystem::path& path) {
-    std::ifstream stream(path);
-    if (!stream) return std::nullopt;
-    std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
-    Settings settings{};
-    if (const auto enabled = ReadField(text, "enabled")) {
-        settings.enabled = *enabled == "true" || *enabled == "1";
-    }
-    if (const auto module = ReadField(text, "module")) settings.module = *module;
-    if (const auto pattern = ReadField(text, "pattern")) settings.pattern = *pattern;
-    if (const auto offset = ReadField(text, "jumpOffset")) {
-        try {
-            settings.jump_offset = static_cast<std::uintptr_t>(std::stoull(*offset));
-        } catch (...) {
-            settings.jump_offset = 0;
+    try {
+        std::ifstream stream(path);
+        if (!stream) return std::nullopt;
+        const auto json = nlohmann::json::parse(stream);
+        if (!json.is_object() || json.value("schemaVersion", 1) != 1) return std::nullopt;
+        Settings settings{};
+        settings.enabled = json.value("enabled", false);
+        settings.module = json.value("module", std::string{});
+        settings.pattern = json.value("pattern", std::string{});
+        settings.patch_bytes = json.value("patchBytes", std::string{});
+        if (const auto offset = json.find("jumpOffset"); offset != json.end()) {
+            if (!offset->is_number_integer() || offset->get<std::int64_t>() < 0 ||
+                offset->get<std::uint64_t>() > 4096) return std::nullopt;
+            settings.jump_offset = offset->get<std::uintptr_t>();
         }
+        return settings;
+    } catch (...) {
+        return std::nullopt;
     }
-    return settings;
+}
+
+bool IsTruePredicate(const std::string& text) {
+    try {
+        auto normalized = text;
+        std::replace(normalized.begin(), normalized.end(), ',', ' ');
+        const auto pattern = ue5mem::Pattern::Parse(normalized);
+        const auto bytes = pattern.Bytes();
+        constexpr std::uint8_t predicate[]{0xB0, 0x01, 0xC3};
+        if (bytes.size() != std::size(predicate)) return false;
+        for (std::size_t i{}; i < bytes.size(); ++i)
+            if (bytes[i].mask != 0xFF || bytes[i].value != predicate[i]) return false;
+        return true;
+    } catch (...) {
+        return false;
+    }
 }
 
 bool ReadBytes(const std::uintptr_t address, void* buffer, const std::size_t size) noexcept {
@@ -173,6 +152,20 @@ public:
             return;
         }
         pattern_.jump_offset = settings->jump_offset;
+        pattern_.direct_predicate = !settings->patch_bytes.empty();
+        if (pattern_.direct_predicate && !IsTruePredicate(settings->patch_bytes)) {
+            Log("unsupported patchBytes; only the B0 01 C3 bool predicate is supported");
+            return;
+        }
+        if (!settings->module.empty()) {
+            wchar_t module_path[MAX_PATH]{};
+            if (GetModuleFileNameW(game_module, module_path, MAX_PATH) == 0 ||
+                _stricmp(std::filesystem::path(module_path).filename().string().c_str(),
+                    settings->module.c_str()) != 0) {
+                Log("configured module does not match the supplied game module");
+                return;
+            }
+        }
         game_module_ = game_module;
         stop_.store(false);
         worker_ = std::thread(&Impl::Run, this);
@@ -186,10 +179,11 @@ public:
             } catch (...) {
             }
         }
-        if (installed_ && hooks_.DisableOwner(kOwner, kGeneration)) {
-            static_cast<void>(hooks_.RemoveOwner(kOwner, kGeneration));
+        // Also remove a created-but-never-enabled hook after EnableOwner failed.
+        if (original_ != nullptr && hooks_.DisableOwner(kOwner, kGeneration)) {
+            if (hooks_.RemoveOwner(kOwner, kGeneration)) original_ = nullptr;
         }
-        installed_ = false;
+        patched_.store(false);
     }
 
     [[nodiscard]] bool Patched() const noexcept { return patched_.load(); }
@@ -207,68 +201,44 @@ private:
         }
     }
 
-    std::uintptr_t FindPattern() noexcept {
-        std::uintptr_t base{};
-        std::uintptr_t start{};
-        std::uintptr_t end{};
-        const HMODULE module = game_module_;
-        if (module == nullptr) return 0;
-        base = reinterpret_cast<std::uintptr_t>(module);
-        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
-        if (dos->e_magic != IMAGE_DOS_SIGNATURE) return 0;
-        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
-        if (nt->Signature != IMAGE_NT_SIGNATURE) return 0;
-        const auto* section = IMAGE_FIRST_SECTION(nt);
-        for (std::uint16_t index{}; index < nt->FileHeader.NumberOfSections; ++index) {
-            if (std::memcmp(section[index].Name, ".text", 5) != 0) continue;
-            start = base + section[index].VirtualAddress;
-            end = start + section[index].Misc.VirtualSize;
+    std::uintptr_t FindPattern() {
+        const auto base = reinterpret_cast<std::uintptr_t>(game_module_);
+        IMAGE_DOS_HEADER dos{};
+        IMAGE_NT_HEADERS nt{};
+        if (!ReadBytes(base, &dos, sizeof(dos)) || dos.e_magic != IMAGE_DOS_SIGNATURE ||
+            dos.e_lfanew <= 0 || !ReadBytes(base + dos.e_lfanew, &nt, sizeof(nt)) ||
+            nt.Signature != IMAGE_NT_SIGNATURE || nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+            return 0;
+        const auto section_table = base + dos.e_lfanew + offsetof(IMAGE_NT_HEADERS, OptionalHeader) +
+            nt.FileHeader.SizeOfOptionalHeader;
+        std::uintptr_t start{}, end{};
+        for (std::uint16_t index{}; index < nt.FileHeader.NumberOfSections; ++index) {
+            IMAGE_SECTION_HEADER section{};
+            if (!ReadBytes(section_table + index * sizeof(section), &section, sizeof(section))) return 0;
+            if (std::memcmp(section.Name, ".text", 5) != 0) continue;
+            if (section.VirtualAddress >= nt.OptionalHeader.SizeOfImage ||
+                section.Misc.VirtualSize > nt.OptionalHeader.SizeOfImage - section.VirtualAddress)
+                return 0;
+            start = base + section.VirtualAddress;
+            end = start + section.Misc.VirtualSize;
             break;
         }
         if (end <= start) return 0;
-
-        const std::size_t size = pattern_.bytes.size();
-        std::size_t first_fixed{};
-        for (; first_fixed < size; ++first_fixed) {
-            if (pattern_.mask[first_fixed] != 0) break;
-        }
-        if (first_fixed == size) return 0;
-
+        const auto size = pattern_.signature.Size();
         std::vector<std::uint8_t> buffer(1u << 20);
-        std::uintptr_t cursor = start;
-        while (cursor + size < end) {
-            const std::size_t want = static_cast<std::size_t>(
-                (std::min)(static_cast<std::uintptr_t>(buffer.size()), end - cursor));
-            SIZE_T got{};
-            if (ReadProcessMemory(
-                    GetCurrentProcess(), reinterpret_cast<const void*>(cursor), buffer.data(),
-                    want, &got) == 0 ||
-                got <= size) {
-                cursor += want;
-                continue;
+        std::uintptr_t cursor = start, match{};
+        while (!stop_.load() && end - cursor >= size) {
+            const auto want = (std::min)(buffer.size(), static_cast<std::size_t>(end - cursor));
+            // A partial image cannot establish uniqueness. Retry after the packed image is ready.
+            if (!ReadBytes(cursor, buffer.data(), want)) return 0;
+            for (const auto offset : pattern_.signature.FindAll(std::span(buffer.data(), want), 2)) {
+                if (match != 0) return 0;
+                match = cursor + offset;
             }
-            for (std::size_t offset{}; offset + size < got;) {
-                const void* found = std::memchr(
-                    buffer.data() + offset + first_fixed, pattern_.bytes[first_fixed],
-                    got - offset - first_fixed);
-                if (found == nullptr) break;
-                const std::size_t at = static_cast<std::size_t>(
-                    static_cast<const std::uint8_t*>(found) - buffer.data());
-                const std::size_t candidate = at - first_fixed;
-                bool matched = true;
-                for (std::size_t i{}; i < size; ++i) {
-                    if (pattern_.mask[i] == 0) continue;
-                    if (buffer[candidate + i] != pattern_.bytes[i]) {
-                        matched = false;
-                        break;
-                    }
-                }
-                if (matched) return cursor + candidate;
-                offset = at + 1;
-            }
-            cursor += got > size ? got - size : got;
+            cursor += want - size + 1;
         }
-        return 0;
+        if (stop_.load() || match == 0 || pattern_.jump_offset >= end - match) return 0;
+        return match;
     }
 
     void Run() noexcept {
@@ -277,8 +247,8 @@ private:
             for (int attempt{}; attempt < 2400 && !stop_.load(); ++attempt) {
                 const std::uintptr_t match = FindPattern();
                 if (match != 0) {
-                    std::uintptr_t target{};
-                    if (!FollowJump(match + pattern_.jump_offset, target)) {
+                    std::uintptr_t target = match + pattern_.jump_offset;
+                    if (!pattern_.direct_predicate && !FollowJump(target, target)) {
                         Log("pattern found but the jump could not be followed");
                         return;
                     }
@@ -294,7 +264,6 @@ private:
                         Log("hook enable failed");
                         return;
                     }
-                    installed_ = true;
                     patched_.store(true);
                     char line[256]{};
                     std::snprintf(
@@ -321,7 +290,6 @@ private:
     std::thread worker_;
     std::atomic_bool stop_{};
     std::atomic_bool patched_{};
-    bool installed_{};
 };
 
 NtePakSignatureBypass::NtePakSignatureBypass() : impl_(std::make_unique<Impl>()) {}
