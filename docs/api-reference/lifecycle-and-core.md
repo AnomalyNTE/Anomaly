@@ -169,3 +169,25 @@ typedef struct AnomalyLocalizationServiceV1 {
 当前语言在进程生命周期内固定，切换语言需重启游戏进程，所以文案可以在产生它的位置直接解析，不必推迟到绘制。
 
 C++ 侧直接用 SDK 的 `anomaly::sdk::Localizer`（`include/anomaly/sdk/localization.hpp`），它封装 `Text` / `Format` / `Label` 与超长消息的两段式重试；用法见 [插件开发 · 文本本地化](../developer-guide/plugin-development.md#文本本地化)。
+
+
+## `anomaly.mods`（v1）
+
+头文件：`anomaly/sdk/services/mods.h`，capability：`mods`。由当前进程的 Pak Runtime 发布。
+所有服务表与行结构都带 `struct_size`，调用前检查所需尾字段。服务受插件 generation lease 约束。
+
+| 方法 | 线程 | 语义 |
+| --- | --- | --- |
+| `compatibility_mode` | 任意 | 进程实际启动模式，0 热加载、1 兼容；文件中的模式修改不改变此值 |
+| `enumerate` | Lifecycle / Worker | 同步遍历目录索引分析结果及共享开关，回调返回 0 停止遍历 |
+| `set_enabled` | Lifecycle / Worker | 保存开关；启用时关闭资源重叠或相同车型模型替换项，成功仅表示选择已保存 |
+| `assets` | Lifecycle / Worker | 遍历完整索引中的 `/game/...` 包路径，去掉扩展名；任一容器不可读时返回不可用 |
+| `synchronize` | Worker | 应用保存的选择并核对挂载集合；不执行 UObject 清理，未收敛时返回非 OK |
+
+`AnomalyModEntryV1` 包含 `enabled`、`disabled_files`、`index_complete`、相对选择 key、名称、
+以逗号和空格分隔的车型资源标识以及原始分析错误。字符串视图仅在回调内有效；宿主不保留回调，
+调用者不得跨 C ABI 抛出异常。非 OK 时丢弃本次部分枚举。已标记 `.disabled` 的文件须先在 Launcher 恢复。
+尾字段 `resource_groups` 是从资源目录识别出的分组标识，以逗号和空格分隔；读取前检查
+`struct_size >= offsetof(AnomalyModEntryV1, resource_groups) + sizeof(entry.resource_groups)`，旧宿主没有该字段时可使用 `vehicles` 展示。
+该字段只用于分类，不改变资源冲突判断；非载具分组不能用于车辆清理。
+兼容模式拒绝 `set_enabled` 与 `synchronize`。完整资源索引仅描述覆盖路径，不代表已加载对象或所有依赖关系。

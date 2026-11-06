@@ -16,6 +16,9 @@ public:
     using RuntimeStatusProvider = std::function<std::string()>;
     using ProfileStatusProvider = std::function<std::string()>;
     using Ue5ReflectionQueryProvider = std::function<std::string(std::string_view)>;
+    // Runtime pak mod commands ("status", "reload", "mount <path>", "release <id>"). The pipe
+    // already runs on the Worker domain, which is where mounting belongs.
+    using PakModCommandProvider = std::function<std::string(std::string_view)>;
 
     Analyzer(
         std::filesystem::path root,
@@ -23,7 +26,8 @@ public:
         RuntimeStatusProvider runtime_status = {},
         anomaly::CoreMemoryServices memory_services = {},
         ProfileStatusProvider profile_status = {},
-        Ue5ReflectionQueryProvider ue5_reflection_query = {});
+        Ue5ReflectionQueryProvider ue5_reflection_query = {},
+        PakModCommandProvider pak_mod_command = {});
 
     [[nodiscard]] std::string Execute(std::string_view command) const;
     [[nodiscard]] std::string BuildSnapshot() const;
@@ -51,6 +55,7 @@ private:
     anomaly::CoreMemoryServices memory_services_;
     ProfileStatusProvider profile_status_;
     Ue5ReflectionQueryProvider ue5_reflection_query_;
+    PakModCommandProvider pak_mod_command_;
 };
 
 }  // namespace ue5mem

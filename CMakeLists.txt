@@ -369,6 +369,7 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${CMAKE_SOURCE_DIR}/schemas/repository-index.schema.json"
     "${CMAKE_SOURCE_DIR}/logo-header.png"
     "${CMAKE_SOURCE_DIR}/logo.png"
+    "${CMAKE_SOURCE_DIR}/apps/launcher/assets/mod-placeholder.png"
     "${CMAKE_SOURCE_DIR}/apps/launcher/AnomalyLauncher.ico")
 configure_file(
     "${CMAKE_SOURCE_DIR}/cmake/platform_ui_resources.rc.in"
@@ -474,7 +475,9 @@ target_include_directories(
     anomaly_i18n PUBLIC include PRIVATE "${GENERATED_DIR}")
 target_compile_definitions(
     anomaly_i18n PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-target_compile_options(anomaly_i18n PRIVATE /W4 /permissive- /EHsc)
+# The embedded catalog is a raw string literal holding UTF-8; without /utf-8 MSVC decodes it
+# with the local code page and the bytes become ill-formed at parse time.
+target_compile_options(anomaly_i18n PRIVATE /W4 /permissive- /EHsc /utf-8)
 target_link_libraries(anomaly_i18n PRIVATE nlohmann_json::nlohmann_json)
 
 add_library(anomaly_config STATIC src/platform/windows/config.cpp)
@@ -580,6 +583,7 @@ target_link_libraries(
 add_library(anomaly_adapter_services STATIC
     src/game/ue5/adapter_service_registry.cpp
     src/game/ue5/ue5_assets.cpp
+    src/game/ue5/ue5_pak.cpp
     src/game/ue5/ue5_object_lookup.cpp
     src/game/ue5/ue5_process_event.cpp
     src/game/ue5/ue5_process_event_hook.cpp
@@ -607,13 +611,26 @@ target_compile_options(anomaly_websocket_server PRIVATE /W4 /permissive- /EHsc)
 target_link_libraries(anomaly_websocket_server PUBLIC Ws2_32 bcrypt)
 
 add_library(anomaly_nte_profile_runtime STATIC
-    src/game/nte/nte_profile_runtime.cpp)
+    src/game/nte/nte_profile_runtime.cpp
+    src/game/nte/nte_pak_signature_bypass.cpp)
 target_include_directories(anomaly_nte_profile_runtime PUBLIC include)
 target_compile_definitions(
     anomaly_nte_profile_runtime PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_compile_options(anomaly_nte_profile_runtime PRIVATE /W4 /permissive- /EHsc)
 target_link_libraries(
-    anomaly_nte_profile_runtime PUBLIC anomaly_adapter_services anomaly_ue5_reflection_query)
+    anomaly_nte_profile_runtime PUBLIC anomaly_adapter_services anomaly_ue5_reflection_query
+    PRIVATE nlohmann_json::nlohmann_json)
+
+# Runtime pak mod loading: discovers containers under the game's Paks directory, mounts them through
+# the resolved FPakPlatformFile, and reconciles the mounted set with the directory (hot swap).
+add_library(anomaly_pak_mod_runtime STATIC src/runtime/pak_mod_runtime.cpp)
+target_include_directories(anomaly_pak_mod_runtime PUBLIC include)
+target_compile_definitions(
+    anomaly_pak_mod_runtime PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_options(anomaly_pak_mod_runtime PRIVATE /W4 /permissive- /EHsc /utf-8)
+target_link_libraries(
+    anomaly_pak_mod_runtime PUBLIC anomaly_adapter_services
+    PRIVATE nlohmann_json::nlohmann_json anomaly_pak_mod_catalog)
 
 add_library(ue5mem_core STATIC
     src/diagnostics/analyzer.cpp
@@ -664,6 +681,11 @@ target_compile_options(anomaly_crash_reporter PRIVATE /W4 /permissive- /EHsc)
 target_link_libraries(anomaly_crash_reporter PUBLIC Dbghelp)
 
 add_library(anomaly_reliable_storage STATIC src/services/reliable_storage.cpp)
+add_library(anomaly_pak_mod_catalog STATIC src/game/nte/pak_mod_catalog.cpp)
+target_include_directories(anomaly_pak_mod_catalog PUBLIC include)
+target_compile_definitions(anomaly_pak_mod_catalog PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_options(anomaly_pak_mod_catalog PRIVATE /W4 /permissive- /EHsc /utf-8)
+target_link_libraries(anomaly_pak_mod_catalog PUBLIC anomaly_reliable_storage nlohmann_json::nlohmann_json)
 target_include_directories(anomaly_reliable_storage PUBLIC include)
 target_compile_definitions(
     anomaly_reliable_storage PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
@@ -1016,11 +1038,13 @@ target_compile_options(anomaly_core PRIVATE /W4 /permissive- /EHsc)
 # function-local static guards. These targets initialize their process-scoped
 # local statics on the lifecycle thread before publishing concurrent services.
 set(ANOMALY_MANUAL_MAP_TLS_FREE_TARGETS
+    anomaly_pak_mod_catalog
     anomaly_core
     anomaly_i18n
     anomaly_adapter_services
     anomaly_imgui
     anomaly_nte_profile_runtime
+    anomaly_pak_mod_runtime
     anomaly_plugin_manifest
     anomaly_plugin_profile
     anomaly_platform_notice
@@ -1043,6 +1067,7 @@ target_link_libraries(
     anomaly_scoped_platform
     anomaly_plugin_shadow anomaly_plugin_dependency_resolver anomaly_plugin_enablement
     anomaly_nte_profile_runtime
+    anomaly_pak_mod_runtime
     anomaly_websocket_server
     anomaly_repository_coordinator
     anomaly_crash_reporter
@@ -1205,11 +1230,18 @@ if(ANOMALY_BUILD_TEST_FIXTURES)
     add_dependencies(anomaly-platform-preview anomaly_stage_nte_profiles)
 endif()
 
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/launcher_archive.cmake")
+
 add_executable(anomaly_launcher WIN32
     apps/launcher/main.cpp
     apps/launcher/AnomalyLauncher.manifest
     "${LAUNCHER_RESOURCES_RC}")
 set_target_properties(anomaly_launcher PROPERTIES OUTPUT_NAME "AnomalyLauncher")
+target_link_libraries(anomaly_launcher PRIVATE winhttp anomaly_launcher_archive)
+target_link_libraries(anomaly_launcher PRIVATE nlohmann_json::nlohmann_json anomaly_pak_mod_catalog)
+target_link_libraries(anomaly_launcher PRIVATE advapi32)
+# The launcher carries a few user-facing strings inline; /utf-8 keeps them valid.
+target_compile_options(anomaly_launcher PRIVATE /utf-8)
 target_include_directories(anomaly_launcher PRIVATE include)
 target_compile_definitions(
     anomaly_launcher PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
@@ -1321,6 +1353,12 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/NteVehicle/manifest.json
         PACKAGE_NAME NteVehicle
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteVehicle")
+    anomaly_add_plugin(anomaly_builtin_mod_manager
+        SOURCES plugins/ModManager/plugin.cpp
+        MANIFEST plugins/ModManager/manifest.json
+        PACKAGE_NAME ModManager
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/ModManager")
+    target_compile_options(anomaly_builtin_mod_manager PRIVATE /utf-8)
     anomaly_add_plugin(anomaly_builtin_night999
         SOURCES plugins/Night999/plugin.cpp
         MANIFEST plugins/Night999/manifest.json
@@ -1995,6 +2033,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
     # Test packages exist only when ANOMALY_BUILD_TEST_PLUGINS is on, so every list that
     # reaches their targets is built from the targets that actually exist.
     set(ANOMALY_BUILTIN_PLUGIN_TARGETS
+        anomaly_builtin_mod_manager
         anomaly_builtin_nte_position anomaly_builtin_nte_teleport anomaly_builtin_nte_vehicle
         anomaly_builtin_entity_esp anomaly_builtin_pink_paw_heist_esp
         anomaly_builtin_fake_uid anomaly_builtin_camera_tools
@@ -2250,7 +2289,10 @@ set(ANOMALY_THIRD_PARTY_LICENSE_FILES
     third_party/licenses/miniaudio-LICENSE.txt
     third_party/licenses/rtaudio-LICENSE.txt
     third_party/licenses/monkeys-audio-LICENSE.txt
-    third_party/licenses/dsd2pcm-LICENSE.txt)
+    third_party/licenses/dsd2pcm-LICENSE.txt
+    third_party/licenses/libarchive-LICENSE.txt
+    third_party/licenses/liblzma-LICENSE.txt
+    third_party/licenses/zlib-LICENSE.txt)
 set(ANOMALY_RELEASE_COMPONENTS GameRuntime SDK Tools)
 if(ANOMALY_BUILD_SYMBOLS)
     list(APPEND ANOMALY_RELEASE_COMPONENTS Symbols)

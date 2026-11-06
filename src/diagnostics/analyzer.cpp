@@ -332,13 +332,15 @@ Analyzer::Analyzer(
     RuntimeStatusProvider runtime_status,
     anomaly::CoreMemoryServices memory_services,
     ProfileStatusProvider profile_status,
-    Ue5ReflectionQueryProvider ue5_reflection_query)
+    Ue5ReflectionQueryProvider ue5_reflection_query,
+    PakModCommandProvider pak_mod_command)
     : root_(std::move(root)),
       config_(std::move(config)),
       runtime_status_(std::move(runtime_status)),
       memory_services_(anomaly::NormalizeCoreMemoryServices(std::move(memory_services))),
       profile_status_(std::move(profile_status)),
-      ue5_reflection_query_(std::move(ue5_reflection_query)) {}
+      ue5_reflection_query_(std::move(ue5_reflection_query)),
+      pak_mod_command_(std::move(pak_mod_command)) {}
 
 std::string Analyzer::ModulesJson() const {
     const auto modules = memory_services_.memory->EnumerateModules();
@@ -524,7 +526,7 @@ std::string Analyzer::Execute(std::string_view command_line) const {
     const auto [command, arguments] = Shift(command_line);
     if (command == "ping") return Ok("\"pid\":" + std::to_string(GetCurrentProcessId()));
     if (command == "help") {
-        return Ok("\"commands\":[\"ping\",\"status\",\"modules\",\"sections <module|.>\",\"regions <module|.>\",\"scan <module|.> <section> <pattern>\",\"xrefs <module|.> <target>\",\"ue\",\"ue actors <filter|*> [limit] [cursor]\",\"ue objects <filter|*> [limit] [cursor]\",\"ue functions <filter|*> [limit] [cursor]\",\"ue fname <id>\",\"ue ftext <address>\",\"ue combat\",\"ue buffs\",\"read <address> <size<=1048576>\",\"write <address> <hex bytes>\",\"patch <address> <hex bytes>\",\"protect <address> <size> <r|rw|x|rx|rwx>\",\"alloc <size> [protection]\",\"free <address>\",\"chain <base> [offset ...]\",\"rip <instruction> <disp_offset> <instruction_size>\",\"ptr <address>\",\"f32 <address> [count]\",\"f64 <address> [count]\",\"snapshot [filename]\"]");
+        return Ok("\"commands\":[\"ping\",\"status\",\"modules\",\"sections <module|.>\",\"regions <module|.>\",\"scan <module|.> <section> <pattern>\",\"xrefs <module|.> <target>\",\"ue\",\"ue actors <filter|*> [limit] [cursor]\",\"ue objects <filter|*> [limit] [cursor]\",\"ue functions <filter|*> [limit] [cursor]\",\"ue fname <id>\",\"ue ftext <address>\",\"ue combat\",\"ue buffs\",\"pak [status|reload|mount <path> [order]|release <id>|unmountall]\",\"read <address> <size<=1048576>\",\"write <address> <hex bytes>\",\"patch <address> <hex bytes>\",\"protect <address> <size> <r|rw|x|rx|rwx>\",\"alloc <size> [protection]\",\"free <address>\",\"chain <base> [offset ...]\",\"rip <instruction> <disp_offset> <instruction_size>\",\"ptr <address>\",\"f32 <address> [count]\",\"f64 <address> [count]\",\"snapshot [filename]\"]");
     }
     if (command == "status") {
         std::string runtime = "null";
@@ -553,6 +555,14 @@ std::string Analyzer::Execute(std::string_view command_line) const {
             return ue5_reflection_query_(arguments);
         } catch (...) {
             return Error("UE reflection query failed");
+        }
+    }
+    if (command == "pak") {
+        if (!pak_mod_command_) return Error("pak mod runtime is unavailable");
+        try {
+            return pak_mod_command_(arguments);
+        } catch (...) {
+            return Error("pak mod command failed");
         }
     }
     if (command == "read") {

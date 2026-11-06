@@ -15,6 +15,7 @@
 7. [主题与背景](theme.md) — 换配色（含奶蛙主题）、贴背景图和贴纸，以及用网页编辑器做布局。
 8. [诊断 CLI](diagnostics-cli.md) — 用 `anomaly-cli` 查看 Runtime、Profile 和内存状态。
 9. [NTE Build Profile](nte-profiles.md) — 了解依赖游戏结构的功能为什么可能暂时不可用。
+10. [模组](mods.md) — 用启动器的模组页管理 `Paks/~mods`，并了解「启用模组加载」开关。
 
 ## 术语速查
 

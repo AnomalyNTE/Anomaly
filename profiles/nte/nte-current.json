@@ -343,6 +343,170 @@
       "requiredBy": [
         "anomaly.ue5.assets"
       ]
+    },
+    "ue5.FPlatformFileManager.Get": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "E8 ?? ?? ?? ?? 48 8B C8 E8 ?? ?? ?? ?? 83 7C 24 50 00 48 8B D3 48 0F 45 54 24 48 48 8B 08 4C 8B 41 78 48 8B C8 41 FF D0 84 C0 0F 84",
+      "resolve": {
+        "kind": "rip-rel32",
+        "offset": 1,
+        "instructionSize": 5
+      },
+      "validators": [
+        "address-in-module",
+        "executable",
+        "function-prologue-v1"
+      ],
+      "requiredBy": [
+        "anomaly.ue5.pak"
+      ]
+    },
+    "ue5.FPakPlatformFile.Mount": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "48 83 EC 48 0F B6 44 24 70 48 89 54 24 20 48 8D 54 24 20 44 89 44 24 28 45 33 C0 4C 89 4C 24 30 4C 8B 4C 24 78 88 44 24 3C C7 44 24 38 00 00 00 00 E8 ?? ?? ?? ?? 48 83 C4 48 C3",
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable",
+        "function-prologue-v1"
+      ],
+      "requiredBy": [
+        "anomaly.ue5.pak"
+      ]
+    },
+    "ue5.PakContainerSignatureVerify": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 F1 48 81 EC 88 00 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 FF",
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable",
+        "function-prologue-v1"
+      ],
+      "requiredBy": [
+        "anomaly.ue5.pak"
+      ]
+    },
+    "ue5.PakSignatureGate": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "74 6B F6 C3 04 75 6F 48 8D 05 ?? ?? ?? ?? 8B CF",
+      "resolve": {
+        "kind": "direct",
+        "addend": 5
+      },
+      "validators": [
+        "address-in-module",
+        "executable"
+      ],
+      "requiredBy": [
+        "anomaly.ue5.pak"
+      ]
+    },
+    "ue5.FPakPlatformFile.MountWithStatus": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "48 83 EC 48 0F B6 44 24 70 48 89 54 24 20 48 8D 54 24 20 44 89 44 24 28 45 33 C0 4C 89 4C 24 30 4C 8B 4C 24 78 88 44 24 3C C7 44 24 38 00 00 00 00 E8 ?? ?? ?? ?? 48 83 C4 48 C3",
+      "resolve": {
+        "kind": "rip-rel32",
+        "offset": 50,
+        "instructionSize": 54
+      },
+      "validators": [
+        "address-in-module",
+        "executable",
+        "function-prologue-v1"
+      ],
+      "requiredBy": [
+        "anomaly.ue5.pak"
+      ]
+    },
+    "ue5.FPakFile.Release": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "40 53 48 83 EC 20 48 8D 41 08 BB FF FF FF FF F0 0F C1 18 83 FB 01 75 15 33 D2 48 85 C0 48 0F 44 CA 48 85 C9 74 07 48 8B 01 8B D3 FF 10 8D 43 FF 48 83 C4 20 5B C3",
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable",
+        "function-prologue-v1"
+      ],
+      "requiredBy": [
+        "anomaly.ue5.pak"
+      ]
+    },
+    "ue5.FPakPlatformFile.Unmount": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "48 8B C4 48 89 50 10 53 57 41 55 48 81 EC 90 00 00 00 48 89 68 20 48 8D 79 38 48 89 70 E0 33 DB 4C 89 60 D8 40 32 ED 4C 89 70 D0 4C 8B E1 48 8B CF 4C 89 78 C8 4C 8B F2 FF 15 ?? ?? ?? ?? 33 F6",
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable",
+        "function-prologue-v1"
+      ],
+      "requiredBy": [
+        "anomaly.ue5.pak"
+      ]
+    },
+    "ue5.PakBlockCacheComplete": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 54 41 56 41 57 48 83 EC 20 49 63 F9 4D 8B F0 44 0F B6 E2 48 8B F1 E8 ?? ?? ?? ?? 48 8D 5E 08 48 8B CB FF 15 ?? ?? ?? ?? 48 8B EF 4C 8D 7F 0C 48 C1 E5 05 48 03 EE 49 C1 E7 05 4C 89 B5 68 01 00 00",
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable",
+        "function-prologue-v1"
+      ],
+      "requiredBy": [
+        "anomaly.ue5.pak"
+      ]
+    },
+    "ue5.PakBlockCacheVerify": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "40 55 53 56 57 41 54 41 55 41 56 48 8D 6C 24 D0 48 81 EC 30 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 20 0F 57 C0 49 63 F9 48 8D 59 08 48 89 4C 24 50 4C 8B F1 89 7C 24 48 48 8B CB 4C 89 44 24 70 49 8B F0 88 54 24 30",
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable",
+        "function-prologue-v1"
+      ],
+      "requiredBy": [
+        "anomaly.ue5.pak"
+      ]
+    },
+    "ue5.FPakFile.Find": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 54 41 56 41 57 48 83 EC 30 80 B9 F2 02 00 00 00 4D 8B F8 48 8B FA 48 8B D9 0F 84 ?? ?? ?? ?? 8B 81 D0 00 00 00 48 8D 35 ?? ?? ?? ?? 8B 69 7C 45 33 E4 4C 8B B1 D0 02 00 00",
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable",
+        "function-prologue-v1"
+      ],
+      "requiredBy": [
+        "anomaly.ue5.pak"
+      ]
     }
   },
   "features": {
@@ -474,6 +638,18 @@
     "ue5.assets": [
       "ue5.AssetRegistry.GetDerivedClassNames",
       "ue5.FMemory.Free"
+    ],
+    "ue5.pak": [
+      "ue5.FPlatformFileManager.Get",
+      "ue5.FPakPlatformFile.Mount",
+      "ue5.FPakPlatformFile.MountWithStatus",
+      "ue5.FPakFile.Release",
+      "ue5.PakSignatureGate",
+      "ue5.FPakPlatformFile.Unmount",
+      "ue5.PakContainerSignatureVerify",
+      "ue5.FPakFile.Find",
+      "ue5.PakBlockCacheVerify",
+      "ue5.PakBlockCacheComplete"
     ]
   },
   "optionalFeatures": [
@@ -495,7 +671,8 @@
     "nte.skills",
     "nte.skill-invocation",
     "ue5.streaming-source",
-    "ue5.assets"
+    "ue5.assets",
+    "ue5.pak"
   ],
   "featureLayoutValidators": {
     "ue5.ftext": [
@@ -561,6 +738,9 @@
     ],
     "ue5.assets": [
       "ue5-assets-abi-v1"
+    ],
+    "ue5.pak": [
+      "ue5-pak-mount-v1"
     ]
   },
   "featureDependencies": {
@@ -654,6 +834,32 @@
     ]
   },
   "layout": {
+    "pak.managerTopmostOffset": 0,
+    "pak.getLowerLevelVtableOffset": 96,
+    "pak.getNameVtableOffset": 112,
+    "pak.signedFlagOffset": 48,
+    "pak.listEntryPakFileOffset": 8,
+    "pak.mountedListOffset": 16,
+    "pak.mountedListLockOffset": 56,
+    "pak.pakFileFilenameOffset": 24,
+    "pak.pakFileMountPointOffset": 200,
+    "pak.openReadVtableOffset": 232,
+    "pak.iterateDirectoryVtableOffset": 304,
+    "pak.fileHandleReadVtableOffset": 32,
+    "pak.fileHandleSizeVtableOffset": 80,
+    "pak.fileHandlePakFileOffset": 16,
+    "pak.cacheLockOffset": 8,
+    "pak.cacheSliceStride": 32,
+    "pak.cacheRecordIndexOffset": 368,
+    "pak.cacheOwnerMaskOffset": 260,
+    "pak.cacheRecordsOffset": 224,
+    "pak.recordStride": 48,
+    "pak.cacheElementsOffset": 168,
+    "pak.elementStride": 152,
+    "pak.elementSignatureTableOffset": 136,
+    "pak.elementHandleOffset": 0,
+    "pak.elementContainerOffset": 8,
+    "pak.fileHandleDestroyVtableOffset": 0,
     "world.gameInstance": 560,
     "world.persistentLevel": 48,
     "world.levels": 464,

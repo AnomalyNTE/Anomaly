@@ -163,9 +163,11 @@ struct SegmentedOptions final {
     float scale{1.0f};
     bool glass_track{true};
     std::uint32_t disabled_mask{};
+    bool activate_selected{false};  // Report clicks on the selected segment, e.g. to reverse sorting.
 };
 
-// A capsule segmented control. Returns true when the selection changed.
+// A capsule segmented control. Returns true when the selection changes, or when
+// the selected segment is clicked with activate_selected enabled.
 bool SegmentedControl(const char* id, std::span<const char* const> labels, int& selected,
     const SegmentedOptions& options) noexcept;
 

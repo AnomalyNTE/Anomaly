@@ -153,3 +153,5 @@ capability 约束**服务可见性与资源归属**（不是 native 代码沙箱
 
 - `ANOMALY_STATUS_V1_PERMISSION_DENIED` — 未声明所需 capability / grant。
 - `ANOMALY_STATUS_V1_UNAVAILABLE` — 服务 / Feature 尚未发布或已降级。
+
+`anomaly.mods` v1 需要 `mods` capability；线程与开关语义见[生命周期与 Core 服务](lifecycle-and-core.md)。

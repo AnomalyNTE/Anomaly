@@ -1580,6 +1580,7 @@ struct PluginServiceContext {
     AnomalyLocalizationServiceV1 localization{};
     AnomalyDiagnosticsServiceV1 diagnostics{};
     AnomalySchedulerServiceV1 scheduler{};
+    AnomalyModsServiceV1 mods{};
     AnomalyIpcServiceV1 ipc_service{};
     AnomalyCommandsServiceV1 commands{};
     AnomalyNotificationsServiceV1 notifications{};
@@ -1891,6 +1892,47 @@ AnomalyStatusV1 InvokeStateIoService(void* user, Callback&& callback) noexcept {
             "plugin state I/O is unavailable from game or render callbacks");
     }
     return InvokeScopedPlatform(user, std::forward<Callback>(callback));
+}
+
+const AnomalyModsServiceV1* QueryModsProvider() noexcept {
+    const auto* table = static_cast<const AnomalyModsServiceV1*>(anomaly::ProcessAdapterServices().Query(
+        ANOMALY_MODS_SERVICE_V1_ID, ANOMALY_MODS_SERVICE_V1_VERSION));
+    return table && table->struct_size >= sizeof(*table) ? table : nullptr;
+}
+template<class Callback>
+AnomalyStatusV1 InvokeModsService(void* user, Callback&& callback, bool worker_only = false) noexcept {
+    return InvokeScopedPlatform(user, [&](PluginServiceContext& context) {
+        auto domain = g_log_thread_domain.Get();
+        // Scheduler callbacks run on their own worker, outside the manager's logging scopes.
+        if (domain == anomaly::LogThreadDomain::Unknown && context.platform->IsWorkerThread())
+            domain = anomaly::LogThreadDomain::Worker;
+        if (domain != anomaly::LogThreadDomain::Worker &&
+            (worker_only || domain != anomaly::LogThreadDomain::Lifecycle))
+            return StatusV1(ANOMALY_STATUS_V1_UNAVAILABLE, "invalid mod operation thread");
+        const auto* provider = QueryModsProvider();
+        return provider ? callback(*provider) : StatusV1(ANOMALY_STATUS_V1_UNAVAILABLE);
+    });
+}
+uint32_t ANOMALY_CALL ModsModeV1(void* user) noexcept {
+    uint32_t mode = 1;
+    static_cast<void>(InvokeScopedPlatform(user, [&](PluginServiceContext&) {
+        const auto* provider = QueryModsProvider();
+        if (provider && provider->compatibility_mode) mode = provider->compatibility_mode(provider->user);
+        return StatusV1(ANOMALY_STATUS_V1_OK);
+    }));
+    return mode;
+}
+AnomalyStatusV1 ANOMALY_CALL ModsEnumerateV1(void* user, AnomalyModVisitorV1 visitor, void* visitor_user) noexcept {
+    return InvokeModsService(user, [&](const auto& p) { return p.enumerate(p.user, visitor, visitor_user); });
+}
+AnomalyStatusV1 ANOMALY_CALL ModsSetEnabledV1(void* user, AnomalyStringViewV1 key, uint32_t enabled) noexcept {
+    return InvokeModsService(user, [&](const auto& p) { return p.set_enabled(p.user, key, enabled); });
+}
+AnomalyStatusV1 ANOMALY_CALL ModsAssetsV1(void* user, AnomalyStringViewV1 key, AnomalyModAssetVisitorV1 visitor, void* visitor_user) noexcept {
+    return InvokeModsService(user, [&](const auto& p) { return p.assets(p.user, key, visitor, visitor_user); });
+}
+AnomalyStatusV1 ANOMALY_CALL ModsSynchronizeV1(void* user) noexcept {
+    return InvokeModsService(user, [&](const auto& p) { return p.synchronize(p.user); }, true);
 }
 
 template <typename Callback>
@@ -3687,6 +3729,11 @@ AnomalyStatusV1 ANOMALY_CALL QueryServiceV1(
         }
     }
     if (const void* adapter = anomaly::ProcessAdapterServices().Query(id, minimum_version)) {
+        if (id == ANOMALY_MODS_SERVICE_V1_ID) {
+            if (!QueryModsProvider()) return StatusV1(ANOMALY_STATUS_V1_UNAVAILABLE);
+            *service = &context->mods;
+            return StatusV1(ANOMALY_STATUS_V1_OK);
+        }
         *service = adapter;
         return StatusV1(ANOMALY_STATUS_V1_OK);
     }
@@ -4512,6 +4559,8 @@ bool PluginManager::Activate(LoadedPlugin& plugin) {
         sizeof(AnomalyCoreServiceV1), ANOMALY_CORE_SERVICE_V1_VERSION,
         &plugin.service_context,
         LogV1, ReadV1, WriteV1, PluginDirectoryV1};
+    plugin.service_context.mods = {sizeof(AnomalyModsServiceV1), ANOMALY_MODS_SERVICE_V1_VERSION,
+        &plugin.service_context, ModsModeV1, ModsEnumerateV1, ModsSetEnabledV1, ModsAssetsV1, ModsSynchronizeV1};
     plugin.service_context.plugin_state = {
         sizeof(AnomalyPluginStateServiceV1), ANOMALY_PLUGIN_STATE_SERVICE_V1_VERSION,
         &plugin.service_context, PluginStateDirectoryV1};

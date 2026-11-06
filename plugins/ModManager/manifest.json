@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 2,
+  "id": "anomaly.mod-manager",
+  "name": "Mod Manager",
+  "description": "Shared mod selection, resource classification and verified vehicle resource cleanup.",
+  "author": "Anomaly",
+  "license": "AGPL-3.0-only",
+  "version": "0.1.0",
+  "entry": "plugin.dll",
+  "api": {
+    "major": 1,
+    "minMinor": 0,
+    "maxMinor": 0
+  },
+  "games": [
+    "nte"
+  ],
+  "builds": [
+    "nte-*"
+  ],
+  "loadPhase": "game-ready",
+  "services": [
+    {
+      "id": "anomaly.ui",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.window",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.localization",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.mods",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.scheduler",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.core",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.profile",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.json",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.interop.signature",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.ue5.objects",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.ue5.names",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.ue5.process-event",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.nte.session",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.nte.actors",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.nte.player",
+      "minVersion": 1
+    }
+  ],
+  "capabilities": [
+    "ui",
+    "ui-window",
+    "mods",
+    "scheduler",
+    "json",
+    "memory-read",
+    "interop-signature",
+    "ue5-objects",
+    "ue5-names",
+    "game-events",
+    "nte-session-snapshot",
+    "nte-actor-snapshot",
+    "nte-player-snapshot"
+  ]
+}

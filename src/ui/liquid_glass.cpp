@@ -1714,7 +1714,8 @@ bool SegmentedControl(const char* id, const std::span<const char* const> labels,
         const bool hovered = ImGui::IsItemHovered();
         ImGui::EndDisabled();
         ImGui::PopID();
-        if (clicked && !disabled && selected != static_cast<int>(index)) {
+        if (clicked && !disabled &&
+            (selected != static_cast<int>(index) || options.activate_selected)) {
             selected = static_cast<int>(index);
             changed = true;
         }
