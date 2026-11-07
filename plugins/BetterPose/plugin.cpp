@@ -966,6 +966,7 @@ struct Context final {
   // It is applied only when non-empty and is keyed by name for portability.
   std::map<std::string, std::array<double, 12>> library_pose_locals;
   std::uintptr_t pose_base_mesh{};
+  std::uintptr_t pose_base_asset{};  // cache key: a skin swap keeps the mesh but replaces the asset
   bool pose_base_ready{};
   struct TPoseCalibrationSession {
     bool pose_override_was_enabled{};
@@ -5399,6 +5400,15 @@ bool ReadPoseArrays(Context &context) noexcept {
   if (asset_readable) {
     if (context.runtime.mesh_asset != 0 && asset != context.runtime.mesh_asset) {
       context.extra_build_pending = true;
+      context.pose_base_ready = false;   // the base pose belonged to the previous mesh asset
+      {
+        std::lock_guard<std::mutex> guard(context.pose_angles_mutex);
+        context.pose_base_locals.clear();
+      }
+      // The reference pose is read from the mesh too: keeping the previous skin's copy leaves the
+      // undriven bones (and the head chain's baseline) sitting at the old bind.
+      context.ref_locals.clear();
+      context.ref_pose_attempted = false;
       context.mesh_scan_owner = 0;
       context.bone_names_mesh = 0;
       context.bone_names.clear();
@@ -8440,7 +8450,11 @@ bool CapturePoseBase(Context &context) noexcept {
   if (mesh == 0 || data == 0 || count == 0)
     return false;
   std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+  // A skin swap replaces the SkeletalMesh asset on the same component, so the component alone is
+  // not a valid cache key: the previous skin's base pose stayed behind and every later motion was
+  // composed on top of it, which is why the tilt survived switching back to the original skin.
   if (context.pose_base_ready && context.pose_base_mesh == mesh &&
+      context.pose_base_asset == context.runtime.mesh_asset &&
       context.pose_base_locals.size() == count)
     return true;
   std::vector<std::array<double, 12>> base(count);
@@ -8453,6 +8467,7 @@ bool CapturePoseBase(Context &context) noexcept {
   }
   context.pose_base_locals = std::move(base);
   context.pose_base_mesh = mesh;
+  context.pose_base_asset = context.runtime.mesh_asset;
   context.pose_base_ready = true;
   return true;
 }
@@ -14960,6 +14975,7 @@ std::string ReferenceBoneTablePath(const int mode) noexcept {
                                 : "\\data\\reference-pmx.json");
 }
 
+
 void ANOMALY_CALL PoseFileTask(void *value, AnomalyGenerationHandleV1) {
   auto *data = static_cast<PoseFileTaskData *>(value);
   if (data == nullptr)
@@ -15486,12 +15502,41 @@ std::string BuildSkeletonDocument(Context &context) noexcept {
                   context.ref_pose_status.c_str());
     LogDiagnostic(context, status);
   }
-  auto bones = nlohmann::json::array();
+  // Component-space transforms of the bind pose. The live buffer holds the current pose, which a
+  // skin (or a previously applied motion) leaves rotated, and the converter reads this field as the
+  // frame it works in.
+  std::vector<Transformd> bind_components;
+  if (has_ref && context.bone_parents.size() == count)
+    bind_components = BindPoseTransforms(context.ref_locals, context.bone_parents);
+  // Sockets are virtual reference-skeleton entries (weapon/selfie/camera attach points). They carry
+  // no skinned geometry, but their presence shifts every later bone index, and the converter walks
+  // the skeleton by index -- two skins with the same rig then produced different motions. Drop them
+  // and remap the parent links so the document describes the animated rig only.
+  std::vector<std::uint32_t> kept;
   for (std::uint32_t index{}; index != count; ++index) {
+    std::string lower = context.bone_names[index];
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](const unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    const bool socket = lower.find("socket") != std::string::npos ||
+                        lower.rfind("footstep_", 0) == 0 ||
+                        lower.rfind("lhand_weapon", 0) == 0 ||
+                        lower.rfind("rhand_weapon", 0) == 0;
+    if (!socket)
+      kept.push_back(index);
+  }
+  std::vector<std::int32_t> remap(count, -1);
+  for (std::size_t slot{}; slot != kept.size(); ++slot)
+    remap[kept[slot]] = static_cast<std::int32_t>(slot);
+  auto bones = nlohmann::json::array();
+  for (std::size_t slot{}; slot != kept.size(); ++slot) {
+    const std::uint32_t index = kept[slot];
     nlohmann::json bone = nlohmann::json::object();
-    bone["index"] = index;
+    bone["index"] = slot;
     bone["name"] = context.bone_names[index];
-    bone["parent"] = context.bone_parents[index];
+    const std::int32_t parent = context.bone_parents[index];
+    bone["parent"] = parent >= 0 && static_cast<std::size_t>(parent) < remap.size()
+                         ? remap[static_cast<std::size_t>(parent)]
+                         : -1;
     std::array<double, 12> local{};
     {
       std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
@@ -15503,7 +15548,30 @@ std::string BuildSkeletonDocument(Context &context) noexcept {
       bone["refLocal"] = TransformToJson(calibrated->second.data());
     else if (has_ref)
       bone["refLocal"] = TransformToJson(context.ref_locals[index].data());
-    if (component_data != 0 && index < component_count) {
+    // The converter normalises local rotations against baseLocal. Using the live pose made the
+    // result depend on whatever the character was doing: a motion converted while the head sat
+    // rotated baked that rotation in, and the next conversion captured it again. The bind pose is
+    // the stable frame, so it takes over whenever the asset exposes one.
+    if (calibrated != manual_reference.end())
+      bone["baseLocal"] = TransformToJson(calibrated->second.data());
+    else if (has_ref)
+      bone["baseLocal"] = TransformToJson(context.ref_locals[index].data());
+    if (index < bind_components.size()) {
+      // Bind-pose component transform: the live one carries whatever pose the skin left behind.
+      const auto &transform = bind_components[index];
+      std::array<double, 12> component{};
+      component[0] = transform.rotation.x;
+      component[1] = transform.rotation.y;
+      component[2] = transform.rotation.z;
+      component[3] = transform.rotation.w;
+      component[4] = transform.translation.x;
+      component[5] = transform.translation.y;
+      component[6] = transform.translation.z;
+      component[8] = transform.scale.x;
+      component[9] = transform.scale.y;
+      component[10] = transform.scale.z;
+      bone["liveComponent"] = TransformToJson(component.data());
+    } else if (component_data != 0 && index < component_count) {
       std::uintptr_t address{};
       std::array<double, 12> component{};
       if (AddAddress(component_data,
@@ -15519,12 +15587,11 @@ std::string BuildSkeletonDocument(Context &context) noexcept {
   root["kind"] = "better-pose-skeleton";
   root["basis"] =
       !manual_reference.empty()
-          ? "captured-live-pose plus the confirmed manual A/T-pose reference"
-          : has_ref ? "captured-live-pose plus refLocal from the mesh asset's "
-                      "FReferenceSkeleton (the bind pose)"
+          ? "bind pose from the confirmed manual A/T-pose reference"
+          : has_ref ? "bind pose from the mesh asset's FReferenceSkeleton"
                     : "captured-live-pose (engine reference pose unavailable)";
   root["mesh"] = Hex(context.runtime.mesh);
-  root["boneCount"] = count;
+  root["boneCount"] = kept.size();
   root["boneSpaceCount"] = context.runtime.bone_space_count;
   root["componentSpaceCount"] = component_count;
   root["bones"] = std::move(bones);
@@ -15566,7 +15633,10 @@ void ExecutePoseFileAction(Context &context) noexcept {
     if (name.size() < 5 || name.substr(name.size() - 5) != ".json")
       name += ".json";
     if (skeleton)
-      name = name.substr(0, name.size() - 5) + ".skeleton.json";
+      // Tag the export with the mesh asset so two skins do not overwrite each other: comparing the
+      // documents is how a skin-specific conversion difference gets located.
+      name = name.substr(0, name.size() - 5) + ".skeleton-" +
+             Hex(context.runtime.mesh_asset).substr(2, 8) + ".json";
     const std::wstring folder = Utf8ToWide(context.pose_export_folder);
     if (folder.empty()) {
       delete data;
