@@ -232,6 +232,7 @@ struct RuntimeState {
   std::uintptr_t bound_mesh{};
   std::uintptr_t character{};
   std::uintptr_t mesh{};
+  std::uintptr_t mesh_asset{};   // USkeletalMesh this entry was resolved against
   bool external_target{};
   std::uintptr_t anim_instance{};
   std::uint32_t animation_mode{};
@@ -5388,6 +5389,32 @@ bool ReadPoseArrays(Context &context) noexcept {
   const auto mesh = context.runtime.mesh;
   if (mesh == 0)
     return false;
+  // A skin swap replaces the SkeletalMesh asset while the component stays put, so neither the
+  // component check nor the buffer check notices: the accessory mapping and the bone-name table
+  // still describe the previous mesh. That is why modular hair stopped following the pose until a
+  // character switch forced a full rescan. Treat an asset change as "rescan this character".
+  std::uintptr_t asset{};
+  const bool asset_readable =
+      Read(context, mesh + native_layout.kMeshSkeletalMeshOffset, asset) && asset != 0;
+  if (asset_readable) {
+    if (context.runtime.mesh_asset != 0 && asset != context.runtime.mesh_asset) {
+      context.extra_build_pending = true;
+      context.mesh_scan_owner = 0;
+      context.bone_names_mesh = 0;
+      context.bone_names.clear();
+      context.mesh_scan_requested.store(true, std::memory_order_release);
+      {
+        // The motion maps bone *names* to this skeleton's bone indices. A skin with a different bone
+        // table (367 vs 375 bones on the same character) makes those cached indices point at other
+        // bones, which is what tilted the head once such a mod was loaded.
+        std::lock_guard<std::mutex> guard(context.motion_mutex);
+        context.motion.indices_ready = false;
+      }
+      LogDiagnostic(context, "betterpose mesh asset changed -> rescan accessories and remap motion"
+                             " asset=" + Hex(asset));
+    }
+    context.runtime.mesh_asset = asset;
+  }
   std::uintptr_t bone_space_data{};
   std::uint32_t bone_space_count{};
   std::uintptr_t component_space_data{};
@@ -9038,7 +9065,25 @@ bool ResolveMotionIndices(Context &context) noexcept {
   // found nothing. "Fingers do not move" is only worth investigating once the
   // finger tracks are known to be resolved at all.
   {
-    std::string message = "betterpose motion resolved " +
+    std::string head_map;
+    for (std::size_t track{}; track != motion.bone_names.size(); ++track) {
+      std::string lower = motion.bone_names[track];
+      std::transform(lower.begin(), lower.end(), lower.begin(),
+                     [](const unsigned char c) { return static_cast<char>(std::tolower(c)); });
+      if (lower.find("head") == std::string::npos && lower.find("neck") == std::string::npos)
+        continue;
+      head_map += " " + motion.bone_names[track] + "->";
+      const auto resolved_index = indices[track];
+      if (resolved_index == (std::numeric_limits<std::uint32_t>::max)()) {
+        head_map += "NONE";
+      } else {
+        head_map += std::to_string(resolved_index) + "(" +
+                    context.bone_names[resolved_index] + ")";
+      }
+    }
+    std::string message = "betterpose motion resolved bones=" +
+                          std::to_string(context.bone_names.size()) +
+                          " asset=" + Hex(context.runtime.mesh_asset) + " headmap" + head_map + " " +
                           std::to_string(resolved) + "/" +
                           std::to_string(motion.bone_names.size());
     std::size_t shown{};
@@ -12967,6 +13012,26 @@ void BuildExtraMeshes(Context &context) noexcept {
     for (const auto &candidate : context.mesh_scan_candidates)
       context.extra_targets.push_back(candidate.first);
     context.extra_build_pending = false;
+    {
+      // Diagnostic: which accessory meshes this character drives, and which body bone each one hangs
+      // from. A modular head anchored to the wrong bone is what tilts it.
+      std::string message = "betterpose accessories rebuilt owner=" +
+                            Hex(context.runtime.mesh) + " asset=" +
+                            Hex(context.runtime.mesh_asset) + " extras=" +
+                            std::to_string(context.extra_meshes.size());
+      for (const auto &extra : context.extra_meshes) {
+        message += " [";
+        message += extra.display_name.empty() ? std::string("?") : extra.display_name;
+        message += " bones=" + std::to_string(extra.bone_count);
+        message += extra.used_hierarchy ? " hier=1" : " hier=0";
+        message += extra.used_bind ? " bind=1" : "";
+        message += " anchor=" + std::to_string(extra.anchor_body);
+        if (extra.anchor_body < context.bone_names.size())
+          message += "(" + context.bone_names[extra.anchor_body] + ")";
+        message += "]";
+      }
+      LogDiagnostic(context, message);
+    }
   }
 }
 
@@ -13282,8 +13347,40 @@ void WriteExtraMeshes(Context &context,
   }
   const auto secondary_tuning = context.secondary_tuning.Load();
   for (auto &extra : context.extra_meshes) {
-    if (extra.component_space_data == 0 || extra.bone_count == 0)
+    if (extra.bone_count == 0)
       continue;
+    {
+      // Switching a skin replaces the SkeletalMesh asset on the *same* component, so the transform
+      // buffers cached when this entry was built are freed and reallocated. Writing through the old
+      // pointers is what crashed the game when an animation was loaded right after a skin change.
+      // A skin swap keeps the component but replaces its SkeletalMesh asset. The bone mapping built
+      // for the previous mesh is then wrong (modular hair stops following), so treat a different
+      // asset as a rebuild trigger too.
+      std::uintptr_t live_asset{};
+      if (!Read(context, extra.object + native_layout.kMeshSkeletalMeshOffset, live_asset) ||
+          live_asset == 0 || (extra.asset != 0 && live_asset != extra.asset)) {
+        context.extra_build_pending = true;
+        continue;
+      }
+      std::uintptr_t component_data{};
+      std::uint32_t component_count{};
+      std::uintptr_t bone_data{};
+      std::uint32_t bone_data_count{};
+      const bool live =
+          ReadArrayHeader(context, extra.object + native_layout.kMeshComponentSpaceBuffer1Offset,
+                          component_data, component_count) &&
+          ReadArrayHeader(context, extra.object + native_layout.kMeshComponentSpaceBuffer0Offset,
+                          bone_data, bone_data_count) &&
+          component_data != 0 && bone_data != 0 &&
+          component_count >= extra.bone_count && bone_data_count >= extra.bone_count;
+      if (!live) {
+        // The mesh no longer has the shape this entry was built for: rebuild instead of writing.
+        context.extra_build_pending = true;
+        continue;
+      }
+      extra.component_space_data = component_data;
+      extra.bone_space_data = bone_data;
+    }
     const std::uint64_t kawaii_now = GetTickCount64();
     if (extra.used_hierarchy && !extra.kawaii_configured &&
         !extra.kawaii_retry_exhausted &&
