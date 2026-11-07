@@ -23,6 +23,7 @@ struct Layout {
     std::uint32_t kPropertySizeOffset{};
     std::uint32_t kFieldClassOffset{};
     std::uint32_t kFieldClassNameOffset{};
+    std::uint32_t kStructPropertyStructOffset{};
     std::uint32_t kBoolPropertyLayoutOffset{};
     std::uint32_t kFStringNumOffset{};
     std::uint32_t kFStringMaxOffset{};
@@ -57,6 +58,7 @@ inline bool LoadCompatibility(const AnomalyHostApiV1* host) noexcept {
         parsed.kPropertySizeOffset = compatibility.Value("kPropertySizeOffset", 1024, 4);
         parsed.kFieldClassOffset = compatibility.Value("kFieldClassOffset", 256, 8);
         parsed.kFieldClassNameOffset = compatibility.Value("kFieldClassNameOffset", 256, 4);
+        parsed.kStructPropertyStructOffset = compatibility.Value("kStructPropertyStructOffset", 256, 8);
         parsed.kBoolPropertyLayoutOffset = compatibility.Value("kBoolPropertyLayoutOffset", 256, 1);
         parsed.kFStringNumOffset = compatibility.Value("kFStringNumOffset", 64, 4);
         parsed.kFStringMaxOffset = compatibility.Value("kFStringMaxOffset", 64, 4);

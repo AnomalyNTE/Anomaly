@@ -14,6 +14,8 @@ struct Fixture {
     std::array<std::uintptr_t, 2> slots{};
     bool binding_test{}, mute_fails{}, bind_fails{}, stale_material{}, stale_event{};
     std::uintptr_t expected_audio{};
+    std::uintptr_t texture_player{};
+    std::vector<std::uintptr_t> texture_changes;
     std::vector<unsigned> calls;
     bool stale{};
 
@@ -88,6 +90,14 @@ struct Fixture {
                 material.material = f.slots.at(material.slot);
             }
             if (function.id == 107 && f.mute_fails) return Status(ANOMALY_STATUS_V1_FAILED);
+            if (function.id == 109) {
+                *static_cast<std::uintptr_t*>(parameters) = f.texture_player;
+                return anomaly::sdk::Ok();
+            }
+            if (function.id == 108) {
+                f.texture_player = *static_cast<const std::uintptr_t*>(parameters);
+                f.texture_changes.push_back(f.texture_player);
+            }
             if (function.id == 101) {
                 const auto& material = *static_cast<const ScreenMaterialParameters*>(parameters);
                 if (object.id != 2 || size != sizeof(material) || material.slot != 1)
@@ -113,7 +123,9 @@ struct Fixture {
         context.media_functions.emplace("/Script/Engine.PrimitiveComponent:GetNumMaterials", std::make_pair(AnomalyGenerationHandleV1{105, 1}, 4));
         context.media_functions.emplace("/Script/Engine.PrimitiveComponent:GetMaterial", std::make_pair(AnomalyGenerationHandleV1{106, 1}, 16));
         context.media_functions.emplace("/Script/HTGame.MovieAudioPlayerComponent:StopAudio", std::make_pair(AnomalyGenerationHandleV1{107, 1}, 0));
-        context.media_functions.emplace("/Script/MediaAssets.MediaTexture:SetMediaPlayer", std::make_pair(AnomalyGenerationHandleV1{108, 1}, 8));
+        context.media_functions.emplace(kTextureSetPlayer, std::make_pair(AnomalyGenerationHandleV1{108, 1}, 8));
+        context.media_functions.emplace(kTextureGetPlayer, std::make_pair(AnomalyGenerationHandleV1{109, 1}, 8));
+        context.media_functions.emplace(kTextureUpdateResource, std::make_pair(AnomalyGenerationHandleV1{120, 1}, 0));
         Prepare();
     }
     std::uintptr_t Pointer(unsigned i) { return reinterpret_cast<std::uintptr_t>(memory[i].data()); }
@@ -122,6 +134,8 @@ struct Fixture {
     }
     void Prepare() {
         calls.clear(); stale = false;
+        texture_player = 0;
+        texture_changes.clear();
         stale_material = stale_event = false;
         context.native_audio_pending = {};
         expected_audio = Pointer(4);
@@ -133,6 +147,197 @@ struct Fixture {
         context.media_playing.store(true); context.game_audio_muted = true;
     }
 };
+
+struct SeekFixture : Fixture {
+    enum Call : unsigned { Close = 104, GetMaterial = 106, SetTexture = 108, GetTexture,
+        SetLooping, Open, HasError, IsReady, IsBuffering, IsPlaying, Seek, GetTime, DetachTexture,
+        RefreshTexture = 120 };
+    decltype(AnomalyUe5ProcessEventServiceV1::invoke) restore_call{};
+    std::vector<unsigned> operations;
+    std::int64_t position{};
+    bool closed{}, binding_readback_fails{};
+
+    explicit SeekFixture(const char* profile) : Fixture(profile) {
+        auto& c = context;
+        c.opened_world = c.tv_binding.world;
+        c.tv_binding.local_material = Pointer(5);
+        c.tv_binding.texture = Pointer(10);
+        c.tv_binding.texture_handle = {11, 1};
+        c.media_player_pointer = Pointer(5);
+        c.resume_position = 3 * kTicksPerSecond;
+        c.media_duration = 12 * kTicksPerSecond;
+        c.media_seekable = true;
+        c.progress = {12, c.resume_position, c.media_duration, true};
+        slots = {Pointer(10), Pointer(5)};
+        texture_player = c.media_player_pointer;
+        c.media_functions.emplace("/Script/MediaAssets.MediaPlayer:Seek",
+            std::make_pair(AnomalyGenerationHandleV1{Seek, 1}, 9));
+        c.media_functions.emplace("/Script/MediaAssets.MediaPlayer:GetTime",
+            std::make_pair(AnomalyGenerationHandleV1{GetTime, 1}, 8));
+        objects.find_exact = [](void*, AnomalyStringViewV1 path, AnomalyGenerationHandleV1* output) {
+            constexpr std::pair<std::string_view, Call> functions[] = {
+                {"SetLooping", SetLooping}, {"OpenFile", Open},
+                {"HasError", HasError}, {"IsReady", IsReady}, {"IsBuffering", IsBuffering},
+                {"IsPlaying", IsPlaying},
+            };
+            const std::string_view name(path.data, path.size);
+            for (const auto& [suffix, id] : functions) {
+                if (name.ends_with(suffix)) {
+                    *output = {id, 1};
+                    return anomaly::sdk::Ok();
+                }
+            }
+            return Status(ANOMALY_STATUS_V1_NOT_FOUND);
+        };
+        restore_call = events.invoke;
+        events.user = this;
+        events.invoke = [](void* user, AnomalyGenerationHandleV1 object, AnomalyGenerationHandleV1 function,
+                          void* parameters, std::size_t size) {
+            auto& f = *static_cast<SeekFixture*>(user);
+            if (!f.context.media_playing.load())
+                return f.restore_call(static_cast<Fixture*>(&f), object, function, parameters, size);
+            switch (function.id) {
+            case GetMaterial:
+                static_cast<ScreenMaterialParameters*>(parameters)->material = f.slots[1];
+                break;
+            case GetTexture:
+                *static_cast<std::uintptr_t*>(parameters) = f.texture_player;
+                break;
+            case SetTexture: {
+                const auto player = *static_cast<std::uintptr_t*>(parameters);
+                if (!player || !f.binding_readback_fails) f.texture_player = player;
+                f.operations.push_back(player ? SetTexture : DetachTexture);
+                break;
+            }
+            case Close:
+                if (f.texture_player) throw std::runtime_error("closed video while the old texture was still attached");
+                f.closed = true;
+                f.operations.push_back(Close);
+                break;
+            case SetLooping: break;
+            case Open: {
+                const auto& path = *static_cast<const PassedString*>(parameters);
+                if (!f.closed || std::wstring_view(path.data) != f.context.opened_path)
+                    throw std::runtime_error("reopen did not use the same closed media session");
+                f.closed = false;
+                static_cast<std::uint8_t*>(parameters)[sizeof(PassedString)] = 1;
+                f.operations.push_back(Open);
+                break;
+            }
+            case HasError: case IsBuffering: *static_cast<std::uint8_t*>(parameters) = 0; break;
+            case IsReady: case IsPlaying: *static_cast<std::uint8_t*>(parameters) = !f.closed; break;
+            case Seek:
+                if (f.closed || f.texture_player)
+                    throw std::runtime_error("seek ran before reopen or on the stale texture");
+                f.position = *static_cast<const std::int64_t*>(parameters);
+                static_cast<std::uint8_t*>(parameters)[sizeof(std::int64_t)] = 1;
+                f.operations.push_back(Seek);
+                break;
+            case GetTime: *static_cast<std::int64_t*>(parameters) = f.position; break;
+            case RefreshTexture:
+                if (f.texture_player != f.context.media_player_pointer)
+                    throw std::runtime_error("render resource was refreshed before binding the new source");
+                f.operations.push_back(RefreshTexture);
+                break;
+            default: throw std::runtime_error("seek invoked an unrelated television operation");
+            }
+            return anomaly::sdk::Ok();
+        };
+    }
+
+    void Tick(MediaClock::time_point now) {
+        if (!UpdatePlaybackSeek(context, context.tv_binding.world, now))
+            throw std::runtime_error("seek did not consume its Game update");
+    }
+};
+
+void VerifySeekRebuild(const char* profile) {
+    using namespace std::chrono_literals;
+    const auto start = MediaClock::now();
+    SeekFixture f(profile);
+    auto& c = f.context;
+    c.seek_request = {11, 2 * kTicksPerSecond, start};
+    if (UpdatePlaybackSeek(c, c.tv_binding.world, start) || !f.operations.empty())
+        throw std::runtime_error("stale seek touched the active player");
+    c.seek_request = {12, c.media_duration - 1, start};
+    f.Tick(start);
+    f.Tick(start + 100ms);
+    f.Tick(start + 200ms);
+    const std::vector<unsigned> rebuilt{SeekFixture::DetachTexture, SeekFixture::Close,
+        SeekFixture::Open, SeekFixture::Seek, SeekFixture::SetTexture, SeekFixture::RefreshTexture};
+    if (f.operations != rebuilt || !c.game_audio_muted || f.position != 117'500'000)
+        throw std::runtime_error("seek did not rebuild once or clamp away from EOF");
+    c.seek_request = {12, 8 * kTicksPerSecond, start + 300ms};
+    for (auto offset : {300ms, 400ms, 500ms}) f.Tick(start + offset);
+    if (!c.playback_seek || !c.seek_request || c.resume_position != 3 * kTicksPerSecond ||
+        c.audio.Read().state != nte_tv_video::AudioOutput::State::Idle || f.operations != rebuilt)
+        throw std::runtime_error("frozen target clock resumed audio or issued a second seek");
+    static_cast<void>(c.audio.Shutdown(0ms));  // The fixture has no actual media file.
+    f.position = 118'500'000;
+    f.Tick(start + 600ms);
+    if (!c.playback_seek) throw std::runtime_error("seek resumed after only one advancing sample");
+    f.position = 200'000;
+    f.Tick(start + 700ms);
+    if (c.playback_seek || !c.seek_request || c.resume_position != 200'000 || f.operations != rebuilt)
+        throw std::runtime_error("valid loop did not complete the seek or retained the wrong pending target");
+    f.Tick(start + 800ms);
+    StopTakeover(c, 0, false);
+    if (c.playback_seek || c.seek_request || !c.opened_path.empty() ||
+        f.calls != std::vector<unsigned>{SeekFixture::Close})
+        throw std::runtime_error("scene change retained the in-flight seek or touched the old television");
+
+    SeekFixture timeout(profile);
+    timeout.context.seek_request = {12, 8 * kTicksPerSecond, start};
+    timeout.Tick(start);
+    timeout.Tick(start + 100ms);
+    timeout.Tick(start + 200ms);
+    timeout.Tick(start + 3200ms);
+    timeout.Tick(start + 3300ms);
+    timeout.Tick(start + 3400ms);
+    if (!timeout.context.playback_seek || !timeout.context.playback_seek->recovering ||
+        timeout.position != 3 * kTicksPerSecond || timeout.operations.size() != 2 * rebuilt.size())
+        throw std::runtime_error("frozen clock did not reopen at the previous position exactly once");
+    static_cast<void>(timeout.context.audio.Shutdown(0ms));
+    timeout.Tick(start + 3500ms);
+    timeout.position += 1'000'000;
+    timeout.Tick(start + 3600ms);
+    timeout.position += 1'000'000;
+    timeout.Tick(start + 3700ms);
+    if (timeout.context.playback_seek || timeout.context.resume_position != 32'000'000 ||
+        !timeout.context.game_audio_muted)
+        throw std::runtime_error("recovered playback did not keep the original takeover");
+
+    SeekFixture failure(profile);
+    failure.binding_readback_fails = true;
+    failure.context.seek_request = {12, 8 * kTicksPerSecond, start};
+    for (auto offset : {0ms, 100ms, 200ms, 300ms, 400ms}) failure.Tick(start + offset);
+    if (!failure.context.takeover_failed || failure.context.playback_seek || failure.context.game_audio_muted ||
+        failure.calls != std::vector<unsigned>{101, 104, 103})
+        throw std::runtime_error("failed texture recovery did not restore the original television");
+
+    SeekFixture resumed(profile);
+    auto& resume_context = resumed.context;
+    resumed.position = 60'000'000;
+    ConfirmAutomaticResume(resume_context, resume_context.tv_binding.world, resumed.position, true, start);
+    resumed.Tick(start + 100ms);
+    if (!resume_context.playback_seek || !resumed.operations.empty())
+        throw std::runtime_error("automatic resume restarted an already open video or accepted one clock sample");
+    static_cast<void>(resume_context.audio.Shutdown(0ms));
+    resumed.position += 1'000'000;
+    resumed.Tick(start + 200ms);
+    resumed.position += 1'000'000;
+    resumed.Tick(start + 300ms);
+    if (resume_context.playback_seek || resume_context.resume_position != 62'000'000 ||
+        !resumed.operations.empty() || !resume_context.game_audio_muted)
+        throw std::runtime_error("automatic resume failed to confirm the newly bound video clock");
+
+    ObserveNativeProgram(resume_context, resumed.Pointer(3), 42);
+    const auto programme_observed = MediaClock::now();
+    if (!NativeProgramIsChanging(resume_context, resumed.Pointer(3), programme_observed) ||
+        NativeProgramIsChanging(resume_context, resumed.Pointer(1), programme_observed) ||
+        NativeProgramIsChanging(resume_context, resumed.Pointer(3), programme_observed + 1s))
+        throw std::runtime_error("native program grace period escaped the active television or did not expire");
+}
 }
 
 int main(int argc, char** argv) {
@@ -226,14 +431,17 @@ int main(int argc, char** argv) {
 
         fixture.mute_fails = false;
         fixture.bind_fails = true;
+        fixture.texture_player = fixture.Pointer(5);
         if (ApplyScreenBinding(context, binding, fixture.Pointer(5), fixture.Pointer(5), false) != BindResult::BindFailed ||
-            !context.game_audio_muted)
-            throw std::runtime_error("binding failure lost the audio restoration record");
+            !context.game_audio_muted ||
+            fixture.texture_changes != std::vector<std::uintptr_t>{0, fixture.Pointer(5)})
+            throw std::runtime_error("reopened media retained its old texture queue or lost audio restoration");
         fixture.calls.clear();
         fixture.stale_material = true;
         RestoreTelevision(context);
-        if (fixture.calls != std::vector<unsigned>{104, 103} || fixture.slots[0] != fixture.Pointer(10))
-            throw std::runtime_error("stale original screen blocked independent audio restoration");
+        if (fixture.calls != std::vector<unsigned>{108, 104, 103} || fixture.texture_player ||
+            fixture.slots[0] != fixture.Pointer(10))
+            throw std::runtime_error("stale original screen blocked texture detach or audio restoration");
 
         fixture.Prepare();
         AnomalyHookServiceV1 hook{sizeof(hook)};
@@ -279,8 +487,9 @@ int main(int argc, char** argv) {
         if (fixture.calls != std::vector<unsigned>{101, 104, 103} || context.native_audio_pending.id || forwarded != 2)
             throw std::runtime_error("current program's event was not restored");
         g_active.store(nullptr);
+        VerifySeekRebuild(argv[1]);
 
-        std::cout << "PASS: 10 restore cycles, exact material/audio, no program replay, stale/no-world/preparing isolation, residual screen and failure rollback\n";
+        std::cout << "PASS: television restore, seek rebuild, frozen clock, loop, cancellation and bounded recovery\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

@@ -11,6 +11,7 @@
 #include "anomaly/sdk/localization.hpp"
 #include "anomaly/sdk/services/core.h"
 #include "anomaly/sdk/services/interop.h"
+#include "anomaly/sdk/services/nte.h"
 #include "anomaly/sdk/services/platform.h"
 #include "anomaly/sdk/services/ue5.h"
 #include "anomaly/sdk/services/ui.h"
@@ -33,6 +34,7 @@
 #include <mutex>
 #include <new>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -44,6 +46,7 @@
 namespace {
 
 using nte_tv_video_profile::native_layout;
+using nte_tv_video::AudioDistanceRange;
 
 // Residence TV actor. The plugin compares the component owner's class name, so
 // cinema/story screens keep their game videos.
@@ -58,7 +61,9 @@ constexpr std::string_view kConfigSchemaJson =
     R"({"type":"object","properties":{"enabled":{"type":"boolean"},)"
     R"("videoPath":{"type":"string","maxLength":4096},)"
     R"("muteGameAudio":{"type":"boolean"},)"
-    R"("forceMediaPlayer":{"type":"boolean"}},)"
+    R"("forceMediaPlayer":{"type":"boolean"},)"
+    R"("audioFullVolumeMeters":{"type":"number","minimum":0.5,"maximum":20},)"
+    R"("audioMaxDistanceMeters":{"type":"number","minimum":1.5,"maximum":60}},)"
     R"("required":["enabled","videoPath","muteGameAudio","forceMediaPlayer"],)"
     R"("additionalProperties":false})";
 
@@ -72,6 +77,7 @@ struct Settings final {
     bool enabled{};
     bool force_media_player{};
     std::string video_path;
+    AudioDistanceRange audio_distance;
 };
 
 // The file dialog runs on its own thread; this state remains valid after the
@@ -87,6 +93,8 @@ struct TelevisionBinding final {
     std::uintptr_t world{}, owner{}, component{}, mesh{}, material{};
     AnomalyGenerationHandleV1 owner_handle{}, component_handle{}, mesh_handle{}, material_handle{};
     std::int32_t slot{-1};
+    std::uintptr_t local_material{}, texture{};
+    AnomalyGenerationHandleV1 texture_handle{};
 };
 
 struct TelevisionAudio final {
@@ -111,8 +119,19 @@ struct SeekRequest final {
     std::int64_t target{};
     MediaClock::time_point due;
 };
+enum class SeekStage { Reopening, Opening, Confirming };
+struct PlaybackSeek final {
+    std::uint64_t id{};
+    std::int64_t target{}, previous{};
+    SeekStage stage{};
+    MediaClock::time_point deadline, issued, last_sample;
+    std::optional<std::int64_t> last_position;
+    unsigned advances{};
+    bool automatic{}, recovering{}, play_requested{};
+};
 
 struct Context final {
+    const AnomalyHostApiV1* host{};
     const AnomalyCoreServiceV1* core{};
     const AnomalySignatureServiceV1* signatures{};
     const AnomalyHookServiceV1* hook{};
@@ -171,10 +190,11 @@ struct Context final {
     bool takeover_failed{};
     PlaybackProgress progress; // Render snapshot, protected by mutex.
     std::optional<SeekRequest> seek_request; // Latest Render intent, protected by mutex.
-    std::optional<SeekRequest> seeking; // Game thread, due is the completion deadline.
+    std::optional<PlaybackSeek> playback_seek; // Game thread, leaves the TV takeover installed.
+    std::uint64_t next_seek_id{};
     std::int64_t media_duration{};
     bool media_seekable{};
-    bool seek_failed{};
+    MediaClock::time_point native_program_transition_until;
     std::uintptr_t opened_world{};
     double media_poll_seconds{};
     double media_wait_seconds{};
@@ -199,7 +219,9 @@ struct Context final {
     std::uintptr_t media_sound{};
     bool media_sound_ready{};
     nte_tv_video::AudioOutput audio;
-    nte_tv_video::AudioOutput::State last_audio_state{nte_tv_video::AudioOutput::State::Idle};
+    nte_tv_video::AudioOutput::Snapshot last_audio{};
+    std::uint64_t audio_session{}, audio_timeline{};
+    bool logged_spatial_pose{};
 };
 
 // Published for the detours, which run on the game thread.
@@ -572,8 +594,47 @@ std::uintptr_t FindNativeObject(Context& context, const std::string_view path) {
         actual.generation == expected.generation ? pointer : 0;
 }
 
+struct ReflectedParameter {
+    const wchar_t* name;
+    const wchar_t* type;
+    std::size_t offset, size;
+    const wchar_t* structure{};
+};
+
+bool MatchParameters(Context& context, std::uintptr_t function,
+                     std::span<const ReflectedParameter> expected) {
+    if (expected.empty()) return true;
+    std::uintptr_t field{};
+    if (!Read(context, function + native_layout.kStructPropertyLinkOffset, field)) return false;
+    unsigned seen{};
+    for (; field;) {
+        std::uintptr_t type{};
+        std::uint32_t offset{}, size{};
+        if (!Read(context, field + native_layout.kFieldClassOffset, type) || !type ||
+            !Read(context, field + native_layout.kPropertyValueOffset, offset) ||
+            !Read(context, field + native_layout.kPropertySizeOffset, size)) return false;
+        const auto match = std::ranges::find_if(expected, [&](const ReflectedParameter& parameter) {
+            return parameter.offset == offset && parameter.size == size &&
+                NameEquals(context, field + native_layout.kPropertyNameOffset, parameter.name) &&
+                NameEquals(context, type + native_layout.kFieldClassNameOffset, parameter.type);
+        });
+        if (match == expected.end()) return false;
+        if (match->structure) {
+            std::uintptr_t structure{};
+            if (!Read(context, field + native_layout.kStructPropertyStructOffset, structure) || !structure ||
+                !NameEquals(context, structure + native_layout.kObjectNameOffset, match->structure)) return false;
+        }
+        const auto bit = 1u << (match - expected.begin());
+        if (seen & bit) return false;
+        seen |= bit;
+        if (!Read(context, field + native_layout.kPropertyNextOffset, field)) return false;
+    }
+    return seen == (1u << expected.size()) - 1;
+}
+
 bool InvokePointer(Context& context, std::uintptr_t receiver, const char* path,
-                   void* parameters, std::size_t size, std::size_t unpadded_size = 0) {
+                   void* parameters, std::size_t size, std::size_t unpadded_size = 0,
+                   std::span<const ReflectedParameter> expected = {}) {
     const auto matches_size = [=](std::size_t actual) {
         return actual == size || (unpadded_size && actual == unpadded_size);
     };
@@ -585,7 +646,8 @@ bool InvokePointer(Context& context, std::uintptr_t receiver, const char* path,
         std::uint16_t parms_size{};
         AnomalyGenerationHandleV1 handle{};
         if (!function || !Read(context, function + native_layout.kFunctionParmsSizeOffset, parms_size) ||
-            !matches_size(parms_size) || !PinPointer(context, function, handle)) {
+            !matches_size(parms_size) || !PinPointer(context, function, handle) ||
+            !MatchParameters(context, function, expected)) {
             Log(context, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
                 std::string("TV function contract unavailable: ") + path);
             return false;
@@ -672,7 +734,12 @@ bool FindTelevision(Context& context, std::uintptr_t world, double elapsed) {
     return false;
 }
 
-bool TelevisionPlaying(Context& context) {
+bool NativeProgramIsChanging(const Context& context, std::uintptr_t component, MediaClock::time_point now) {
+    return context.media_playing.load(std::memory_order_acquire) &&
+        component == context.tv_binding.component && now < context.native_program_transition_until;
+}
+
+bool TelevisionPlaying(Context& context, bool keep_during_program_change = false) {
     std::uintptr_t field{}, component{};
     if (!ObjectProperty(context, context.tv_owner, L"MovieAudioPlayer", sizeof(component), field) ||
         !Read(context, field, component) || !component) return false;
@@ -683,22 +750,37 @@ bool TelevisionPlaying(Context& context) {
     if (!InvokePointer(context, component, "/Script/HTGame.MovieAudioPlayerComponent:IsPlaying",
         &playing, sizeof(playing))) return false;
     context.tv_component = component;
-    return playing != 0;
+    return playing != 0 || (keep_during_program_change &&
+        NativeProgramIsChanging(context, component, MediaClock::now()));
 }
 
-void CloseLocalMedia(Context& context) {
+bool CloseMediaPlayer(Context& context) {
+    return context.media_close.id && context.media_player.id && context.process_events &&
+        context.process_events->invoke(context.process_events->user,
+            context.media_player, context.media_close, nullptr, 0).code == ANOMALY_STATUS_V1_OK;
+}
+
+void DetachLocalTexture(Context&, const TelevisionBinding&);
+
+void CloseLocalMedia(Context& context, const TelevisionBinding& binding = {}) {
     context.media_playing.store(false);
     context.audio.Transport({}, 0, false);
-    if (!context.opened_path.empty() && context.media_close.id && context.media_player.id && context.process_events)
-        static_cast<void>(context.process_events->invoke(context.process_events->user,
-            context.media_player, context.media_close, nullptr, 0));
+    ++context.audio_session;
+    context.logged_spatial_pose = false;
+    if (!context.opened_path.empty()) {
+        DetachLocalTexture(context, binding);
+        static_cast<void>(CloseMediaPlayer(context));
+    }
     context.opened_path.clear();
     context.opened_world = 0;
     context.media_probe_phase.store(2);
-    context.seeking.reset();
+    if (context.playback_seek)
+        Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
+            "TV seek #" + std::to_string(context.playback_seek->id) + " cancelled");
+    context.playback_seek.reset();
     context.media_duration = 0;
     context.media_seekable = false;
-    context.seek_failed = false;
+    context.native_program_transition_until = {};
     {
         std::scoped_lock lock(context.mutex);
         context.progress = {context.progress.generation + 1};
@@ -760,6 +842,10 @@ void ObserveNativeProgram(Context& context, std::uintptr_t component, std::uintp
     if (!AudioComponentRelevant(context, component)) return;
     AnomalyGenerationHandleV1 handle{};
     if (!PinPointer(context, component, handle)) return;
+    if (program && context.media_playing.load(std::memory_order_acquire) &&
+        component == context.tv_binding.component && SameHandle(handle, context.tv_binding.component_handle)) {
+        context.native_program_transition_until = MediaClock::now() + std::chrono::seconds(1);
+    }
     const auto& audio = context.tv_audio;
     if (program && audio.component == component && SameHandle(audio.component_handle, handle) && audio.program == program)
         return;
@@ -793,6 +879,29 @@ constexpr auto kNativeScreenAsset =
 constexpr auto kLocalScreenAsset =
     "/Game/Movies/FFMpegUI/TVMovies/TVMediaPlayer_Video_Mat.TVMediaPlayer_Video_Mat";
 constexpr auto kSetScreenMaterial = "/Script/Engine.PrimitiveComponent:SetMaterial";
+constexpr auto kTextureGetPlayer = "/Script/MediaAssets.MediaTexture:GetMediaPlayer";
+constexpr auto kTextureSetPlayer = "/Script/MediaAssets.MediaTexture:SetMediaPlayer";
+constexpr auto kTextureUpdateResource = "/Script/MediaAssets.MediaTexture:UpdateResource";
+
+bool GetTexturePlayer(Context& context, std::uintptr_t texture, std::uintptr_t& player) {
+    return InvokePointer(context, texture, kTextureGetPlayer, &player, sizeof(player));
+}
+
+bool SetTexturePlayer(Context& context, std::uintptr_t texture, std::uintptr_t player) {
+    std::uintptr_t current{};
+    return InvokePointer(context, texture, kTextureSetPlayer, &player, sizeof(player)) &&
+        GetTexturePlayer(context, texture, current) && current == player;
+}
+
+void DetachLocalTexture(Context& context, const TelevisionBinding& binding) {
+    if (!LivePointer(context, binding.texture, binding.texture_handle)) return;
+    std::uintptr_t current{};
+    if (!GetTexturePlayer(context, binding.texture, current) ||
+        (current && current == context.media_player_pointer &&
+            !SetTexturePlayer(context, binding.texture, 0))) {
+        Log(context, ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "TV restore: could not detach the local media texture");
+    }
+}
 
 struct ScreenMaterialParameters {
     std::int32_t slot;
@@ -854,15 +963,23 @@ bool SetScreenMaterial(Context& context, const TelevisionBinding& binding, std::
 BindResult ApplyScreenBinding(Context& context, TelevisionBinding binding, std::uintptr_t material,
                               std::uintptr_t texture, bool residue) {
     if (residue && !SetScreenMaterial(context, binding, binding.material)) return BindResult::RecoveryFailed;
-    auto player = context.media_player_pointer;
-    if (!texture || !player || !InvokePointer(context, texture,
-            "/Script/MediaAssets.MediaTexture:SetMediaPlayer", &player, sizeof(player)))
+    const auto player = context.media_player_pointer;
+    std::uintptr_t previous{};
+    if (!player || !PinPointer(context, texture, binding.texture_handle) ||
+        !GetTexturePlayer(context, texture, previous) || (previous && previous != player))
         return BindResult::BindFailed;
     if (!InvokePointer(context, binding.component,
             "/Script/HTGame.MovieAudioPlayerComponent:StopAudio", nullptr, 0)) return BindResult::MuteFailed;
     context.game_audio_muted = true;
+    binding.local_material = material;
+    binding.texture = texture;
     context.tv_binding = binding;
-    if (!SetScreenMaterial(context, binding, material)) return BindResult::BindFailed;
+    // The asset can still reference this same UObject from a previous session.
+    // Changing through null forces UE to discard the old sample queue.
+    if ((previous && !SetTexturePlayer(context, texture, 0)) ||
+        !SetTexturePlayer(context, texture, player) ||
+        !InvokePointer(context, texture, kTextureUpdateResource, nullptr, 0) ||
+        !SetScreenMaterial(context, binding, material)) return BindResult::BindFailed;
     return BindResult::Success;
 }
 
@@ -937,7 +1054,7 @@ void RestoreTelevision(Context& context, bool restore_audio = true) {
         Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO, "TV restore: screen material call returned");
     }
     Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO, "TV restore: closing local media");
-    CloseLocalMedia(context);
+    CloseLocalMedia(context, binding);
     Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO, "TV restore: local media close returned");
     bool audio = !muted || !restore_audio;
     if (owner_valid && muted && restore_audio && LivePointer(context, binding.component, binding.component_handle) &&
@@ -957,14 +1074,137 @@ void RestoreTelevision(Context& context, bool restore_audio = true) {
 }
 
 bool MediaBool(Context&, const char*, bool&);
+
+using AudioVector = std::array<double, 3>;
+enum class CameraSource { Snapshot, Reflection };
+
+bool CameraSnapshot(Context& context, AudioVector& location, AudioVector& rotation) {
+    const auto* player = Query<AnomalyNtePlayerServiceV1>(
+        context.host, ANOMALY_NTE_PLAYER_SERVICE_V1_ID, ANOMALY_NTE_PLAYER_SERVICE_V1_VERSION);
+    if (!HasField<AnomalyNtePlayerServiceV1, decltype(AnomalyNtePlayerServiceV1::camera_snapshot)>(
+            player, offsetof(AnomalyNtePlayerServiceV1, camera_snapshot)) || !player->camera_snapshot) return false;
+    const auto* world = Query<AnomalyUe5WorldServiceV1>(
+        context.host, ANOMALY_UE5_WORLD_SERVICE_V1_ID, ANOMALY_UE5_WORLD_SERVICE_V1_VERSION);
+    if (!HasField<AnomalyUe5WorldServiceV1, decltype(AnomalyUe5WorldServiceV1::snapshot)>(
+            world, offsetof(AnomalyUe5WorldServiceV1, snapshot)) || !world->current || !world->snapshot) return false;
+    AnomalyGenerationHandleV1 current{};
+    AnomalyUe5WorldSnapshotV1 current_world{sizeof(current_world)};
+    AnomalyNteCameraSnapshotV1 camera{sizeof(camera)};
+    std::uint32_t world_name{};
+    if (world->current(world->user, &current).code != ANOMALY_STATUS_V1_OK || !current.id ||
+        world->snapshot(world->user, current, &current_world).code != ANOMALY_STATUS_V1_OK ||
+        !Read(context, context.tv_binding.world + native_layout.kObjectNameOffset, world_name) ||
+        world_name != current_world.name_id ||
+        player->camera_snapshot(player->user, &camera).code != ANOMALY_STATUS_V1_OK ||
+        !(camera.flags & ANOMALY_NTE_SNAPSHOT_V1_VALID) ||
+        (camera.flags & (ANOMALY_NTE_SNAPSHOT_V1_STALE | ANOMALY_NTE_SNAPSHOT_V1_PARTIAL)) ||
+        !camera.sequence || camera.world.id != current.id || camera.world.generation != current.generation) return false;
+    std::ranges::copy(camera.position, location.begin());
+    std::ranges::copy(camera.rotation, rotation.begin());
+    return true;
+}
+
+bool IsCameraManager(Context& context, std::uintptr_t object) {
+    std::uintptr_t type{};
+    if (!Read(context, object + native_layout.kObjectClassOffset, type)) return false;
+    for (unsigned depth = 0; type && depth < 32; ++depth) {
+        if (NameEquals(context, type + native_layout.kObjectNameOffset, L"PlayerCameraManager")) return true;
+        if (!Read(context, type + native_layout.kStructSuperOffset, type)) return false;
+    }
+    return false;
+}
+
+bool ReflectedCamera(Context& context, AudioVector& location, AudioVector& rotation) {
+    struct Parameters {
+        std::uintptr_t world;
+        std::int32_t index{};
+        std::uintptr_t manager{};
+    } parameters{context.tv_binding.world};
+    constexpr ReflectedParameter manager_fields[] = {
+        {L"WorldContextObject", L"ObjectProperty", offsetof(Parameters, world), sizeof(Parameters::world)},
+        {L"PlayerIndex", L"IntProperty", offsetof(Parameters, index), sizeof(Parameters::index)},
+        {L"ReturnValue", L"ObjectProperty", offsetof(Parameters, manager), sizeof(Parameters::manager)},
+    };
+    const auto statics = FindNativeObject(context, "/Script/Engine.Default__GameplayStatics");
+    if (!statics || !InvokePointer(context, statics, "/Script/Engine.GameplayStatics:GetPlayerCameraManager",
+            &parameters, sizeof(parameters), 0, manager_fields) ||
+        !parameters.manager || !IsCameraManager(context, parameters.manager)) return false;
+    constexpr ReflectedParameter vector_return[]{{L"ReturnValue", L"StructProperty", 0, sizeof(AudioVector), L"Vector"}};
+    constexpr ReflectedParameter rotator_return[]{{L"ReturnValue", L"StructProperty", 0, sizeof(AudioVector), L"Rotator"}};
+    return InvokePointer(context, parameters.manager, "/Script/Engine.PlayerCameraManager:GetCameraLocation",
+            &location, sizeof(location), 0, vector_return) &&
+        InvokePointer(context, parameters.manager, "/Script/Engine.PlayerCameraManager:GetCameraRotation",
+            &rotation, sizeof(rotation), 0, rotator_return);
+}
+
+std::optional<nte_tv_video::AudioPosition> RelativeAudioPosition(const AudioVector& screen,
+    const AudioVector& camera, const AudioVector& rotation) {
+    const auto finite = [](double value) { return std::isfinite(value); };
+    if (!std::ranges::all_of(screen, finite) || !std::ranges::all_of(camera, finite) ||
+        !std::ranges::all_of(rotation, finite)) return std::nullopt;
+    constexpr double radians = 0.017453292519943295;
+    const auto pitch = rotation[0] * radians;
+    const auto yaw = rotation[1] * radians;
+    const auto roll = rotation[2] * radians;
+    const double cp = std::cos(pitch), sp = std::sin(pitch);
+    const double cy = std::cos(yaw), sy = std::sin(yaw);
+    const double cr = std::cos(roll), sr = std::sin(roll);
+    const AudioVector forward{cp * cy, cp * sy, sp};
+    const AudioVector right{sr * sp * cy - cr * sy, sr * sp * sy + cr * cy, -sr * cp};
+    const AudioVector up{-cr * sp * cy - sr * sy, -cr * sp * sy + sr * cy, cr * cp};
+    const AudioVector delta{screen[0] - camera[0], screen[1] - camera[1], screen[2] - camera[2]};
+    const auto project = [&](const AudioVector& axis) {
+        return static_cast<float>((delta[0] * axis[0] + delta[1] * axis[1] + delta[2] * axis[2]) / 100.0);
+    };
+    const nte_tv_video::AudioPosition result{project(right), project(up), project(forward)};
+    if (!finite(result.right) || !finite(result.up) || !finite(result.forward)) return std::nullopt;
+    return result;
+}
+
+std::optional<nte_tv_video::AudioPosition> TelevisionAudioPosition(Context& context) {
+    const auto& binding = context.tv_binding;
+    constexpr ReflectedParameter location_return[]{{L"ReturnValue", L"StructProperty", 0, sizeof(AudioVector), L"Vector"}};
+    AudioVector screen{}, camera{}, rotation{};
+    if (!InvokePointer(context, binding.mesh, "/Script/Engine.SceneComponent:K2_GetComponentLocation",
+            &screen, sizeof(screen), 0, location_return)) return std::nullopt;
+    std::optional<nte_tv_video::AudioPosition> position;
+    auto source = CameraSource::Snapshot;
+    if (CameraSnapshot(context, camera, rotation)) position = RelativeAudioPosition(screen, camera, rotation);
+    if (!position && ReflectedCamera(context, camera, rotation)) {
+        position = RelativeAudioPosition(screen, camera, rotation);
+        source = CameraSource::Reflection;
+    }
+    if (!context.logged_spatial_pose) {
+        context.logged_spatial_pose = true;
+        if (position) {
+            char message[192]{};
+            std::snprintf(message, sizeof(message), "TV spatial pose camera=%s distance_m=%.2f right_m=%.2f",
+                source == CameraSource::Snapshot ? "snapshot" : "reflection",
+                std::hypot(position->right, position->up, position->forward), position->right);
+            Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO, message);
+        } else {
+            Log(context, ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "TV spatial pose unavailable");
+        }
+    }
+    return position;
+}
+
 void UpdateAudio(Context& context, const std::wstring& path, std::int64_t ticks, bool playing) {
-    context.audio.Transport(path, ticks, playing);
+    AudioDistanceRange distance_range;
+    {
+        std::scoped_lock lock(context.mutex);
+        distance_range = context.settings.audio_distance;
+    }
+    const auto source = playing ? TelevisionAudioPosition(context) : std::nullopt;
+    context.audio.Transport(path, ticks, playing,
+        {context.audio_session, context.audio_timeline, source, distance_range});
     const auto audio = context.audio.Read();
-    if (audio.state != context.last_audio_state) {
-        context.last_audio_state = audio.state;
-        char message[160]{};
-        std::snprintf(message, sizeof(message), "TV audio state=%u error=0x%08X",
-            static_cast<unsigned>(audio.state), audio.error);
+    if (audio.state != context.last_audio.state || audio.route != context.last_audio.route ||
+        audio.spatial_error != context.last_audio.spatial_error) {
+        context.last_audio = audio;
+        char message[180]{};
+        std::snprintf(message, sizeof(message), "TV audio state=%u route=%u error=0x%08X spatial_error=0x%08X",
+            static_cast<unsigned>(audio.state), static_cast<unsigned>(audio.route), audio.error, audio.spatial_error);
         Log(context, audio.state == nte_tv_video::AudioOutput::State::Failed ?
             ANOMALY_CORE_LOG_LEVEL_V1_WARNING : ANOMALY_CORE_LOG_LEVEL_V1_INFO, message);
     }
@@ -996,17 +1236,25 @@ bool MediaBool(Context& context, const char* function, bool& value) {
     return true;
 }
 
-bool SeekVideo(Context& context, SeekRequest request, MediaClock::time_point now) {
+bool OpenLocalMediaFile(Context& context, const std::wstring& path, std::uint32_t& code) {
+    const auto looping = ResolveFunction(context, "/Script/MediaAssets.MediaPlayer", "SetLooping");
+    struct { std::uint8_t loop{1}; std::uint8_t result{}; } loop;
+    static_cast<void>(InvokeResolved(context, context.media_player, looping, &loop, sizeof(loop), code));
+    const auto open = ResolveFunction(context, "/Script/MediaAssets.MediaPlayer", "OpenFile");
+    struct { PassedString path; std::uint8_t result{}; } parameters{
+        {path.c_str(), static_cast<std::int32_t>(path.size() + 1),
+         static_cast<std::int32_t>(path.size() + 1)}};
+    return InvokeResolved(context, context.media_player, open, &parameters, sizeof(parameters), code) &&
+        parameters.result;
+}
+
+bool RequestMediaSeek(Context& context, std::int64_t target) {
     struct Parameters { std::int64_t time; std::uint8_t accepted{}; };
     static_assert(offsetof(Parameters, accepted) == sizeof(std::int64_t));
-    request.target = std::clamp(request.target, std::int64_t{0}, context.media_duration - 1);
-    Parameters parameters{request.target};
-    if (!InvokePointer(context, context.media_player_pointer, "/Script/MediaAssets.MediaPlayer:Seek",
-            &parameters, sizeof(parameters), offsetof(Parameters, accepted) + sizeof(parameters.accepted)) ||
-        !parameters.accepted) return false;
-    request.due = now + std::chrono::seconds(2);
-    context.seeking = request;
-    return true;
+    Parameters parameters{target};
+    return InvokePointer(context, context.media_player_pointer, "/Script/MediaAssets.MediaPlayer:Seek",
+        &parameters, sizeof(parameters), offsetof(Parameters, accepted) + sizeof(parameters.accepted)) &&
+        parameters.accepted;
 }
 
 void StopTakeover(Context& context, std::uintptr_t world, bool restore_audio) {
@@ -1014,10 +1262,219 @@ void StopTakeover(Context& context, std::uintptr_t world, bool restore_audio) {
     if (context.tv_binding.slot >= 0 && world && context.tv_binding.world == world)
         RestoreTelevision(context, restore_audio);
     else {
+        const auto binding = context.tv_binding;
         context.tv_binding = {};
         context.game_audio_muted = false;
-        CloseLocalMedia(context);
+        CloseLocalMedia(context, binding);
     }
+}
+
+constexpr auto kSeekEndMargin = kTicksPerSecond / 4;
+
+std::int64_t ClampSeekTarget(const Context& context, std::int64_t target) {
+    return std::clamp(target, std::int64_t{0},
+        std::max(std::int64_t{0}, context.media_duration - kSeekEndMargin));
+}
+
+void LogPlaybackSeek(Context& context, const PlaybackSeek& seek, std::string_view step,
+                   std::uint32_t level = ANOMALY_CORE_LOG_LEVEL_V1_INFO) {
+    Log(context, level, "TV seek #" + std::to_string(seek.id) +
+        (seek.recovering ? " recovery " : " ") + std::string(step));
+}
+
+bool ValidateSeekBinding(Context& context) {
+    const auto& binding = context.tv_binding;
+    if (binding.slot < 0 || !binding.local_material || binding.world != context.opened_world ||
+        !LivePointer(context, binding.owner, binding.owner_handle) ||
+        !LivePointer(context, binding.component, binding.component_handle) ||
+        !LivePointer(context, binding.mesh, binding.mesh_handle) ||
+        !OwnsComponent(context, binding.owner, binding.mesh) ||
+        !LivePointer(context, binding.texture, binding.texture_handle) ||
+        !LivePointer(context, context.media_player_pointer, context.media_player)) return false;
+    ScreenMaterialParameters screen{binding.slot};
+    return InvokePointer(context, binding.mesh, "/Script/Engine.PrimitiveComponent:GetMaterial",
+            &screen, sizeof(screen)) &&
+        MaterialBase(context, screen.material, 0, binding.local_material) == binding.local_material;
+}
+
+bool ReadSeekTexturePlayer(Context& context, std::uintptr_t& player) {
+    return ValidateSeekBinding(context) && GetTexturePlayer(context, context.tv_binding.texture, player);
+}
+
+bool SetSeekTexturePlayer(Context& context, std::uintptr_t player) {
+    std::uintptr_t current{};
+    if (!ReadSeekTexturePlayer(context, current) ||
+        (current && current != context.media_player_pointer)) return false;
+    return current == player || SetTexturePlayer(context, context.tv_binding.texture, player);
+}
+
+bool BeginSeekRebuild(Context& context, PlaybackSeek& seek) {
+    seek.stage = SeekStage::Reopening;
+    seek.last_position.reset();
+    seek.advances = 0;
+    seek.play_requested = false;
+    LogPlaybackSeek(context, seek, "detach and close target_ticks=" + std::to_string(seek.target));
+    return SetSeekTexturePlayer(context, 0) && CloseMediaPlayer(context);
+}
+
+void AwaitSeekClock(PlaybackSeek& seek, MediaClock::time_point now) {
+    seek.stage = SeekStage::Confirming;
+    seek.issued = now;
+    seek.deadline = now + std::chrono::seconds(3);
+}
+
+void FailPlaybackSeek(Context& context, std::uintptr_t world, std::string_view reason) {
+    auto& seek = *context.playback_seek;
+    LogPlaybackSeek(context, seek, reason, ANOMALY_CORE_LOG_LEVEL_V1_WARNING);
+    if (!seek.recovering) {
+        seek.recovering = true;
+        seek.target = ClampSeekTarget(context, seek.previous);
+        MediaStatus(context, seek.automatic
+            ? context.localizer.Text("media.resume_recovering", "Restarting local playback")
+            : context.localizer.Text("media.seek_recovering", "Restoring the previous playback position"));
+        if (BeginSeekRebuild(context, seek)) return;
+        LogPlaybackSeek(context, seek, "detach or close failed", ANOMALY_CORE_LOG_LEVEL_V1_WARNING);
+    }
+    context.playback_seek.reset();
+    StopTakeover(context, world, true);
+    context.takeover_failed = true;
+    MediaStatus(context, context.localizer.Text("media.seek_stopped", "Seek failed and local playback was stopped"));
+}
+
+void ConfirmAutomaticResume(Context& context, std::uintptr_t world, std::int64_t target,
+                            bool accepted, MediaClock::time_point now) {
+    auto& seek = context.playback_seek.emplace();
+    seek.id = ++context.next_seek_id;
+    seek.target = target;
+    seek.automatic = true;
+    AwaitSeekClock(seek, now);
+    ++context.audio_timeline;
+    MediaStatus(context, context.localizer.Text("media.seeking", "Seeking"));
+    LogPlaybackSeek(context, seek, "resume after texture binding target_ticks=" + std::to_string(target));
+    if (!accepted) FailPlaybackSeek(context, world, "resume rejected");
+}
+
+bool ConfirmSeekClock(PlaybackSeek& seek, std::int64_t position, std::int64_t duration,
+                      MediaClock::time_point now) {
+    constexpr auto tolerance = kTicksPerSecond / 10;
+    const auto ticks_since = [now](MediaClock::time_point time) {
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(now - time).count() / 100;
+    };
+    if (!seek.last_position) {
+        if (position < seek.target - tolerance || position > seek.target + ticks_since(seek.issued) + tolerance)
+            return false;
+    } else {
+        const auto budget = ticks_since(seek.last_sample) + tolerance;
+        auto advance = position - *seek.last_position;
+        // Allow a real loop after the first target sample, including very short clips.
+        if (advance < 0 && duration - *seek.last_position <= budget && position <= budget)
+            advance += duration;
+        if (advance < 0 || advance > budget) {
+            seek.last_position.reset();
+            seek.advances = 0;
+            return false;
+        }
+        seek.advances = advance > 0 ? seek.advances + 1 : 0;
+    }
+    seek.last_position = position;
+    seek.last_sample = now;
+    return seek.advances >= 2;
+}
+
+std::optional<SeekRequest> TakeReadySeek(Context& context, MediaClock::time_point now) {
+    std::scoped_lock lock(context.mutex);
+    if (!context.seek_request || context.seek_request->due > now) return std::nullopt;
+    auto request = std::exchange(context.seek_request, std::nullopt);
+    if (!context.media_seekable || request->generation != context.progress.generation) return std::nullopt;
+    return request;
+}
+
+bool UpdatePlaybackSeek(Context& context, std::uintptr_t world, MediaClock::time_point now) {
+    const auto fail = [&](std::string_view reason) {
+        FailPlaybackSeek(context, world, reason);
+        return true;
+    };
+    if (!context.playback_seek) {
+        const auto request = TakeReadySeek(context, now);
+        if (!request) return false;
+        auto& seek = context.playback_seek.emplace();
+        seek.id = ++context.next_seek_id;
+        seek.target = ClampSeekTarget(context, request->target);
+        seek.previous = context.resume_position;
+        ++context.audio_timeline;
+        UpdateAudio(context, context.opened_path, context.resume_position, false);
+        MediaStatus(context, context.localizer.Text("media.seeking", "Seeking"));
+        if (!BeginSeekRebuild(context, seek)) return fail("detach or close failed");
+        return true;
+    }
+    auto& seek = *context.playback_seek;
+    if (seek.stage == SeekStage::Reopening) {
+        // The UE facade can discard its backend on Close. IsClosed reports false
+        // with no backend, so reopen on the next Game update after Close returns.
+        std::uint32_t code = ANOMALY_STATUS_V1_UNAVAILABLE;
+        if (!OpenLocalMediaFile(context, context.opened_path, code))
+            return fail("reopen rejected status=" + std::to_string(code));
+        seek.stage = SeekStage::Opening;
+        seek.deadline = now + std::chrono::seconds(5);
+        LogPlaybackSeek(context, seek, "reopening");
+        return true;
+    }
+    bool error{}, ready{}, buffering{};
+    if (!MediaBool(context, "HasError", error) || error) return fail("media error");
+    if (!MediaBool(context, "IsReady", ready) || !MediaBool(context, "IsBuffering", buffering))
+        return fail("could not read media state");
+    if (!ready || buffering) {
+        seek.advances = 0;
+        return now >= seek.deadline ? fail("media readiness timed out") : true;
+    }
+    if (seek.stage == SeekStage::Opening) {
+        if (seek.target && !RequestMediaSeek(context, seek.target)) return fail("seek rejected");
+        if (!SetSeekTexturePlayer(context, context.media_player_pointer)) return fail("texture binding failed");
+        if (!InvokePointer(context, context.tv_binding.texture, kTextureUpdateResource, nullptr, 0))
+            return fail("texture resource rebuild failed");
+        AwaitSeekClock(seek, now);
+        LogPlaybackSeek(context, seek, "texture resource rebuilt, waiting for playback clock");
+        return true;
+    }
+    bool playing{};
+    if (!MediaBool(context, "IsPlaying", playing)) return fail("could not read playback state");
+    if (!playing && !seek.play_requested) {
+        bool accepted{};
+        if (!MediaBool(context, "Play", accepted) || !accepted) return fail("play rejected");
+        seek.play_requested = true;
+    }
+    std::int64_t position{};
+    const bool sampled = playing && InvokePointer(context, context.media_player_pointer,
+        "/Script/MediaAssets.MediaPlayer:GetTime", &position, sizeof(position)) &&
+        position >= 0 && position <= context.media_duration;
+    if (!sampled) seek.advances = 0;
+    if (sampled && ConfirmSeekClock(seek, position, context.media_duration, now)) {
+        std::uintptr_t current{};
+        if (!ReadSeekTexturePlayer(context, current) || current != context.media_player_pointer)
+            return fail("texture binding changed before confirmation");
+        LogPlaybackSeek(context, seek, "playback confirmed ticks=" + std::to_string(position));
+        const bool recovered = seek.recovering;
+        const bool automatic = seek.automatic;
+        context.playback_seek.reset();
+        context.resume_position = position;
+        {
+            std::scoped_lock lock(context.mutex);
+            context.progress.position = position;
+            context.progress.duration = context.media_duration;
+            context.progress.seekable = context.media_seekable;
+            if (!context.seek_request) context.progress.preview.reset();
+        }
+        // Keep the current audio backend. Its timeline changed when the seek began.
+        UpdateAudio(context, context.opened_path, position, true);
+        if (recovered && automatic)
+            MediaStatus(context, context.localizer.Text("media.resume_recovered", "Video restarted from the beginning"));
+        else
+            MediaStatus(context, recovered
+                ? context.localizer.Text("media.seek_recovered", "Seek failed and the previous playback position was restored")
+                : context.localizer.Text("media.active", "Playing local video"));
+        return true;
+    }
+    return now >= seek.deadline ? fail("playback clock did not advance") : true;
 }
 
 void ANOMALY_CALL UpdateMedia(void* plugin_context, double delta_seconds) noexcept {
@@ -1062,8 +1519,9 @@ void ANOMALY_CALL UpdateMedia(void* plugin_context, double delta_seconds) noexce
         if (path.empty() || !CanInvoke(context)) return;
         const bool television = FindTelevision(context, world, elapsed);
         if (!television || (!context.opened_path.empty() && context.opened_world != world) ||
-            !TelevisionPlaying(context) || (context.tv_binding.slot >= 0 &&
-                context.tv_binding.component != context.tv_component)) {
+            !TelevisionPlaying(context, true) || (context.tv_binding.slot >= 0 &&
+                (context.tv_binding.component != context.tv_component ||
+                    !LivePointer(context, context.tv_binding.mesh, context.tv_binding.mesh_handle)))) {
             const bool scene_changed = context.opened_world && context.opened_world != world;
             StopTakeover(context, world, false);
             context.takeover_failed = false;
@@ -1100,29 +1558,21 @@ void ANOMALY_CALL UpdateMedia(void* plugin_context, double delta_seconds) noexce
                 return;
             }
             context.media_close = ResolveFunction(context, "/Script/MediaAssets.MediaPlayer", "Close").handle;
-            const auto open = ResolveFunction(context, "/Script/MediaAssets.MediaPlayer", "OpenFile");
-            const auto looping = ResolveFunction(context, "/Script/MediaAssets.MediaPlayer", "SetLooping");
-            struct { std::uint8_t loop{1}; std::uint8_t result{}; } loop;
             std::uint32_t code = ANOMALY_STATUS_V1_UNAVAILABLE;
-            static_cast<void>(InvokeResolved(context, context.media_player, looping, &loop, sizeof(loop), code));
-            struct { PassedString path; std::uint8_t result{}; } parameters{
-                {path.c_str(), static_cast<std::int32_t>(path.size() + 1),
-                 static_cast<std::int32_t>(path.size() + 1)}};
-            const bool invoked = InvokeResolved(context, context.media_player, open,
-                &parameters, sizeof(parameters), code);
+            const bool opened = OpenLocalMediaFile(context, path, code);
             context.opened_path = path;
             context.media_wait_seconds = 0;
             context.media_playing.store(false);
-            context.media_probe_phase.store(invoked && parameters.result ? 1 : 2);
+            context.media_probe_phase.store(opened ? 1 : 2);
             const std::string status_code = std::to_string(code);
             const std::array<std::string_view, 1> arguments{status_code};
-            MediaStatus(context, invoked && parameters.result ? context.localizer.Text("media.opening", "Opening") :
+            MediaStatus(context, opened ? context.localizer.Text("media.opening", "Opening") :
                 context.localizer.Format("media.open_failed", "OpenFile rejected the local video (status={0})", arguments));
             return;
         }
         const auto now = MediaClock::now();
+        if (context.media_playing.load() && UpdatePlaybackSeek(context, world, now)) return;
         const int phase = context.media_probe_phase.load();
-        bool seek_issued = false;
         if (phase == 1) {
             context.media_wait_seconds += elapsed;
             bool error{}, ready{}, playing{};
@@ -1144,50 +1594,8 @@ void ANOMALY_CALL UpdateMedia(void* plugin_context, double delta_seconds) noexce
                 "/Script/MediaAssets.MediaPlayer:GetDuration", &context.media_duration, sizeof(context.media_duration)));
             context.media_seekable = context.media_duration > 0 &&
                 MediaBool(context, "SupportsSeeking", context.media_seekable) && context.media_seekable;
-            context.media_probe_phase.store(3);
-            if (context.resume_position > 0 && context.media_seekable) {
-                seek_issued = SeekVideo(context, {0, context.resume_position, {}}, now);
-                context.seek_failed = !seek_issued;
-            }
-        } else if (phase != 3 && !context.media_playing.load()) {
-            return;
-        }
-
-        std::optional<SeekRequest> request;
-        if (context.media_playing.load() && !context.seeking) {
-            std::scoped_lock lock(context.mutex);
-            if (context.seek_request && context.seek_request->due <= now) {
-                if (context.seek_request->generation == context.progress.generation && context.media_seekable)
-                    request = context.seek_request;
-                context.seek_request.reset();
-            }
-        }
-        if (request) {
-            seek_issued = SeekVideo(context, *request, now);
-            context.seek_failed = !seek_issued;
-        }
-        if (seek_issued) {
-            UpdateAudio(context, path, context.resume_position, false);
-            return;
-        }
-
-        std::int64_t position{};
-        const bool sampled = InvokePointer(context, context.media_player_pointer,
-            "/Script/MediaAssets.MediaPlayer:GetTime", &position, sizeof(position)) && position >= 0;
-        const bool finishing_seek = context.seeking.has_value();
-        if (finishing_seek) {
-            const auto target = context.seeking->target;
-            constexpr auto tolerance = kTicksPerSecond / 2;
-            const bool reached = sampled && (std::abs(position - target) <= tolerance ||
-                (context.media_duration - target <= tolerance && position <= tolerance));
-            if (!reached && now < context.seeking->due) {
-                UpdateAudio(context, path, context.resume_position, false);
-                return;
-            }
-            context.seek_failed = !reached;
-            context.seeking.reset();
-        }
-        if (!context.media_playing.load()) {
+            const auto resume = context.media_seekable ? ClampSeekTarget(context, context.resume_position) : 0;
+            const bool resume_accepted = !resume || RequestMediaSeek(context, resume);
             const auto bound = BindTelevision(context);
             if (bound != BindResult::Success) {
                 StopTakeover(context, world, true);
@@ -1206,11 +1614,24 @@ void ANOMALY_CALL UpdateMedia(void* plugin_context, double delta_seconds) noexce
             }
             context.media_playing.store(true);
             context.media_probe_phase.store(2);
+            if (resume) {
+                ConfirmAutomaticResume(context, world, resume, resume_accepted, now);
+                return;
+            }
             MediaStatus(context, context.localizer.Text("media.active", "Playing local video"));
+        } else if (!context.media_playing.load()) {
+            return;
         }
+        std::int64_t position{};
+        const bool sampled = InvokePointer(context, context.media_player_pointer,
+            "/Script/MediaAssets.MediaPlayer:GetTime", &position, sizeof(position)) && position >= 0;
         bool playing{};
         static_cast<void>(MediaBool(context, "IsPlaying", playing));
-        if (sampled) context.resume_position = position;
+        if (sampled) {
+            if (position + kTicksPerSecond / 10 < context.resume_position)
+                ++context.audio_timeline;  // Electra wrapped to the beginning.
+            context.resume_position = position;
+        }
         UpdateAudio(context, path, context.resume_position, sampled && playing);
         {
             std::scoped_lock lock(context.mutex);
@@ -1219,12 +1640,10 @@ void ANOMALY_CALL UpdateMedia(void* plugin_context, double delta_seconds) noexce
             context.progress.seekable = context.media_seekable;
             if (!context.seek_request) context.progress.preview.reset();
         }
-        if (request || finishing_seek || (phase == 1 && context.seek_failed))
-            MediaStatus(context, context.seek_failed ? context.localizer.Text("media.seek_failed", "Could not seek to the requested position") :
-                context.localizer.Text("media.active", "Playing local video"));
     } catch (...) {
         context.media_probe_phase.store(2);
         context.media_playing.store(false);
+        context.audio.Transport({}, 0, false);
     }
 }
 
@@ -1329,6 +1748,25 @@ void ANOMALY_CALL PlayAudioDetour(void* self, void* argument) noexcept {
 
 void UpdateOverridePath(Context& context) noexcept;
 
+AudioDistanceRange ReadAudioDistanceRange(const nlohmann::json& document) {
+    const auto read = [&](const char* key, float fallback, float minimum, float maximum) {
+        const auto field = document.find(key);
+        if (field == document.end() || !field->is_number()) return fallback;
+        const auto value = field->get<double>();
+        return std::isfinite(value) && value >= minimum && value <= maximum
+            ? static_cast<float>(value) : fallback;
+    };
+    AudioDistanceRange range;
+    range.full_volume_meters = read("audioFullVolumeMeters", range.full_volume_meters,
+        AudioDistanceRange::kMinFullVolumeMeters, AudioDistanceRange::kMaxFullVolumeMeters);
+    range.max_distance_meters = read("audioMaxDistanceMeters", range.max_distance_meters,
+        AudioDistanceRange::kMinFullVolumeMeters + AudioDistanceRange::kMinimumFadeMeters,
+        AudioDistanceRange::kMaxDistanceMeters);
+    if (range.max_distance_meters < range.full_volume_meters + AudioDistanceRange::kMinimumFadeMeters)
+        return {};
+    return range;
+}
+
 void ReadSettings(Context& context) noexcept {
     if (!ConfigReady(context.config)) return;
     try {
@@ -1357,6 +1795,7 @@ void ReadSettings(Context& context) noexcept {
             settings.enabled = false; // Activation is local to this plugin session.
             settings.force_media_player = json.value("forceMediaPlayer", false);
             settings.video_path = json.value("videoPath", std::string{});
+            settings.audio_distance = ReadAudioDistanceRange(json);
             if (settings.video_path.size() > 4000U) settings.video_path.clear();
             {
                 std::scoped_lock lock(context.mutex);
@@ -1386,7 +1825,9 @@ void PersistSettingsTask(void* user, AnomalyGenerationHandleV1) noexcept {
             nlohmann::json{{"enabled", false},
                            {"videoPath", settings.video_path},
                            {"muteGameAudio", true},
-                           {"forceMediaPlayer", settings.force_media_player}}
+                           {"forceMediaPlayer", settings.force_media_player},
+                           {"audioFullVolumeMeters", settings.audio_distance.full_volume_meters},
+                           {"audioMaxDistanceMeters", settings.audio_distance.max_distance_meters}}
                 .dump();
         static_cast<void>(context->config->write_atomic(
             context->config->user, anomaly::sdk::StringView(kConfigSchemaId),
@@ -1556,6 +1997,36 @@ void DrawProgress(Context& context, const AnomalyUiServiceV1* ui) {
     Text(ui, context.localizer.Format("progress.time", "{0} / {1}", times));
 }
 
+void DrawAudioDistanceSettings(Context& context, const AnomalyUiServiceV1* ui, AudioDistanceRange range) {
+    if (!ui->slider_float) return;
+    const auto full_label = context.localizer.Label("audio.full_volume_distance",
+        "Full-volume distance (m)", "tv-audio-full-volume");
+    const auto max_label = context.localizer.Label("audio.max_distance",
+        "Mute distance (m)", "tv-audio-max-distance");
+    constexpr auto gap = AudioDistanceRange::kMinimumFadeMeters;
+    // The host also accepts typed input, which may exceed the slider bounds.
+    const auto draw_slider = [&](const std::string& label, float value, float minimum, float maximum) {
+        float edited = value;
+        if (!ui->slider_float(ui->user, anomaly::sdk::StringView(label), &edited, minimum, maximum) ||
+            !std::isfinite(edited)) return value;
+        return std::clamp(edited, minimum, maximum);
+    };
+    const AudioDistanceRange before = range;
+    range.full_volume_meters = draw_slider(full_label, range.full_volume_meters,
+        AudioDistanceRange::kMinFullVolumeMeters,
+        std::min(AudioDistanceRange::kMaxFullVolumeMeters, range.max_distance_meters - gap));
+    range.max_distance_meters = draw_slider(max_label, range.max_distance_meters,
+        range.full_volume_meters + gap, AudioDistanceRange::kMaxDistanceMeters);
+    if (range.full_volume_meters != before.full_volume_meters ||
+        range.max_distance_meters != before.max_distance_meters) {
+        {
+            std::scoped_lock lock(context.mutex);
+            context.settings.audio_distance = range;
+        }
+        MarkSettingsDirty(context);
+    }
+}
+
 void Draw(void* plugin_context, const AnomalyUiServiceV1* ui_v1) {
     auto* context = static_cast<Context*>(plugin_context);
     if (context == nullptr || ui_v1 == nullptr || context->ui == nullptr) return;
@@ -1636,6 +2107,15 @@ void Draw(void* plugin_context, const AnomalyUiServiceV1* ui_v1) {
     }
     const std::array<std::string_view, 1> audio_args{audio_text};
     Text(ui_v1, context->localizer.Format("text.audio", "Audio: {0}", audio_args));
+    using AudioRoute = nte_tv_video::AudioOutput::Route;
+    if (audio.route != AudioRoute::None && audio.state != AudioState::Failed) {
+        const auto route = audio.route == AudioRoute::Spatial
+            ? context->localizer.Text("audio.route_spatial", "External 3D audio")
+            : context->localizer.Text("audio.route_external", "Standard external audio");
+        const std::array<std::string_view, 1> args{route};
+        Text(ui_v1, context->localizer.Format("text.audio_route", "Audio output: {0}", args));
+    }
+    DrawAudioDistanceSettings(*context, ui_v1, ui_settings.audio_distance);
 
     {
         std::string path;
@@ -1670,6 +2150,7 @@ AnomalyStatusV1 Load(const AnomalyHostApiV1* host, void** plugin_context) {
         return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "compatibility profile rejected");
     auto* context = new (std::nothrow) Context();
     if (context == nullptr) return Status(ANOMALY_STATUS_V1_FAILED);
+    context->host = host;
     context->core = Query<AnomalyCoreServiceV1>(host, ANOMALY_CORE_SERVICE_V1_ID,
                                                 ANOMALY_CORE_SERVICE_V1_VERSION);
     context->signatures = Query<AnomalySignatureServiceV1>(
@@ -1750,20 +2231,20 @@ AnomalyStatusV1 Start(void* plugin_context) noexcept {
     return anomaly::sdk::Ok();
 }
 
-AnomalyStatusV1 Stop(void* plugin_context, std::uint32_t) noexcept {
+AnomalyStatusV1 Stop(void* plugin_context, std::uint32_t deadline_ms) noexcept {
     auto* context = static_cast<Context*>(plugin_context);
     if (context == nullptr) return anomaly::sdk::Ok();
     context->alive.store(false, std::memory_order_release);
-    context->audio.Shutdown();
     g_active.store(nullptr, std::memory_order_release);
     context->persist_task = {};
+    if (!context->audio.Shutdown(std::chrono::milliseconds(deadline_ms)))
+        return Status(ANOMALY_STATUS_V1_TIMEOUT, "television audio worker did not stop in time");
     return anomaly::sdk::Ok();
 }
 
 void Unload(void* plugin_context) noexcept {
     auto* context = static_cast<Context*>(plugin_context);
     if (context == nullptr) return;
-    static_cast<void>(Stop(context, 0));
     delete context;
 }
 

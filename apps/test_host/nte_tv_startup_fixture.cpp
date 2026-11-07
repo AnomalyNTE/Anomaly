@@ -6,7 +6,7 @@ int main() {
     try {
         unsigned finds{}, invokes{};
         std::string persisted;
-        const std::string saved = R"({"enabled":true,"forceMediaPlayer":true,"muteGameAudio":false,"videoPath":"C:/fixture/movie.mp4"})";
+        std::string saved = R"({"enabled":true,"forceMediaPlayer":true,"muteGameAudio":false,"videoPath":"C:/fixture/movie.mp4"})";
         AnomalyConfigServiceV1 config{sizeof(config)};
         config.register_schema = [](void*, AnomalyStringViewV1, std::uint32_t, AnomalyByteSpanV1,
                                     AnomalyGenerationHandleV1*) { return anomaly::sdk::Ok(); };
@@ -42,6 +42,9 @@ int main() {
         if (context.settings.enabled ||
             context.settings.video_path != "C:/fixture/movie.mp4")
             throw std::runtime_error("saved activation was restored or preferences were lost");
+        if (context.settings.audio_distance.full_volume_meters != 4.0f ||
+            context.settings.audio_distance.max_distance_meters != 16.0f)
+            throw std::runtime_error("legacy configuration did not load the default audio distances");
         UpdateMedia(&context, 1.0);
         if (finds || invokes) throw std::runtime_error("startup touched UE media services");
         context.settings.enabled = true;
@@ -53,6 +56,66 @@ int main() {
         const auto written = nlohmann::json::parse(persisted);
         if (written.at("enabled") != false || written.at("muteGameAudio") != true)
             throw std::runtime_error("legacy audio preference overrode mandatory mute");
+        const auto position = RelativeAudioPosition({0, 200, 0}, {0, 0, 0}, {0, 0, 0});
+        const auto turned = RelativeAudioPosition({0, 200, 0}, {0, 0, 0}, {0, 180, 0});
+        if (!position || !turned || std::abs(position->right - 2.0f) > 0.001f ||
+            std::abs(turned->right + 2.0f) > 0.001f || std::abs(turned->forward) > 0.001f)
+            throw std::runtime_error("two-metre offset or camera-relative handedness is wrong");
+        const AudioDistanceRange defaults;
+        const AudioDistanceRange custom{8.0f, 24.0f};
+        if (defaults.Gain(3.0f) != 1.0f || defaults.Gain(4.0f) != 1.0f ||
+            defaults.Gain(10.0f) != 0.5f || defaults.Gain(16.0f) != 0.0f ||
+            defaults.Gain(18.0f) != 0.0f || custom.Gain(8.0f) != 1.0f ||
+            custom.Gain(16.0f) != 0.5f || custom.Gain(24.0f) != 0.0f)
+            throw std::runtime_error("television distance gain does not match the playback range");
+        struct SliderEdit {
+            std::array<float, 2> values;
+            std::array<std::array<float, 2>, 2> bounds{};
+            std::size_t next{};
+        };
+        AnomalyUiServiceV1 ui{sizeof(ui)};
+        ui.slider_float = [](void* user, AnomalyStringViewV1, float* value, float min, float max) {
+            auto& edit = *static_cast<SliderEdit*>(user);
+            if (edit.next >= edit.values.size()) return 0;
+            edit.bounds[edit.next] = {min, max};
+            *value = edit.values[edit.next++];
+            return 1;
+        };
+        SliderEdit change{{8.0f, 24.0f}};
+        ui.user = &change;
+        DrawAudioDistanceSettings(context, &ui, context.settings.audio_distance);
+        if (change.bounds[0] != std::array{0.5f, 15.0f} ||
+            change.bounds[1] != std::array{9.0f, 60.0f})
+            throw std::runtime_error("distance sliders did not constrain each other's ranges");
+        PersistSettingsTask(&context, {});
+        saved = persisted;
+        context.settings = {};
+        ReadSettings(context);
+        if (context.settings.audio_distance.full_volume_meters != 8.0f ||
+            context.settings.audio_distance.max_distance_meters != 24.0f)
+            throw std::runtime_error("edited audio distances were lost after loading saved settings");
+        SliderEdit typed{{100.0f, 0.0f}};
+        ui.user = &typed;
+        DrawAudioDistanceSettings(context, &ui, context.settings.audio_distance);
+        if (context.settings.audio_distance.full_volume_meters != 20.0f ||
+            context.settings.audio_distance.max_distance_meters != 21.0f)
+            throw std::runtime_error("typed values bypassed the distance slider limits");
+
+        auto invalid = nlohmann::json::parse(saved);
+        invalid["audioFullVolumeMeters"] = "near";
+        saved = invalid.dump();
+        ReadSettings(context);
+        if (context.settings.audio_distance.full_volume_meters != 4.0f ||
+            context.settings.audio_distance.max_distance_meters != 24.0f ||
+            context.settings.video_path != "C:/fixture/movie.mp4")
+            throw std::runtime_error("invalid audio distance discarded a valid preference");
+        invalid["audioFullVolumeMeters"] = 8.0f;
+        invalid["audioMaxDistanceMeters"] = 8.5f;
+        saved = invalid.dump();
+        ReadSettings(context);
+        if (context.settings.audio_distance.full_volume_meters != 4.0f ||
+            context.settings.audio_distance.max_distance_meters != 16.0f)
+            throw std::runtime_error("invalid distance pair did not restore both defaults");
         std::cout << "PASS: legacy activation ignored, preferences retained, startup/no-TV media calls=0\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

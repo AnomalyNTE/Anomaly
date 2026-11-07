@@ -22,6 +22,7 @@
     "kPropertySizeOffset": 52,
     "kFieldClassOffset": 8,
     "kFieldClassNameOffset": 0,
+    "kStructPropertyStructOffset": 112,
     "kBoolPropertyLayoutOffset": 112
   },
   "symbols": [

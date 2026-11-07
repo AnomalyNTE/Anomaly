@@ -1205,7 +1205,7 @@ if(ANOMALY_BUILD_TEST_FIXTURES)
     target_compile_definitions(anomaly_nte_tv_startup_fixture PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
     target_compile_options(anomaly_nte_tv_startup_fixture PRIVATE /utf-8 /EHsc)
     target_link_libraries(anomaly_nte_tv_startup_fixture PRIVATE Anomaly::sdk nlohmann_json::nlohmann_json
-        mfplay mfplat mfuuid propsys ole32 shell32 uuid user32)
+        mfplay mfreadwrite mfplat mfuuid propsys ole32 xaudio2 shell32 uuid user32)
     add_test(NAME nte_tv_startup_isolation COMMAND anomaly_nte_tv_startup_fixture)
     add_executable(anomaly_nte_tv_restore_fixture EXCLUDE_FROM_ALL
         apps/test_host/nte_tv_restore_fixture.cpp plugins/NteTvVideo/audio_output.cpp)
@@ -1213,7 +1213,7 @@ if(ANOMALY_BUILD_TEST_FIXTURES)
     target_compile_definitions(anomaly_nte_tv_restore_fixture PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
     target_compile_options(anomaly_nte_tv_restore_fixture PRIVATE /utf-8 /EHsc)
     target_link_libraries(anomaly_nte_tv_restore_fixture PRIVATE Anomaly::sdk nlohmann_json::nlohmann_json
-        mfplay mfplat mfuuid propsys ole32 shell32 uuid user32)
+        mfplay mfreadwrite mfplat mfuuid propsys ole32 xaudio2 shell32 uuid user32)
     add_test(NAME nte_tv_restore COMMAND anomaly_nte_tv_restore_fixture
         "${CMAKE_SOURCE_DIR}/plugins/NteTvVideo/profile/compatibility.profile.json")
     add_executable(anomaly_nte_tv_audio_fixture EXCLUDE_FROM_ALL
@@ -1221,7 +1221,7 @@ if(ANOMALY_BUILD_TEST_FIXTURES)
     target_include_directories(anomaly_nte_tv_audio_fixture PRIVATE "${CMAKE_SOURCE_DIR}")
     target_compile_definitions(anomaly_nte_tv_audio_fixture PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_compile_options(anomaly_nte_tv_audio_fixture PRIVATE /utf-8 /EHsc)
-    target_link_libraries(anomaly_nte_tv_audio_fixture PRIVATE mfplay mfplat mfuuid propsys ole32)
+    target_link_libraries(anomaly_nte_tv_audio_fixture PRIVATE mfplay mfreadwrite mfplat mfuuid propsys ole32 xaudio2)
     add_executable(anomaly_ue5_assets_fixture
         apps/test_host/ue5_assets_fixture.cpp apps/test_host/ue5_assets_c_fixture.c)
     target_link_libraries(anomaly_ue5_assets_fixture PRIVATE anomaly_adapter_services Anomaly::sdk)
@@ -1981,7 +1981,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         PACKAGE_NAME NteTvVideo
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteTvVideo")
     target_link_libraries(anomaly_builtin_nte_tv_video PRIVATE
-        nlohmann_json::nlohmann_json mfplay mfplat mfuuid propsys ole32)
+        nlohmann_json::nlohmann_json mfplay mfreadwrite mfplat mfuuid propsys ole32 xaudio2)
     anomaly_add_plugin(anomaly_builtin_model_scale
         SOURCES plugins/ModelScale/plugin.cpp
         MANIFEST plugins/ModelScale/manifest.json

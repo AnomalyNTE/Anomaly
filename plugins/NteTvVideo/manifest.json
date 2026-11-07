@@ -69,6 +69,16 @@
       "minVersion": 1
     },
     {
+      "id": "anomaly.ue5.world",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.nte.player",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
       "id": "anomaly.interop.patch",
       "minVersion": 1
     }
@@ -84,6 +94,8 @@
     "scheduler",
     "ui",
     "ue5-objects",
+    "ue5-world",
+    "nte-player-snapshot",
     "game-events",
     "interop-patch"
   ]
