@@ -13012,26 +13012,6 @@ void BuildExtraMeshes(Context &context) noexcept {
     for (const auto &candidate : context.mesh_scan_candidates)
       context.extra_targets.push_back(candidate.first);
     context.extra_build_pending = false;
-    {
-      // Diagnostic: which accessory meshes this character drives, and which body bone each one hangs
-      // from. A modular head anchored to the wrong bone is what tilts it.
-      std::string message = "betterpose accessories rebuilt owner=" +
-                            Hex(context.runtime.mesh) + " asset=" +
-                            Hex(context.runtime.mesh_asset) + " extras=" +
-                            std::to_string(context.extra_meshes.size());
-      for (const auto &extra : context.extra_meshes) {
-        message += " [";
-        message += extra.display_name.empty() ? std::string("?") : extra.display_name;
-        message += " bones=" + std::to_string(extra.bone_count);
-        message += extra.used_hierarchy ? " hier=1" : " hier=0";
-        message += extra.used_bind ? " bind=1" : "";
-        message += " anchor=" + std::to_string(extra.anchor_body);
-        if (extra.anchor_body < context.bone_names.size())
-          message += "(" + context.bone_names[extra.anchor_body] + ")";
-        message += "]";
-      }
-      LogDiagnostic(context, message);
-    }
   }
 }
 
