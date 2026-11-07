@@ -1,4 +1,4 @@
-# 插件 id 迁移：把运行时数据里的旧 id 换成 `<作者>.<插件名>`。
+﻿# 插件 id 迁移：把运行时数据里的旧 id 换成 `<作者>.<插件名>`。
 # 双击用同目录的 Migrate-Plugin-Ids.cmd；使用说明见同目录 README.md。
 # 本目录应当与 AnomalyLauncher.exe 同级，省略 -Root 时自动使用脚本所在目录（及其下的 Anomaly/）。
 # 文件以 UTF-8 BOM 保存，Windows 自带的 PowerShell 5.1 与 PowerShell 7 都能直接运行。
