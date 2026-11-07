@@ -6,7 +6,7 @@ int main() {
     try {
         unsigned finds{}, invokes{};
         std::string persisted;
-        std::string saved = R"({"enabled":true,"forceMediaPlayer":true,"muteGameAudio":false,"videoPath":"C:/fixture/movie.mp4"})";
+        std::string saved = R"({"enabled":true,"forceMediaPlayer":true,"muteGameAudio":false,"videoPath":"C:/fixture/movie.mp4","bilibiliUrl":"https://www.bilibili.com/video/BV1xx411c7mD?p=2"})";
         AnomalyConfigServiceV1 config{sizeof(config)};
         config.register_schema = [](void*, AnomalyStringViewV1, std::uint32_t, AnomalyByteSpanV1,
                                     AnomalyGenerationHandleV1*) { return anomaly::sdk::Ok(); };
@@ -42,6 +42,15 @@ int main() {
         if (context.settings.enabled ||
             context.settings.video_path != "C:/fixture/movie.mp4")
             throw std::runtime_error("saved activation was restored or preferences were lost");
+        if (context.settings.bilibili_url !=
+                "https://www.bilibili.com/video/BV1xx411c7mD?p=2")
+            throw std::runtime_error("the last bilibili link was not restored as input content");
+        const std::wstring cache = nte_tv_video::DefaultMediaCacheDirectory();
+        if (cache.empty() || !IsPreparedCachePath(WideToUtf8(cache) + "/bv_fixture_p1.mp4") ||
+            IsPreparedCachePath("C:/fixture/movie.mp4"))
+            throw std::runtime_error("prepared cache paths are not distinguished from local sources");
+        if (context.preparer.Started())
+            throw std::runtime_error("startup created the preparation worker");
         if (context.settings.audio_distance.full_volume_meters != 4.0f ||
             context.settings.audio_distance.max_distance_meters != 16.0f)
             throw std::runtime_error("legacy configuration did not load the default audio distances");
@@ -50,12 +59,17 @@ int main() {
         context.settings.enabled = true;
         UpdateMedia(&context, 1.0);
         if (finds || invokes) throw std::runtime_error("manual enable without a television touched media services");
+        if (context.preparer.Started())
+            throw std::runtime_error("manual enable started the preparation worker");
         if (context.audio.Read().state != nte_tv_video::AudioOutput::State::Idle)
             throw std::runtime_error("startup started audio");
         PersistSettingsTask(&context, {});
         const auto written = nlohmann::json::parse(persisted);
         if (written.at("enabled") != false || written.at("muteGameAudio") != true)
             throw std::runtime_error("legacy audio preference overrode mandatory mute");
+        if (written.at("bilibiliUrl") !=
+                "https://www.bilibili.com/video/BV1xx411c7mD?p=2")
+            throw std::runtime_error("the last bilibili link was not persisted");
         const auto position = RelativeAudioPosition({0, 200, 0}, {0, 0, 0}, {0, 0, 0});
         const auto turned = RelativeAudioPosition({0, 200, 0}, {0, 0, 0}, {0, 180, 0});
         if (!position || !turned || std::abs(position->right - 2.0f) > 0.001f ||
@@ -92,8 +106,10 @@ int main() {
         context.settings = {};
         ReadSettings(context);
         if (context.settings.audio_distance.full_volume_meters != 8.0f ||
-            context.settings.audio_distance.max_distance_meters != 24.0f)
-            throw std::runtime_error("edited audio distances were lost after loading saved settings");
+            context.settings.audio_distance.max_distance_meters != 24.0f ||
+            context.settings.bilibili_url !=
+                "https://www.bilibili.com/video/BV1xx411c7mD?p=2")
+            throw std::runtime_error("edited audio distances or the link were lost after loading saved settings");
         SliderEdit typed{{100.0f, 0.0f}};
         ui.user = &typed;
         DrawAudioDistanceSettings(context, &ui, context.settings.audio_distance);

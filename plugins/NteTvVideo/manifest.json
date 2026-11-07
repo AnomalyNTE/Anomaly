@@ -2,10 +2,10 @@
   "schemaVersion": 2,
   "id": "anomaly.nte-tv-video",
   "name": "NTE TV Video",
-  "description": "Replaces the video played on the residence TV with a local custom video.",
+  "description": "Replaces the video played on the residence TV with a local custom video or a Bilibili link.",
   "author": "Anomaly",
   "license": "AGPL-3.0-only",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "entry": "plugin.dll",
   "api": {
     "major": 1,

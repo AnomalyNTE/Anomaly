@@ -17,6 +17,7 @@
 #include "anomaly/sdk/services/ui.h"
 #include "tv_video_profile.hpp"
 #include "audio_output.hpp"
+#include "media_prepare.hpp"
 
 #include <Windows.h>
 #include <ShlObj.h>
@@ -54,12 +55,15 @@ constexpr std::wstring_view kTvActorClassName = L"BP_FurnitureActorBase_TV_C";
 // Blueprint function that selects the TV video pipeline (see IsManaPlayerFunction).
 constexpr std::size_t kMaxPathChars = 512;
 constexpr std::size_t kMaxNameBytes = 256;
+// The bilibili link input keeps its own edited copy until the user parses it.
+constexpr std::size_t kMaxLinkChars = 1024;
 
 constexpr std::string_view kConfigSchemaId = "anomaly.nte-tv-video.settings";
 constexpr std::uint32_t kConfigSchemaVersion = 1;
 constexpr std::string_view kConfigSchemaJson =
     R"({"type":"object","properties":{"enabled":{"type":"boolean"},)"
     R"("videoPath":{"type":"string","maxLength":4096},)"
+    R"("bilibiliUrl":{"type":"string","maxLength":2048},)"
     R"("muteGameAudio":{"type":"boolean"},)"
     R"("forceMediaPlayer":{"type":"boolean"},)"
     R"("audioFullVolumeMeters":{"type":"number","minimum":0.5,"maximum":20},)"
@@ -77,7 +81,23 @@ struct Settings final {
     bool enabled{};
     bool force_media_player{};
     std::string video_path;
+    // Last link the user submitted. Restored into the input on startup, never
+    // fetched automatically.
+    std::string bilibili_url;
     AudioDistanceRange audio_distance;
+};
+
+// Bilibili preparation state shared by the game update (consumer) and draw
+// (renderer). Guarded by Context::mutex.
+struct PrepareDisplay final {
+    std::uint64_t request_id{};
+    std::uint64_t applied_id{};
+    nte_tv_video::PrepareStage stage{nte_tv_video::PrepareStage::Idle};
+    nte_tv_video::PrepareError error{nte_tv_video::PrepareError::None};
+    bool active{};
+    std::uint64_t received_bytes{};
+    std::uint64_t total_bytes{};
+    float progress{};
 };
 
 // The file dialog runs on its own thread; this state remains valid after the
@@ -157,6 +177,18 @@ struct Context final {
     std::mutex mutex;
     Settings settings;
     bool settings_dirty{};
+    PrepareDisplay prepare;  // Guarded by mutex.
+    // Last preparation result written to the log; game thread only.
+    std::uint64_t prepare_logged{};
+    // Previous replacement switch state, used to detect the turn-off transition
+    // (game thread only).
+    bool enabled_prev{};
+    // Render-thread link input; initialized once from the restored settings.
+    std::array<char, kMaxLinkChars> link_input{};
+    bool link_input_initialized{};
+    // Worker-owned download/merge pipeline. Started on the lifecycle thread;
+    // render callbacks never create it or touch its files.
+    nte_tv_video::MediaPreparer preparer;
     // The user's video path, applied in memory only. Nothing is ever written to
     // the game directory: the plugin overrides strings and hook results.
     std::wstring override_path;
@@ -1477,6 +1509,10 @@ bool UpdatePlaybackSeek(Context& context, std::uintptr_t world, MediaClock::time
     return now >= seek.deadline ? fail("playback clock did not advance") : true;
 }
 
+void UpdatePrepare(Context& context) noexcept;
+void ResetBilibiliPrepare(Context& context) noexcept;
+void DiscardPreparedSource(Context& context, const std::string& path) noexcept;
+
 void ANOMALY_CALL UpdateMedia(void* plugin_context, double delta_seconds) noexcept {
     auto* pointer = static_cast<Context*>(plugin_context);
     if (!pointer || !pointer->alive.load(std::memory_order_acquire)) return;
@@ -1485,6 +1521,9 @@ void ANOMALY_CALL UpdateMedia(void* plugin_context, double delta_seconds) noexce
         context.media_poll_seconds += delta_seconds;
         if (context.media_poll_seconds < 0.1) return;
         const double elapsed = std::exchange(context.media_poll_seconds, 0);
+        // A validated prepared file enters the same source-change path as a picked
+        // file, so switching pages/links clears the previous resume position below.
+        UpdatePrepare(context);
         std::wstring path;
         bool enabled{};
         {
@@ -1495,20 +1534,36 @@ void ANOMALY_CALL UpdateMedia(void* plugin_context, double delta_seconds) noexce
         const auto world = enabled || !context.opened_path.empty() || context.native_audio_pending.id ? CurrentWorld(context) : 0;
         const bool login = world && NameEquals(context, world + native_layout.kObjectNameOffset, L"Updater_P");
         if (login || (world && world != context.tv_world)) context.native_audio_pending = {};
+        if (login) {
+            std::scoped_lock lock(context.mutex);
+            context.settings.enabled = false;
+        }
+        enabled = enabled && !login;
+        const bool enabled_before = context.enabled_prev;
+        context.enabled_prev = enabled;
+        const bool disable_transition = enabled_before && !enabled;
         const bool source_changed = path != context.selected_path;
-        if (!enabled || login || source_changed) {
-            if (login) {
-                std::scoped_lock lock(context.mutex);
-                context.settings.enabled = false;
-            }
+        if (!enabled || source_changed) {
             const bool active_tv = !context.opened_path.empty() && context.tv_binding.slot >= 0 &&
                 world == context.tv_binding.world && !login &&
                 LivePointer(context, context.tv_binding.owner, context.tv_binding.owner_handle) &&
                 TelevisionPlaying(context) && context.tv_component == context.tv_binding.component;
             StopTakeover(context, login ? 0 : world, active_tv);
+            const std::wstring previous = context.selected_path;
             context.resume_position = 0;
             context.takeover_failed = false;
-            context.selected_path = path;
+            if (disable_transition || login) {
+                // Turning replacement off (or a login reset) cancels an active
+                // preparation and reclaims the prepared artifact after the media
+                // was closed above.
+                ResetBilibiliPrepare(context);
+                if (!previous.empty()) DiscardPreparedSource(context, WideToUtf8(previous));
+                context.selected_path.clear();
+            } else {
+                if (source_changed && !previous.empty() && previous != path)
+                    DiscardPreparedSource(context, WideToUtf8(previous));
+                context.selected_path = path;
+            }
             if (!enabled || login || path.empty()) {
                 MediaStatus(context, context.native_audio_pending.id ?
                     context.localizer.Text("media.native_audio_pending", "Original sound will resume with the television's next audio event") :
@@ -1795,8 +1850,10 @@ void ReadSettings(Context& context) noexcept {
             settings.enabled = false; // Activation is local to this plugin session.
             settings.force_media_player = json.value("forceMediaPlayer", false);
             settings.video_path = json.value("videoPath", std::string{});
+            settings.bilibili_url = json.value("bilibiliUrl", std::string{});
             settings.audio_distance = ReadAudioDistanceRange(json);
             if (settings.video_path.size() > 4000U) settings.video_path.clear();
+            if (settings.bilibili_url.size() > 2000U) settings.bilibili_url.clear();
             {
                 std::scoped_lock lock(context.mutex);
                 context.settings = settings;
@@ -1824,6 +1881,7 @@ void PersistSettingsTask(void* user, AnomalyGenerationHandleV1) noexcept {
         const std::string document =
             nlohmann::json{{"enabled", false},
                            {"videoPath", settings.video_path},
+                           {"bilibiliUrl", settings.bilibili_url},
                            {"muteGameAudio", true},
                            {"forceMediaPlayer", settings.force_media_player},
                            {"audioFullVolumeMeters", settings.audio_distance.full_volume_meters},
@@ -1866,6 +1924,286 @@ void UpdateOverridePath(Context& context) noexcept {
         std::scoped_lock lock(context.mutex);
         wide = Utf8ToWide(context.settings.video_path);
         context.override_path = wide;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bilibili link preparation
+// ---------------------------------------------------------------------------
+
+bool PrepareActive(const nte_tv_video::PrepareStage stage) noexcept {
+    using Stage = nte_tv_video::PrepareStage;
+    return stage == Stage::Resolving || stage == Stage::Downloading ||
+           stage == Stage::Validating;
+}
+
+// Starts the worker lazily so plugin startup never touches the network or opens
+// media. Only the per-session cache root is prepared here.
+bool EnsurePreparer(Context& context) noexcept {
+    if (context.preparer.Started()) return true;
+    nte_tv_video::PrepareOptions options;
+    options.cache_directory = nte_tv_video::DefaultMediaCacheDirectory();
+    if (context.preparer.Start(options)) return true;
+    Log(context, ANOMALY_CORE_LOG_LEVEL_V1_ERROR,
+        "bilibili preparation worker failed to start");
+    return false;
+}
+
+void LogPrepareResult(Context& context, const nte_tv_video::PrepareSnapshot& snapshot) noexcept {
+    if (context.prepare_logged == snapshot.request_id) return;
+    context.prepare_logged = snapshot.request_id;
+    char message[512]{};
+    std::snprintf(message, sizeof(message), "bilibili preparation id=%llu stage=%d error=%d %s",
+                  static_cast<unsigned long long>(snapshot.request_id),
+                  static_cast<int>(snapshot.stage), static_cast<int>(snapshot.error),
+                  snapshot.detail.c_str());
+    Log(context, snapshot.stage == nte_tv_video::PrepareStage::Ready
+                     ? ANOMALY_CORE_LOG_LEVEL_V1_INFO
+                     : ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
+        message);
+}
+
+// Applies a validated prepared file once. The game update is the only consumer, so
+// the prepared path enters the normal source-change path after it is ready.
+void UpdatePrepare(Context& context) noexcept {
+    try {
+        const auto snapshot = context.preparer.Poll();
+        if (snapshot.request_id == 0) return;
+        {
+            std::scoped_lock lock(context.mutex);
+            if (snapshot.request_id != context.prepare.request_id) return;
+        }
+        if (snapshot.stage == nte_tv_video::PrepareStage::Ready && !snapshot.path.empty()) {
+            std::uint64_t applied{};
+            {
+                std::scoped_lock lock(context.mutex);
+                applied = context.prepare.applied_id;
+            }
+            if (applied != snapshot.request_id) {
+                if (snapshot.path.size() >= kMaxPathChars) {
+                    Log(context, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
+                        "prepared media path is too long");
+                } else {
+                    {
+                        std::scoped_lock lock(context.mutex);
+                        context.settings.video_path = snapshot.path;
+                    }
+                    UpdateOverridePath(context);
+                    MarkSettingsDirty(context);
+                }
+                std::scoped_lock lock(context.mutex);
+                context.prepare.applied_id = snapshot.request_id;
+            }
+        }
+        {
+            std::scoped_lock lock(context.mutex);
+            if (snapshot.request_id != context.prepare.request_id) return;
+            context.prepare.stage = snapshot.stage;
+            context.prepare.error = snapshot.error;
+            context.prepare.active = PrepareActive(snapshot.stage);
+            context.prepare.received_bytes = snapshot.received_bytes;
+            context.prepare.total_bytes = snapshot.total_bytes;
+            context.prepare.progress = snapshot.progress;
+        }
+        LogPrepareResult(context, snapshot);
+    } catch (...) {
+    }
+}
+
+void SubmitBilibiliLink(Context& context) noexcept {
+    if (!EnsurePreparer(context)) {
+        std::scoped_lock lock(context.mutex);
+        context.prepare = PrepareDisplay{};
+        context.prepare.stage = nte_tv_video::PrepareStage::Failed;
+        context.prepare.error = nte_tv_video::PrepareError::Internal;
+        return;
+    }
+    std::string link(context.link_input.data());
+    const auto first = link.find_first_not_of(" \t\r\n");
+    const auto last = link.find_last_not_of(" \t\r\n");
+    link = first == std::string::npos ? std::string{} : link.substr(first, last - first + 1);
+    if (link.empty() || link.size() > 2000U) {
+        std::scoped_lock lock(context.mutex);
+        context.prepare = PrepareDisplay{};
+        context.prepare.stage = nte_tv_video::PrepareStage::Failed;
+        context.prepare.error = nte_tv_video::PrepareError::InvalidLink;
+        return;
+    }
+    const auto request_id = context.preparer.Submit(link);
+    if (request_id == 0) {
+        std::scoped_lock lock(context.mutex);
+        context.prepare = PrepareDisplay{};
+        context.prepare.stage = nte_tv_video::PrepareStage::Failed;
+        context.prepare.error = nte_tv_video::PrepareError::Internal;
+        return;
+    }
+    {
+        std::scoped_lock lock(context.mutex);
+        context.prepare = PrepareDisplay{};
+        context.prepare.request_id = request_id;
+        context.prepare.stage = nte_tv_video::PrepareStage::Resolving;
+        context.prepare.active = true;
+        context.settings.bilibili_url = link;
+    }
+    MarkSettingsDirty(context);
+    char message[96]{};
+    std::snprintf(message, sizeof(message), "bilibili preparation id=%llu submitted",
+                  static_cast<unsigned long long>(request_id));
+    Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO, message);
+}
+
+void CancelBilibiliPrepare(Context& context) noexcept {
+    context.preparer.Cancel();
+    std::scoped_lock lock(context.mutex);
+    // Drop late results of the cancelled request by request id; the display keeps
+    // the cancellation copy until the next submit or source selection.
+    context.prepare.request_id = 0;
+    if (!context.prepare.active) return;
+    context.prepare.active = false;
+    context.prepare.stage = nte_tv_video::PrepareStage::Cancelled;
+    context.prepare.error = nte_tv_video::PrepareError::Cancelled;
+}
+
+void ResetBilibiliPrepare(Context& context) noexcept {
+    context.preparer.Cancel();
+    std::scoped_lock lock(context.mutex);
+    context.prepare = PrepareDisplay{};
+}
+
+std::string TrimmedLink(const char* text) noexcept {
+    if (text == nullptr) return {};
+    const std::string_view value(text);
+    const auto first = value.find_first_not_of(" \t\r\n");
+    if (first == std::string_view::npos) return {};
+    const auto last = value.find_last_not_of(" \t\r\n");
+    return std::string(value.substr(first, last - first + 1));
+}
+
+// Prepared artifacts live in the per-process cache and are reclaimed when the
+// process exits, so a path from a previous session is never restored as a source.
+bool IsPreparedCachePath(const std::string& path) noexcept {
+    if (path.empty()) return false;
+    const std::wstring cache = nte_tv_video::DefaultMediaCacheDirectory();
+    if (cache.empty()) return false;
+    const std::wstring wide = Utf8ToWide(path);
+    if (wide.size() < cache.size()) return false;
+    return CompareStringOrdinal(wide.data(), static_cast<int>(cache.size()), cache.data(),
+                                static_cast<int>(cache.size()), TRUE) == CSTR_EQUAL;
+}
+
+// Deletes one prepared artifact after the television media has been closed and
+// clears the remembered source when it pointed at that artifact. User-owned local
+// files are never touched.
+void DiscardPreparedSource(Context& context, const std::string& path) noexcept {
+    if (path.empty() || !IsPreparedCachePath(path)) return;
+    bool removed = false;
+    if (context.preparer.Started()) {
+        removed = context.preparer.Discard(path);
+    } else {
+        const std::wstring wide = Utf8ToWide(path);
+        removed = !wide.empty() && DeleteFileW(wide.c_str()) != 0;
+    }
+    {
+        std::scoped_lock lock(context.mutex);
+        if (context.settings.video_path == path) context.settings.video_path.clear();
+    }
+    UpdateOverridePath(context);
+    MarkSettingsDirty(context);
+    char message[380]{};
+    std::snprintf(message, sizeof(message), "bilibili cache %s: %s",
+                  removed ? "removed" : "left for the next session", path.c_str());
+    Log(context, removed ? ANOMALY_CORE_LOG_LEVEL_V1_INFO : ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
+        message);
+}
+
+std::string PrepareReasonText(Context& context, const nte_tv_video::PrepareError error) {
+    using Error = nte_tv_video::PrepareError;
+    switch (error) {
+    case Error::InvalidLink:
+        return context.localizer.Text("prepare.reason.invalid_link",
+            "The link is not a supported normal submission");
+    case Error::Network:
+        return context.localizer.Text("prepare.reason.network",
+            "The bilibili service could not be reached");
+    case Error::Api:
+        return context.localizer.Text("prepare.reason.api",
+            "The bilibili API rejected the page");
+    case Error::NoPlayableStream:
+        return context.localizer.Text("prepare.reason.no_playable_stream",
+            "No compatible muxed H.264/AAC stream is available");
+    case Error::SegmentedStream:
+        return context.localizer.Text("prepare.reason.segmented",
+            "Segmented videos are not supported");
+    case Error::Download:
+        return context.localizer.Text("prepare.reason.download",
+            "The video could not be downloaded");
+    case Error::InvalidMedia:
+        return context.localizer.Text("prepare.reason.invalid_media",
+            "The downloaded file did not pass validation");
+    case Error::Oversize:
+        return context.localizer.Text("prepare.reason.oversize",
+            "The video exceeds the 512 MiB limit");
+    case Error::Budget:
+        return context.localizer.Text("prepare.reason.budget",
+            "The media cache exceeds its 2 GiB budget");
+    case Error::Cancelled:
+        return context.localizer.Text("prepare.cancelled", "Cancelled");
+    case Error::Internal:
+        return context.localizer.Text("prepare.reason.internal",
+            "Internal preparation error");
+    default:
+        return {};
+    }
+}
+
+std::string FormatMebibytes(const std::uint64_t bytes) {
+    constexpr std::uint64_t kMebibyte = 1024ull * 1024ull;
+    return std::to_string((bytes + kMebibyte / 2) / kMebibyte);
+}
+
+// Text for the existing playback status row. Ready entries only show while
+// replacement is off; with replacement on the normal playback status takes over
+// once the prepared file is applied.
+std::string PrepareStatusText(Context& context) {
+    PrepareDisplay display;
+    bool enabled{};
+    {
+        std::scoped_lock lock(context.mutex);
+        display = context.prepare;
+        enabled = context.settings.enabled;
+    }
+    using Stage = nte_tv_video::PrepareStage;
+    switch (display.stage) {
+    case Stage::Resolving:
+        return context.localizer.Text("prepare.resolving", "Resolving the bilibili link");
+    case Stage::Downloading: {
+        const int percent = display.total_bytes > 0
+                                ? static_cast<int>(display.progress * 100.0F + 0.5F)
+                                : 0;
+        const std::string percent_text = std::to_string(percent);
+        const std::string received = FormatMebibytes(display.received_bytes);
+        const std::string total = FormatMebibytes(display.total_bytes);
+        const std::array<std::string_view, 3> arguments{percent_text, received, total};
+        return context.localizer.Format(
+            "prepare.downloading",
+            "Downloading the video {0}% ({1} MiB / {2} MiB)", arguments);
+    }
+    case Stage::Validating:
+        return context.localizer.Text("prepare.validating", "Validating the video file");
+    case Stage::Failed: {
+        const std::string reason = PrepareReasonText(context, display.error);
+        const std::array<std::string_view, 1> arguments{reason};
+        return context.localizer.Format("prepare.failed", "Preparation failed: {0}",
+                                        arguments);
+    }
+    case Stage::Cancelled:
+        return context.localizer.Text("prepare.cancelled", "Cancelled");
+    case Stage::Ready:
+        return enabled ? std::string{}
+                       : context.localizer.Text("prepare.ready_disabled",
+                             "Ready; enable replacement to play");
+    default:
+        return {};
     }
 }
 
@@ -1997,6 +2335,38 @@ void DrawProgress(Context& context, const AnomalyUiServiceV1* ui) {
     Text(ui, context.localizer.Format("progress.time", "{0} / {1}", times));
 }
 
+// Read-only download progress. The host owns no progress-bar widget, so reuse the
+// existing disabled slider when the append-only API is present and fall back to an
+// ASCII bar on older runtimes.
+void DrawPrepareProgress(Context& context, const AnomalyUiServiceV1* ui) {
+    PrepareDisplay display;
+    {
+        std::scoped_lock lock(context.mutex);
+        display = context.prepare;
+    }
+    if (display.stage != nte_tv_video::PrepareStage::Downloading) return;
+    const float fraction = display.total_bytes > 0
+                               ? std::clamp(display.progress, 0.0F, 1.0F)
+                               : 0.0F;
+    if (HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::slider_float_enabled)>(
+            ui, offsetof(AnomalyUiServiceV1, slider_float_enabled)) &&
+        ui->slider_float_enabled != nullptr) {
+        float value = fraction * 100.0F;
+        const auto label = context.localizer.Label(
+            "prepare.progress_label", "Download progress", "tv-video-prepare-progress");
+        static_cast<void>(ui->slider_float_enabled(
+            ui->user, anomaly::sdk::StringView(label), &value, 0.0F, 100.0F, 0));
+        return;
+    }
+    constexpr int kCells = 20;
+    const int filled = static_cast<int>(fraction * static_cast<float>(kCells) + 0.5F);
+    std::string bar("[");
+    bar.append(static_cast<std::size_t>(filled), '#');
+    bar.append(static_cast<std::size_t>(kCells - filled), '-');
+    bar.push_back(']');
+    Text(ui, bar);
+}
+
 void DrawAudioDistanceSettings(Context& context, const AnomalyUiServiceV1* ui, AudioDistanceRange range) {
     if (!ui->slider_float) return;
     const auto full_label = context.localizer.Label("audio.full_volume_distance",
@@ -2057,6 +2427,9 @@ void Draw(void* plugin_context, const AnomalyUiServiceV1* ui_v1) {
                 }
                 UpdateOverridePath(*context);
                 MarkSettingsDirty(*context);
+                // A manually picked file replaces both the prepared source and
+                // the running preparation task.
+                ResetBilibiliPrepare(*context);
             }
         }
     }
@@ -2085,9 +2458,12 @@ void Draw(void* plugin_context, const AnomalyUiServiceV1* ui_v1) {
         std::scoped_lock lock(context->mutex);
         playback_status = context->media_status;
     }
+    const std::string prepare_status = PrepareStatusText(*context);
+    if (!prepare_status.empty()) playback_status = prepare_status;
     const std::array<std::string_view, 1> playback_args{playback_status};
     Text(ui_v1, context->localizer.Format("text.playback", "Playback: {0}", playback_args));
     DrawProgress(*context, ui_v1);
+    DrawPrepareProgress(*context, ui_v1);
     const auto audio = context->audio.Read();
     std::string audio_text;
     using AudioState = nte_tv_video::AudioOutput::State;
@@ -2132,6 +2508,43 @@ void Draw(void* plugin_context, const AnomalyUiServiceV1* ui_v1) {
                                                         "tv-video-browse");
     if (Button(ui_v1, browse, true)) {
         StartFilePicker(*context);
+    }
+
+    if (!context->link_input_initialized) {
+        const auto& restored = ui_settings.bilibili_url;
+        const auto count = std::min(restored.size(), context->link_input.size() - 1);
+        if (count > 0) std::memcpy(context->link_input.data(), restored.data(), count);
+        context->link_input[count] = '\0';
+        context->link_input_initialized = true;
+    }
+    const std::string link_label = context->localizer.Label(
+        "bilibili.link", "Bilibili link", "tv-video-bilibili-link");
+    if (ui_v1->input_text != nullptr) {
+        if (HasField<AnomalyUiServiceV1, decltype(AnomalyUiServiceV1::set_next_item_width)>(
+                ui_v1, offsetof(AnomalyUiServiceV1, set_next_item_width)) &&
+            ui_v1->set_next_item_width != nullptr)
+            ui_v1->set_next_item_width(ui_v1->user, -1.0F);
+        static_cast<void>(ui_v1->input_text(
+            ui_v1->user, anomaly::sdk::StringView(link_label), context->link_input.data(),
+            context->link_input.size(), 0));
+    }
+    bool prepare_active{};
+    {
+        std::scoped_lock lock(context->mutex);
+        prepare_active = context->prepare.active;
+    }
+    const std::string edited_link = TrimmedLink(context->link_input.data());
+    // A new link submitted while a task runs replaces it; the same button cancels
+    // the active task when the input still holds the running link.
+    const bool submit_new =
+        prepare_active && !edited_link.empty() && edited_link != ui_settings.bilibili_url;
+    const std::string action =
+        prepare_active && !submit_new
+            ? context->localizer.Label("action.cancel", "Cancel", "tv-video-bilibili-cancel")
+            : context->localizer.Label("action.parse", "Parse", "tv-video-bilibili-parse");
+    if (Button(ui_v1, action, true)) {
+        if (prepare_active && !submit_new) CancelBilibiliPrepare(*context);
+        else SubmitBilibiliLink(*context);
     }
     const std::array<std::string_view, 1> hits{
         std::to_string(context->tv_hits.load(std::memory_order_relaxed))};
@@ -2200,6 +2613,9 @@ AnomalyStatusV1 Start(void* plugin_context) noexcept {
     context->logged_play_missing.store(false, std::memory_order_release);
     context->logged_audio_missing.store(false, std::memory_order_release);
     context->settings = Settings{};
+    context->enabled_prev = false;
+    context->prepare = PrepareDisplay{};
+    context->prepare_logged = 0;
     context->media_status = context->localizer.Text("media.idle", "Idle");
     context->alive.store(true, std::memory_order_release);
     {
@@ -2215,6 +2631,23 @@ AnomalyStatusV1 Start(void* plugin_context) noexcept {
         }
     }
     ReadSettings(*context);
+    {
+        // The media cache is per process: a prepared artifact from a previous
+        // session no longer exists, so only a user-owned local path is restored.
+        if (IsPreparedCachePath(context->settings.video_path))
+            context->settings.video_path.clear();
+        // Restore only the input content: startup must not resolve or fetch it.
+        const auto& restored = context->settings.bilibili_url;
+        const auto count = std::min(restored.size(), context->link_input.size() - 1);
+        if (count > 0) std::memcpy(context->link_input.data(), restored.data(), count);
+        context->link_input[count] = '\0';
+        context->link_input_initialized = true;
+    }
+    // Cache reclamation and the worker setup belong to the lifecycle thread, never
+    // to a render callback. No network or media is touched here.
+    if (!EnsurePreparer(*context))
+        Log(*context, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
+            "bilibili preparation worker is unavailable this session");
     {
         char message[320]{};
         std::snprintf(message, sizeof(message),
@@ -2237,7 +2670,23 @@ AnomalyStatusV1 Stop(void* plugin_context, std::uint32_t deadline_ms) noexcept {
     context->alive.store(false, std::memory_order_release);
     g_active.store(nullptr, std::memory_order_release);
     context->persist_task = {};
-    if (!context->audio.Shutdown(std::chrono::milliseconds(deadline_ms)))
+    const auto started = MediaClock::now();
+    bool prepare_stopped = true;
+    if (context->preparer.Started()) {
+        prepare_stopped = context->preparer.Stop(deadline_ms);
+        // A player may still hold the current artifact; leftovers are reclaimed by
+        // the next Start.
+        if (prepare_stopped) context->preparer.DiscardAll();
+    }
+    const auto spent = std::chrono::duration_cast<std::chrono::milliseconds>(
+        MediaClock::now() - started);
+    const auto remaining = spent.count() >= deadline_ms
+        ? 0U
+        : static_cast<std::uint32_t>(deadline_ms - spent.count());
+    const bool audio_stopped = context->audio.Shutdown(std::chrono::milliseconds(remaining));
+    if (!prepare_stopped)
+        return Status(ANOMALY_STATUS_V1_TIMEOUT, "bilibili preparation worker did not stop in time");
+    if (!audio_stopped)
         return Status(ANOMALY_STATUS_V1_TIMEOUT, "television audio worker did not stop in time");
     return anomaly::sdk::Ok();
 }
@@ -2260,7 +2709,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
                    anomaly::sdk::StringView("anomaly.nte-tv-video"),
                    anomaly::sdk::StringView("NTE TV Video"),
                    anomaly::sdk::StringView("Anomaly"),
-                   anomaly::sdk::StringView("0.1.0"),
+                   anomaly::sdk::StringView("0.3.0"),
                    Load,
                    Start,
                    Stop,
