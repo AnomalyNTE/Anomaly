@@ -34,7 +34,8 @@ typedef struct AnomalyModsServiceV1 {
     // Enumerates package paths from the complete index; fails if any container is unreadable.
     AnomalyStatusV1 (ANOMALY_CALL *assets)(void* user, AnomalyStringViewV1 key,
         AnomalyModAssetVisitorV1 visitor, void* visitor_user);
-    // Worker only. Applies saved selection and verifies mounted containers match it.
+    // Worker only. Applies and verifies the effective selection. Conflicting mods keep their
+    // current mounts and are reported in pak-mods.json; unrelated mods still synchronize.
     // Does not clear resident UObjects. Compatibility mode returns CONFLICT.
     AnomalyStatusV1 (ANOMALY_CALL *synchronize)(void* user);
 } AnomalyModsServiceV1;

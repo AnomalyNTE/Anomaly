@@ -174,17 +174,22 @@ not mean existing resources have been reloaded. Resident assets, outstanding asy
 replacement behavior still need in-game validation. Restart when a clean resource replacement is needed.
 
 The independent **Mod Manager** plugin and Launcher classify mods from `.pak` and `.utoc` directory indices.
-Player resource directories identify characters: Akane outfits use `Player_057`, Elyms uses `Player_090`,
-and the pendant replacement uses `Pendant_07`. Different outfits for one character share a group;
-borrowed texture filenames do not change ownership. Other resources use their content directory,
+Full player skin directories identify groups: Zero's base outfit uses `Player_051_female` and the swimsuit uses
+`Player_051_female_swimsuit`. Blackbird's base and evolved forms are separate groups. Skin mesh ownership takes
+priority over companion materials and variant helpers; texture-only mods use their resource directories.
+The pendant replacement uses `Pendant_07`; borrowed texture filenames do not change ownership. Other resources use their content directory,
 such as `/game/wwiseaudio` for audio. Unreadable indices remain unclassified.
 Grouping alone does not make mods mutually exclusive: non-overlapping outfits can coexist.
 Resource cleanup remains limited to vehicles.
 GT3 RS and P1 cover `Vehicle_037`; Tourbillon covers `Vehicle_026`. Mods conflict when they override the same resource
 or replace the body/blueprint of the same vehicle. Enabling one disables conflicting variants in the same saved selection.
-Sound add-ons are exclusive only when their resources actually overlap. Encrypted, missing or unsupported indices are
+IoStore checks both paths and chunk IDs: shared resources with equal content hashes and lengths can coexist.
+Different or unknown content remains exclusive. Only index metadata is read, not large resource payloads.
+Encrypted, missing or unsupported indices are
 reported as incomplete; archive and mod folder names are not used to guess the category. Launcher and the plugin share parsing and selection logic.
-Known conflicts introduced by manual configuration edits preserve existing mounts and produce an error until resolved.
+Known conflicts introduced by manual configuration edits freeze only the conflicting mods at their current mounts;
+unrelated mods continue synchronizing and hot replacing. The status file lists affected mods in `conflicts`.
+Selecting a single variant resolves the conflict.
 
 The alternative wheel finishes in the example P1 archive should be imported individually. All containers inside one mod
 folder form one unit; the manager does not choose between variants packed into the same folder.

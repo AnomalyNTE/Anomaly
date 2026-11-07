@@ -163,6 +163,7 @@ struct PakModRuntime::Impl final {
     std::uint64_t mounts{};
     std::uint64_t unmounts{};
     std::string last_error;
+    std::set<std::string> conflicting_mods;
     std::string configuration_source{"scan"};
     bool enabled{true};
     SignatureState signature_state{SignatureState::Unknown};
@@ -353,6 +354,16 @@ struct PakModRuntime::Impl final {
         return id;
     }
 
+    [[nodiscard]] std::string ModKey(const std::filesystem::path& file) const {
+        auto root = EnginePathKey(std::filesystem::absolute(options.mod_directory));
+        if (!root.ends_with(L'/')) root += L'/';
+        const auto path = EnginePathKey(file);
+        if (!path.starts_with(root)) return {};
+        const auto relative = NarrowText(path.substr(root.size()));
+        const auto slash = relative.find('/');
+        return slash == std::string::npos ? relative : relative.substr(0, slash + 1);
+    }
+
     // `config/pak-mods.json` is optional. When it lists containers it is authoritative, which
     // lets a launcher point at a staged replacement without renaming anything under a live game.
     bool CollectManifest(std::vector<DesiredPak>& desired, const nlohmann::json& parsed) {
@@ -421,6 +432,7 @@ struct PakModRuntime::Impl final {
             enabled = true;
             configuration_source = "scan";
             last_error.clear();
+            conflicting_mods.clear();
         }
         std::vector<DesiredPak> desired;
         if (!CollectManifest(desired, settings)) {
@@ -436,21 +448,21 @@ struct PakModRuntime::Impl final {
         // Validate only the effective mount set, after master switch and explicit manifest filtering.
         // An unselected variant on disk must never prevent disabling all mods.
         if (!enabled) desired.clear();
+        std::set<std::string> conflicts;
         if (desired.size() > 1) {
             const auto catalog = catalog_cache.Read(options.mod_directory, settings);
+            std::set<std::string> selected_keys;
+            for (const auto& pak : desired) selected_keys.insert(ModKey(pak.file));
             std::vector<const PakModCatalogEntry*> active;
             for (const auto& row : *catalog) {
-                const auto key = NormalizePakModKey(row.key);
-                if (std::any_of(desired.begin(), desired.end(), [&](const auto& pak) {
-                    const auto relative = NormalizePakModKey(Narrow(pak.file.lexically_relative(
-                        std::filesystem::absolute(options.mod_directory).lexically_normal())));
-                    return key == relative || (key.ends_with('/') && relative.starts_with(key));
-                })) active.push_back(&row);
+                if (selected_keys.contains(NormalizePakModKey(row.key))) active.push_back(&row);
             }
             for (std::size_t i = 0; i < active.size(); ++i)
                 for (std::size_t j = i + 1; j < active.size(); ++j)
-                    if (PakModsConflict(*active[i], *active[j]))
-                        throw std::runtime_error("conflicting enabled mods: " + active[i]->key + " / " + active[j]->key);
+                    if (PakModsConflict(*active[i], *active[j])) {
+                        conflicts.insert(NormalizePakModKey(active[i]->key));
+                        conflicts.insert(NormalizePakModKey(active[j]->key));
+                    }
         }
         std::set<std::string> ids;
         std::set<std::wstring> paths;
@@ -463,6 +475,15 @@ struct PakModRuntime::Impl final {
             }
         }
         std::scoped_lock lock(mutex);
+        conflicting_mods = std::move(conflicts);
+        if (!conflicting_mods.empty()) {
+            // Freeze only the conflicting mods at their currently mounted versions. Other
+            // selections and file replacements must still reach the engine in this pass.
+            std::erase_if(desired, [&](const auto& pak) { return conflicting_mods.contains(ModKey(pak.file)); });
+            for (const auto& entry : entries)
+                if (entry.state == PakModState::Mounted && conflicting_mods.contains(ModKey(entry.file)))
+                    desired.push_back({entry.id, entry.file, entry.order, entry.bytes, entry.stamp, entry.fingerprint});
+        }
         if (!enabled) {
             desired.clear();
         }
@@ -553,6 +574,9 @@ struct PakModRuntime::Impl final {
                 })) continue;
             const auto path = EnginePathKey(file.filename);
             if (!path.starts_with(root) && !requested.contains(path)) continue;
+            // Startup mounts of a conflicting mod are frozen too. Do not tear them down
+            // merely to process an unrelated mod's replacement.
+            if (conflicting_mods.contains(ModKey(std::filesystem::path(path)))) continue;
             // Unmount compares the stored filename literally. Use the native spelling, which
             // may be relative, and also remove startup mounts excluded by the saved selection.
             if (!options.unmount_pak(engine, file.filename))
@@ -835,6 +859,17 @@ struct PakModRuntime::Impl final {
         result["mounts"] = mounts;
         result["unmounts"] = unmounts;
         if (!last_error.empty()) result["lastError"] = last_error;
+        if (!conflicting_mods.empty()) {
+            result["conflicts"] = conflicting_mods;
+            if (last_error.empty()) {
+                std::string names;
+                for (const auto& key : conflicting_mods) {
+                    if (!names.empty()) names += " / ";
+                    names += key;
+                }
+                result["lastError"] = "conflicting enabled mods: " + names;
+            }
+        }
         return result;
     }
 

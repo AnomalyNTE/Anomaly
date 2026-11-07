@@ -11,6 +11,18 @@ namespace anomaly {
 namespace {
 constexpr std::size_t MaxIndex = 64 * 1024 * 1024;
 constexpr std::uint32_t MaxEntries = 1000000, Invalid = 0xffffffffu;
+struct IndexedAsset {
+    std::string path, fingerprint;
+};
+struct ContainerIndex {
+    std::vector<IndexedAsset> assets;
+    std::map<std::string, std::string> chunks;
+};
+void MergeFingerprint(std::map<std::string, std::string>& values,
+    const std::string& key, const std::string& fingerprint) {
+    const auto [it, inserted] = values.try_emplace(key, fingerprint);
+    if (!inserted && it->second != fingerprint) it->second.clear();
+}
 std::string Utf8(const std::wstring& s) {
     if (s.empty()) return {};
     const auto n = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, s.data(),
@@ -69,7 +81,7 @@ std::vector<std::uint8_t> ReadRange(const std::filesystem::path& path, std::uint
         throw std::runtime_error("cannot read container index");
     return bytes;
 }
-std::vector<std::string> ReadUtoc(const std::filesystem::path& path) {
+ContainerIndex ReadUtoc(const std::filesystem::path& path) {
     // On-disk FIoStoreTocHeader and FIoDirectoryIndexResource, UE 5.6.1 Core/IO.
     const auto header = ReadRange(path, 0, 144); Reader h{header};
     constexpr char magic[] = "-==--==--==--==-";
@@ -80,6 +92,7 @@ std::vector<std::string> ReadUtoc(const std::filesystem::path& path) {
     if (flags & 2) throw std::runtime_error("encrypted IoStore index");
     if (!(flags & 8)) throw std::runtime_error("IoStore directory index absent");
     const auto entries = h.At<std::uint32_t>(24), blocks = h.At<std::uint32_t>(28);
+    if (entries > MaxEntries) throw std::runtime_error("too many IoStore chunks");
     const auto index_size = h.At<std::uint32_t>(48);
     std::uint64_t offset = 144ull + std::uint64_t(entries) * 22 + std::uint64_t(blocks) * 12 +
         std::uint64_t(h.At<std::uint32_t>(36)) * h.At<std::uint32_t>(40);
@@ -89,7 +102,32 @@ std::vector<std::string> ReadUtoc(const std::filesystem::path& path) {
         const auto length = ReadRange(path, offset, 4); Reader sign{length};
         offset += 4ull + std::uint64_t(sign.Count()) * 2 + std::uint64_t(blocks) * 20;
     }
-    if (!index_size) return {};
+    if (!index_size) {
+        if (entries) throw std::runtime_error("IoStore directory index absent");
+        return {};
+    }
+    const auto chunk_data = ReadRange(path, 144, std::uint64_t(entries) * 22);
+    // UE 5.6.1 IoStore.cpp: v8 stores FIoHash (20 bytes) in a 24-byte meta record;
+    // older versions store a 32-byte hash in a 33-byte record. Never mix hash formats.
+    const std::size_t hash_size = version >= 8 ? 20 : 32, meta_size = version >= 8 ? 24 : 33;
+    const auto metadata = ReadRange(path, offset + index_size, std::uint64_t(entries) * meta_size);
+    std::vector<std::string> fingerprints(entries);
+    ContainerIndex result;
+    for (std::uint32_t i = 0; i < entries; ++i) {
+        const auto* hash = metadata.data() + std::size_t(i) * meta_size;
+        auto& fingerprint = fingerprints[i];
+        if (std::any_of(hash, hash + hash_size, [](auto byte) { return byte != 0; })) {
+            fingerprint.assign(reinterpret_cast<const char*>(hash), hash_size);
+            // Include the source length, not compressed size or physical placement.
+            fingerprint.append(reinterpret_cast<const char*>(chunk_data.data() +
+                std::size_t(entries) * 12 + std::size_t(i) * 10 + 5), 5);
+        }
+        const auto* id = chunk_data.data() + std::size_t(i) * 12;
+        // ContainerHeader is container metadata, not a replaceable game resource. Include
+        // all other chunks, including bulk data absent from the directory index.
+        if (id[11] != 6) MergeFingerprint(result.chunks,
+            std::string(reinterpret_cast<const char*>(id), 12), fingerprint);
+    }
     const auto bytes = ReadRange(path, offset, index_size); Reader r{bytes};
     const auto mount = r.String();
     using Dir = std::array<std::uint32_t, 4>; using File = std::array<std::uint32_t, 3>;
@@ -105,10 +143,9 @@ std::vector<std::string> ReadUtoc(const std::filesystem::path& path) {
     if (ns > (r.data.size() - r.pos) / 4) throw std::runtime_error("truncated strings");
     std::vector<std::string> strings; strings.reserve(ns);
     for (std::uint32_t i = 0; i < ns; ++i) strings.push_back(r.String());
-    if (dirs.empty()) { if (nf) throw std::runtime_error("files without root directory"); return {}; }
+    if (dirs.empty()) { if (nf) throw std::runtime_error("files without root directory"); return result; }
     std::vector<std::pair<std::uint32_t, std::string>> pending{{0, mount}};
     std::vector<bool> seen_dirs(nd), seen_files(nf);
-    std::vector<std::string> result;
     std::size_t expanded_bytes = mount.size();
     const auto account = [&](std::size_t size) {
         if (size > MaxIndex - expanded_bytes) throw std::runtime_error("expanded index exceeds limit");
@@ -130,7 +167,7 @@ std::vector<std::string> ReadUtoc(const std::filesystem::path& path) {
             seen_files[f] = true;
             if (files[f][0] >= ns || files[f][2] >= entries) throw std::runtime_error("invalid file index entry");
             account(parent.size() + strings[files[f][0]].size());
-            result.push_back(parent + strings[files[f][0]]);
+            result.assets.push_back({parent + strings[files[f][0]], fingerprints[files[f][2]]});
         }
     }
     if (std::find(seen_dirs.begin(), seen_dirs.end(), false) != seen_dirs.end() ||
@@ -187,6 +224,14 @@ std::vector<std::string> ReadPak(const std::filesystem::path& path) {
     }
     throw std::runtime_error("unsupported pak footer");
 }
+ContainerIndex ReadIndex(const std::filesystem::path& file) {
+    auto logical = file;
+    if (NormalizePakModKey(PathText(logical.extension())) == ".disabled") logical.replace_extension();
+    if (NormalizePakModKey(PathText(logical.extension())) == ".utoc") return ReadUtoc(file);
+    ContainerIndex result;
+    for (auto& path : ReadPak(file)) result.assets.push_back({std::move(path), {}});
+    return result;
+}
 std::string VehicleToken(std::string_view path) {
     const auto at = path.find("vehicle_"); if (at == std::string_view::npos) return {};
     auto end = at + 8;
@@ -194,11 +239,19 @@ std::string VehicleToken(std::string_view path) {
     if (end == at + 8 || end > at + 14 || (end < path.size() && path[end] != '/' && path[end] != '_' && path[end] != '.')) return {};
     return "Vehicle_" + std::string(path.substr(at + 8, end - at - 8));
 }
-void AddAsset(PakModCatalogEntry& row, std::string path) {
-    path = NormalizePakModKey(std::move(path));
+void AddAsset(PakModCatalogEntry& row, IndexedAsset asset) {
+    auto path = NormalizePakModKey(std::move(asset.path));
     const auto content = path.find("/ht/content/");
     if (content != std::string::npos) path = "/game/" + path.substr(content + 12);
+    else {
+        // Some IoStore producers write content-relative character paths. Runtime identity
+        // still comes from the chunk ID; recognize their directory ownership as well.
+        std::string_view relative = path;
+        while (relative.starts_with("../")) relative.remove_prefix(3);
+        if (relative.starts_with("characters/player/")) path = "/game/" + std::string(relative);
+    }
     row.assets.insert(path);
+    MergeFingerprint(row.asset_fingerprints, path, asset.fingerprint);
     if (const auto token = VehicleToken(path); !token.empty()) {
         row.vehicles.insert(token);
         if (path.ends_with(".uasset") && (path.find("/carbody/") != std::string::npos ||
@@ -207,7 +260,7 @@ void AddAsset(PakModCatalogEntry& row, std::string path) {
 }
 void ClassifyResources(PakModCatalogEntry& row) {
     row.resource_groups = row.vehicles;
-    std::set<std::string> directories;
+    std::set<std::string> directories, players, model_players;
     for (const auto& asset : row.assets) {
         const std::string_view path = asset;
         if (!path.starts_with("/game/")) continue;
@@ -216,17 +269,21 @@ void ClassifyResources(PakModCatalogEntry& row) {
         directories.emplace(path.substr(0, top));
 
         // Ownership comes from the directory, not texture names borrowed from another character.
-        constexpr std::string_view players = "/game/characters/player/";
-        if (path.starts_with(players)) {
-            const auto rest = path.substr(players.size());
+        constexpr std::string_view player_root = "/game/characters/player/";
+        if (path.starts_with(player_root)) {
+            const auto rest = path.substr(player_root.size());
             const auto slash = rest.find('/');
             if (slash == std::string_view::npos) continue;
             const auto owner = rest.substr(0, slash);
             const auto digits = owner.find_first_not_of("0123456789");
             const auto length = digits == std::string_view::npos ? owner.size() : digits;
-            if (length > 0 && length <= 6 && (digits == std::string_view::npos || owner[digits] == '_'))
-                row.resource_groups.insert("Player_" + std::string(owner.substr(0, length)));
-            else row.resource_groups.emplace(path.substr(0, players.size() + slash));
+            if (length > 0 && length <= 6 && (digits == std::string_view::npos || owner[digits] == '_')) {
+                const auto group = "Player_" + std::string(owner);
+                players.insert(group);
+                const auto name = rest.substr(slash + 1);
+                if (name.starts_with("player_" + std::string(owner.substr(0, length)) + "_") &&
+                    name.ends_with("_skin.uasset")) model_players.insert(group);
+            }
             continue;
         }
         constexpr std::string_view pendant = "/game/characters/pendant_";
@@ -238,12 +295,28 @@ void ClassifyResources(PakModCatalogEntry& row) {
                 row.resource_groups.insert("Pendant_" + std::string(rest.substr(0, slash)));
         }
     }
+    // Skin meshes identify the primary replacement; shared materials and variant helpers
+    // must not add unrelated skins. Texture-only mods retain their full owner directories.
+    const auto& character_groups = model_players.empty() ? players : model_players;
+    row.resource_groups.insert(character_groups.begin(), character_groups.end());
     // Companion materials and custom folders do not split a known character or vehicle group.
     if (row.resource_groups.empty()) row.resource_groups = std::move(directories);
 }
 bool Intersects(const std::set<std::string>& a, const std::set<std::string>& b) {
     auto x = a.begin(), y = b.begin();
     while (x != a.end() && y != b.end()) { if (*x == *y) return true; if (*x < *y) ++x; else ++y; }
+    return false;
+}
+bool ConflictingContents(const std::map<std::string, std::string>& a,
+    const std::map<std::string, std::string>& b) {
+    auto x = a.begin(), y = b.begin();
+    while (x != a.end() && y != b.end()) {
+        if (x->first == y->first) {
+            if (x->second.empty() || y->second.empty() || x->second != y->second) return true;
+            ++x; ++y;
+        } else if (x->first < y->first) ++x;
+        else ++y;
+    }
     return false;
 }
 struct ConfigLock {
@@ -264,9 +337,9 @@ struct ConfigLock {
 } // namespace
 
 std::vector<std::string> ReadModContainerIndex(const std::filesystem::path& file) {
-    auto logical = file;
-    if (NormalizePakModKey(PathText(logical.extension())) == ".disabled") logical.replace_extension();
-    return NormalizePakModKey(PathText(logical.extension())) == ".utoc" ? ReadUtoc(file) : ReadPak(file);
+    std::vector<std::string> paths;
+    for (auto& asset : ReadIndex(file).assets) paths.push_back(std::move(asset.path));
+    return paths;
 }
 std::shared_ptr<const std::vector<PakModCatalogEntry>> PakModCatalogCache::Read(
     const std::filesystem::path& directory, const nlohmann::json& settings) {
@@ -331,7 +404,12 @@ std::vector<PakModCatalogEntry> ReadPakModCatalog(const std::filesystem::path& d
         auto selection_path = logical;
         if (extension == ".utoc") selection_path.replace(selection_path.size() - 5, 5, ".pak");
         if (!disabled && PakModEnabled(states, selection_path)) row.enabled = true;
-        try { for (auto& asset : ReadModContainerIndex(it->path())) AddAsset(row, std::move(asset)); }
+        try {
+            auto index = ReadIndex(it->path());
+            for (auto& asset : index.assets) AddAsset(row, std::move(asset));
+            for (const auto& [id, fingerprint] : index.chunks)
+                MergeFingerprint(row.chunk_fingerprints, id, fingerprint);
+        }
         catch (const std::exception& e) { row.index_complete = false; row.analysis_error = e.what(); }
     }
     std::vector<PakModCatalogEntry> result;
@@ -343,7 +421,9 @@ std::vector<PakModCatalogEntry> ReadPakModCatalog(const std::filesystem::path& d
 }
 bool PakModsConflict(const PakModCatalogEntry& a, const PakModCatalogEntry& b) {
     return NormalizePakModKey(a.key) != NormalizePakModKey(b.key) &&
-        (Intersects(a.assets, b.assets) || Intersects(a.model_vehicles, b.model_vehicles));
+        (ConflictingContents(a.asset_fingerprints, b.asset_fingerprints) ||
+            ConflictingContents(a.chunk_fingerprints, b.chunk_fingerprints) ||
+            Intersects(a.model_vehicles, b.model_vehicles));
 }
 void SelectPakMod(nlohmann::json& settings, const std::vector<PakModCatalogEntry>& catalog,
     std::string_view key, bool enabled) {

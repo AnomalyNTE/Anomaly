@@ -10,6 +10,9 @@ namespace anomaly {
 struct PakModCatalogEntry {
     std::string key, name;
     std::set<std::string> assets, vehicles, model_vehicles, resource_groups;
+    // Index-only content fingerprints. Empty means unknown or inconsistent across containers.
+    // IoStore chunk keys are raw 12-byte IDs, independent of directory mount-point spelling.
+    std::map<std::string, std::string> asset_fingerprints, chunk_fingerprints;
     bool enabled{}, disabled_files{}, index_complete{true};
     std::string analysis_error;
 };
