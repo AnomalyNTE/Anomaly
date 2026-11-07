@@ -1,39 +1,101 @@
 # NTE TV Video
 
-把《异环》住宅电视播放的视频替换为本地视频。插件只改写住宅电视
-（`BP_FurnitureActorBase_TV_C`）的媒体来源，影院、剧情、技能、房间邀请等其它
-Mana 视频保持游戏原样。
+把《异环》住宅电视播放的视频替换为本地视频。插件只接管住宅电视
+（`BP_FurnitureActorBase_TV_C`），影院、剧情、技能、房间邀请等其它视频保持游戏原样。
+
+## 硬性约束（不可违反）
+
+- **不写游戏安装目录**：不复制、不替换、不新增 `HT/Content`、`*.pak`、`*.ucas` 或任何游戏文件。
+  启动器和内容校验会检测内容目录变化，落盘替换会破坏游戏完整性。
+- 本地视频文件保留在用户自己的路径，插件只读取它并在**进程内存**里替换数据。
+- 所有替换点都必须是内存操作：FString 参数改写、Hook 返回值改写、后续的虚拟文件数据。
 
 ## 当前状态
 
-- 插件可在运行中的游戏里加载、注册配置、选择本地视频、安装 Hook，并把电视资产
-  `TVFileManaMovie` 的路径改写为 `./Movies/FFMpeg_Mana/TV/ntetv.mp4`（本地视频会先复制到
-  `HT/Content/Movies/FFMpeg_Mana/TV/ntetv.mp4`）。路径改写已在 1.5.4 国服实测生效。
-- **未通过的门槛**：电视随后黑屏，CRI Mana 没有播放本地 H.264 MP4。原因待查：Mana
-  `FileManaMovie` 可能只接受 Sofdec Prime（USM），或需要额外的格式开关。插件默认
-  `enabled=false`，关闭时电视保持游戏原视频。
+- 本地 MP4 画面已通过真实电视人工验证。插件独立驱动电视的 MediaPlayer/MediaTexture，
+  仅替换屏幕材质槽位；电视外壳和其它视频场景不变。
+- 本地音轨使用插件自己的 Windows Media Foundation 输出线程，不依赖游戏的音频设备。
+  Game tick 提供媒体时间；线程只读取本地文件、输出音频并校准时钟，不访问 UE 对象。
+- 用户已确认本地画面、声音与同步正常，原电视节目声音可静音。当前游戏后端是 ElectraPlayer，
+  它不支持原生音量输出；游戏内 MediaSoundComponent 测试也未产生声音。
+- 取消替换时在 Game tick 关闭媒体、停止音轨并恢复电视材质。音轨线程在插件停止时关闭并回收。
+  配置变更继续在 Worker 保存，已修复首次保存后任务句柄不清空的问题。
+- **尚未完成最终验收**：电视开关、取消替换的完整恢复、切换场景以及宿主禁用/热重载时的
+  Game 域清理仍需验证和收尾；不能仅凭播放成功认定插件已完成。
+
+## 黑屏诊断（1.5.4 国服）
+
+- 原 Profile 把 `FFrame::Node` 偏移写成了 `0`，现场脚本帧确认它位于 `0x10`，
+  `0` 处是虚表。修正后，通过 SDK 调用 `IsUseManaPlayer`，强制选项开启时返回值已从 `1` 变为 `0`。
+- 这项修正不足以恢复播放：实时电视组件和组件模板仍引用 `TVManaPlayer`、
+  `TVFileManaMovie` 和 `TVManaPlayer_Texture`。独立打开 `TVMediaPlayer` 不会改变这些绑定。
+- `MovieAudioPlayerComponent::Play` 原生实现（本次诊断地址 `0x149498BA0`）检查的类型是
+  `ManaPlayer` 和 `FileManaMovie`，随后调用 Mana 打开函数；该实现没有 MediaPlayer 播放分支。
+  因而不能只改管线开关或把组件字段替换为 Media 资产来完成 MP4 支持。
+- `OpenFile=true` 和 `Play=true` 不能作为电视播放成功的判据。必须在后续 Game tick 确认媒体状态，
+  并分别验证 MediaTexture 到电视材质的连接和本地音轨的输出；当前实验尚未完成这些步骤。
+- FString 的非空 `Num` 包含结尾 NUL；参数构造与原位改写已统一计入该字符。
+
+以上地址只记录诊断位置，不用于运行时寻址。生产兼容数据仍由 Profile 管理。
 
 ## 已验证的运行时链路（1.5.4 国服）
 
 - 电视 actor：`BP_FurnitureActorBase_TV_C`，组件 `MovieAudioPlayerComponent`。
 - 换节目：`MovieAudioPlayerComponent::PlayByConfig(FName)` → `FileManaMovie.SetFilePath(FString)`
   → `TVFileManaMovie.FilePath` 变成 `./Movies/FFMpeg_Mana/EP/<节目>.usm`。
-- 视频在 pak 内，不在磁盘；本地替换必须经过 Mana 的解码器。
+- 片源在 pak 内，不在磁盘；替换来源只能走解码器，不能靠改磁盘文件。
 
 ## 配置
 
-- `enabled`：是否接管电视。
-- `videoPath`：本地视频绝对路径（复制到游戏目录后再交给 Mana）。
-- `muteGameAudio`：跳过电视原本的 Wwise 事件，避免与本地视频音轨不同步。
+- `enabled`：仅控制本次插件会话。每次启动或热重载均关闭，旧配置中的 `true` 不会自动恢复。
+- `videoPath`：本地视频绝对路径（只在内存中改写路径使用，不会复制到游戏目录）。
+- `muteGameAudio`：旧配置兼容字段。接管电视时强制静音原节目，面板不显示单独的静音开关。
+- `forceMediaPlayer`：旧配置兼容字段，不再作为开关使用，也不再显示实验选项。
 
 ## 文件
 
-- `plugin.cpp`：Hook、配置、复制、UI。
-- `tv_video_profile.hpp` / `profile/compatibility.profile.json`：1.5.4 的函数签名与布局。
+- `plugin.cpp`：Hook、配置、内存改写、UI；不包含任何游戏目录写入代码。
+- `tv_video_profile.hpp` / `profile/compatibility.profile.json`：1.5.4 的函数签名与布局
+  （含 `IsUseManaPlayer` thunk）。
 - `locales/zh-CN.json`：中文界面文案。
 
 ## 已知限制
 
-- 只识别电视节目目录 `Movies/FFMpeg_Mana/EP/`，其它 Mana 视频不动。
-- 复制目标固定为 `HT/Content/Movies/FFMpeg_Mana/TV/ntetv.mp4`；游戏更新不会删除它。
-- 热重载/停止会释放全部 Hook；复制与配置写入在 Worker 上执行。
+- 只识别电视节目目录 `Movies/FFMpeg_Mana/EP/`，其它视频不动。
+- 旧实验通过游戏管线开关切换电视；当前实现独立接管屏幕，不再依赖该开关改变原生播放实现。
+- 热重载/停止会释放全部 Hook；配置写入在 Worker 上执行。
+
+## 音轨验证夹具
+
+在标准构建树开启 `ANOMALY_BUILD_TEST_FIXTURES` 后，构建 `anomaly_nte_tv_audio_fixture`，
+运行 `.build/windows-vs2022/bin/RelWithDebInfo/anomaly_nte_tv_audio_fixture.exe <本地含音轨视频>`。
+夹具使用真实系统音频后端验证时钟前进、回跳同步、暂停和关闭；它会短暂播放文件的声音。
+音画同步和实际电视画面仍以真实游戏人工验证为准。
+
+## 登录隔离
+
+插件启动保留片源，需要手动开启替换。未开启时不查找电视媒体资产、不打开视频、
+不启动音频线程；登录阶段手动开启但没有当前世界中正在播放的真实电视时，面板显示等待。
+关电视、离开住宅或普通加载时停止本地音画，保留开关和本次片源的播放位置。再次打开电视后续播。
+退回登录会关闭替换并清除位置。手动关闭替换或换片源也会清除位置。
+旧的 Mana 路径改写和全局媒体 Hook 已移除，当前仅保留电视节目和电视音频 Hook。
+资源下载弹窗是否彻底消失仍须真实登录复测；插件不会绕过游戏资源检查。
+
+## 关闭替换与原节目恢复
+
+关闭替换时先解除原声拦截并通知外部音轨停止，恢复接管时保存的原屏幕材质，再关闭本地媒体、
+单独调用原电视的 `PlayAudio`。不再通过 `PlayByConfig` 重新加载整个原节目；先前的卡死日志
+停在这次重播调用内，其内部等待机制尚未取得线程栈证据。
+
+原声音频事件来自游戏真实的 `PlayAudio` 参数，恢复前校验事件、电视组件、屏幕与原材质的对象身份。
+没有可恢复事件时等待接管，游戏原节目照常播放。关电视时仅恢复有效的屏幕材质，原声由游戏开关管理。
+场景已切换或对象失效时仅停止本地播放，不调用旧电视恢复。
+当前事件恢复是否与原节目时钟保持一致，仍需真实游戏听觉验证。
+
+`anomaly_nte_tv_restore_fixture` 验证恢复顺序、原材质和原音频事件、重复关闭，以及失效对象隔离。
+它能捕获关闭时重播整个原节目的回归，不能替代游戏内卡死与音画恢复的实测。
+
+## 播放进度
+
+面板显示当前时间和总时长。点击或拖动进度条后，插件合并短时间内的连续调整，并在游戏更新中跳转。
+外部音轨在跳转期间暂停，随后根据视频实际时间同步。等待电视、媒体准备中及不可跳转时，进度条不可操作。
