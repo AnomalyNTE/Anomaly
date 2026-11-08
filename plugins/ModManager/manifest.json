@@ -2,10 +2,10 @@
   "schemaVersion": 2,
   "id": "anomaly.mod-manager",
   "name": "Mod Manager",
-  "description": "Shared mod selection, resource classification and verified vehicle resource cleanup.",
+  "description": "Shared mod selection, resource classification, in-place appearance refresh and world reload.",
   "author": "Anomaly",
   "license": "AGPL-3.0-only",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "entry": "plugin.dll",
   "api": {
     "major": 1,
@@ -57,6 +57,10 @@
       "minVersion": 1
     },
     {
+      "id": "anomaly.interop.hook",
+      "minVersion": 1
+    },
+    {
       "id": "anomaly.ue5.objects",
       "minVersion": 1
     },
@@ -73,10 +77,6 @@
       "minVersion": 1
     },
     {
-      "id": "anomaly.nte.actors",
-      "minVersion": 1
-    },
-    {
       "id": "anomaly.nte.player",
       "minVersion": 1
     }
@@ -88,12 +88,13 @@
     "scheduler",
     "json",
     "memory-read",
+    "memory-write",
     "interop-signature",
+    "interop-hook",
     "ue5-objects",
     "ue5-names",
     "game-events",
     "nte-session-snapshot",
-    "nte-actor-snapshot",
     "nte-player-snapshot"
   ]
 }
