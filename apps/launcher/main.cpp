@@ -1964,6 +1964,7 @@ struct LauncherModEntry final {
     std::filesystem::file_time_type cover_stamp{};
     bool directory{};
     bool enabled{true};
+    bool selected{};           // batch selection, kept across refreshes by name
     std::uint64_t bytes{};
     std::size_t files{};
 };
@@ -2040,6 +2041,8 @@ struct LauncherModSource final {
     std::string mod_id;
     std::string file_id;
     std::string file_md5;
+    std::string author;        // recorded at download time, so rows can show it without mod.json
+    std::string display_name;
 };
 
 LauncherModSource LauncherReadModSource(const std::filesystem::path& folder) {
@@ -2051,7 +2054,8 @@ LauncherModSource LauncherReadModSource(const std::filesystem::path& folder) {
     try {
         if (source.at("schemaVersion") != 1 || source.at("provider") != "gamebanana") return {};
         return {source.at("modId").get<std::string>(), source.at("fileId").get<std::string>(),
-            source.value("fileMd5", std::string{})};
+            source.value("fileMd5", std::string{}), source.value("author", std::string{}),
+            source.value("displayName", std::string{})};
     } catch (const nlohmann::json::exception&) {
         return {};
     }
@@ -2317,6 +2321,11 @@ void LauncherRefreshMods(
             entry.icon_path = item.path();
             LauncherReadModJson(item.path(), entry);
             LauncherReadModNotes(entry);
+            if (entry.author.empty() || entry.display_name.empty()) {
+                const auto source = LauncherReadModSource(item.path());
+                if (entry.author.empty()) entry.author = source.author;
+                if (entry.display_name.empty()) entry.display_name = source.display_name;
+            }
             if (!entry.custom_name.empty()) entry.display_name = entry.custom_name;
             if (const auto cached = g_mod_remote_versions.find(entry.name);
                 cached != g_mod_remote_versions.end()) {
@@ -4452,6 +4461,12 @@ void DrawBrowseMode(
         ImGui::TextDisabled("%s",
             Tr(anomaly::MessageId::LauncherBrowseNoMatches).c_str());
     }
+    // Scrolling to the bottom loads the next page, so reading further no longer means scrolling back
+    // up to the toolbar. browse_loading gates repeats and exhausted stops the last request.
+    if (!browse_loading && !exhausted && ImGui::GetScrollMaxY() > 0.0f &&
+        ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - Scale(4.0f)) {
+        load_page(replace_pending ? 1 : loaded_pages + 1);
+    }
     ImGui::EndChild();
 }
 
@@ -4476,6 +4491,8 @@ void DrawModsMode(
     static std::string notes_source;
     static bool notes_directory{};
     static std::string pending_uninstall;   // single uninstall awaiting confirmation
+    static std::set<std::string> selected_names;  // batch selection by mod name
+    static bool bulk_uninstall_pending{};
     static std::map<std::string, bool> group_collapsed;
     static std::string update_status;
     static std::mutex check_mutex;
@@ -4500,6 +4517,7 @@ void DrawModsMode(
             bypass = false;
         }
         LauncherRefreshMods(snapshot, mods, &settings);
+        for (auto& entry : mods) entry.selected = selected_names.count(entry.name) != 0;
         refreshed = true;
         last_refresh = ImGui::GetTime();
     };
@@ -4607,6 +4625,7 @@ void DrawModsMode(
         page = 0;
     }
 
+
     if (mods.empty()) {
         ImGui::TextDisabled("%s", Text(translator, anomaly::MessageId::LauncherModsEmpty));
         ImGui::EndChild();
@@ -4649,6 +4668,47 @@ void DrawModsMode(
         ImGui::SetScrollY(0.0f);
     }
     ImGui::EndDisabled();
+    ImGui::SameLine();
+    {
+        // Batch operations act on the selection across pages, not just the rows on screen.
+        std::size_t selected_count{};
+        bool any_unselected{};
+        for (const auto& entry : mods) {
+            if (entry.selected) ++selected_count;
+            else any_unselected = true;
+        }
+        // Same lock the per-row switch uses; that variable is declared further down.
+        ImGui::BeginDisabled(!snapshot.processes.empty() && compatibility_mode);
+        if (ImGui::Button(Text(translator, anomaly::MessageId::LauncherModsSelectAll))) {
+            for (auto& entry : mods) entry.selected = any_unselected;
+            selected_names.clear();
+            if (any_unselected) {
+                for (const auto& entry : mods) selected_names.insert(entry.name);
+            }
+        }
+        ImGui::SameLine();
+        ImGui::BeginDisabled(selected_count == 0);
+        if (ImGui::Button(Text(translator, anomaly::MessageId::LauncherModsBulkEnable))) {
+            for (const auto& entry : mods) {
+                if (entry.selected && !entry.enabled) LauncherSetModEnabled(snapshot, entry, true);
+            }
+            refresh_mods();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(Text(translator, anomaly::MessageId::LauncherModsBulkDisable))) {
+            for (const auto& entry : mods) {
+                if (entry.selected && entry.enabled) LauncherSetModEnabled(snapshot, entry, false);
+            }
+            refresh_mods();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(Text(translator, anomaly::MessageId::LauncherModsBulkUninstall))) {
+            bulk_uninstall_pending = true;
+            ImGui::OpenPopup("bulk-uninstall");
+        }
+        ImGui::EndDisabled();
+        ImGui::EndDisabled();
+    }
     ImGui::Separator();
     const auto draw_switch = [&](const LauncherModEntry& target) {
         bool enabled = target.enabled;
@@ -4697,6 +4757,16 @@ void DrawModsMode(
         // Every action is a button inside a disabled scope: the click is evaluated first and the
         // action runs afterwards, so a disabled scope never spans an early return.
         const float actions_right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+        // Optional buttons (update / source) are skipped on most rows; reserving their width keeps
+        // the trailing checkbox in the same column on every row.
+        const auto reserve_action = [&](const char* label) {
+            const auto& style = ImGui::GetStyle();
+            const ImVec2 size(ImGui::CalcTextSize(label).x + style.FramePadding.x * 2.0f,
+                ImGui::GetFrameHeight());
+            if (ImGui::GetItemRectMax().x + style.ItemSpacing.x + size.x <= actions_right)
+                ImGui::SameLine();
+            ImGui::Dummy(size);
+        };
         const auto next_action = [&](const char* label) {
             const auto& style = ImGui::GetStyle();
             const float width = ImGui::CalcTextSize(label).x + style.FramePadding.x * 2.0f;
@@ -4745,6 +4815,16 @@ void DrawModsMode(
             std::snprintf(rename_buffer, sizeof(rename_buffer), "%s", entry.name.c_str());
             ImGui::OpenPopup("rename-mod");
         }
+        if (!entry.link.empty()) {
+            next_action(Text(translator, anomaly::MessageId::LauncherModsOpenSource));
+            if (ImGui::Button((std::string(Text(translator, anomaly::MessageId::LauncherModsOpenSource)) +
+                    "##" + entry.name).c_str())) {
+                const std::wstring url(entry.link.begin(), entry.link.end());
+                ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            }
+        } else {
+            reserve_action(Text(translator, anomaly::MessageId::LauncherModsOpenSource));
+        }
         if (!entry.remote_version.empty() &&
             (entry.version.empty() || entry.remote_version != entry.version)) {
             next_action(Text(translator, anomaly::MessageId::LauncherModsUpdate));
@@ -4760,14 +4840,15 @@ void DrawModsMode(
                 ImGui::EndChild();
                 return;
             }
+        } else {
+            reserve_action(Text(translator, anomaly::MessageId::LauncherModsUpdate));
         }
-        if (!entry.link.empty()) {
-            next_action(Text(translator, anomaly::MessageId::LauncherModsOpenSource));
-            if (ImGui::Button((std::string(Text(translator, anomaly::MessageId::LauncherModsOpenSource)) +
-                    "##" + entry.name).c_str())) {
-                const std::wstring url(entry.link.begin(), entry.link.end());
-                ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-            }
+        ImGui::SameLine();
+        bool row_selected = entry.selected;
+        if (ImGui::Checkbox(("##select-" + entry.name).c_str(), &row_selected)) {
+            const_cast<LauncherModEntry&>(entry).selected = row_selected;
+            if (row_selected) selected_names.insert(entry.name);
+            else selected_names.erase(entry.name);
         }
         ImGui::EndGroup();
         ImGui::Spacing();
@@ -4809,6 +4890,29 @@ void DrawModsMode(
         ImGui::SameLine();
         if (ImGui::Button((Tr(anomaly::MessageId::LauncherModsCancel) + "##uninstall").c_str()))
             ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+    if (ImGui::BeginPopupModal("bulk-uninstall", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        std::size_t count{};
+        for (const auto& entry : mods) {
+            if (entry.selected) ++count;
+        }
+        ImGui::Text("%s", Format(translator, anomaly::MessageId::LauncherModsConfirmUninstallMany,
+            {std::to_string(count)}).c_str());
+        if (ImGui::Button(Text(translator, anomaly::MessageId::LauncherModsConfirmUninstallAll))) {
+            for (const auto& entry : mods) {
+                if (entry.selected) LauncherRemoveMod(snapshot, entry);
+            }
+            selected_names.clear();
+            bulk_uninstall_pending = false;
+            refresh_mods();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button((Tr(anomaly::MessageId::LauncherModsCancel) + "##bulk").c_str())) {
+            bulk_uninstall_pending = false;
+            ImGui::CloseCurrentPopup();
+        }
         ImGui::EndPopup();
     }
     if (ImGui::BeginPopupModal("mod-notes", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
