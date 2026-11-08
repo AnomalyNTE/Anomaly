@@ -1,3 +1,4 @@
+// Non-ASCII escapes below are original share-text/parser fixture data, not UI copy.
 // Fixture for bilibili link parsing and short link redirect validation.
 //
 // The redirect fetcher is injected and every hop is a fixed rule, so the whole
@@ -229,7 +230,7 @@ void TestVideoUrls() {
     {
         FakeRedirects redirects;
         const BilibiliLinkResult result = ResolveWith(
-            "【4K 修复】分享视频 https://www.bilibili.com/video/BV1xx411c7mD?p=2 复制打开哔哩哔哩",
+            "\u30104K \u4fee\u590d\u3011\u5206\u4eab\u89c6\u9891 https://www.bilibili.com/video/BV1xx411c7mD?p=2 \u590d\u5236\u6253\u5f00\u54d4\u54e9\u54d4\u54e9",
             &redirects);
         ExpectPage(result, "share text video URL", kBv, 0, 2,
                    "https://www.bilibili.com/video/BV1xx411c7mD?p=2", "bv:BV1xx411c7mD:p2");
@@ -289,7 +290,7 @@ void TestShortLinks() {
     {
         FakeRedirects redirects;
         redirects.Redirect("https://b23.tv/share", 301, "https://www.bilibili.com/video/av170001");
-        const BilibiliLinkResult result = ResolveWith("看这个视频 https://b23.tv/share 超好看", &redirects);
+        const BilibiliLinkResult result = ResolveWith("\u770b\u8fd9\u4e2a\u89c6\u9891 https://b23.tv/share \u8d85\u597d\u770b", &redirects);
         ExpectPage(result, "share text short link", "", 170001, 1, kAvPage, kAvCacheKey);
         ExpectRequests(redirects, {"https://b23.tv/share"}, "share text short link");
     }
@@ -395,7 +396,7 @@ void TestShortLinks() {
 void TestNeedsRedirectResolution() {
     Expect(nte_tv_video::NeedsRedirectResolution("https://b23.tv/abc"),
            "b23 link needs resolution");
-    Expect(nte_tv_video::NeedsRedirectResolution("看这个 https://b23.tv/abc 好看"),
+    Expect(nte_tv_video::NeedsRedirectResolution("\u770b\u8fd9\u4e2a https://b23.tv/abc \u597d\u770b"),
            "share text b23 link needs resolution");
     Expect(!nte_tv_video::NeedsRedirectResolution(kBvPage),
            "video page does not need resolution");

@@ -106,6 +106,8 @@ public:
     // Removes one ready artifact from this session's cache, but only when the
     // path is a registered ready artifact inside the cache directory.
     bool Discard(std::string_view path);
+    // Nonblocking Game/Render intent; deletion runs on the owned media worker.
+    void RequestDiscard(std::string path);
     // Removes every ready artifact of this session (best effort).
     void DiscardAll();
 

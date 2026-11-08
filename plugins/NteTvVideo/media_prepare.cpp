@@ -12,6 +12,7 @@
 #include <optional>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace nte_tv_video {
 namespace {
@@ -157,6 +158,7 @@ struct MediaPreparer::Impl final {
     bool worker_done{};
     std::uint64_t latest_request_id{};
     std::optional<PendingRequest> pending;
+    std::vector<std::string> discard_requests;
     PrepareSnapshot snapshot;
     std::map<std::string, std::wstring> cache;
     std::wstring temp_root;
@@ -202,22 +204,44 @@ struct MediaPreparer::Impl final {
 
     void Run() {
         for (;;) {
-            PendingRequest request;
+            std::optional<PendingRequest> request;
+            std::vector<std::string> discard;
+            bool stop{};
             {
                 std::unique_lock lock(mutex);
-                wake.wait(lock, [this] { return stopping || pending.has_value(); });
-                if (stopping) break;
-                request = std::move(*pending);
-                pending.reset();
-                cancel_requested = false;
+                wake.wait(lock, [this] { return stopping || pending || !discard_requests.empty(); });
+                discard.swap(discard_requests);
+                stop = stopping;
+                if (!stop) {
+                    request = std::exchange(pending, {});
+                    if (request) cancel_requested = false;
+                }
             }
-            Process(request);
+            for (const auto& path : discard) Discard(path);
+            if (stop) break;
+            if (request) Process(*request);
         }
         {
             std::scoped_lock lock(mutex);
             worker_done = true;
         }
         worker_done_cv.notify_all();
+    }
+
+    bool Discard(std::string_view path) {
+        if (path.empty()) return false;
+        const std::wstring target = WideFromUtf8(path);
+        if (target.empty()) return false;
+        {
+            std::scoped_lock lock(mutex);
+            auto entry = std::find_if(cache.begin(), cache.end(), [&target](const auto& item) {
+                return CompareStringOrdinal(item.second.c_str(), static_cast<int>(item.second.size()),
+                    target.c_str(), static_cast<int>(target.size()), TRUE) == CSTR_EQUAL;
+            });
+            if (entry == cache.end()) return false;
+            cache.erase(entry);
+        }
+        return DeleteFileW(target.c_str()) || GetLastError() == ERROR_FILE_NOT_FOUND;
     }
 
     void Process(const PendingRequest& request) {
@@ -494,26 +518,13 @@ bool MediaPreparer::Started() const {
     return impl_->started;
 }
 
-bool MediaPreparer::Discard(std::string_view path) {
-    if (path.empty()) return false;
-    const std::wstring target = WideFromUtf8(path);
-    if (target.empty()) return false;
-    {
-        std::scoped_lock lock(impl_->mutex);
-        auto entry = std::find_if(impl_->cache.begin(), impl_->cache.end(),
-                                  [&target](const auto& item) {
-                                      return CompareStringOrdinal(
-                                                 item.second.c_str(),
-                                                 static_cast<int>(item.second.size()),
-                                                 target.c_str(),
-                                                 static_cast<int>(target.size()), TRUE) ==
-                                             CSTR_EQUAL;
-                                  });
-        if (entry == impl_->cache.end()) return false;
-        impl_->cache.erase(entry);
-    }
-    if (DeleteFileW(target.c_str())) return true;
-    return GetLastError() == ERROR_FILE_NOT_FOUND;
+bool MediaPreparer::Discard(std::string_view path) { return impl_->Discard(path); }
+
+void MediaPreparer::RequestDiscard(std::string path) {
+    std::scoped_lock lock(impl_->mutex);
+    if (!impl_->started || impl_->stopping) return;
+    impl_->discard_requests.push_back(std::move(path));
+    impl_->wake.notify_all();
 }
 
 void MediaPreparer::DiscardAll() {

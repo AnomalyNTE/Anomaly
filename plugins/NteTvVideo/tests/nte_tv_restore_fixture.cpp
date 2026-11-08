@@ -10,9 +10,10 @@ struct Fixture {
     AnomalyUe5ObjectsServiceV1 objects{sizeof(objects)};
     AnomalyUe5ProcessEventServiceV1 events{sizeof(events)};
     AnomalyUe5NamesServiceV1 names{sizeof(names)};
-    std::array<std::array<std::uint8_t, 512>, 11> memory{};
+    std::array<std::array<std::uint8_t, 512>, 24> memory{};
     std::array<std::uintptr_t, 2> slots{};
     bool binding_test{}, mute_fails{}, bind_fails{}, stale_material{}, stale_event{};
+    bool restore_material_fails{}, restore_audio_fails{};
     std::uintptr_t expected_audio{};
     std::uintptr_t texture_player{};
     std::vector<std::uintptr_t> texture_changes;
@@ -23,6 +24,7 @@ struct Fixture {
         std::ifstream input(profile);
         const auto layout = nlohmann::json::parse(input).at("layout");
         native_layout.kObjectIndexOffset = layout.at("kObjectIndexOffset");
+        native_layout.kFunctionParmsSizeOffset = layout.at("kFunctionParmsSizeOffset");
         native_layout.kObjectNameOffset = layout.at("kObjectNameOffset");
         native_layout.kObjectOuterOffset = layout.at("kObjectOuterOffset");
         native_layout.kObjectClassOffset = layout.at("kObjectClassOffset");
@@ -98,7 +100,9 @@ struct Fixture {
                 f.texture_player = *static_cast<const std::uintptr_t*>(parameters);
                 f.texture_changes.push_back(f.texture_player);
             }
+            if (function.id == 103 && f.restore_audio_fails) return Status(ANOMALY_STATUS_V1_FAILED);
             if (function.id == 101) {
+                if (f.restore_material_fails) return Status(ANOMALY_STATUS_V1_FAILED);
                 const auto& material = *static_cast<const ScreenMaterialParameters*>(parameters);
                 if (object.id != 2 || size != sizeof(material) || material.slot != 1)
                     throw std::runtime_error("restore changed the wrong screen slot");
@@ -138,6 +142,10 @@ struct Fixture {
         texture_changes.clear();
         stale_material = stale_event = false;
         context.native_audio_pending = {};
+        context.tv_owner = Pointer(0);
+        context.tv_owner_handle = {1, 1};
+        context.tv_component = Pointer(3);
+        context.television_audio.clear();
         expected_audio = Pointer(4);
         context.tv_binding = {Pointer(4), Pointer(0), Pointer(3), Pointer(1), Pointer(2),
             {1, 1}, {4, 1}, {2, 1}, {3, 1}, 1};
@@ -340,6 +348,8 @@ void VerifySeekRebuild(const char* profile) {
 }
 }
 
+#include "nte_tv_selection_tests.hpp"
+
 int main(int argc, char** argv) {
     try {
         if (argc != 2) throw std::runtime_error("profile path required");
@@ -488,6 +498,9 @@ int main(int argc, char** argv) {
             throw std::runtime_error("current program's event was not restored");
         g_active.store(nullptr);
         VerifySeekRebuild(argv[1]);
+        VerifyTelevisionSelection(argv[1]);
+        VerifyTelevisionDiscovery(argv[1]);
+        VerifyFailedSelectionRestore(argv[1]);
 
         std::cout << "PASS: television restore, seek rebuild, frozen clock, loop, cancellation and bounded recovery\n";
         return 0;

@@ -18,6 +18,7 @@
 #include "tv_video_profile.hpp"
 #include "audio_output.hpp"
 #include "media_prepare.hpp"
+#include "file_picker.hpp"
 
 #include <Windows.h>
 #include <ShlObj.h>
@@ -100,21 +101,13 @@ struct PrepareDisplay final {
     float progress{};
 };
 
-// The file dialog runs on its own thread; this state remains valid after the
-// plugin context is gone, so the thread never touches a destroyed context.
-struct PickerState final {
-    std::mutex mutex;
-    bool busy{};
-    bool done{};
-    std::string path;
-};
-
 struct TelevisionBinding final {
     std::uintptr_t world{}, owner{}, component{}, mesh{}, material{};
     AnomalyGenerationHandleV1 owner_handle{}, component_handle{}, mesh_handle{}, material_handle{};
     std::int32_t slot{-1};
     std::uintptr_t local_material{}, texture{};
     AnomalyGenerationHandleV1 texture_handle{};
+    bool screen_restored{}, audio_restored{}, audio_restore_pending{};
 };
 
 struct TelevisionAudio final {
@@ -148,6 +141,13 @@ struct PlaybackSeek final {
     std::optional<std::int64_t> last_position;
     unsigned advances{};
     bool automatic{}, recovering{}, play_requested{};
+};
+
+struct TelevisionCandidate final {
+    std::uintptr_t world{}, owner{}, component{};
+    AnomalyGenerationHandleV1 world_handle{}, owner_handle{}, component_handle{};
+    std::string name;
+    bool playing{};
 };
 
 struct Context final {
@@ -189,10 +189,14 @@ struct Context final {
     // Worker-owned download/merge pipeline. Started on the lifecycle thread;
     // render callbacks never create it or touch its files.
     nte_tv_video::MediaPreparer preparer;
+    nte_tv_video::PrepareOptions prepare_options;
     // The user's video path, applied in memory only. Nothing is ever written to
     // the game directory: the plugin overrides strings and hook results.
     std::wstring override_path;
-    std::shared_ptr<PickerState> picker;
+    nte_tv_video::FilePicker picker;
+    std::optional<std::string> prepare_intent;
+    std::uint64_t prepare_serial{};
+    AnomalyGenerationHandleV1 prepare_task{};
 
     std::atomic<bool> force_media_player{false};
     std::atomic<bool> alive{false};
@@ -241,6 +245,15 @@ struct Context final {
     TelevisionBinding tv_binding;
     TelevisionBinding last_native_screen;
     TelevisionAudio tv_audio;
+    std::map<std::uintptr_t, TelevisionAudio> television_audio; // Game only.
+    std::vector<TelevisionCandidate> televisions; // Game only.
+    std::vector<TelevisionCandidate> television_display; // mutex protected.
+    std::optional<TelevisionCandidate> television_request; // mutex protected.
+    AnomalyGenerationHandleV1 displayed_selection{}; // mutex protected.
+    AnomalyGenerationHandleV1 discovery_world_handle{};
+    std::uintptr_t discovery_world{};
+    bool refresh_televisions{}; // mutex protected.
+    bool television_discovery_failed{}; // mutex protected.
     AnomalyGenerationHandleV1 native_audio_pending{};
     AudioIssue last_audio_issue{AudioIssue::None};
     AudioObservation last_audio_observation{AudioObservation::Valid};
@@ -430,16 +443,20 @@ bool ObjectClassText(Context& context, const void* object, char* output,
            ReadFNameText(context, type + native_layout.kObjectNameOffset, output, capacity);
 }
 
-bool IsTvComponent(Context& context, void* self) noexcept {
-    const auto component = reinterpret_cast<std::uintptr_t>(self);
-    if (component == 0 || native_layout.kObjectOuterOffset == 0) return false;
-    std::uintptr_t owner{};
-    if (!Read(context, component + native_layout.kObjectOuterOffset, owner) || owner == 0)
-        return false;
+bool IsTvActor(Context& context, std::uintptr_t owner) noexcept {
     std::uintptr_t type{};
-    if (!Read(context, owner + native_layout.kObjectClassOffset, type) || type == 0)
-        return false;
-    return NameEquals(context, type + native_layout.kObjectNameOffset, kTvActorClassName);
+    if (!owner || !Read(context, owner + native_layout.kObjectClassOffset, type)) return false;
+    for (unsigned depth = 0; type && depth < 32; ++depth) {
+        if (NameEquals(context, type + native_layout.kObjectNameOffset, kTvActorClassName)) return true;
+        if (!Read(context, type + native_layout.kStructSuperOffset, type)) return false;
+    }
+    return false;
+}
+
+bool IsTvComponent(Context& context, void* self) noexcept {
+    std::uintptr_t owner{};
+    return self && Read(context, reinterpret_cast<std::uintptr_t>(self) +
+        native_layout.kObjectOuterOffset, owner) && IsTvActor(context, owner);
 }
 
 
@@ -739,31 +756,176 @@ std::uintptr_t CurrentWorld(Context& context) {
     return world;
 }
 
-bool FindTelevision(Context& context, std::uintptr_t world, double elapsed) {
-    if (!world) return false;
-    AnomalyUe5ObjectSnapshotV1 current{sizeof(current)};
-    if (context.tv_owner && context.tv_world == world &&
-        context.objects->snapshot_by_handle(context.objects->user, context.tv_owner_handle, &current).code == 0)
-        return true;
-    context.tv_owner = 0;
-    context.tv_component = 0;
-    context.tv_discovery_seconds += elapsed;
-    if (context.tv_discovery_seconds < 1.0) return false;
-    context.tv_discovery_seconds = 0;
+bool LivePointer(Context&, std::uintptr_t, AnomalyGenerationHandleV1);
+bool SameHandle(AnomalyGenerationHandleV1, AnomalyGenerationHandleV1);
+bool OwnsComponent(Context&, std::uintptr_t, std::uintptr_t);
+bool StopTakeover(Context&, std::uintptr_t, bool);
+
+bool BelongsToWorld(Context& context, std::uintptr_t object, std::uintptr_t world) {
+    for (unsigned depth = 0; object && depth < 32; ++depth) {
+        if (object == world) return true;
+        if (!Read(context, object + native_layout.kObjectOuterOffset, object)) return false;
+    }
+    return false;
+}
+
+bool ReadTelevision(Context& context, std::uintptr_t world, std::uintptr_t owner,
+                    TelevisionCandidate& result) {
+    result = {};
+    if (!IsTvActor(context, owner) || !BelongsToWorld(context, owner, world) ||
+        !PinPointer(context, world, result.world_handle) ||
+        !PinPointer(context, owner, result.owner_handle)) return false;
+    result.world = world;
+    result.owner = owner;
+    char name[kMaxNameBytes]{};
+    if (ReadFNameText(context, owner + native_layout.kObjectNameOffset, name, sizeof(name))) result.name = name;
+    std::uintptr_t field{};
+    if (ObjectProperty(context, owner, L"MovieAudioPlayer", sizeof(result.component), field) &&
+        Read(context, field, result.component) && OwnsComponent(context, owner, result.component) &&
+        PinPointer(context, result.component, result.component_handle)) {
+        char type[128]{};
+        if (ObjectClassText(context, reinterpret_cast<void*>(result.component), type, sizeof(type)) &&
+            std::string_view(type) == "MovieAudioPlayerComponent") {
+            std::uint8_t playing{};
+            result.playing = InvokePointer(context, result.component,
+                "/Script/HTGame.MovieAudioPlayerComponent:IsPlaying", &playing, sizeof(playing)) && playing;
+        } else result.component = 0;
+    } else result.component = 0;
+    return true;
+}
+
+// Native UE TArray ABI. Its allocation belongs to FMemory, never the plugin CRT.
+struct TelevisionArray { std::uintptr_t data{}; std::int32_t count{}, capacity{}; };
+static_assert(sizeof(TelevisionArray) == 16);
+void FreeTelevisionArray(std::uintptr_t function, std::uintptr_t data) noexcept {
+    __try { reinterpret_cast<void(ANOMALY_CALL*)(void*)>(function)(reinterpret_cast<void*>(data)); }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
+bool ReadTelevisionArray(Context& context, std::uintptr_t world, const TelevisionArray& actors,
+                         std::vector<TelevisionCandidate>& output) {
+    // Bound engine output before reading the caller-owned result buffer.
+    if (actors.count < 0 || actors.capacity < actors.count || actors.count > 65536 ||
+        (actors.count && !actors.data)) return false;
+    for (std::int32_t i = 0; i < actors.count; ++i) {
+        std::uintptr_t owner{};
+        TelevisionCandidate candidate;
+        if (Read(context, actors.data + i * sizeof(owner), owner) &&
+            ReadTelevision(context, world, owner, candidate)) output.push_back(std::move(candidate));
+    }
+    return true;
+}
+
+bool EnumerateTelevisions(Context& context, std::uintptr_t world,
+                         std::vector<TelevisionCandidate>& output) {
+    std::uintptr_t release{};
+    if (!ResolveValidated(context, "memoryFree", release)) return false;
     const auto actor_class = FindNativeObject(context,
         "/Game/Blueprints/Level/World/Common/Room/BP_FurnitureActorBase_TV.BP_FurnitureActorBase_TV_C");
     const auto statics = FindNativeObject(context, "/Script/Engine.Default__GameplayStatics");
     if (!actor_class || !statics) return false;
-    struct { std::uintptr_t world, type, result{}; } parameters{world, actor_class};
-    if (InvokePointer(context, statics, "/Script/Engine.GameplayStatics:GetActorOfClass",
-            &parameters, sizeof(parameters)) && parameters.result &&
-        PinPointer(context, parameters.result, context.tv_owner_handle)) {
-        context.tv_owner = parameters.result;
-        context.tv_world = world;
-        Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO, "TV actor found in the active world");
-        return true;
+    struct Parameters { std::uintptr_t world, type; TelevisionArray actors; } parameters{world, actor_class};
+    constexpr ReflectedParameter fields[] = {
+        {L"WorldContextObject", L"ObjectProperty", offsetof(Parameters, world), sizeof(parameters.world)},
+        {L"ActorClass", L"ClassProperty", offsetof(Parameters, type), sizeof(parameters.type)},
+        {L"OutActors", L"ArrayProperty", offsetof(Parameters, actors), sizeof(parameters.actors)}};
+    struct Release {
+        std::uintptr_t function; TelevisionArray& array;
+        ~Release() { if (array.data) FreeTelevisionArray(function, array.data); }
+    } cleanup{release, parameters.actors};
+    if (!InvokePointer(context, statics, "/Script/Engine.GameplayStatics:GetAllActorsOfClass",
+            &parameters, sizeof(parameters), 0, fields)) return false;
+    if (!ReadTelevisionArray(context, world, parameters.actors, output)) return false;
+    std::ranges::sort(output, {}, [](const auto& item) { return item.owner_handle.id; });
+    return true;
+}
+
+bool SelectTelevision(Context& context, std::uintptr_t world, const TelevisionCandidate& request) {
+    const auto found = std::ranges::find_if(context.televisions, [&](const auto& item) {
+        return item.world == world && SameHandle(item.world_handle, request.world_handle) &&
+            SameHandle(item.owner_handle, request.owner_handle);
+    });
+    if (found == context.televisions.end() || !LivePointer(context, world, found->world_handle) ||
+        !LivePointer(context, found->owner, found->owner_handle) ||
+        !BelongsToWorld(context, found->owner, world)) return false;
+    if (SameHandle(context.tv_owner_handle, found->owner_handle) && context.tv_owner == found->owner) return true;
+    std::uint8_t old_playing{};
+    const bool restore_audio = context.tv_binding.component &&
+        LivePointer(context, context.tv_binding.component, context.tv_binding.component_handle) &&
+        InvokePointer(context, context.tv_binding.component,
+            "/Script/HTGame.MovieAudioPlayerComponent:IsPlaying", &old_playing, sizeof(old_playing)) && old_playing;
+    if (!StopTakeover(context, world, restore_audio)) {
+        std::scoped_lock lock(context.mutex);
+        context.media_status = context.localizer.Text("tv.restore_failed", "Could not restore the previous television; select again to retry");
+        return false;
     }
-    return false;
+    context.tv_owner = found->owner;
+    context.tv_owner_handle = found->owner_handle;
+    context.tv_world = world;
+    context.tv_component = found->component;
+    context.tv_audio = {};
+    const auto audio = context.television_audio.find(found->component);
+    if (audio != context.television_audio.end() &&
+        SameHandle(audio->second.component_handle, found->component_handle)) context.tv_audio = audio->second;
+    context.takeover_failed = false;
+    std::scoped_lock lock(context.mutex);
+    context.displayed_selection = found->owner_handle;
+    return true;
+}
+
+bool FindTelevision(Context& context, std::uintptr_t world, double elapsed) {
+    const bool world_changed = world != context.discovery_world ||
+        (world && !LivePointer(context, world, context.discovery_world_handle));
+    if (world_changed || (context.tv_owner && (!LivePointer(context, context.tv_owner, context.tv_owner_handle) ||
+            !BelongsToWorld(context, context.tv_owner, world)))) {
+        StopTakeover(context, world_changed ? 0 : world, false);
+        context.tv_owner = context.tv_component = 0;
+        context.tv_owner_handle = {};
+        context.tv_audio = {};
+        context.takeover_failed = false;
+        context.televisions.clear();
+        if (world_changed) {
+            std::erase_if(context.television_audio, [&](const auto& item) {
+                return !world || !LivePointer(context, item.first, item.second.component_handle) ||
+                    !BelongsToWorld(context, item.first, world);
+            });
+            context.media_player = {};
+            context.media_close = {};
+            context.media_player_pointer = 0;
+            context.media_functions.clear();
+        }
+        context.discovery_world = world;
+        context.discovery_world_handle = {};
+        if (world) PinPointer(context, world, context.discovery_world_handle);
+        context.tv_discovery_seconds = 1;
+        std::scoped_lock lock(context.mutex);
+        context.television_display.clear();
+        context.displayed_selection = {};
+        context.television_request.reset();
+    }
+    bool refresh{};
+    std::optional<TelevisionCandidate> request;
+    {
+        std::scoped_lock lock(context.mutex);
+        refresh = std::exchange(context.refresh_televisions, false);
+        request = std::exchange(context.television_request, {});
+    }
+    context.tv_discovery_seconds += elapsed;
+    if (world && (refresh || context.tv_discovery_seconds >= 1)) {
+        context.tv_discovery_seconds = 0;
+        std::vector<TelevisionCandidate> candidates;
+        const bool success = EnumerateTelevisions(context, world, candidates);
+        context.televisions = std::move(candidates);
+        std::erase_if(context.television_audio, [&](const auto& item) {
+            return !LivePointer(context, item.first, item.second.component_handle) ||
+                !BelongsToWorld(context, item.first, world);
+        });
+        std::scoped_lock lock(context.mutex);
+        context.television_display = context.televisions;
+        context.television_discovery_failed = !success;
+    }
+    if (request) SelectTelevision(context, world, *request);
+    return context.tv_owner != 0;
 }
 
 bool NativeProgramIsChanging(const Context& context, std::uintptr_t component, MediaClock::time_point now) {
@@ -782,6 +944,9 @@ bool TelevisionPlaying(Context& context, bool keep_during_program_change = false
     if (!InvokePointer(context, component, "/Script/HTGame.MovieAudioPlayerComponent:IsPlaying",
         &playing, sizeof(playing))) return false;
     context.tv_component = component;
+    const auto audio = context.television_audio.find(component);
+    if (audio != context.television_audio.end() && LivePointer(context, component, audio->second.component_handle))
+        context.tv_audio = audio->second;
     return playing != 0 || (keep_during_program_change &&
         NativeProgramIsChanging(context, component, MediaClock::now()));
 }
@@ -871,22 +1036,22 @@ bool AudioComponentRelevant(Context& context, std::uintptr_t component) {
 }
 
 void ObserveNativeProgram(Context& context, std::uintptr_t component, std::uintptr_t program) {
-    if (!AudioComponentRelevant(context, component)) return;
     AnomalyGenerationHandleV1 handle{};
     if (!PinPointer(context, component, handle)) return;
     if (program && context.media_playing.load(std::memory_order_acquire) &&
         component == context.tv_binding.component && SameHandle(handle, context.tv_binding.component_handle)) {
         context.native_program_transition_until = MediaClock::now() + std::chrono::seconds(1);
     }
-    const auto& audio = context.tv_audio;
+    const auto& audio = context.television_audio[component];
     if (program && audio.component == component && SameHandle(audio.component_handle, handle) && audio.program == program)
         return;
     // PlayByConfig can synchronously call PlayAudio. Publish the new program first.
-    context.tv_audio = {component, 0, handle, {}, program};
+    auto& recorded = context.television_audio[component];
+    recorded = {component, 0, handle, {}, program};
+    if (AudioComponentRelevant(context, component)) context.tv_audio = recorded;
 }
 
 AnomalyGenerationHandleV1 ObserveNativeAudio(Context& context, std::uintptr_t component, std::uintptr_t event) {
-    if (!AudioComponentRelevant(context, component)) return {};
     AnomalyGenerationHandleV1 component_handle{}, event_handle{};
     const auto observation = !event ? AudioObservation::Empty :
         PinPointer(context, component, component_handle) && PinPointer(context, event, event_handle) ?
@@ -898,9 +1063,11 @@ AnomalyGenerationHandleV1 ObserveNativeAudio(Context& context, std::uintptr_t co
             Log(context, ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "TV audio recovery: ignored unverifiable event");
     }
     if (observation != AudioObservation::Valid) return {};
-    const auto& old = context.tv_audio;
+    const auto& old = context.television_audio[component];
     const auto program = old.component == component && SameHandle(old.component_handle, component_handle) ? old.program : 0;
-    context.tv_audio = {component, event, component_handle, event_handle, program};
+    auto& recorded = context.television_audio[component];
+    recorded = {component, event, component_handle, event_handle, program};
+    if (AudioComponentRelevant(context, component)) context.tv_audio = recorded;
     return component_handle;
 }
 
@@ -1068,41 +1235,40 @@ BindResult BindTelevision(Context& context) {
     return result;
 }
 
-void RestoreTelevision(Context& context, bool restore_audio = true) {
-    // Release interception before any engine call can re-enter the audio hook.
+bool RestoreTelevision(Context& context, bool restore_audio = true) {
     context.media_playing.store(false);
     context.audio.Transport({}, 0, false);
-    const auto binding = context.tv_binding;
-    const bool muted = context.game_audio_muted;
-    context.tv_binding = {};
+    auto& binding = context.tv_binding;
+    binding.audio_restore_pending = binding.audio_restore_pending || context.game_audio_muted;
     context.game_audio_muted = false;
     const bool owner_valid = binding.slot >= 0 && LivePointer(context, binding.owner, binding.owner_handle);
-    bool material = false;
-    if (owner_valid && LivePointer(context, binding.mesh, binding.mesh_handle) &&
-        LivePointer(context, binding.material, binding.material_handle) &&
-        OwnsComponent(context, binding.owner, binding.mesh)) {
-        Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO, "TV restore: restoring screen material");
-        material = SetScreenMaterial(context, binding, binding.material);
-        Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO, "TV restore: screen material call returned");
+    if (!owner_valid) {
+        const auto stale = binding;
+        binding = {};
+        CloseLocalMedia(context, stale);
+        return true;
     }
-    Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO, "TV restore: closing local media");
+    if (!binding.screen_restored && LivePointer(context, binding.mesh, binding.mesh_handle) &&
+        LivePointer(context, binding.material, binding.material_handle) &&
+        OwnsComponent(context, binding.owner, binding.mesh))
+        binding.screen_restored = SetScreenMaterial(context, binding, binding.material);
+    // Closing the media does not discard a failed screen/audio recovery record.
     CloseLocalMedia(context, binding);
-    Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO, "TV restore: local media close returned");
-    bool audio = !muted || !restore_audio;
-    if (owner_valid && muted && restore_audio && LivePointer(context, binding.component, binding.component_handle) &&
+    if (!restore_audio || !binding.audio_restore_pending) binding.audio_restored = true;
+    if (!binding.audio_restored && LivePointer(context, binding.component, binding.component_handle) &&
         OwnsComponent(context, binding.owner, binding.component)) {
         const auto issue = CheckNativeAudio(context, binding.component);
         ReportAudioIssue(context, issue);
         if (issue == AudioIssue::None) {
             auto event = context.tv_audio.event;
-            Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO, "TV restore: restoring native audio event");
-            audio = InvokePointer(context, binding.component,
+            binding.audio_restored = InvokePointer(context, binding.component,
                 "/Script/HTGame.MovieAudioPlayerComponent:PlayAudio", &event, sizeof(event));
         }
-        context.native_audio_pending = audio ? AnomalyGenerationHandleV1{} : binding.component_handle;
+        context.native_audio_pending = binding.audio_restored ? AnomalyGenerationHandleV1{} : binding.component_handle;
     }
-    Log(context, material && audio ? ANOMALY_CORE_LOG_LEVEL_V1_INFO : ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
-        "TV restore complete: material=" + std::to_string(material) + " audio=" + std::to_string(audio));
+    const bool restored = binding.screen_restored && binding.audio_restored;
+    if (restored) binding = {};
+    return restored;
 }
 
 bool MediaBool(Context&, const char*, bool&);
@@ -1289,16 +1455,14 @@ bool RequestMediaSeek(Context& context, std::int64_t target) {
         parameters.accepted;
 }
 
-void StopTakeover(Context& context, std::uintptr_t world, bool restore_audio) {
-    if (context.opened_path.empty()) return;
+bool StopTakeover(Context& context, std::uintptr_t world, bool restore_audio) {
     if (context.tv_binding.slot >= 0 && world && context.tv_binding.world == world)
-        RestoreTelevision(context, restore_audio);
-    else {
-        const auto binding = context.tv_binding;
-        context.tv_binding = {};
-        context.game_audio_muted = false;
-        CloseLocalMedia(context, binding);
-    }
+        return RestoreTelevision(context, restore_audio);
+    const auto binding = context.tv_binding;
+    context.tv_binding = {};
+    context.game_audio_muted = false;
+    if (!context.opened_path.empty()) CloseLocalMedia(context, binding);
+    return true;
 }
 
 constexpr auto kSeekEndMargin = kTicksPerSecond / 4;
@@ -1548,7 +1712,10 @@ void ANOMALY_CALL UpdateMedia(void* plugin_context, double delta_seconds) noexce
                 world == context.tv_binding.world && !login &&
                 LivePointer(context, context.tv_binding.owner, context.tv_binding.owner_handle) &&
                 TelevisionPlaying(context) && context.tv_component == context.tv_binding.component;
-            StopTakeover(context, login ? 0 : world, active_tv);
+            if (!StopTakeover(context, login ? 0 : world, active_tv || context.tv_binding.audio_restore_pending)) {
+                MediaStatus(context, context.localizer.Text("tv.restore_failed", "Could not restore the previous television; select again to retry"));
+                return;
+            }
             const std::wstring previous = context.selected_path;
             context.resume_position = 0;
             context.takeover_failed = false;
@@ -1564,15 +1731,17 @@ void ANOMALY_CALL UpdateMedia(void* plugin_context, double delta_seconds) noexce
                     DiscardPreparedSource(context, WideToUtf8(previous));
                 context.selected_path = path;
             }
-            if (!enabled || login || path.empty()) {
+            if (!enabled || login) {
+                FindTelevision(context, 0, 0);
                 MediaStatus(context, context.native_audio_pending.id ?
                     context.localizer.Text("media.native_audio_pending", "Original sound will resume with the television's next audio event") :
                     context.localizer.Text("media.idle", "Idle"));
                 return;
             }
         }
-        if (path.empty() || !CanInvoke(context)) return;
+        if (!CanInvoke(context)) return;
         const bool television = FindTelevision(context, world, elapsed);
+        if (path.empty()) return;
         if (!television || (!context.opened_path.empty() && context.opened_world != world) ||
             !TelevisionPlaying(context, true) || (context.tv_binding.slot >= 0 &&
                 (context.tv_binding.component != context.tv_component ||
@@ -1592,6 +1761,10 @@ void ANOMALY_CALL UpdateMedia(void* plugin_context, double delta_seconds) noexce
             return;
         }
         if (context.takeover_failed) return;
+        if (context.tv_binding.slot >= 0 && context.opened_path.empty()) {
+            MediaStatus(context, context.localizer.Text("tv.restore_failed", "Could not restore the previous television; select again to retry"));
+            return;
+        }
         if (NeedsNativeAudio(context)) {
             StopTakeover(context, world, true);
             const auto waiting = context.localizer.Text("media.waiting_audio", "Waiting for the television audio event");
@@ -1941,9 +2114,7 @@ bool PrepareActive(const nte_tv_video::PrepareStage stage) noexcept {
 // media. Only the per-session cache root is prepared here.
 bool EnsurePreparer(Context& context) noexcept {
     if (context.preparer.Started()) return true;
-    nte_tv_video::PrepareOptions options;
-    options.cache_directory = nte_tv_video::DefaultMediaCacheDirectory();
-    if (context.preparer.Start(options)) return true;
+    if (context.preparer.Start(context.prepare_options)) return true;
     Log(context, ANOMALY_CORE_LOG_LEVEL_V1_ERROR,
         "bilibili preparation worker failed to start");
     return false;
@@ -2010,14 +2181,32 @@ void UpdatePrepare(Context& context) noexcept {
     }
 }
 
-void SubmitBilibiliLink(Context& context) noexcept {
-    if (!EnsurePreparer(context)) {
+void PrepareLinkTask(void* user, AnomalyGenerationHandleV1) noexcept {
+    auto& context = *static_cast<Context*>(user);
+    try {
+        std::optional<std::string> link;
+        std::uint64_t serial{};
+        {
+            std::scoped_lock lock(context.mutex);
+            context.prepare_task = {};
+            link = std::exchange(context.prepare_intent, {});
+            serial = context.prepare_serial;
+        }
+        if (!link || !context.alive.load()) return;
+        const bool ready = EnsurePreparer(context); // Worker domain: directories and thread startup.
         std::scoped_lock lock(context.mutex);
-        context.prepare = PrepareDisplay{};
-        context.prepare.stage = nte_tv_video::PrepareStage::Failed;
-        context.prepare.error = nte_tv_video::PrepareError::Internal;
-        return;
-    }
+        if (serial != context.prepare_serial) return;
+        const auto id = ready ? context.preparer.Submit(*link) : 0;
+        context.prepare.request_id = id;
+        if (!id) {
+            context.prepare.active = false;
+            context.prepare.stage = nte_tv_video::PrepareStage::Failed;
+            context.prepare.error = nte_tv_video::PrepareError::Internal;
+        }
+    } catch (...) {}
+}
+
+void SubmitBilibiliLink(Context& context) noexcept {
     std::string link(context.link_input.data());
     const auto first = link.find_first_not_of(" \t\r\n");
     const auto last = link.find_last_not_of(" \t\r\n");
@@ -2029,27 +2218,26 @@ void SubmitBilibiliLink(Context& context) noexcept {
         context.prepare.error = nte_tv_video::PrepareError::InvalidLink;
         return;
     }
-    const auto request_id = context.preparer.Submit(link);
-    if (request_id == 0) {
-        std::scoped_lock lock(context.mutex);
-        context.prepare = PrepareDisplay{};
-        context.prepare.stage = nte_tv_video::PrepareStage::Failed;
-        context.prepare.error = nte_tv_video::PrepareError::Internal;
-        return;
-    }
     {
         std::scoped_lock lock(context.mutex);
+        context.prepare_intent = link;
+        ++context.prepare_serial;
         context.prepare = PrepareDisplay{};
-        context.prepare.request_id = request_id;
         context.prepare.stage = nte_tv_video::PrepareStage::Resolving;
         context.prepare.active = true;
         context.settings.bilibili_url = link;
+        if (!context.prepare_task.id) {
+            AnomalyGenerationHandleV1 task{};
+            if (!SchedulerReady(context.scheduler) || context.scheduler->schedule(context.scheduler->user,
+                    0, PrepareLinkTask, &context, &task).code != ANOMALY_STATUS_V1_OK) {
+                context.prepare_intent.reset();
+                context.prepare.active = false;
+                context.prepare.stage = nte_tv_video::PrepareStage::Failed;
+                context.prepare.error = nte_tv_video::PrepareError::Internal;
+            } else context.prepare_task = task;
+        }
     }
     MarkSettingsDirty(context);
-    char message[96]{};
-    std::snprintf(message, sizeof(message), "bilibili preparation id=%llu submitted",
-                  static_cast<unsigned long long>(request_id));
-    Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO, message);
 }
 
 void CancelBilibiliPrepare(Context& context) noexcept {
@@ -2057,6 +2245,8 @@ void CancelBilibiliPrepare(Context& context) noexcept {
     std::scoped_lock lock(context.mutex);
     // Drop late results of the cancelled request by request id; the display keeps
     // the cancellation copy until the next submit or source selection.
+    context.prepare_intent.reset();
+    ++context.prepare_serial;
     context.prepare.request_id = 0;
     if (!context.prepare.active) return;
     context.prepare.active = false;
@@ -2067,6 +2257,8 @@ void CancelBilibiliPrepare(Context& context) noexcept {
 void ResetBilibiliPrepare(Context& context) noexcept {
     context.preparer.Cancel();
     std::scoped_lock lock(context.mutex);
+    context.prepare_intent.reset();
+    ++context.prepare_serial;
     context.prepare = PrepareDisplay{};
 }
 
@@ -2096,24 +2288,14 @@ bool IsPreparedCachePath(const std::string& path) noexcept {
 // files are never touched.
 void DiscardPreparedSource(Context& context, const std::string& path) noexcept {
     if (path.empty() || !IsPreparedCachePath(path)) return;
-    bool removed = false;
-    if (context.preparer.Started()) {
-        removed = context.preparer.Discard(path);
-    } else {
-        const std::wstring wide = Utf8ToWide(path);
-        removed = !wide.empty() && DeleteFileW(wide.c_str()) != 0;
-    }
+    context.preparer.RequestDiscard(path);
     {
         std::scoped_lock lock(context.mutex);
         if (context.settings.video_path == path) context.settings.video_path.clear();
     }
     UpdateOverridePath(context);
     MarkSettingsDirty(context);
-    char message[380]{};
-    std::snprintf(message, sizeof(message), "bilibili cache %s: %s",
-                  removed ? "removed" : "left for the next session", path.c_str());
-    Log(context, removed ? ANOMALY_CORE_LOG_LEVEL_V1_INFO : ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
-        message);
+
 }
 
 std::string PrepareReasonText(Context& context, const nte_tv_video::PrepareError error) {
@@ -2210,71 +2392,6 @@ std::string PrepareStatusText(Context& context) {
 // ---------------------------------------------------------------------------
 // UI
 // ---------------------------------------------------------------------------
-
-std::optional<std::wstring> PickVideoFile() {
-    std::optional<std::wstring> result;
-    const HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-    IFileOpenDialog* dialog = nullptr;
-    if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
-                                   IID_PPV_ARGS(&dialog)))) {
-        const COMDLG_FILTERSPEC filters[] = {
-            {L"Video files", L"*.mp4;*.m4v;*.mov;*.webm;*.mkv;*.usm"},
-            {L"All files", L"*.*"},
-        };
-        dialog->SetFileTypes(static_cast<UINT>(sizeof(filters) / sizeof(filters[0])), filters);
-        FILEOPENDIALOGOPTIONS options{};
-        if (SUCCEEDED(dialog->GetOptions(&options))) {
-            dialog->SetOptions(options | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST | FOS_PATHMUSTEXIST);
-        }
-        IShellItem* item = nullptr;
-        if (SUCCEEDED(dialog->Show(nullptr)) && SUCCEEDED(dialog->GetResult(&item))) {
-            PWSTR path = nullptr;
-            if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)) && path != nullptr) {
-                result = std::wstring(path);
-                CoTaskMemFree(path);
-            }
-            item->Release();
-        }
-        dialog->Release();
-    }
-    if (SUCCEEDED(init)) CoUninitialize();
-    return result;
-}
-
-void StartFilePicker(Context& context) noexcept {
-    std::shared_ptr<PickerState> state;
-    {
-        std::scoped_lock lock(context.mutex);
-        state = context.picker;
-    }
-    if (state == nullptr) return;
-    {
-        std::scoped_lock lock(state->mutex);
-        if (state->busy) return;
-        state->busy = true;
-    }
-    try {
-        std::thread([state] {
-            std::optional<std::wstring> picked;
-            try {
-                picked = PickVideoFile();
-            } catch (...) {
-            }
-            std::scoped_lock lock(state->mutex);
-            if (picked) {
-                const std::string utf8 = WideToUtf8(*picked);
-                if (!utf8.empty()) {
-                    state->path = utf8;
-                    state->done = true;
-                }
-            }
-            state->busy = false;
-        }).detach();
-    } catch (...) {
-        std::scoped_lock lock(state->mutex);
-        state->busy = false;
-    }
-}
 
 void Text(const AnomalyUiServiceV1* ui, const std::string& text) noexcept {
     ui->text(ui->user, anomaly::sdk::StringView(text));
@@ -2397,6 +2514,41 @@ void DrawAudioDistanceSettings(Context& context, const AnomalyUiServiceV1* ui, A
     }
 }
 
+void DrawTelevisions(Context& context, const AnomalyUiServiceV1* ui) {
+    std::vector<TelevisionCandidate> rows;
+    AnomalyGenerationHandleV1 selected{};
+    bool failed{}, enabled{};
+    {
+        std::scoped_lock lock(context.mutex);
+        rows = context.television_display;
+        selected = context.displayed_selection;
+        failed = context.television_discovery_failed;
+        enabled = context.settings.enabled;
+    }
+    if (!enabled) return;
+    const auto refresh = context.localizer.Text("tv.refresh", "Refresh televisions");
+    if (ui->button(ui->user, anomaly::sdk::StringView(refresh), 0, 0)) {
+        std::scoped_lock lock(context.mutex);
+        context.refresh_televisions = true;
+    }
+    if (failed) Text(ui, context.localizer.Text("tv.discovery_failed", "Television discovery unavailable; check the compatibility profile"));
+    else if (rows.empty()) Text(ui, context.localizer.Text("tv.empty", "No loaded residence televisions"));
+    else if (!selected.id) Text(ui, context.localizer.Text("tv.choose", "Select a television below"));
+    for (const auto& row : rows) {
+        const auto identity = std::to_string(row.owner_handle.id);
+        const auto state = (row.playing ? context.localizer.Text("tv.playing", "Playing") :
+            context.localizer.Text("tv.off", "Off or unavailable"));
+        const std::array<std::string_view, 3> args{row.name, identity, state};
+        Text(ui, context.localizer.Format("tv.row", "{0} [{1}] - {2}", args));
+        const auto label = (SameHandle(selected, row.owner_handle) ? context.localizer.Text("tv.selected", "Selected") :
+            context.localizer.Text("tv.select", "Select")) + "##tv" + identity;
+        if (ui->button(ui->user, anomaly::sdk::StringView(label), 0, 0)) {
+            std::scoped_lock lock(context.mutex);
+            context.television_request = row;
+        }
+    }
+}
+
 void Draw(void* plugin_context, const AnomalyUiServiceV1* ui_v1) {
     auto* context = static_cast<Context*>(plugin_context);
     if (context == nullptr || ui_v1 == nullptr || context->ui == nullptr) return;
@@ -2405,32 +2557,15 @@ void Draw(void* plugin_context, const AnomalyUiServiceV1* ui_v1) {
     if (!window) return;
 
     {
-        std::shared_ptr<PickerState> state;
-        {
-            std::scoped_lock lock(context->mutex);
-            state = context->picker;
-        }
-        if (state != nullptr) {
-            std::string picked;
+        const auto picked = context->picker.TakeResult();
+        if (picked.path) {
             {
-                std::scoped_lock lock(state->mutex);
-                if (!state->busy && state->done) {
-                    picked = std::move(state->path);
-                    state->path.clear();
-                    state->done = false;
-                }
+                std::scoped_lock lock(context->mutex);
+                context->settings.video_path = WideToUtf8(*picked.path);
             }
-            if (!picked.empty()) {
-                {
-                    std::scoped_lock lock(context->mutex);
-                    context->settings.video_path = picked;
-                }
-                UpdateOverridePath(*context);
-                MarkSettingsDirty(*context);
-                // A manually picked file replaces both the prepared source and
-                // the running preparation task.
-                ResetBilibiliPrepare(*context);
-            }
+            UpdateOverridePath(*context);
+            MarkSettingsDirty(*context);
+            ResetBilibiliPrepare(*context);
         }
     }
 
@@ -2452,6 +2587,7 @@ void Draw(void* plugin_context, const AnomalyUiServiceV1* ui_v1) {
         }
         MarkSettingsDirty(*context);
     }
+    DrawTelevisions(*context, ui_v1);
     Text(ui_v1, HookStatusText(*context));
     std::string playback_status;
     {
@@ -2507,7 +2643,7 @@ void Draw(void* plugin_context, const AnomalyUiServiceV1* ui_v1) {
     const std::string browse = context->localizer.Label("action.browse", "Choose video...",
                                                         "tv-video-browse");
     if (Button(ui_v1, browse, true)) {
-        StartFilePicker(*context);
+        context->picker.Request();
     }
 
     if (!context->link_input_initialized) {
@@ -2585,12 +2721,6 @@ AnomalyStatusV1 Load(const AnomalyHostApiV1* host, void** plugin_context) {
     context->ui = Query<AnomalyUiServiceV1>(host, ANOMALY_UI_SERVICE_V1_ID,
                                             ANOMALY_UI_SERVICE_V1_VERSION);
     context->localizer = anomaly::sdk::Localizer(host);
-    try {
-        context->picker = std::make_shared<PickerState>();
-    } catch (...) {
-        delete context;
-        return Status(ANOMALY_STATUS_V1_FAILED);
-    }
     if (!CoreReady(context->core) || !SignatureReady(context->signatures) ||
         !HookReady(context->hook) || !NamesReady(context->names) ||
         !ConfigReady(context->config) || !SchedulerReady(context->scheduler) ||
@@ -2631,6 +2761,10 @@ AnomalyStatusV1 Start(void* plugin_context) noexcept {
         }
     }
     ReadSettings(*context);
+    if (!context->picker.Start(
+            Utf8ToWide(context->localizer.Text("picker.video_files", "Video files")),
+            Utf8ToWide(context->localizer.Text("picker.all_files", "All files"))))
+        Log(*context, ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "file picker STA unavailable");
     {
         // The media cache is per process: a prepared artifact from a previous
         // session no longer exists, so only a user-owned local path is restored.
@@ -2645,6 +2779,7 @@ AnomalyStatusV1 Start(void* plugin_context) noexcept {
     }
     // Cache reclamation and the worker setup belong to the lifecycle thread, never
     // to a render callback. No network or media is touched here.
+    context->prepare_options.cache_directory = nte_tv_video::DefaultMediaCacheDirectory();
     if (!EnsurePreparer(*context))
         Log(*context, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
             "bilibili preparation worker is unavailable this session");
@@ -2671,9 +2806,15 @@ AnomalyStatusV1 Stop(void* plugin_context, std::uint32_t deadline_ms) noexcept {
     g_active.store(nullptr, std::memory_order_release);
     context->persist_task = {};
     const auto started = MediaClock::now();
+    const auto remaining_time = [&] {
+        const auto spent = std::chrono::duration_cast<std::chrono::milliseconds>(MediaClock::now() - started);
+        return spent.count() >= deadline_ms ? 0U : deadline_ms - static_cast<std::uint32_t>(spent.count());
+    };
+    if (!context->picker.Stop(std::chrono::milliseconds(remaining_time())))
+        return Status(ANOMALY_STATUS_V1_TIMEOUT, "file picker did not stop in time");
     bool prepare_stopped = true;
     if (context->preparer.Started()) {
-        prepare_stopped = context->preparer.Stop(deadline_ms);
+        prepare_stopped = context->preparer.Stop(remaining_time());
         // A player may still hold the current artifact; leftovers are reclaimed by
         // the next Start.
         if (prepare_stopped) context->preparer.DiscardAll();

@@ -70,6 +70,18 @@
     "prepare.reason.budget": "缓存超过 2 GiB 预算",
     "prepare.reason.internal": "内部准备错误",
     "progress.slider": "视频进度",
-    "progress.time": "{0} / {1}"
+    "progress.time": "{0} / {1}",
+    "tv.refresh": "刷新电视列表",
+    "tv.discovery_failed": "无法发现电视，请检查兼容配置",
+    "tv.empty": "当前没有已加载的住宅电视",
+    "tv.choose": "请选择下方的电视",
+    "tv.playing": "播放中",
+    "tv.off": "已关闭或不可用",
+    "tv.row": "{0} [{1}] - {2}",
+    "tv.selected": "已选择",
+    "tv.select": "选择",
+    "picker.video_files": "视频文件",
+    "picker.all_files": "所有文件",
+    "tv.restore_failed": "未能恢复上一台电视，请重新选择以重试"
   }
 }

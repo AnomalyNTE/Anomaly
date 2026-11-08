@@ -65,6 +65,16 @@
           "values": {}
         }
       ]
+    },
+    {
+      "name": "memoryFree",
+      "candidates": [
+        {
+          "pattern": "48 85 C9 74 2E 53 48 83 EC 20 48 8B D9 48 8B 0D ?? ?? ?? ?? 48 85 C9 75 0C E8 ?? ?? ?? ?? 48 8B 0D ?? ?? ?? ?? 48 8B 01 48 8B D3 FF 50 48 48 83 C4 20 5B C3",
+          "entry": "48 85 C9 74 2E",
+          "values": {}
+        }
+      ]
     }
   ]
 }

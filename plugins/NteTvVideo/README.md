@@ -10,6 +10,16 @@
 - 本地视频文件保留在用户自己的路径，插件只读取它并在**进程内存**里替换数据。
 - 所有替换点都必须是内存操作：FString 参数改写、Hook 返回值改写、后续的虚拟文件数据。
 
+## 选择住宅电视
+
+开启替换后，在电视列表中手动选择当前世界已加载的住宅电视；默认不自动选中第一台。
+列表每秒刷新，也可点击「刷新电视列表」。实例编号用于区分同名电视，选择不会写入配置。
+关闭中的电视可以选中，开启后再接管；切换目标时恢复旧电视的材质和原声，并保留本地片源进度。
+离开世界或选中对象卸载后清除选择，需要重新选择；其他电视继续播放原节目。
+仅支持已知住宅电视基类及其派生类，以及通过校验的组件和屏幕材质。未知屏幕不会强行替换。
+其他住宅的实际蓝图和材质兼容性仍需实机验收。
+当前公开 SDK 没有 Game 域停止回调，因此本版本不能保证宿主禁用或热重载时自动恢复电视。面板关闭替换时的 Game 域恢复仍有效；宿主停止路径不在本次插件范围内修复，也不作为离线测试已覆盖的能力。
+
 ## 当前状态
 
 - 本地 MP4 画面已通过真实电视人工验证。插件独立驱动电视的 MediaPlayer/MediaTexture，
@@ -111,6 +121,14 @@
 - 旧实验通过游戏管线开关切换电视；当前实现独立接管屏幕，不再依赖该开关改变原生播放实现。
 - 热重载/停止会释放全部 Hook；配置写入在 Worker 上执行。
 
+## 测试源码归属
+
+住宅电视专用 fixture 位于 `plugins/NteTvVideo/tests/`，专用视频素材位于其 `data/` 子目录。
+构建注册仍集中在根 CMakeLists.txt，原 target 和 CTest 名称保持不变，测试不进入发布包。
+恢复 fixture 同时验证手动选择、候选重排、过期身份、跨世界清理及多电视音频事件隔离。
+`nte_tv_picker_lifecycle` 验证真实文件对话框的排队取消、打开后取消和线程回收；运行时会短暂显示对话框。
+启动 fixture 还校验当前 SDK 描述符容量与尾部哨兵，防止写入未提供的扩展字段。
+
 ## 音轨验证夹具
 
 在标准构建树开启 `ANOMALY_BUILD_TEST_FIXTURES` 后，构建 `anomaly_nte_tv_audio_fixture`，
@@ -126,7 +144,9 @@
 ```powershell
 cmake --build --preset windows-relwithdebinfo --target `
     anomaly_nte_tv_link_fixture anomaly_nte_tv_bilibili_api_fixture `
-    anomaly_nte_tv_media_fixture anomaly_nte_tv_prepare_fixture
+    anomaly_nte_tv_media_fixture anomaly_nte_tv_prepare_fixture `
+    anomaly_nte_tv_startup_fixture anomaly_nte_tv_restore_fixture `
+    anomaly_nte_tv_audio_fixture anomaly_nte_tv_picker_fixture
 ctest --test-dir .build\windows-vs2022 -C RelWithDebInfo -R nte_tv
 ```
 

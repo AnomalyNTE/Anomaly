@@ -1506,7 +1506,7 @@ int RunFixture(const std::wstring& data_directory) {
 int main() {
     const std::vector<std::wstring> arguments = Arguments();
     const std::wstring data_directory =
-        arguments.size() > 1 ? arguments[1] : std::wstring(L"apps/test_host/data");
+        arguments.size() > 1 ? arguments[1] : std::wstring(L"plugins/NteTvVideo/tests/data");
     // The plugin resolves the default cache directory through the shell and the
     // fixture checks it; a shell apartment is harmless for the Media Foundation
     // worker threads, which initialize COM on their own threads.

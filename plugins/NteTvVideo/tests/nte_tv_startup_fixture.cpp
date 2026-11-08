@@ -4,6 +4,21 @@
 
 int main() {
     try {
+        // Exercise the actual exported entry against the installed SDK's capacity.
+        struct DescriptorBuffer {
+            AnomalyPluginDescriptorV1 descriptor{};
+            std::array<unsigned char, 16> sentinel;
+        } buffer;
+        buffer.sentinel.fill(0xA5);
+        buffer.descriptor.struct_size = sizeof(buffer.descriptor) - 1;
+        if (AnomalyPluginEntryV1(&buffer.descriptor).code != ANOMALY_STATUS_V1_INVALID_ARGUMENT)
+            throw std::runtime_error("undersized descriptor accepted");
+        buffer.descriptor.struct_size = sizeof(buffer.descriptor);
+        if (AnomalyPluginEntryV1(&buffer.descriptor).code != ANOMALY_STATUS_V1_OK ||
+            buffer.descriptor.on_stop != Stop || buffer.descriptor.on_update != UpdateMedia ||
+            !std::all_of(buffer.sentinel.begin(), buffer.sentinel.end(),
+                         [](unsigned char value) { return value == 0xA5; }))
+            throw std::runtime_error("SDK descriptor entry or capacity boundary is invalid");
         unsigned finds{}, invokes{};
         std::string persisted;
         std::string saved = R"({"enabled":true,"forceMediaPlayer":true,"muteGameAudio":false,"videoPath":"C:/fixture/movie.mp4","bilibiliUrl":"https://www.bilibili.com/video/BV1xx411c7mD?p=2"})";
