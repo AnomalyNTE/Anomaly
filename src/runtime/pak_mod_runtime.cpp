@@ -1,10 +1,12 @@
 #include "anomaly/pak_mod_runtime.hpp"
 #include "anomaly/pak_mod_settings.hpp"
 #include "anomaly/pak_mod_catalog.hpp"
+#include "anomaly/pak_mod_layout.hpp"
 
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <charconv>
 #include <cstdio>
@@ -13,6 +15,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -156,6 +159,10 @@ struct PakModRuntime::Impl final {
     bool shutdown_complete{};
     std::vector<PakModEntrySnapshot> entries;
     PakModCatalogCache catalog_cache;
+    // Where one mod begins and ends, as the catalogue keys it. Rebuilt with every desired set and
+    // published atomically: the mount paths ask for a key outside the planning pass as well, and a
+    // key that named the first folder above a mod would not match a category's own keys.
+    std::atomic<std::shared_ptr<const PakModLayout>> layout_;
     // Strong references transferred by Mount, retained for explicit diagnostic reads and released
     // after unmount or shutdown. Engine-owned references have their own lifetime.
     std::map<std::string, std::uintptr_t, std::less<>> containers;
@@ -360,8 +367,67 @@ struct PakModRuntime::Impl final {
         const auto path = EnginePathKey(file);
         if (!path.starts_with(root)) return {};
         const auto relative = NarrowText(path.substr(root.size()));
-        const auto slash = relative.find('/');
-        return slash == std::string::npos ? relative : relative.substr(0, slash + 1);
+        std::string logical;
+        for (std::size_t begin = 0; begin <= relative.size();) {
+            auto end = relative.find('/', begin);
+            if (end == std::string::npos) end = relative.size();
+            auto name = relative.substr(begin, end - begin);
+            if (!logical.empty()) logical += '/';
+            if (IsDisabledName(LowerAscii(name))) name.resize(name.size() - 9);
+            logical += name;
+            begin = end + 1;
+        }
+        // A container in the mods directory is a mod of its own and keys by its own file name, which
+        // is how the catalogue spells it.
+        const auto loose = [&] {
+            const auto dot = logical.rfind('.');
+            return dot == std::string::npos ? logical : logical.substr(0, dot) + ".pak";
+        };
+        const auto layout = layout_.load();
+        if (!layout) {
+            const auto slash = logical.find('/');
+            return slash == std::string::npos ? loose() : logical.substr(0, slash + 1);
+        }
+        const auto folder = layout->Root(logical);
+        return folder.empty() ? loose() : folder + "/";
+    }
+
+    // One walk of the mods tree per planned set, keyed the way the catalogue keys it. A folder that
+    // only groups mods is a category on both sides, so a mod filed in one keeps its own key instead
+    // of the folder's, and a selection stored for either still reaches every container under it.
+    void BuildLayout() {
+        auto layout = std::make_shared<PakModLayout>();
+        const auto root = std::filesystem::absolute(options.mod_directory).lexically_normal();
+        std::error_code error;
+        if (std::filesystem::is_directory(root, error)) {
+            std::size_t scanned{};
+            for (auto it = std::filesystem::recursive_directory_iterator(root, error);
+                 it != std::filesystem::recursive_directory_iterator{}; ++it) {
+                if (++scanned > 20000) throw std::runtime_error("mod directory exceeds scan limit");
+                const auto attributes = GetFileAttributesW(it->path().c_str());
+                if (attributes == INVALID_FILE_ATTRIBUTES) continue;
+                if (attributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+                    it.disable_recursion_pending();
+                    continue;
+                }
+                if (!it->is_regular_file()) continue;
+                std::string logical;
+                for (const auto& part : it->path().lexically_relative(root)) {
+                    if (!logical.empty()) logical += '/';
+                    auto wide = part.wstring();
+                    std::transform(wide.begin(), wide.end(), wide.begin(),
+                        [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
+                    auto name = NarrowText(wide);
+                    if (IsDisabledName(LowerAscii(name))) name.resize(name.size() - 9);
+                    logical += name;
+                }
+                const auto extension = std::filesystem::u8path(logical).extension();
+                if (extension == L".pak" || extension == L".utoc" || extension == L".ucas" ||
+                    extension == L".sig" || PakModShippedFile(logical))
+                    layout->AddOwnerFile(logical);
+            }
+        }
+        layout_.store(std::move(layout));
     }
 
     // `config/pak-mods.json` is optional. When it lists containers it is authoritative, which
@@ -435,6 +501,9 @@ struct PakModRuntime::Impl final {
             conflicting_mods.clear();
         }
         std::vector<DesiredPak> desired;
+        // Keyed before the set is planned: the conflict pass compares these keys with the catalogue's
+        // and the mount paths need them when a mod is frozen or replaced.
+        BuildLayout();
         if (!CollectManifest(desired, settings)) {
             desired.clear();
             CollectDirectory(desired);

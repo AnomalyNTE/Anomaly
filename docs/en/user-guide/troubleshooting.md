@@ -23,7 +23,7 @@ The game directory may already contain another tool's `dwmapi.dll`, or `dwmapi.d
 
 ### "Start and attach" is grayed out
 
-The **Start and attach** option under Live attach only handles the game process that the launcher creates this time: it stays disabled while the page already lists a running `HTGame.exe`. In that case use **Inject into running process** instead; if you want to go through the startup flow again, exit the game first.
+The **Start and attach** option under **Launch → Injection mode** only handles the game process that the launcher creates this time: it stays disabled while the page already lists a running `HTGame.exe`. In that case use **Inject into running process** instead; if you want to go through the startup flow again, exit the game first.
 
 ### "Inject into running process" is grayed out
 

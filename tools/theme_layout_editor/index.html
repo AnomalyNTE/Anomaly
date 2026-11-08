@@ -294,6 +294,13 @@ button.icon { padding: 2px 5px; font-size: 12px; line-height: 1.4; }
       <input type="text" id="pathPrefix" spellcheck="false" placeholder="assets/images/">
     </div>
     <div class="head-field">
+      <label for="designTarget">设计目标</label>
+      <select id="designTarget">
+        <option value="launcher">启动器 1280 × 860</option>
+        <option value="shell">游戏内主界面 1180 × 700</option>
+      </select>
+    </div>
+    <div class="head-field">
       <label for="canvasW">画布</label>
       <input type="number" id="canvasW" min="1" max="32768" step="1" style="width:74px">
       <span style="color:var(--muted-2)">×</span>
@@ -376,7 +383,9 @@ button.icon { padding: 2px 5px; font-size: 12px; line-height: 1.4; }
         <li>贴纸 <code>rotation</code>：<b>-3600 ~ 3600</b> 度（非法回退 0）</li>
         <li><code>opacity</code> / 背景 <code>opacity</code>：<b>0 ~ 1</b>（非法回退 1）</li>
         <li><code>surfaceOpacity</code>：<b>0.15 ~ 1</b>（非法回退 1）</li>
-        <li><code>canvas.width</code>/<code>height</code>：<b>1 ~ 32768</b>（非法回退 1180 / 700）</li>
+        <li><code>canvas.width</code>/<code>height</code>：<b>1 ~ 32768</b>（非法回退 1280 / 860）</li>
+        <li>画布预设只改尺寸与参考骨架：<b>启动器 1280 × 860</b>（左右无带子，上方 63.3 px 透明带供贴纸出界）、<b>游戏内主界面 1180 × 700</b></li>
+        <li><b>两个设计目标各存一份布局</b>：两者比例不同，同一张归一化贴纸落点不一样，所以切到「启动器」只编辑启动器那份，导出时存成 <code>&lt;配色&gt;.launcher.json</code>；游戏内主界面仍存成 <code>&lt;配色&gt;.json</code></li>
         <li>贴纸数量 ≤ <b>64</b>、<code>path</code> ≤ <b>512</b> 字符、文件 ≤ <b>256 KB</b>，超出则整个文件被运行时拒绝</li>
         <li><code>schemaVersion</code> 为整数且 ≠ 1 时整个文件被拒绝；没有 <code>path</code> 的贴纸会被丢弃</li>
       </ul>
@@ -407,7 +416,7 @@ button.icon { padding: 2px 5px; font-size: 12px; line-height: 1.4; }
   <section class="center">
     <div class="canvas-panel">
       <div class="canvas-host" id="canvasHost">
-        <canvas id="view" width="1180" height="700"></canvas>
+        <canvas id="view" width="1280" height="860"></canvas>
       </div>
       <div class="canvas-bar">
         <span id="canvasInfo">—</span>
@@ -435,6 +444,7 @@ button.icon { padding: 2px 5px; font-size: 12px; line-height: 1.4; }
           <button id="btnJsonCopy">复制到剪贴板</button>
           <span class="msg" id="jsonMsg"></span>
         </div>
+        <div class="msg">这是「<b id="targetLabel">启动器</b>」的布局，放进 <code>Anomaly\config\themes\</code> 时用 <b id="targetFileHint">—</b> 作为文件名；两个目标的文件互不覆盖。</div>
       </div>
 
       <div class="tab-body" id="tab-imgui">
@@ -461,7 +471,7 @@ button.icon { padding: 2px 5px; font-size: 12px; line-height: 1.4; }
         <label class="check" style="margin-bottom:8px"><input type="checkbox" id="exportChecker">
           导出时包含棋盘格（默认不勾 → PNG 保持透明背景）</label>
         <div class="msg">
-          按画布逻辑尺寸（<b id="pngSize">1180 × 700</b>）导出干净渲染：仅包含表面、背景图与贴纸，
+          按画布逻辑尺寸（<b id="pngSize">1280 × 860</b>）导出干净渲染：仅包含表面、背景图与贴纸，
           不含网格线、选中框与参考线；未绑定图片的贴纸不会出现在 PNG 中。
           <b>默认不绘制棋盘格</b>，Surface 与贴图的 alpha 会原样保留（透明背景）；
           勾选后才会把 #ffffff / #cccccc 的 8px 棋盘格烧进 PNG。
@@ -611,6 +621,22 @@ var MAX_CANVAS = 32768;
 var MAX_STICKERS = 64;                 // 超过即整个文件被运行时拒绝
 var MAX_PATH_LENGTH = 512;             // path 超过即整个文件被运行时拒绝
 var MAX_LAYOUT_BYTES = 256 * 1024;     // 文件超过即整个文件被运行时拒绝
+/* 两块真实画面，比例不同，所以各自一份布局：启动器窗口的 shell 画布（运行时已经去掉左右
+ * 透明贴纸带，画布就是整个窗口），以及游戏内主界面。切换设计目标会整套切换画布、背景和贴纸，
+ * 因为同一张贴纸的归一化坐标在两种比例下落到不同的控件上。 */
+var CANVAS_PRESETS = {
+  launcher: {
+    width: 1280, height: 860, label: '启动器', bandLeft: 0, bandRight: 0, bandTop: 63.3,
+    guide: 'launcher', suffix: '.launcher.json',
+    fileHint: '<配色>.launcher.json（启动器专用，例如 naiwa.launcher.json）'
+  },
+  shell: {
+    width: 1180, height: 700, label: '游戏内主界面', bandLeft: 0, bandRight: 0, bandTop: 0,
+    guide: 'shell', suffix: '.json',
+    fileHint: '<配色>.json（游戏内主界面，例如 naiwa.json）'
+  }
+};
+var TARGET_ORDER = ['launcher', 'shell'];
 var FIELD_LIMITS = {
   x: { lo: -4, hi: 5, def: 0.5 },
   y: { lo: -4, hi: 5, def: 0.5 },
@@ -619,8 +645,8 @@ var FIELD_LIMITS = {
   rotation: { lo: -3600, hi: 3600, def: 0 },
   opacity: { lo: 0, hi: 1, def: 1 },
   surfaceOpacity: { lo: 0, hi: 1, def: 1 },   // kPlatformUiLayoutSurfaceOpacityMinimum
-  canvasWidth: { lo: MIN_CANVAS, hi: MAX_CANVAS, def: 1180 },
-  canvasHeight: { lo: MIN_CANVAS, hi: MAX_CANVAS, def: 700 }
+  canvasWidth: { lo: MIN_CANVAS, hi: MAX_CANVAS, def: CANVAS_PRESETS.launcher.width },
+  canvasHeight: { lo: MIN_CANVAS, hi: MAX_CANVAS, def: CANVAS_PRESETS.launcher.height }
 };
 
 var MIN_STICKER_PX = 4;    // 缩放时贴纸的最小像素边长
@@ -632,8 +658,34 @@ var MAX_EXPORT_PIXELS = 16384;   // PNG 导出的单边上限
 
 /* ===================== 2. 状态 ===================== */
 
+/** 一个设计目标的空白文档。尺寸按目标的真实画布给，贴纸与背景各自独立。 */
+function makeDoc(key) {
+  var preset = CANVAS_PRESETS[key];
+  return {
+    canvas: { width: preset.width, height: preset.height },
+    surfaceOpacity: 0.72,
+    background: {
+      fileName: DEFAULT_BG_FILE,
+      dir: '',              // 空字符串 = 使用全局前缀
+      mode: 'crop',
+      opacity: 0.9,
+      tint: '#ffffff',
+      img: null,
+      naturalW: 0,
+      naturalH: 0
+    },
+    stickers: [],
+    pathPrefix: DEFAULT_PREFIX,
+    selectedId: null
+  };
+}
+
 var state = {
-  canvas: { width: 1180, height: 700 },
+  // 当前编辑的设计目标，以及另一个目标暂存的整套文档。这里的 canvas / background /
+  // stickers 等字段始终是「当前目标」的实时副本，切换目标时整体换进换出。
+  target: 'launcher',
+  docs: { launcher: makeDoc('launcher'), shell: makeDoc('shell') },
+  canvas: { width: CANVAS_PRESETS.launcher.width, height: CANVAS_PRESETS.launcher.height },
   surfaceOpacity: 0.72,
   background: {
     fileName: DEFAULT_BG_FILE,
@@ -661,10 +713,61 @@ var state = {
   }
 };
 
+/** 把当前实时字段收进该目标的文档槽。 */
+function captureDoc() {
+  state.docs[state.target] = {
+    canvas: { width: state.canvas.width, height: state.canvas.height },
+    surfaceOpacity: state.surfaceOpacity,
+    background: state.background,
+    stickers: state.stickers,
+    pathPrefix: state.pathPrefix,
+    selectedId: state.selectedId
+  };
+}
+
+/** 把另一个目标的文档槽换进实时字段。 */
+function restoreDoc(key) {
+  var doc = state.docs[key];
+  state.canvas.width = doc.canvas.width;
+  state.canvas.height = doc.canvas.height;
+  state.surfaceOpacity = doc.surfaceOpacity;
+  state.background = doc.background;
+  state.stickers = doc.stickers;
+  state.pathPrefix = doc.pathPrefix;
+  state.selectedId = doc.selectedId;
+  // 图片对象只活在内存里，切换目标时必须重新绑定；重新载入存档时它们本来就是空的。
+  state.target = key;
+}
+
+/** 参考骨架跟着设计目标走，而不是跟着手动改过的画布尺寸走。 */
+function currentGuide() {
+  return CANVAS_PRESETS[state.target].guide;
+}
+
+/** 两个目标的可序列化副本：图片本体进不了 localStorage，只留元数据。 */
+function savedDocs() {
+  captureDoc();
+  var out = {};
+  for (var i = 0; i < TARGET_ORDER.length; i++) {
+    var key = TARGET_ORDER[i];
+    var doc = state.docs[key];
+    out[key] = {
+      canvas: { width: doc.canvas.width, height: doc.canvas.height },
+      surfaceOpacity: doc.surfaceOpacity,
+      background: stripImg(doc.background),
+      stickers: doc.stickers.map(stripImg),
+      pathPrefix: doc.pathPrefix,
+      selectedId: doc.selectedId
+    };
+  }
+  return out;
+}
+
 var idSeq = 1;
 var drag = null;           // 当前交互
 var undoStack = [];          // 撤销栈
 var future = [];           // 重做栈
+var targetHistory = { launcher: { undo: [], redo: [] }, shell: { undo: [], redo: [] } };
 var saveTimer = null;
 var renderQueued = false;
 var statusTimer = null;
@@ -676,14 +779,14 @@ function $(id) { return document.getElementById(id); }
 var dom = {};
 function cacheDom() {
   var ids = [
-    'pathPrefix', 'canvasW', 'canvasH', 'status',
+    'pathPrefix', 'canvasW', 'canvasH', 'designTarget', 'status',
     'bgDrop', 'bgFile', 'bgMode', 'bgOpacity', 'bgOpacityVal', 'bgTint', 'bgTintText',
     'bgPathOut', 'bgClear', 'bgSize', 'bgState',
     'stickerDrop', 'stickerFiles', 'stickerCount',
     'snapGrid', 'snapStepPct', 'snapCenter', 'showGrid', 'showChecker', 'surfaceOpacity', 'surfaceOpacityVal',
     'btnReset', 'btnSaveNow', 'btnClearLocal',
     'canvasHost', 'view', 'canvasInfo', 'zoomInfo', 'snapInfo',
-    'jsonOut', 'btnJsonDownload', 'btnJsonCopy', 'jsonMsg',
+    'jsonOut', 'btnJsonDownload', 'btnJsonCopy', 'jsonMsg', 'targetLabel', 'targetFileHint',
     'imguiOut', 'btnImguiCopy', 'btnImguiDownload', 'imguiMsg',
     'importText', 'btnImportApply', 'btnImportFile', 'btnImportClear', 'importFile', 'importMsg',
     'pngSize', 'exportChecker', 'btnPngExport', 'btnPngCopy', 'pngMsg',
@@ -1333,6 +1436,123 @@ function drawShellGuide(ctx, vw, vh) {
 }
 
 /**
+ * 启动器参考骨架：按 Anomaly Launcher 的真实几何画出标题带、模式带和正文卡
+ * （标题带 64、模式带 76、正文卡四周内缩 14、卡内内边距 20×18），
+ * 以及左右的贴纸可视溢出宽度。只用于预览，不进入 PNG 导出。
+ */
+function drawLauncherGuide(ctx, vw, vh) {
+  var preset = CANVAS_PRESETS.launcher;
+  var headerH = 64;
+  var modeH = 76;
+  var inset = 14;
+  var radius = 20;
+  var s = Math.max(0.6, Math.min(vw / preset.width, vh / preset.height));
+  ctx.save();
+  ctx.lineWidth = Math.max(1, s);
+  ctx.font = Math.round(11 * s) + 'px "Segoe UI", "Microsoft YaHei", sans-serif';
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'left';
+
+  // 标题带：应用图标、窗口标题、右侧最小化 / 关闭
+  ctx.fillStyle = 'rgba(120,132,158,0.13)';
+  ctx.fillRect(0, 0, vw, headerH);
+  ctx.strokeStyle = 'rgba(120,132,158,0.55)';
+  ctx.strokeRect(0.5, 0.5, vw - 1, headerH - 1);
+  var mark = 48;
+  ctx.strokeRect(12.5, (headerH - mark) / 2 + 0.5, mark - 1, mark - 1);
+  ctx.fillStyle = 'rgba(196,206,228,0.8)';
+  ctx.fillText('图标 / 窗口标题', 12 + mark + 12, headerH / 2);
+  var closeW = 44;
+  ctx.strokeRect(vw - closeW * 2 + 0.5, 0.5, closeW - 1, headerH - 1);
+  ctx.strokeRect(vw - closeW + 0.5, 0.5, closeW - 1, headerH - 1);
+  ctx.fillText('—', vw - closeW * 1.5 - 4 * s, headerH / 2);
+  ctx.fillText('×', vw - closeW * 0.5 - 4 * s, headerH / 2);
+
+  // 模式带：三个模式段 + 客户端切换（同一行右移）
+  var modeTop = headerH;
+  ctx.fillStyle = 'rgba(120,132,158,0.09)';
+  ctx.fillRect(0, modeTop, vw, modeH);
+  ctx.strokeStyle = 'rgba(120,132,158,0.45)';
+  ctx.strokeRect(0.5, modeTop + 0.5, vw - 1, modeH - 1);
+  var segH = 54;
+  var segTop = modeTop + (modeH - segH) / 2;
+  var segLabels = ['启动', '模组', '设置'];
+  var segX = 16;
+  for (var i = 0; i < segLabels.length; i++) {
+    var segW = ctx.measureText(segLabels[i]).width + 32 * 2;
+    ctx.strokeRect(segX + 0.5, segTop + 0.5, segW - 1, segH - 1);
+    ctx.fillStyle = 'rgba(196,206,228,0.8)';
+    ctx.fillText(segLabels[i], segX + 32, segTop + segH / 2);
+    segX += segW;
+  }
+  var clientX = segX + 12;
+  var clientLabels = ['CN', 'Global'];
+  for (var j = 0; j < clientLabels.length; j++) {
+    var clientW = ctx.measureText(clientLabels[j]).width + 26 * 2;
+    ctx.strokeRect(clientX + 0.5, segTop + 0.5, clientW - 1, segH - 1);
+    ctx.fillStyle = 'rgba(196,206,228,0.8)';
+    ctx.fillText(clientLabels[j], clientX + 26, segTop + segH / 2);
+    clientX += clientW;
+  }
+
+  // 正文卡：四周内缩 14，圆角 20，卡内内边距 20 × 18
+  var cardTop = headerH + modeH;
+  var cardX = inset;
+  var cardW = vw - inset * 2;
+  var cardH = vh - cardTop - inset;
+  ctx.strokeStyle = 'rgba(120,132,158,0.55)';
+  ctx.beginPath();
+  if (ctx.roundRect) {
+    ctx.roundRect(cardX + 0.5, cardTop + 0.5, cardW - 1, cardH - 1, radius);
+    ctx.stroke();
+  } else {
+    ctx.rect(cardX + 0.5, cardTop + 0.5, cardW - 1, cardH - 1);
+    ctx.stroke();
+  }
+  var padX = 20;
+  var padY = 18;
+  ctx.setLineDash([6 * s, 6 * s]);
+  ctx.strokeStyle = 'rgba(120,132,158,0.35)';
+  ctx.strokeRect(cardX + padX + 0.5, cardTop + padY + 0.5,
+    cardW - padX * 2 - 1, cardH - padY * 2 - 1);
+  ctx.setLineDash([]);
+  ctx.fillStyle = 'rgba(196,206,228,0.8)';
+  ctx.fillText('正文卡（内容区，内边距 20 × 18）', cardX + padX + 8 * s, cardTop + padY + 14 * s);
+
+  // 贴纸带的真实可视范围：贴纸越过画布到这几条虚线为止都还看得见。启动器只在**上方**留一条
+  // 带子（贴纸顶部出界），左右已经没有；仍然带边距的目标才画。
+  if (preset.bandLeft > 0 || preset.bandRight > 0 || preset.bandTop > 0) {
+    ctx.setLineDash([4 * s, 8 * s]);
+    ctx.strokeStyle = 'rgba(255,138,61,0.7)';
+    ctx.beginPath();
+    if (preset.bandLeft > 0) {
+      ctx.moveTo(-preset.bandLeft, -preset.bandTop);
+      ctx.lineTo(-preset.bandLeft, vh);
+    }
+    if (preset.bandRight > 0) {
+      ctx.moveTo(vw + preset.bandRight, -preset.bandTop);
+      ctx.lineTo(vw + preset.bandRight, vh);
+    }
+    if (preset.bandTop > 0) {
+      ctx.moveTo(-preset.bandLeft, -preset.bandTop);
+      ctx.lineTo(vw + preset.bandRight, -preset.bandTop);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = 'rgba(255,168,110,0.9)';
+    if (preset.bandTop > 0) {
+      ctx.textAlign = 'left';
+      ctx.fillText('可见 ' + preset.bandTop + 'px', 6 * s, -preset.bandTop + 14 * s);
+    }
+    ctx.textAlign = 'right';
+    if (preset.bandLeft > 0) ctx.fillText('可见 ' + preset.bandLeft + 'px', -6 * s, 16 * s);
+    ctx.textAlign = 'left';
+    if (preset.bandRight > 0) ctx.fillText('可见 ' + preset.bandRight + 'px', vw + 6 * s, 16 * s);
+  }
+  ctx.restore();
+}
+
+/**
  * 负责把整个场景画到 ctx 上。
  * opts.bleed > 0 时，逻辑原点 (0,0) 之外还有 bleed 像素的「窗口外」区域，
  * 贴纸可以画到那里而不会被截断；PNG 导出传 0，只导出窗口本身。
@@ -1356,7 +1576,8 @@ function renderScene(ctx, vw, vh, opts) {
   ctx.fillRect(0, 0, vw, vh);
   ctx.restore();
 
-  if (opts.shellGuide) { drawShellGuide(ctx, vw, vh); }
+  if (opts.guide === 'shell') { drawShellGuide(ctx, vw, vh); }
+  else if (opts.guide === 'launcher') { drawLauncherGuide(ctx, vw, vh); }
 
   // 注意：棋盘格不在整块画布上铺，而是在 drawBackground / drawSticker 内部
   // 紧贴每个背景图与每个贴纸的正下方绘制，这样主题表面在空白区域仍然可见。
@@ -1431,7 +1652,7 @@ function render() {
   ctx.setTransform(scale, 0, 0, scale, bleed * scale, bleed * scale);
   renderScene(ctx, vw, vh, {
     checker: state.view.showChecker, placeholders: true, grid: state.view.showGrid,
-    guides: true, selection: true, shellGuide: true, bleed: bleed
+    guides: true, selection: true, guide: currentGuide(), bleed: bleed
   });
   ctx.setTransform(1, 0, 0, 1, 0, 0);
 }
@@ -2240,6 +2461,7 @@ function syncTop() {
   setVal(dom.pathPrefix, state.pathPrefix);
   setVal(dom.canvasW, state.canvas.width);
   setVal(dom.canvasH, state.canvas.height);
+  if (dom.designTarget) { setVal(dom.designTarget, state.target); }
 
   var bg = state.background;
   setVal(dom.bgMode, bg.mode);
@@ -2272,6 +2494,9 @@ function syncTop() {
       ' · 中线参考线 ' + (state.snap.center ? '开' : '关');
   }
   if (dom.pngSize) { dom.pngSize.textContent = state.canvas.width + ' × ' + state.canvas.height; }
+  var target = CANVAS_PRESETS[state.target];
+  if (dom.targetLabel) { dom.targetLabel.textContent = target.label; }
+  if (dom.targetFileHint) { dom.targetFileHint.textContent = target.fileHint; }
   if (dom.zoomInfo) { dom.zoomInfo.textContent = Math.round((state.view.scale || 1) * 100) + '%'; }
 }
 
@@ -2708,19 +2933,13 @@ function parseLayoutJson(text) {
   return { data: out, warnings: warnings, error: null };
 }
 
-/** 依据导入的 path 列表决定全局前缀与逐项目录 */
+/** 导入的 path 只取文件名：全局前缀保持编辑器里的「路径前缀」（默认即运行时根目录下的
+ *  assets/images/），这样别人项目里的本地目录不会被带进导出的 JSON，导出的路径一定能被
+ *  运行时解析。需要别的目录就在「路径前缀」里改。 */
 function adoptPrefix(paths) {
-  var seen = {};
-  var first = '';
-  var count = 0;
-  for (var i = 0; i < paths.length; i++) {
-    var d = dirname(paths[i]);
-    if (!first) { first = d; }
-    if (!seen[d]) { seen[d] = true; count++; }
-  }
-  if (!count) { return state.pathPrefix; }
-  if (count === 1) { return first; }
-  return first;
+  // 保留一个形参，调用方不必判断；前缀本身不再从导入的路径里推断。
+  void paths;
+  return state.pathPrefix;
 }
 
 /** 把校验后的数据落到编辑器状态（尽量复用已绑定的图片） */
@@ -2900,14 +3119,11 @@ function saveLocal(now) {
   var doSave = function () {
     try {
       var payload = JSON.stringify({
-        v: 1,
+        v: 2,
         savedAt: new Date().toISOString(),
-        canvas: { width: state.canvas.width, height: state.canvas.height },
-        surfaceOpacity: state.surfaceOpacity,
-        background: stripImg(state.background),
-        stickers: state.stickers.map(stripImg),
-        pathPrefix: state.pathPrefix,
-        selectedId: state.selectedId,
+        target: state.target,
+        // 两个设计目标各存一份：它们是两张不同的画布，贴纸不会通用。
+        docs: savedDocs(),
         snap: state.snap,
         showGrid: state.view.showGrid
       });
@@ -2922,6 +3138,22 @@ function saveLocal(now) {
   if (now) { doSave(); } else { saveTimer = setTimeout(doSave, 400); }
 }
 
+/** 从存档恢复一个目标：借 applySnapshot 的校验通道读一份文档，再收进它的槽位。 */
+function restoreTargetFromSave(key, saved) {
+  var probe = {
+    schemaVersion: 1,
+    canvas: saved && saved.canvas,
+    surfaceOpacity: saved && saved.surfaceOpacity,
+    background: saved && saved.background,
+    stickers: saved && saved.stickers,
+    pathPrefix: saved && saved.pathPrefix,
+    selectedId: null
+  };
+  state.target = key;
+  applySnapshot(JSON.stringify(probe));
+  captureDoc();
+}
+
 function loadLocal() {
   var text = null;
   try { text = localStorage.getItem(LS_KEY); } catch (e) { return false; }
@@ -2929,8 +3161,21 @@ function loadLocal() {
   var d;
   try { d = JSON.parse(text); } catch (e) { return false; }
   if (!d || typeof d !== 'object') { return false; }
-  var ok = applySnapshot(text);
-  if (!ok) { return false; }
+  if (d.docs && typeof d.docs === 'object') {
+    for (var i = 0; i < TARGET_ORDER.length; i++) {
+      var key = TARGET_ORDER[i];
+      restoreTargetFromSave(key, d.docs[key]);
+    }
+    state.target = (d.target === 'shell' || d.target === 'launcher') ? d.target : 'launcher';
+  } else {
+    // v1 存档只有一份文档：按它的画布尺寸认领目标，另一个目标从空白开始。
+    var shellSized = d.canvas &&
+      Number(d.canvas.width) === CANVAS_PRESETS.shell.width &&
+      Number(d.canvas.height) === CANVAS_PRESETS.shell.height;
+    restoreTargetFromSave(shellSized ? 'shell' : 'launcher', d);
+    state.target = shellSized ? 'shell' : 'launcher';
+  }
+  restoreDoc(state.target);
   if (d.snap && typeof d.snap === 'object') {
     state.snap.grid = d.snap.grid !== false;
     state.snap.step = isNum(d.snap.step) ? clamp(d.snap.step, 0.00001, 0.5) : 0.0001;
@@ -2959,10 +3204,14 @@ function clearLocal() {
  * ===================================================================== */
 
 function resetLayout() {
-  if (!window.confirm('确定要重置为默认布局吗？当前所有贴纸与背景绑定都会被清除（可用 Ctrl+Z 撤销）。')) { return; }
+  var preset = CANVAS_PRESETS[state.target];
+  if (!window.confirm('确定要把「' + preset.label +
+    '」重置为默认布局吗？这个目标的所有贴纸与背景绑定都会被清除（可用 Ctrl+Z 撤销），另一个目标不受影响。')) {
+    return;
+  }
   pushHistory();
-  state.canvas.width = 1180;
-  state.canvas.height = 700;
+  state.canvas.width = preset.width;
+  state.canvas.height = preset.height;
   state.surfaceOpacity = 0.72;
   state.background = {
     fileName: DEFAULT_BG_FILE, dir: '', mode: 'crop', opacity: 0.9, tint: '#ffffff',
@@ -2977,9 +3226,10 @@ function resetLayout() {
   state.view.showGrid = false;
   state.view.showChecker = false;
   state.export.includeChecker = false;
+  captureDoc();
   fitCanvas();
   syncAll();
-  setStatus('已重置为默认布局', 'ok');
+  setStatus('已把「' + preset.label + '」重置为默认布局', 'ok');
 }
 
 /* =====================================================================
@@ -3108,18 +3358,36 @@ function bindEvents() {
   on(dom.pathPrefix, 'change', function () { commitHistory(); syncAll(); });
 
   var applyCanvasSize = function () {
-    // 与运行时一致：canvas 尺寸收敛到 [1, 32768]，非法值回退 1180 / 700
+    // 与运行时一致：canvas 尺寸收敛到 [1, 32768]，非法值回退 1280 / 860
     var w = Math.round(numSpecFrom(dom.canvasW, FIELD_LIMITS.canvasWidth, '画布宽度'));
     var h = Math.round(numSpecFrom(dom.canvasH, FIELD_LIMITS.canvasHeight, '画布高度'));
     mutate(function () {
       state.canvas.width = w;
       state.canvas.height = h;
     });
+    // 尺寸属于当前目标的文档，改完立刻收进它的槽位。
+    captureDoc();
     fitCanvas();
     syncAll();
   };
   on(dom.canvasW, 'change', applyCanvasSize);
   on(dom.canvasH, 'change', applyCanvasSize);
+  on(dom.designTarget, 'change', function () {
+    var key = dom.designTarget.value;
+    if (!CANVAS_PRESETS[key] || key === state.target) { return; }
+    // 整套换进换出：两个目标的画布比例不同，贴纸、背景和路径前缀都是各自的一份。
+    commitHistory();
+    targetHistory[state.target] = { undo: undoStack, redo: future };
+    captureDoc();
+    restoreDoc(key);
+    undoStack = targetHistory[key].undo;
+    future = targetHistory[key].redo;
+    state.selectedId = null;
+    fitCanvas();
+    syncAll();
+    setStatus('正在编辑：' + CANVAS_PRESETS[key].label + '（' +
+      state.canvas.width + ' × ' + state.canvas.height + '）', 'ok');
+  });
 
   /* ---------- 背景 ---------- */
   on(dom.bgDrop, 'click', function () { dom.bgFile.click(); });
@@ -3239,8 +3507,11 @@ function bindEvents() {
 
   /* ---------- 导出 JSON ---------- */
   on(dom.btnJsonDownload, 'click', function () {
-    downloadText('anomaly-theme-layout.json', buildExportJsonText(), 'application/json;charset=utf-8');
-    setMsg(dom.jsonMsg, '已下载 anomaly-theme-layout.json', 'ok');
+    // 文件名跟着设计目标走：启动器的布局必须存成 <配色>.launcher.json，否则会和
+    // 游戏内主界面的那份互相覆盖。
+    var fileName = 'anomaly-theme-layout' + CANVAS_PRESETS[state.target].suffix;
+    downloadText(fileName, buildExportJsonText(), 'application/json;charset=utf-8');
+    setMsg(dom.jsonMsg, '已下载 ' + fileName, 'ok');
     setStatus('JSON 已下载', 'ok');
   });
   on(dom.btnJsonCopy, 'click', function () {
@@ -3402,8 +3673,11 @@ function init() {
     restored = false;
   }
   if (!restored) {
-    state.canvas.width = 1180;
-    state.canvas.height = 700;
+    // 首次打开：两个目标都从各自的真实画布开始，当前停在启动器。
+    state.docs.launcher = makeDoc('launcher');
+    state.docs.shell = makeDoc('shell');
+    state.target = 'launcher';
+    restoreDoc('launcher');
     state.surfaceOpacity = 0.72;
     state.background.fileName = DEFAULT_BG_FILE;
     state.background.dir = '';
@@ -3411,6 +3685,7 @@ function init() {
     state.background.opacity = 0.9;
     state.background.tint = '#ffffff';
     state.pathPrefix = DEFAULT_PREFIX;
+    captureDoc();
   }
   fitCanvas();
   syncAll();

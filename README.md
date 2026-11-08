@@ -122,7 +122,7 @@ qq交流群: 1037114140
 ## 🚀 快速上手
 
 > [!NOTE]
-> 普通用户无需构建源码。下载 `Anomaly-<版本号>-runtime.zip` 并完整解压，运行其中的 `AnomalyLauncher.exe`，在 **代理安装** 页面选择 `HTGame.exe` 所在目录并点击 **安装**。
+> 普通用户无需构建源码。下载 `Anomaly-<版本号>-runtime.zip` 并完整解压，运行其中的 `AnomalyLauncher.exe`，在 **启动 → 代理模式** 页面选择 `HTGame.exe` 所在目录并点击 **安装**。
 
 1. 下载并安装 Runtime，具体步骤见[安装与更新](docs/user-guide/installation.md)。
 2. 像平时一样启动游戏，按 `Insert` 呼出管理界面。

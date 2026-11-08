@@ -685,7 +685,9 @@ target_compile_options(anomaly_crash_reporter PRIVATE /W4 /permissive- /EHsc)
 target_link_libraries(anomaly_crash_reporter PUBLIC Dbghelp)
 
 add_library(anomaly_reliable_storage STATIC src/services/reliable_storage.cpp)
-add_library(anomaly_pak_mod_catalog STATIC src/game/nte/pak_mod_catalog.cpp)
+add_library(anomaly_pak_mod_catalog STATIC
+    src/game/nte/pak_mod_catalog.cpp
+    src/game/nte/mod_group_names.cpp)
 target_include_directories(anomaly_pak_mod_catalog PUBLIC include)
 target_compile_definitions(anomaly_pak_mod_catalog PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_compile_options(anomaly_pak_mod_catalog PRIVATE /W4 /permissive- /EHsc /utf-8)
@@ -1407,6 +1409,12 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/SummonLab")
     target_link_libraries(anomaly_builtin_summon_lab PRIVATE nlohmann_json::nlohmann_json)
     target_compile_options(anomaly_builtin_summon_lab PRIVATE /utf-8)
+    # 开发者测试插件：只在 ANOMALY_BUILD_TEST_PLUGINS 打开时构建，并只随 TestPlugins 组件安装。
+    anomaly_add_plugin(anomaly_builtin_mod_name_export TEST_PLUGIN
+        SOURCES plugins/ModNameExport/plugin.cpp
+        MANIFEST plugins/ModNameExport/manifest.json
+        PACKAGE_NAME ModNameExport
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/ModNameExport")
     anomaly_add_plugin(anomaly_builtin_pink_paw_heist_esp
         SOURCES
             plugins/PinkPawHeistESP/plugin.cpp
@@ -2059,7 +2067,10 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
             anomaly_builtin_nte_movement_hold
             anomaly_builtin_nte_navigation anomaly_builtin_nte_pickup_demo
             anomaly_builtin_teleport_landmarks_probe
-            anomaly_builtin_map_spawn_exporter)
+            anomaly_builtin_map_spawn_exporter
+            anomaly_builtin_mod_name_export)
+        target_link_libraries(anomaly_builtin_mod_name_export PRIVATE nlohmann_json::nlohmann_json)
+        target_compile_options(anomaly_builtin_mod_name_export PRIVATE /utf-8)
     endif()
     foreach(builtin_target IN LISTS ANOMALY_BUILTIN_PLUGIN_TARGETS)
         target_include_directories(${builtin_target} PRIVATE "${CMAKE_SOURCE_DIR}")
@@ -2224,6 +2235,10 @@ install(FILES assets/fonts/NotoSansCJKsc-Regular.ttf
 # same `Anomaly/` root. Users replace or extend these with their own files.
 install(DIRECTORY assets/images/
     DESTINATION Anomaly/assets/images COMPONENT GameRuntime)
+# The category-name table the mods page shows and files category folders under. A user override
+# lives in `Anomaly/config/mod-groups.json`, so extending a name never edits the package.
+install(DIRECTORY assets/mod-groups/
+    DESTINATION Anomaly/assets/mod-groups COMPONENT GameRuntime)
 install(DIRECTORY config/themes/
     DESTINATION Anomaly/config/themes COMPONENT GameRuntime)
 install(CODE [[

@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "game": "nte",
+  "module": "HTGame.exe",
+  "section": ".text",
+  "contract": "mod-name-export-v1",
+  "layout": {
+    "ObjectClass": 16,
+    "ObjectName": 24,
+    "ObjectIndex": 12,
+    "ObjectOuter": 32,
+    "ObjectFlags": 8,
+    "StructSuper": 64,
+    "StructProperties": 112,
+    "PropertyName": 32,
+    "PropertyNext": 72,
+    "PropertyClass": 8,
+    "FieldClassName": 0,
+    "PropertyOffset": 68,
+    "PropertySize": 52,
+    "RegistryCount": 36,
+    "RegistryItems": 16,
+    "ChunkSize": 65536,
+    "ItemStride": 24,
+    "ItemSerial": 16,
+    "RegistrySubtract": 16,
+    "DataTableRowStruct": 40,
+    "DataTableRowMap": 48,
+    "MapEntryStride": 24,
+    "MapValueOffset": 8,
+    "SetDataCount": 8,
+    "SetAllocationBits": 16,
+    "SetIndirectBits": 32,
+    "SetBitCount": 40,
+    "SetFreeCount": 52
+  },
+  "symbols": [
+    {
+      "name": "Objects",
+      "candidates": [
+        {
+          "pattern": "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3 33 C0 48 8B 00 C3",
+          "entry": "48 8B 05",
+          "values": {}
+        }
+      ]
+    }
+  ]
+}

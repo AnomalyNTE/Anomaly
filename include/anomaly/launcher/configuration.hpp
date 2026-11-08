@@ -1,7 +1,11 @@
 #pragma once
 
+#include "anomaly/platform_ui_theme.hpp"
+
 #include <Windows.h>
 
+#include <array>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -19,10 +23,63 @@ struct LauncherClientConfiguration final {
     std::filesystem::path launcher_executable;
 };
 
+// The launcher's own background picture, named the way the theme files name theirs (relative to the
+// Anomaly root). Stickers are the layout editor's job, as they are for the in-game window, so this
+// holds the background and the two values that sit beside it: the fill mode and the veil drawn over
+// it. The veil starts at zero -- the launcher paints its own body, and a veil on top of that body
+// changes nothing anyone can see -- and a fill mode of -1 keeps whatever the layout says.
+struct LauncherThemeArtwork final {
+    std::string background;
+    int background_mode{-1};
+    float surface_opacity{0.0f};
+};
+
+// How the launcher lays out its own pages. These are choices about this window -- the mods
+// grid, its pager and the download page filters -- so they are stored with the rest of the
+// launcher configuration instead of in a second file next to the payload.
+// The page sizes the settings page offers. The value is stored as one of them: an older build let the
+// size be any number from 1 to 200 through a slider, and a stored 134 would otherwise surface in a
+// settings box that only lists four choices.
+inline constexpr std::array<int, 4> kLauncherPageSizes{10, 20, 50, 100};
+
+[[nodiscard]] inline int LauncherNearestPageSize(const int value) noexcept {
+    int nearest = kLauncherPageSizes.front();
+    for (const int size : kLauncherPageSizes) {
+        if (std::abs(size - value) < std::abs(nearest - value)) nearest = size;
+    }
+    return nearest;
+}
+
+struct LauncherViewSettings final {
+    // The grid is the default view, and it lists every mod at once unless pagination is asked
+    // for: a page of covers is easy to scroll, and a pager over it only gets in the way.
+    bool mods_grid{true};
+    bool mods_pagination{false};
+    int mods_page_size{10};
+    std::string browse_sort{"default"};
+    std::string browse_category;
+    bool browse_hide_mature{true};
+};
+
 struct LauncherConfiguration final {
     NteClient selected_client{NteClient::MainlandChina};
     LauncherClientConfiguration mainland_china;
     LauncherClientConfiguration global;
+    // The palette the launcher window wears, as the palette name the theme files use.
+    // It is the launcher's own choice and is deliberately independent of the in-game
+    // palette: the two windows are separate surfaces. An unknown or missing name keeps
+    // the shipped default, Naiwa.
+    std::string theme{"naiwa"};
+    // The launcher's interface language: "auto" follows the Windows display language, and the
+    // other two name a catalog explicitly. The in-game interface has its own setting, so this
+    // one dresses this window alone. Empty means "never stored": a launcher that upgrades from a
+    // build without this field starts from the language its runtime ini already names.
+    std::string language;
+    // Pictures of this window's own, and the colours the "custom" palette is built from. Both are
+    // the launcher's choices: the in-game shell keeps its own theme files untouched.
+    LauncherThemeArtwork artwork;
+    anomaly::PlatformUiCustomColors custom_colors;
+    LauncherViewSettings view;
 
     [[nodiscard]] LauncherClientConfiguration& Selected() noexcept {
         return selected_client == NteClient::Global ? global : mainland_china;
@@ -70,6 +127,8 @@ struct LauncherDiscoveryOptions final {
     std::vector<std::filesystem::path> search_roots;
     bool include_system_locations{true};
     bool allow_unpaired_game_discovery{};
+    // Never assign the other client's known installation to this client.
+    std::filesystem::path other_game_directory;
 };
 
 [[nodiscard]] std::filesystem::path LauncherConfigurationPath(

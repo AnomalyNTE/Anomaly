@@ -127,6 +127,14 @@ struct PlatformUiLayoutParseResult final {
 [[nodiscard]] std::filesystem::path ResolvePlatformUiLayoutFile(
     const std::filesystem::path& runtime_root, std::string_view palette) noexcept;
 
+// Picks the launcher's own layout file for one palette: config/themes/<palette>.launcher.json
+// when it exists, otherwise whatever ResolvePlatformUiLayoutFile returns. The launcher window
+// and the in-game shell are different sizes and different aspect ratios, so one normalized
+// layout cannot place a sticker correctly on both; a theme that wants to dress the launcher
+// writes this second file, and a theme that does not keeps sharing the in-game one.
+[[nodiscard]] std::filesystem::path ResolveLauncherUiLayoutFile(
+    const std::filesystem::path& runtime_root, std::string_view palette) noexcept;
+
 // Writes a layout atomically, because the theme worker polls this file's stamp
 // and must never observe a half-written document. `error` receives a message
 // suitable for the settings page when the write fails.

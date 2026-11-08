@@ -434,13 +434,13 @@ ProxyInstallationStatus InspectProxyInstallation(
     if (!runtime_current || !proxy_current) {
         return {ProxyInstallationState::UpdateAvailable,
                 ProxyInstallationError::None, game_directory,
-                "Anomaly installation is incomplete or out of date and can be repaired"};
+                "Anomaly installation is incomplete or out of date and can be repaired", has_enabled};
     }
     return {has_enabled ? ProxyInstallationState::Enabled
                         : ProxyInstallationState::Disabled,
             ProxyInstallationError::None, game_directory,
             has_enabled ? "Anomaly proxy is enabled"
-                        : "Anomaly proxy is disabled for the next launch"};
+                        : "Anomaly proxy is disabled for the next launch", has_enabled};
 }
 
 ProxyInstallationStatus InstallProxyRuntime(
@@ -646,11 +646,11 @@ ProxyInstallationStatus SetProxyEnabled(
     bool enabled) {
     const auto current = InspectProxyInstallation(game_directory, source);
     if (current.state != ProxyInstallationState::Enabled &&
-        current.state != ProxyInstallationState::Disabled) {
+        current.state != ProxyInstallationState::Disabled &&
+        current.state != ProxyInstallationState::UpdateAvailable) {
         return current;
     }
-    if ((enabled && current.state == ProxyInstallationState::Enabled) ||
-        (!enabled && current.state == ProxyInstallationState::Disabled)) {
+    if (enabled == current.proxy_enabled) {
         return current;
     }
 
@@ -659,9 +659,65 @@ ProxyInstallationStatus SetProxyEnabled(
     const auto destination = game_directory /
         (enabled ? kProxyName : kDisabledProxyName);
     if (MovePath(proxy_source, destination) != ERROR_SUCCESS) {
-        return Failure(
-            game_directory, current.state, ProxyInstallationError::IoFailure,
-            "proxy state could not be changed");
+        auto failure = current;
+        failure.error = ProxyInstallationError::IoFailure;
+        failure.message = "proxy state could not be changed";
+        return failure;
+    }
+    return InspectProxyInstallation(game_directory, source);
+}
+
+ProxyInstallationStatus UninstallProxy(
+    const std::filesystem::path& game_directory,
+    const ProxyInstallationSource& source) {
+    auto current = InspectProxyInstallation(game_directory, source);
+    if (current.state != ProxyInstallationState::Enabled &&
+        current.state != ProxyInstallationState::Disabled &&
+        current.state != ProxyInstallationState::UpdateAvailable) return current;
+    if (GameExecutableRunning()) {
+        current.error = ProxyInstallationError::IoFailure;
+        current.message = "close HTGame.exe before completely uninstalling Anomaly";
+        return current;
+    }
+    const auto runtime = game_directory / kRuntimeDirectoryName;
+    std::error_code error;
+    const bool has_runtime = std::filesystem::exists(runtime, error);
+    if (IsReparsePoint(runtime)) {
+        current.error = ProxyInstallationError::Conflict;
+        current.message = "installed runtime is a reparse point";
+        return current;
+    }
+    if (has_runtime && !error) {
+        // Check the entire tree before deleting anything; junctions must not lead outside Anomaly.
+        for (std::filesystem::recursive_directory_iterator iterator(runtime, error), end;
+             iterator != end && !error; iterator.increment(error)) {
+            if (IsReparsePoint(iterator->path())) {
+                current.error = ProxyInstallationError::Conflict;
+                current.message = "installed runtime contains a reparse point";
+                return current;
+            }
+        }
+    }
+    if (error) {
+        current.error = ProxyInstallationError::IoFailure;
+        current.message = "installed runtime could not be inspected: " + error.message();
+        return current;
+    }
+    // Keep the recognized proxy until the runtime is gone, so a partial removal can be retried.
+    std::filesystem::remove_all(runtime, error);
+    if (error) {
+        current = InspectProxyInstallation(game_directory, source);
+        current.error = ProxyInstallationError::IoFailure;
+        current.message = "installed runtime could not be completely removed: " + error.message();
+        return current;
+    }
+    const auto proxy = game_directory / (current.proxy_enabled ? kProxyName : kDisabledProxyName);
+    if (!DeleteFileW(proxy.c_str())) {
+        const DWORD delete_error = GetLastError();
+        current = InspectProxyInstallation(game_directory, source);
+        current.error = ProxyInstallationError::IoFailure;
+        current.message = Win32Failure("proxy could not be removed", delete_error);
+        return current;
     }
     return InspectProxyInstallation(game_directory, source);
 }

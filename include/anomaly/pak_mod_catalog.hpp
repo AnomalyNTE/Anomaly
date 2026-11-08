@@ -4,12 +4,26 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <string_view>
 #include <vector>
 
 namespace anomaly {
+// A group token is two levels deep for character mods: `Player_051/female` is the `female` skin of
+// the `Player_051` group, so every outfit of one character stays inside that character. `Vehicle_037`,
+// `Pendant_07` and content directories name a group as a whole; content directories are the only
+// tokens that start with '/', which is what makes the split unambiguous instead of a guess.
+struct PakModGroupName {
+    std::string_view group;
+    std::string_view skin;
+};
+PakModGroupName ParsePakModGroup(std::string_view token);
+
 struct PakModCatalogEntry {
     std::string key, name;
-    std::set<std::string> assets, vehicles, model_vehicles, resource_groups;
+    std::set<std::string> assets, vehicles, model_vehicles;
+    // Classified group tokens, see PakModGroupName. A mod that replaces two outfits of one
+    // character carries both skins of that character, never a token per pair of them.
+    std::set<std::string> resource_groups;
     // Index-only content fingerprints. Empty means unknown or inconsistent across containers.
     // IoStore chunk keys are raw 12-byte IDs, independent of directory mount-point spelling.
     std::map<std::string, std::string> asset_fingerprints, chunk_fingerprints;

@@ -56,6 +56,7 @@ struct ProxyInstallationStatus final {
     ProxyInstallationError error{ProxyInstallationError::None};
     std::filesystem::path game_directory;
     std::string message;
+    bool proxy_enabled{};
 
     [[nodiscard]] bool Ok() const noexcept {
         return error == ProxyInstallationError::None;
@@ -79,5 +80,10 @@ struct ProxyInstallationSource final {
     const std::filesystem::path& game_directory,
     const ProxyInstallationSource& source,
     bool enabled);
+
+// Removes the recognized proxy and the entire game-local Anomaly directory, including user data.
+[[nodiscard]] ProxyInstallationStatus UninstallProxy(
+    const std::filesystem::path& game_directory,
+    const ProxyInstallationSource& source);
 
 }  // namespace anomaly::launcher

@@ -426,6 +426,19 @@ std::filesystem::path ResolvePlatformUiLayoutFile(
     return present && !error ? themed : shared;
 }
 
+std::filesystem::path ResolveLauncherUiLayoutFile(
+    const std::filesystem::path& runtime_root, const std::string_view palette) noexcept {
+    const std::filesystem::path fallback = ResolvePlatformUiLayoutFile(runtime_root, palette);
+    if (palette.empty()) return fallback;
+    const std::filesystem::path directory =
+        runtime_root / std::filesystem::path(kPlatformUiLayoutDirectory);
+    std::filesystem::path launcher = directory / std::filesystem::path(palette);
+    launcher += L".launcher.json";
+    std::error_code error;
+    const bool present = std::filesystem::is_regular_file(launcher, error);
+    return present && !error ? launcher : fallback;
+}
+
 namespace {
 
 // nlohmann rejects any string that is not valid UTF-8, and a throw inside this
