@@ -1,4 +1,5 @@
 #include "anomaly/pak_mod_catalog.hpp"
+#include "anomaly/pak_mod_layout.hpp"
 #include "anomaly/reliable_storage.hpp"
 #include <Windows.h>
 #include <algorithm>
@@ -278,11 +279,17 @@ void ClassifyResources(PakModCatalogEntry& row) {
             const auto digits = owner.find_first_not_of("0123456789");
             const auto length = digits == std::string_view::npos ? owner.size() : digits;
             if (length > 0 && length <= 6 && (digits == std::string_view::npos || owner[digits] == '_')) {
-                const auto group = "Player_" + std::string(owner);
+                // The numeric id names the character, the directory suffix names one of its skins.
+                // Keeping them apart is what puts every outfit of a character into one group
+                // instead of making a category out of each outfit.
+                auto skin = owner.substr(length);
+                if (!skin.empty()) skin.remove_prefix(1);
+                auto group = "Player_" + std::string(owner.substr(0, length));
+                if (!skin.empty()) group += "/" + std::string(skin);
                 players.insert(group);
                 const auto name = rest.substr(slash + 1);
                 if (name.starts_with("player_" + std::string(owner.substr(0, length)) + "_") &&
-                    name.ends_with("_skin.uasset")) model_players.insert(group);
+                    name.ends_with("_skin.uasset")) model_players.insert(std::move(group));
             }
             continue;
         }
@@ -336,6 +343,16 @@ struct ConfigLock {
 };
 } // namespace
 
+PakModGroupName ParsePakModGroup(const std::string_view token) {
+    // Only content directories carry a leading '/'; nothing else the classifier emits contains one,
+    // so a '/' anywhere after the first character separates the group from its skin.
+    if (token.empty() || token.front() == '/') return {token, {}};
+    const auto separator = token.find('/');
+    if (separator == std::string_view::npos) return {token, {}};
+    if (separator + 1 == token.size()) return {token.substr(0, separator), {}};
+    return {token.substr(0, separator), token.substr(separator + 1)};
+}
+
 std::vector<std::string> ReadModContainerIndex(const std::filesystem::path& file) {
     std::vector<std::string> paths;
     for (auto& asset : ReadIndex(file).assets) paths.push_back(std::move(asset.path));
@@ -361,7 +378,11 @@ std::shared_ptr<const std::vector<PakModCatalogEntry>> PakModCatalogCache::Read(
             auto logical = it->path();
             if (NormalizePakModKey(PathText(logical.extension())) == ".disabled") logical.replace_extension();
             const auto extension = NormalizePakModKey(PathText(logical.extension()));
-            if (extension == ".pak" || extension == ".utoc")
+            // Every file the classification looks at invalidates the snapshot, not only the ones it
+            // indexes: a cover or a `.ucas` marker decides which folder is a mod, so adding one can
+            // change a key without changing any container.
+            if (extension == ".pak" || extension == ".utoc" || extension == ".ucas" ||
+                extension == ".sig" || PakModShippedFile(PathText(logical)))
                 files.emplace(it->path(), std::pair{it->last_write_time(), it->file_size()});
         }
     }
@@ -379,6 +400,15 @@ std::vector<PakModCatalogEntry> ReadPakModCatalog(const std::filesystem::path& d
     if (!std::filesystem::exists(directory)) return {};
     if (GetFileAttributesW(directory.c_str()) & FILE_ATTRIBUTE_REPARSE_POINT)
         throw std::runtime_error("mod root is a reparse point");
+    // The tree is walked once to learn which folders are mods before any of them is read: a folder
+    // that only groups mods must not become one of them, see PakModLayout.
+    struct Container final {
+        std::string logical, extension;
+        std::filesystem::path file;
+        bool disabled{};
+    };
+    std::vector<Container> containers;
+    PakModLayout layout;
     std::size_t scanned{};
     for (auto it = std::filesystem::recursive_directory_iterator(directory); it != std::filesystem::recursive_directory_iterator{}; ++it) {
         if (++scanned > 20000) throw std::runtime_error("mod directory exceeds scan limit");
@@ -395,17 +425,28 @@ std::vector<PakModCatalogEntry> ReadPakModCatalog(const std::filesystem::path& d
             logical += name;
         }
         const auto extension = NormalizePakModKey(PathText(std::filesystem::u8path(logical).extension()));
-        if (extension != ".pak" && extension != ".utoc") continue;
-        const auto slash = logical.find('/');
-        const auto key = slash == std::string::npos ? logical.substr(0, logical.size() - extension.size()) + ".pak" : logical.substr(0, slash + 1);
+        if (extension == ".pak" || extension == ".utoc") {
+            layout.AddOwnerFile(logical);
+            containers.push_back({std::move(logical), extension, it->path(), disabled});
+            continue;
+        }
+        // Containers this reader does not index still belong to the mod that ships them, and so do
+        // the files a mod is distributed with: they are what marks a folder as a mod.
+        if (extension == ".ucas" || extension == ".sig" || PakModShippedFile(logical))
+            layout.AddOwnerFile(logical);
+    }
+    for (const auto& container : containers) {
+        const auto root = layout.Root(container.logical);
+        const auto stem = container.logical.substr(0, container.logical.size() - container.extension.size());
+        const auto key = root.empty() ? stem + ".pak" : root + "/";
         auto& row = found[key]; row.key = key;
-        row.name = slash == std::string::npos ? key.substr(0, key.size() - 4) : key.substr(0, key.size() - 1);
-        row.disabled_files = row.disabled_files || disabled;
-        auto selection_path = logical;
-        if (extension == ".utoc") selection_path.replace(selection_path.size() - 5, 5, ".pak");
-        if (!disabled && PakModEnabled(states, selection_path)) row.enabled = true;
+        row.name = PakModFolderName(root.empty() ? std::string_view(stem) : std::string_view(root));
+        row.disabled_files = row.disabled_files || container.disabled;
+        auto selection_path = container.logical;
+        if (container.extension == ".utoc") selection_path.replace(selection_path.size() - 5, 5, ".pak");
+        if (!container.disabled && PakModEnabled(states, selection_path)) row.enabled = true;
         try {
-            auto index = ReadIndex(it->path());
+            auto index = ReadIndex(container.file);
             for (auto& asset : index.assets) AddAsset(row, std::move(asset));
             for (const auto& [id, fingerprint] : index.chunks)
                 MergeFingerprint(row.chunk_fingerprints, id, fingerprint);

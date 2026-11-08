@@ -11,7 +11,9 @@ using Reload = mod_manager::WorldReload;
 using Visual = mod_manager::VisualReload;
 
 struct Row {
-    std::string key, name, groups;
+    std::string key, name;
+    std::string header;  // the categories the mod replaces, one section per set of them
+    std::string skins;   // the variants inside those categories, shown on the mod's own row
     bool enabled{}, disabled{}, complete{};
     bool operator==(const Row&) const = default;
 };
@@ -45,6 +47,43 @@ struct Context {
 
 std::string Copy(AnomalyStringViewV1 value) { return value.data ? std::string(value.data, value.size) : std::string{}; }
 std::string ErrorText(AnomalyStatusV1 value) { return value.message.size ? Copy(value.message) : std::to_string(value.code); }
+// The ABI carries the classification as `group/skin` tokens separated by ", ". The panel names the
+// group in the section header and the variants on the mod's own row, so two outfits of one character
+// stay one section instead of becoming a section of their own. Content directories are the only
+// tokens that start with '/', which is what tells a group apart from its skin without guessing.
+std::pair<std::string, std::string> SplitGroups(std::string_view text) {
+    std::vector<std::string_view> groups, skins;
+    std::size_t at{};
+    while (at < text.size()) {
+        auto end = text.find(',', at);
+        if (end == std::string_view::npos) end = text.size();
+        auto token = text.substr(at, end - at);
+        at = end + 1;
+        while (!token.empty() && token.front() == ' ') token.remove_prefix(1);
+        while (!token.empty() && token.back() == ' ') token.remove_suffix(1);
+        if (token.empty()) continue;
+        auto group = token;
+        std::string_view skin;
+        if (token.front() != '/') {
+            if (const auto slash = token.find('/'); slash != std::string_view::npos) {
+                group = token.substr(0, slash);
+                skin = token.substr(slash + 1);
+            }
+        }
+        if (std::find(groups.begin(), groups.end(), group) == groups.end()) groups.push_back(group);
+        if (!skin.empty() && std::find(skins.begin(), skins.end(), skin) == skins.end())
+            skins.push_back(skin);
+    }
+    const auto join = [](const std::vector<std::string_view>& values) {
+        std::string text;
+        for (const auto value : values) {
+            if (!text.empty()) text += " · ";
+            text += value;
+        }
+        return text;
+    };
+    return {join(groups), join(skins)};
+}
 void LocalizedStatus(std::string_view key, std::string_view fallback, std::string_view detail = {}) {
     const std::array<std::string_view, 1> args{detail};
     auto text = detail.empty() ? g.localizer.Text(key, fallback) : g.localizer.Format(key, fallback, args);
@@ -56,9 +95,11 @@ int ANOMALY_CALL Collect(void* user, const AnomalyModEntryV1* entry) noexcept {
         if (!entry || entry->struct_size < offsetof(AnomalyModEntryV1, resource_groups)) {
             result.failed = true; return 0;
         }
+        const auto groups = Copy(entry->struct_size >= offsetof(AnomalyModEntryV1, resource_groups) + sizeof(entry->resource_groups)
+            ? entry->resource_groups : entry->vehicles);
+        const auto classification = SplitGroups(groups);
         result.values.push_back({Copy(entry->key), Copy(entry->name),
-            Copy(entry->struct_size >= offsetof(AnomalyModEntryV1, resource_groups) + sizeof(entry->resource_groups)
-                ? entry->resource_groups : entry->vehicles),
+            classification.first, classification.second,
             entry->enabled != 0, entry->disabled_files != 0, entry->index_complete != 0});
         return 1;
     } catch (...) { result.failed = true; return 0; }
@@ -111,7 +152,7 @@ void ANOMALY_CALL Worker(void*, AnomalyGenerationHandleV1) noexcept {
         const bool listed = listing.code == 0;
         auto rows = std::move(collection.values);
         if (!listed) { rows.clear(); LocalizedStatus("status.catalog_failed", "Read failed: {0}", ErrorText(listing)); }
-        std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) { return std::tie(a.groups, a.name) < std::tie(b.groups, b.name); });
+        std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) { return std::tie(a.header, a.skins, a.name) < std::tie(b.header, b.skins, b.name); });
 
         if (listed && !compatibility) {
             bool index_failed{};
@@ -278,8 +319,8 @@ void ANOMALY_CALL Draw(void*, const AnomalyUiServiceV1* ui) noexcept {
         std::optional<std::string> group;
         for (size_t i = g.page * page_size; i < std::min(rows.size(), (g.page + 1) * page_size); ++i) {
             const auto& row = rows[i];
-            if (!group || row.groups != *group) {
-                ui->separator(ui->user); group = row.groups;
+            if (!group || row.header != *group) {
+                ui->separator(ui->user); group = row.header;
                 if (group->empty()) TextLocalized("group.unknown", "Unclassified resources");
                 else ui->text(ui->user, StringView(*group));
             }
@@ -287,6 +328,8 @@ void ANOMALY_CALL Draw(void*, const AnomalyUiServiceV1* ui) noexcept {
             if (ui->checkbox(ui->user, StringView("##enabled-" + row.key), &enabled) && !busy && !g.compatibility && (row.enabled || !row.disabled))
                 Request({Kind::Toggle, row.key, enabled != 0});
             ui->same_line(ui->user, 0, -1); ui->text(ui->user, StringView(row.name));
+            // The variants this mod replaces, on its own row: the section is the character.
+            if (!row.skins.empty()) { ui->same_line(ui->user, 0, -1); ui->text(ui->user, StringView(row.skins)); }
             if (!row.complete) TextLocalized("row.incomplete", "Index unavailable.");
             if (row.disabled) TextLocalized("row.disabled_files", "Files disabled; restore in Launcher.");
         }
