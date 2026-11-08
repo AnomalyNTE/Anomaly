@@ -100,11 +100,13 @@ bool HasRange(std::uintptr_t address, std::size_t size, bool write) {
 
 template <typename T>
 bool ReadLocal(std::uintptr_t address, T& output) {
-    SIZE_T read{};
-    return ReadProcessMemory(
-               GetCurrentProcess(), reinterpret_cast<const void*>(address),
-               &output, sizeof(output), &read) != FALSE &&
-           read == sizeof(output);
+    if (address == 0) return false;
+    __try {
+        std::memcpy(&output, reinterpret_cast<const void*>(address), sizeof(output));
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
 }
 
 std::wstring BaseName(const std::wstring& path) {
@@ -353,10 +355,12 @@ std::optional<std::vector<std::uint8_t>> ReadMemory(std::uintptr_t address, std:
 
 bool ReadMemoryInto(std::uintptr_t address, void* destination, std::size_t size) {
     if (destination == nullptr || !HasRange(address, size, false)) return false;
-    SIZE_T read{};
-    return ReadProcessMemory(
-               GetCurrentProcess(), reinterpret_cast<const void*>(address), destination, size, &read) != FALSE &&
-           read == size;
+    __try {
+        std::memcpy(destination, reinterpret_cast<const void*>(address), size);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
 }
 
 bool WriteMemory(std::uintptr_t address, const void* source, std::size_t size) {
