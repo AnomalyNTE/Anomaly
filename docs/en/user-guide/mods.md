@@ -241,6 +241,10 @@ The name a category is shown under comes from a shipped data table,
 - A category the table does not mention still gets a readable name: `Player_007` → Character 007 /
   角色 007, `Vehicle_037` → Vehicle 037 / 车辆 037, `Pendant_07` → Pendant 07 / 挂件 07. A content
   directory such as `/game/wwiseaudio` keeps its own spelling.
+- A name is shown in the language it is written in: an entry with no name for the current UI language
+  falls back to the generated category name instead of showing the other language's name, so an
+  English page never reads a Chinese character name or organises mods into a Chinese folder. A Chinese
+  page still reads a Latin vehicle name such as `Old Times`.
 - `Anomaly/config/mod-groups.json` is read after it and overrides or adds an entry; entries it does not
   mention are kept, so a new character or car needs one line there and no package update.
 - Vehicles use the same mechanism as characters: the `Vehicle_*` mapping names both the display value and
@@ -251,16 +255,27 @@ The name a category is shown under comes from a shipped data table,
   container folder `Player_0NN`, its `ItemName` is the character's name and `MeltPackID` says which body
   the row is -- 零 exists as both the male and the female character, so they read as 「零（男）」 and
   「零（女）」. A row of `DT_VehicleItemData` named `vehicleNNN` is `Vehicle_0NN` and carries the car's name.
+  A name this client carries in Chinese is recorded as `zh-CN` only; a vehicle whose name is Latin
+  letters gets an `en-US` entry as well.
 - A game update is one export away: the developer test plugin `ModNameExport` (not built or installed by
   default; `build.cmd testplugins` builds it and the `TestPlugins` component installs it) reads both tables
   on launch and writes nothing but
   `Anomaly/state/plugins/anomaly.mod-name-export/mod-group-names.json`, which is read after the shipped
   table -- no package edit, and the next mods-page refresh shows the new names.
+- The in-game Mod Manager uses the same names: its package ships
+  `Anomaly/plugins/ModManager/assets/mod-groups.json` (Chinese names only, generated from the same data;
+  a plugin can only read the files the host copied into its package). It shows the character and vehicle
+  names while the UI is Chinese and the generated `Character 051` / `Vehicle 037` while it is English;
+  a name never changes classification or exclusivity.
 
 The alternative wheel finishes in the example P1 archive should be imported individually. All containers inside one mod
 folder form one unit; the manager does not choose between variants packed into the same folder.
 
-1. Open Mod Manager, confirm hot mode, and use the mutually exclusive switches shared with Launcher.
+1. Open Mod Manager, confirm hot mode, and use the mutually exclusive switches shared with Launcher. The
+   window no longer pages: it lists every mod under its category at once, and only the list scrolls -- the
+   mode, the status, **Reload world** and the search box stay at the top. The search matches the mod name,
+   the category identifier, the Chinese category name and the skins, so a Chinese and an English input find
+   the same row.
 2. After container changes, the plugin automatically attempts to release resources from all variants of the vehicle.
    Each vehicle group keeps one **Release resources** button for manual retries.
 3. If instances remain, exit the vehicle and use the group's single **Force cleanup** button. The plugin validates object serials,

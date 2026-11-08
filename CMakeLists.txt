@@ -1365,6 +1365,8 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         PACKAGE_NAME ModManager
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/ModManager")
     target_compile_options(anomaly_builtin_mod_manager PRIVATE /utf-8)
+    # The panel reads the Chinese category names its package ships in `assets/mod-groups.json`.
+    target_link_libraries(anomaly_builtin_mod_manager PRIVATE nlohmann_json::nlohmann_json)
     anomaly_add_plugin(anomaly_builtin_night999
         SOURCES plugins/Night999/plugin.cpp
         MANIFEST plugins/Night999/manifest.json
