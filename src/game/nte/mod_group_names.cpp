@@ -53,9 +53,12 @@ std::string Sanitize(std::string_view text) {
 
 std::string Pick(const std::string& en_us, const std::string& zh_cn,
     const ModGroupLanguage language) {
-    const auto& first = language == ModGroupLanguage::ZhCn ? zh_cn : en_us;
-    if (!first.empty()) return first;
-    return language == ModGroupLanguage::ZhCn ? en_us : zh_cn;
+    // A name is shown in the language it is written in. The table carries Chinese names for the
+    // characters and mixed spellings for the vehicles, so a missing entry is a reason to fall back to
+    // the generated category name, never to show the other language's name in an English UI. Chinese
+    // still reads a Latin name that has no Chinese spelling of its own.
+    if (language == ModGroupLanguage::ZhCn) return !zh_cn.empty() ? zh_cn : en_us;
+    return en_us;
 }
 } // namespace
 

@@ -117,7 +117,6 @@
       "zh-CN": "Novis ST-X 950"
     },
     "Vehicle_013": {
-      "en-US": "旧时光",
       "zh-CN": "旧时光"
     },
     "Vehicle_014": {
@@ -161,7 +160,6 @@
       "zh-CN": "Porsche 918 Spyder"
     },
     "Vehicle_030": {
-      "en-US": "冲向明天！",
       "zh-CN": "冲向明天！"
     },
     "Vehicle_031": {
@@ -185,7 +183,6 @@
       "zh-CN": "Draco（039）"
     },
     "Vehicle_043": {
-      "en-US": "热风",
       "zh-CN": "热风"
     },
     "Vehicle_044": {
@@ -193,25 +190,22 @@
       "zh-CN": "Tide"
     },
     "Vehicle_045": {
-      "en-US": "坦途",
       "zh-CN": "坦途"
     },
     "Vehicle_047": {
-      "en-US": "试作型陆地霸者001",
       "zh-CN": "试作型陆地霸者001"
     },
     "Vehicle_055": {
-      "en-US": "划向明天！",
       "zh-CN": "划向明天！"
     }
   },
   "skins": {
     "female": {
-      "zh-CN": "女装",
+      "zh-CN": "女",
       "en-US": "Female"
     },
     "male": {
-      "zh-CN": "男装",
+      "zh-CN": "男",
       "en-US": "Male"
     },
     "female_swimsuit": {

@@ -152,8 +152,10 @@ void Finish() {
                 (entry.body.empty() ? entry.token.substr(entry.token.find('_') + 1) : entry.body) +
                 "\xef\xbc\x89";
         }
+        // The name is the one this installation of the game carries, which for a Chinese client is
+        // its Chinese spelling: it is the zh-CN name and never the en-US one, or an English mods page
+        // would read a Chinese name for a category it has no English name for.
         groups[entry.token] = {{"zh-CN", display}};
-        if (entry.token.starts_with("Vehicle_")) groups[entry.token]["en-US"] = display;
     }
     if (groups.empty()) {
         Report(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "ModNameExport: no category names read");

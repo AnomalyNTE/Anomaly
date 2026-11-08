@@ -25,7 +25,10 @@ public:
     // must not cost the mods page its classification.
     void Load(const nlohmann::json& document);
     // The name of a category. An unmapped identifier still reads as a category: the known id
-    // families become "角色 051" / "Character 051", and anything else keeps its own spelling.
+    // families become "角色 051" / "Character 051", and anything else keeps its own spelling. A name
+    // is shown in the language it is written in: an entry with no name for the requested language is
+    // generated instead of reading the other language's name, so an English page never shows a
+    // Chinese one.
     [[nodiscard]] std::string Group(std::string_view token, ModGroupLanguage language) const;
     // The name of one skin inside a category. Unmapped skins keep their own spelling: they are
     // identifiers a mod author chose ("female_fashion4"), not a name the game assigned.
