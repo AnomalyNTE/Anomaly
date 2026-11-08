@@ -4,7 +4,7 @@ This page assumes you have already completed the proxy install as described in [
 
 ## 1. Start the game
 
-When the proxy is already enabled, just start the game as usual. With live attach, exit any running `HTGame.exe` first, then click **Start and attach** on the **Live attach** page of `AnomalyLauncher`. Once Runtime enters the game process it writes two logs:
+When the proxy is already enabled, just start the game as usual. With live attach, exit any running `HTGame.exe` first, then click **Start and attach** on the **Launch → Injection mode** page of `AnomalyLauncher`. Once Runtime enters the game process it writes two logs:
 
 - `Anomaly\logs\anomaly-runtime.log` — Runtime state, PID, named pipe name.
 - `Anomaly\anomaly-platform.log` — platform and plugin logs.

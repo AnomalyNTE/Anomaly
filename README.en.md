@@ -117,7 +117,7 @@ The runtime package ships one enabled plugin source; the actual address is defin
 ## 🚀 Quickstart
 
 > [!NOTE]
-> Regular users do not need to build from source. Download `Anomaly-<version>-runtime.zip`, extract it completely, run the bundled `AnomalyLauncher.exe`, then on the **Proxy install** page select the directory containing `HTGame.exe` and click **Install**.
+> Regular users do not need to build from source. Download `Anomaly-<version>-runtime.zip`, extract it completely, run the bundled `AnomalyLauncher.exe`, then on the **Launch → Proxy mode** page select the directory containing `HTGame.exe` and click **Install**.
 
 1. Download and install the runtime package; see [installation and updates](docs/en/user-guide/installation.md) for the steps.
 2. Start the game as usual and press `Insert` to open the management UI.

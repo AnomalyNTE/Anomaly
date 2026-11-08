@@ -4,7 +4,7 @@
 
 ## 1. 启动游戏
 
-代理已经启用时，像平时一样启动游戏即可。使用实时附加时，要先退出已有的 `HTGame.exe`，再从 `AnomalyLauncher` 的 **实时附加** 页面点击 **启动并附加**。Runtime 进入游戏进程后会写入两份日志：
+代理已经启用时，像平时一样启动游戏即可。使用实时附加时，要先退出已有的 `HTGame.exe`，再从 `AnomalyLauncher` 的 **启动 → 注入模式** 页面点击 **启动并附加**。Runtime 进入游戏进程后会写入两份日志：
 
 - `Anomaly\logs\anomaly-runtime.log` — Runtime 状态、PID、命名管道名。
 - `Anomaly\anomaly-platform.log` — 平台与插件日志。
