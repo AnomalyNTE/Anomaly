@@ -21,13 +21,14 @@ public:
             const auto& p = n_->profile;
             rename_ = p.Address("RenameResourcePackage"); load_ = p.Address("LoadResourceObject");
             acquire_ = p.Address("AcquireResourceReference"); release_ = p.Address("ReleaseResourceReference");
-            flush_ = p.Address("FlushResourceLoading"); parent_ = p.Address("SetMaterialParent");
+            flush_ = p.Address("FlushResourceLoading"); reset_loaders_ = p.Address("ResetResourcePackageLoaders");
+            parent_ = p.Address("SetMaterialParent");
             exists_ = p.Address("ResourcePackageExists");
             for_each_class_ = p.Address("ForEachObjectOfClass");
             for_each_package_ = p.Address("ForEachObjectWithPackage");
             array_inner_ = p.Value("ResourceArrayInner", 4096, 8);
             array_flags_ = p.Value("ResourceArrayFlags", 4096);
-            return available_ = rename_ && load_ && acquire_ && release_ && flush_ && parent_ &&
+            return available_ = rename_ && load_ && acquire_ && release_ && flush_ && reset_loaders_ && parent_ &&
                 exists_ && for_each_class_ && for_each_package_ &&
                 lMaxHeader() <= 128;
         } catch (...) { return available_ = false; }
@@ -206,6 +207,7 @@ public:
             }
             for (auto& package : tx.packages) {
                 Progress(3, package.old_package); // Retire package names.
+                if (!ResetLoadersCall(reset_loaders_, package.old_package)) throw Failure{};
                 if (!Rename(package.old_package, package.retired)) throw Failure{};
                 package.renamed = true;
             }
@@ -337,7 +339,7 @@ private:
     static constexpr uint16_t MeshParamsSize = sizeof(uintptr_t) + sizeof(uint8_t);
     using Parameter = NativeAccess::Parameter;
     NativeAccess* n_{};
-    uintptr_t rename_{}, load_{}, acquire_{}, release_{}, flush_{}, parent_{}, exists_{};
+    uintptr_t rename_{}, load_{}, acquire_{}, release_{}, flush_{}, reset_loaders_{}, parent_{}, exists_{};
     uintptr_t for_each_class_{}, for_each_package_{};
     uint32_t array_inner_{}, array_flags_{};
     bool available_{};
@@ -455,6 +457,10 @@ private:
     static bool Flush(uintptr_t fn) noexcept {
         const Array empty{};
         __try { reinterpret_cast<void(__fastcall*)(const Array*)>(fn)(&empty); return true; }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    }
+    static bool ResetLoadersCall(uintptr_t fn, uintptr_t package) noexcept {
+        __try { reinterpret_cast<void(__fastcall*)(uintptr_t)>(fn)(package); return true; }
         __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
     }
     static bool Load(uintptr_t fn, uintptr_t cls, const wchar_t* path, uintptr_t& object) noexcept {

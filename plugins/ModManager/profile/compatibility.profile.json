@@ -332,6 +332,16 @@
       ]
     },
     {
+      "name": "ResetResourcePackageLoaders",
+      "candidates": [
+        {
+          "pattern": "48 83 EC 38 E8 ?? ?? ?? ?? 48 85 C0 74 ?? 48 8B 40 48 48 85 C0 74 ?? 48 89 5C 24 30 48 8B 58 20 48 85 DB 74 ??",
+          "entry": "48 83 EC 38 E8",
+          "values": {}
+        }
+      ]
+    },
+    {
       "name": "SetMaterialParent",
       "candidates": [
         {
