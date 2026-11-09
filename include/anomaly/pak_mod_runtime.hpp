@@ -74,6 +74,9 @@ struct PakModRuntimeOptions {
     // caching the failure, because the platform file chain only exists after engine start-up.
     std::function<std::uintptr_t()> resolve_pak_platform_file;
     std::function<PakModMountOutcome(std::uintptr_t, const Ue5PakMountRequest&)> mount_pak;
+    // Inspects candidate cooked schemas before any engine mount can expose them.
+    std::function<Ue5ModCompatibilityPlan(const std::filesystem::path&)> prepare_compatibility;
+    // The engine adapter must drain async package loads on its required thread before unmounting.
     std::function<bool(std::uintptr_t, const std::wstring&)> unmount_pak;
     std::function<std::optional<std::vector<Ue5MountedPakFile>>(std::uintptr_t)> mounted_files;
     std::function<void(std::uintptr_t)> release_container;

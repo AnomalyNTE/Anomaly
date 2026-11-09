@@ -27,6 +27,14 @@ using ManagerGetFn = std::uintptr_t(__fastcall*)();
 using MountWithStatusFn = bool(__fastcall*)(std::uintptr_t, const void*, void*, void*);
 // FPakPlatformFile::Unmount(const TCHAR*)
 using UnmountFn = bool(__fastcall*)(std::uintptr_t, const wchar_t*);
+// FlushAsyncLoading(TConstArrayView<int32>) — an empty view drains all async package requests.
+struct FlushAsyncLoadingRequestIds final {
+    const std::int32_t* data;
+    std::int32_t size;
+};
+static_assert(offsetof(FlushAsyncLoadingRequestIds, size) == 0x08);
+static_assert(sizeof(FlushAsyncLoadingRequestIds) == 0x10);
+using FlushAsyncLoadingFn = void(__fastcall*)(FlushAsyncLoadingRequestIds);
 // The two IPlatformFile virtuals the chain walk needs.
 using GetLowerLevelFn = std::uintptr_t(__fastcall*)(std::uintptr_t);
 using GetNameFn = const wchar_t*(__fastcall*)(std::uintptr_t);
@@ -115,6 +123,7 @@ FeatureValidationResult ValidatePakMount(const BuildProfile& profile, std::strin
         {kUe5PakPlatformFileManagerSymbol, binding.platform_file_manager},
         {kUe5PakMountSymbol, binding.mount},
         {kUe5PakUnmountSymbol, binding.unmount},
+        {kUe5PakFlushAsyncLoadingSymbol, binding.flush_async_loading},
         {kUe5PakReleaseSymbol, binding.release}};
     for (const auto& [id, address] : entries) {
         if (!ExecutableAddress(address, memory)) {
@@ -191,6 +200,16 @@ bool CallUnmount(std::uintptr_t pak_platform_file, UnmountFn function,
     const wchar_t* pak_file) noexcept {
     __try {
         return function(pak_platform_file, pak_file);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool CallFlushAsyncLoading(FlushAsyncLoadingFn function) noexcept {
+    const FlushAsyncLoadingRequestIds request_ids{nullptr, 0};
+    __try {
+        function(request_ids);
+        return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
@@ -909,10 +928,26 @@ bool BindUe5Pak(const BuildProfile& profile, const ProfileResolutionSnapshot& re
     if (mount == nullptr) return false;
     const auto* unmount = RequireSymbol(resolution, kUe5PakUnmountSymbol, error);
     if (unmount == nullptr) return false;
+    const auto* flush_async_loading =
+        RequireSymbol(resolution, kUe5PakFlushAsyncLoadingSymbol, error);
+    if (flush_async_loading == nullptr) return false;
     Ue5PakBinding candidate{};
     candidate.platform_file_manager = manager->address;
     candidate.mount = mount->address;
     candidate.unmount = unmount->address;
+    candidate.flush_async_loading = flush_async_loading->address;
+    const auto codec_symbol = [&](std::string_view name) -> std::uintptr_t {
+        const auto* symbol = resolution.FindSymbol(name);
+        return symbol && symbol->Available() && (!memory || ExecutableAddress(symbol->address, *memory)) ? symbol->address : 0;
+    };
+    candidate.encryption_key_manager = codec_symbol("ue5.FEncryptionKeyManager.Get");
+    candidate.try_encryption_key = codec_symbol("ue5.FEncryptionKeyManager.TryGetKey");
+    candidate.uncompress_memory = codec_symbol("ue5.FCompression.UncompressMemory");
+    candidate.name_from_enum = codec_symbol("ue5.FName.FromEName");
+    ReadLayoutField(profile, "pak.compressionZlibName", candidate.compression_zlib);
+    ReadLayoutField(profile, "pak.compressionGzipName", candidate.compression_gzip);
+    ReadLayoutField(profile, "pak.compressionLz4Name", candidate.compression_lz4);
+    ReadLayoutField(profile, "pak.compressionOodleName", candidate.compression_oodle);
     const auto* status_mount = RequireSymbol(resolution, kUe5PakMountWithStatusSymbol, error);
     const auto* release = RequireSymbol(resolution, kUe5PakReleaseSymbol, error);
     if (status_mount == nullptr || release == nullptr) return false;
@@ -1029,6 +1064,38 @@ bool BindUe5Pak(const BuildProfile& profile, const ProfileResolutionSnapshot& re
     }
     binding = candidate;
     return true;
+}
+
+namespace {
+bool ContainerKeyCall(const Ue5PakBinding& binding, const std::uint8_t* guid, std::uint8_t* key) noexcept {
+    if (!binding.encryption_key_manager || !binding.try_encryption_key) return false;
+    __try {
+        const auto manager = reinterpret_cast<std::uintptr_t(__fastcall*)()>(binding.encryption_key_manager)();
+        return manager && reinterpret_cast<bool(__fastcall*)(std::uintptr_t, const void*, void*)>(
+            binding.try_encryption_key)(manager, guid, key);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+bool ContainerDecompressCall(const Ue5PakBinding& binding, std::uint32_t format,
+    const void* input, std::size_t input_size, void* output, std::size_t output_size) noexcept {
+    if (!format || !binding.uncompress_memory || !binding.name_from_enum) return false;
+    __try {
+        std::uint64_t name{};
+        reinterpret_cast<void*(__fastcall*)(void*, std::uint32_t)>(binding.name_from_enum)(&name, format);
+        return reinterpret_cast<bool(__fastcall*)(std::uint64_t, void*, std::int64_t,
+            const void*, std::int64_t, std::uint32_t, std::uintptr_t)>(binding.uncompress_memory)(
+                name, output, static_cast<std::int64_t>(output_size), input, static_cast<std::int64_t>(input_size), 0, 0);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+} // namespace
+Ue5ContainerCodecs Ue5PakContainerCodecs(const Ue5PakBinding& binding) {
+    return {
+        [binding](const auto& guid, auto& key) { return ContainerKeyCall(binding, guid.data(), key.data()); },
+        [binding](std::string_view method, std::span<const std::uint8_t> input, std::span<std::uint8_t> output) {
+            const auto format = method == "Zlib" ? binding.compression_zlib : method == "Gzip" ? binding.compression_gzip :
+                method == "LZ4" ? binding.compression_lz4 : method == "Oodle" ? binding.compression_oodle : 0;
+            return ContainerDecompressCall(binding, format, input.data(), input.size(), output.data(), output.size());
+        }
+    };
 }
 
 std::uintptr_t FindUe5PakPlatformFile(
@@ -1165,6 +1232,12 @@ bool UnmountUe5Pak(const Ue5PakBinding& binding, std::uintptr_t pak_platform_fil
     if (!binding.Complete() || pak_platform_file == 0 || pak_file.empty()) return false;
     return CallUnmount(pak_platform_file, reinterpret_cast<UnmountFn>(binding.unmount),
         pak_file.c_str());
+}
+
+bool FlushUe5AsyncLoading(const Ue5PakBinding& binding) noexcept {
+    if (!binding.Complete()) return false;
+    return CallFlushAsyncLoading(
+        reinterpret_cast<FlushAsyncLoadingFn>(binding.flush_async_loading));
 }
 
 void ReleaseUe5PakContainer(const Ue5PakBinding& binding, std::uintptr_t container) noexcept {

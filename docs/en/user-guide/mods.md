@@ -152,6 +152,20 @@ Pure pak files use `SkipContainerFile`; the presence of `.utoc` selects native I
 sizes do not determine the container type. The output entry transfers a strong reference that the
 Runtime releases after unmount or during shutdown. Every required signature step must succeed.
 
+Before mounting an IoStore mod, the Runtime compares its Blueprint, struct and enum serialization
+definitions with the currently mounted game containers, including parents, field order, array dimensions
+and nested types. An incompatible definition and its affected dependencies within the candidate container
+are retained from the game in a separate compatibility container. Other mod resources can still load.
+Retained package names are reported in mount status and logs; this policy has no mod-name or vehicle exceptions.
+Unreadable formats, inseparable new dependencies and unsupported optional packages are refused before mounting,
+preserving the existing mounted set for that pass. This inspection covers supported Zen package formats;
+legacy standalone pak files keep their existing path, and schema compatibility does not guarantee script behavior.
+
+Unmount drains async package loading on the Game thread, then removes the source before its compatibility
+container. Partial failures retain ownership for cleanup on a later pass and block new replacement mounts.
+Compatibility cache files are addressed by content and verified on reuse; existing files are never overwritten
+while the engine may still hold them.
+
 The cache hook samples ownership while holding the engine's cache lock. Existing signature tables use
 the original verifier. A confirmed null table goes through native completion, which obtains the read
 results and maintains queues/counters. Unreadable state uses the original function. The hook does not
