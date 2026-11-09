@@ -190,6 +190,11 @@ rebuild the Asset Registry, refresh materials/audio, or replace resident assets.
 not mean existing resources have been reloaded. Resident assets, outstanding asynchronous loads and full
 replacement behavior still need in-game validation. Restart when a clean resource replacement is needed.
 
+When ModManager refreshes a mesh, it preserves a dynamic material instance only when the slot mapping
+and material identity remain continuous. A different material uses the new mesh's defaults, preventing
+an old skin's textures from being carried to another model. Detached instances with no other compatible consumers keep their parent
+and textures so a failed transaction can restore the previous component bindings.
+
 The independent **Mod Manager** plugin and Launcher classify mods from `.pak` and `.utoc` directory indices.
 The classification has two levels: one group per character, and the skins inside it. Zero's base outfit and
 swimsuit land in the `female` and `female_swimsuit` skins of `Player_051` (`Player_051/female` and
