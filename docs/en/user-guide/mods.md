@@ -225,6 +225,14 @@ exists is skipped instead of merged. It also runs while the game is open: a fold
 open is skipped and reported, and one more pass after closing the game finishes it; a mod filed by hand
 under some other folder is moved to the folder its category names.
 
+After a manual folder move, each container with no saved selection for its current path inherits the selection
+saved for its mod's name: the folder name, or the `.pak` filename of a loose container. Multiple containers in
+one mod count as one mod. Current file or directory selections take precedence, and physically disabled files
+stay disabled. Inheritance requires a unique mod name across the complete directory tree; namesakes are not
+resolved by name. If historical locations disagree, OFF takes precedence so an old ON entry cannot reactivate
+the mod. An explicit selection, or an automatic disable due to a conflict, removes uniquely attributable old
+keys that no longer reach an existing mod and saves the selection at the current path.
+
 #### Category names
 
 The name a category is shown under comes from a shipped data table,

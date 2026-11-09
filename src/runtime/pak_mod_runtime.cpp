@@ -395,8 +395,9 @@ struct PakModRuntime::Impl final {
     // One walk of the mods tree per planned set, keyed the way the catalogue keys it. A folder that
     // only groups mods is a category on both sides, so a mod filed in one keeps its own key instead
     // of the folder's, and a selection stored for either still reaches every container under it.
-    void BuildLayout() {
+    std::set<std::string> BuildLayout() {
         auto layout = std::make_shared<PakModLayout>();
+        std::vector<std::string> logical_containers;
         const auto root = std::filesystem::absolute(options.mod_directory).lexically_normal();
         std::error_code error;
         if (std::filesystem::is_directory(root, error)) {
@@ -425,9 +426,18 @@ struct PakModRuntime::Impl final {
                 if (extension == L".pak" || extension == L".utoc" || extension == L".ucas" ||
                     extension == L".sig" || PakModShippedFile(logical))
                     layout->AddOwnerFile(logical);
+                if (extension == L".pak" || extension == L".utoc") logical_containers.push_back(std::move(logical));
             }
         }
+        // Count distinct logical mods across the complete tree, including disabled files and
+        // mods omitted by a manifest. Container count must not turn one multi-pak mod into namesakes.
+        std::set<std::string> mod_keys;
+        for (const auto& logical : logical_containers) {
+            const auto folder = layout->Root(logical);
+            mod_keys.insert(folder.empty() ? logical.substr(0, logical.rfind('.')) + ".pak" : folder + "/");
+        }
         layout_.store(std::move(layout));
+        return mod_keys;
     }
 
     // `config/pak-mods.json` is optional. When it lists containers it is authoritative, which
@@ -503,16 +513,26 @@ struct PakModRuntime::Impl final {
         std::vector<DesiredPak> desired;
         // Keyed before the set is planned: the conflict pass compares these keys with the catalogue's
         // and the mount paths need them when a mod is frozen or replaced.
-        BuildLayout();
+        const auto mod_keys = BuildLayout();
         if (!CollectManifest(desired, settings)) {
             desired.clear();
             CollectDirectory(desired);
         }
+        // A selection is stored under the mod's path, so a folder moved by hand leaves it behind.
+        // Resolving the leftover entry by mod name is what keeps a switched-off variant off: reading
+        // it as enabled would mount it again, and the conflict it was switched off for would return.
+        std::map<std::string, std::size_t> mod_names;
+        for (const auto& key : mod_keys) ++mod_names[PakModSelectionName(key)];
         std::erase_if(desired, [&](const DesiredPak& entry) {
             auto relative = Narrow(entry.file.lexically_relative(
                 std::filesystem::absolute(options.mod_directory).lexically_normal()));
             std::replace(relative.begin(), relative.end(), '\\', '/');
-            return !PakModEnabled(states, relative);
+            if (PakModSelectionApplied(states, relative)) return !PakModEnabled(states, relative);
+            const auto name = PakModSelectionName(ModKey(entry.file));
+            if (const auto inherited = PakModInheritedSelection(states, name, mod_names[name] == 1))
+                return !*inherited;
+            // No saved entry names this mod at all: a mod is mounted unless it was switched off.
+            return false;
         });
         // Validate only the effective mount set, after master switch and explicit manifest filtering.
         // An unselected variant on disk must never prevent disabling all mods.
