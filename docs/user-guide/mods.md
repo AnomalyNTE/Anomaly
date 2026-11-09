@@ -97,7 +97,7 @@ Paks\~mods\
 
 ## 运行时加载与热替换
 
-Runtime 默认每 750 ms 扫描 `Paks\~mods`，跳过 `.disabled` 文件夹、文件和 reparse 条目。
+Runtime 默认每 750 ms 检查 `Paks\~mods` 的变更通知，首次加载或有变化时扫描，跳过 `.disabled` 文件夹、文件和 reparse 条目。
 每个 `.pak` 是一个容器，默认读序从 **100000** 递增；相同资源路径按引擎的读序规则选择。
 默认 id 是去掉扩展名后的相对路径，例如 `Outfit/Shared`，不同文件夹下同名 pak 不会互相覆盖状态。
 
@@ -111,11 +111,15 @@ Runtime 默认每 750 ms 扫描 `Paks\~mods`，跳过 `.disabled` 文件夹、�
 相对路径按 `Paks\~mods` 解析。有 `mods` 数组时以清单为准；没有时扫描目录。
 `enabled: false` 停止自动挂载并尝试卸载本 Runtime 管理的容器。配置格式错误、清单文件缺失或重复 id/路径
 不会被当成空集合。卸载失败的条目继续保留，并阻止本轮新挂载，避免不同 id 的两个替换版本同时生效。
-每轮还会在引擎挂载锁内复制实际文件名，卸载 `~mods` 中未由当前 Runtime 持有的启动挂载，
+首次加载、文件/配置变化或显式同步时，会在引擎挂载锁内复制实际文件名，卸载 `~mods` 中未由当前 Runtime 持有的启动挂载，
 再按选择重新挂载。原生卸载使用引擎保存的原始文件名，避免相对路径导致旧包残留或禁用失效。
+稳定状态只检查目录变更通知，不重复扫描目录、规划挂载或进入引擎挂载锁；目录缓存同样按通知失效。
+目录移动、删除、重建及清单中的外部目录都保持监视。通知不可用时退回扫描，普通挂载或卸载失败仍自动重试。
+挂载触发原生异常时会记录 `nativeFault: true` 并停止该文件的后台重试，文件变化或显式重新加载才会再次尝试。
 
 ```text
 anomaly-cli --pid <游戏 PID> pak status
+anomaly-cli --pid <游戏 PID> pak performance
 anomaly-cli --pid <游戏 PID> pak release "My Mod/MyMod"
 anomaly-cli --pid <游戏 PID> pak reload
 anomaly-cli --pid <游戏 PID> pak mount "My Mod/MyMod.pak" 100100
@@ -134,6 +138,8 @@ anomaly-cli --pid <游戏 PID> pak unmountall
 状态写入 `Anomaly\state\pak-mods.json`；`diagnostics-summary.json` 的 `pakMods` 节点也包含快照。
 `mode` 表示进程采用的加载路线，`pid` 用于识别所属进程；`residentAssetsReloaded: false` 明确表示
 容器切换没有主动刷新驻留资产。
+`pak performance` 只读取诊断计数，不触发扫描；稳定且无操作时，`reconcilePasses`、`mountedListReads`
+（挂载同步中的列表读取次数）和 `catalogMetadataScans` 应保持不变，`retryPending` 为 `false`。
 
 ### 内存调用与诊断边界
 

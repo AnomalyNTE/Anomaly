@@ -165,7 +165,8 @@ struct Ue5PakCacheVerifySample final {
     std::uintptr_t handle{};
 };
 
-// Called from the verifier's own thread for every request, before the original body runs.
+// Called from the verifier's own thread for up to eight unsigned or unreadable requests per
+// attachment, before the original body runs. Later reads bypass the diagnostic sink lock.
 using Ue5PakCacheVerifySink =
     void(__fastcall*)(void* context, const Ue5PakCacheVerifySample& sample) noexcept;
 
@@ -177,7 +178,7 @@ enum class Ue5PakCacheVerifyStatus : std::uint8_t {
     Unreadable,
 };
 
-// Installs the diagnostic detour on the verifier entry. It reports each request's attribution to
+// Installs the diagnostic detour on the verifier entry. It reports bounded exceptional attribution to
 // `sink` and routes the call: a container whose element has a table keeps the engine's whole body,
 // one whose element has none gets only the completion half (`complete`), which is what keeps the read
 // alive without hanging the caller. Removal requires disabling and draining the hook.
@@ -328,6 +329,8 @@ std::uintptr_t FindUe5PakPlatformFile(
 // container can be explained instead of just reported as failed.
 struct Ue5PakMountResult {
     bool mounted{};
+    // SEH is not an ordinary I/O refusal and must not be retried by the idle watcher.
+    bool native_fault{};
     std::int32_t error_code{-1};
     std::wstring error_message;
     // Strong reference transferred by the native output entry; caller must release it.
@@ -367,10 +370,6 @@ Ue5PakPrimeReport PrimeUe5PakContainer(const Ue5PakBinding& binding,
 bool ClearUe5PakSignatureRequirement(const Ue5PakBinding& binding,
     std::uintptr_t pak_platform_file, const SymbolMemory& memory) noexcept;
 
-// Turns the game's own container gate into an unconditional accept: the instruction there is
-// `test bl, 4 / jnz accept`, and flipping the JNZ to a JMP keeps unsigned containers mountable. The
-// byte is only patched when it is exactly that conditional jump, so a wrong Profile cannot corrupt
-// unrelated code. Returns false when the gate is unavailable or already patched.
 enum class Ue5PakGateStatus : std::uint8_t {
     NoSymbol,
     Unreadable,
@@ -379,11 +378,9 @@ enum class Ue5PakGateStatus : std::uint8_t {
     AlreadyPatched,
 };
 
-// Turns the game's own container gate into an unconditional accept: the instruction there is
-// `test bl, 4 / jnz accept`, and flipping the JNZ to a JMP keeps unsigned containers mountable. The
-// byte is only patched when it is exactly that conditional jump, so a wrong Profile cannot corrupt
-// unrelated code. `observed` receives what was actually read, which is what makes a refusal
-// diagnosable.
+// Selects the IsSigningEnabled()==false path, which still reads signatures when the container
+// declares them. Never force entry into signature parsing for an unsigned container. The Profile
+// resolves the JZ into that path; a different opcode is rejected. `observed` reports the read byte.
 Ue5PakGateStatus DisableUe5PakSignatureGate(
     const Ue5PakBinding& binding, std::uint8_t* observed = nullptr) noexcept;
 

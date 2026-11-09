@@ -629,7 +629,7 @@ std::filesystem::path WriteOverlay(const std::filesystem::path& candidate,
     const auto path_text = candidate.generic_u8string();
     Bytes identity(reinterpret_cast<const std::uint8_t*>(path_text.data()),
         reinterpret_cast<const std::uint8_t*>(path_text.data()) + path_text.size());
-    Append(identity, std::uint32_t{3});
+    Append(identity, std::uint32_t{4});
     Append(identity, static_cast<std::uint32_t>(packages.size()));
     for (const auto& p : packages) {
         Append(identity, p.id);
@@ -673,6 +673,8 @@ std::filesystem::path WriteOverlay(const std::filesystem::path& candidate,
     for (const auto& p : packages) append_chunk(chunk_id(p.id, 1), p.data);
     for (const auto& chunk : bulk) append_chunk(chunk.id, chunk.data);
     append_chunk(chunk_id(container_id, 6), container_header);
+    // ReadContainerHeader reads Align(logical size, AESBlockSize), including the final block.
+    data.resize((data.size() + 15) & ~std::size_t{15});
     Bytes toc(144);
     constexpr char magic[] = "-==--==--==--==-";
     std::memcpy(toc.data(), magic, 16); toc[16] = 8;

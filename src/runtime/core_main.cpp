@@ -8,6 +8,7 @@
 #include "anomaly/nte_profile_runtime.hpp"
 #include "anomaly/nte_pak_signature_bypass.hpp"
 #include "anomaly/pak_mod_runtime.hpp"
+#include "anomaly/pak_mod_catalog.hpp"
 #include "anomaly/pak_mod_settings.hpp"
 #include "anomaly/platform_settings.hpp"
 #include "anomaly/repository_coordinator.hpp"
@@ -684,6 +685,7 @@ DWORD PreparePakMods(
             }
             auto result = anomaly::MountUe5Pak(binding, engine, request);
             outcome.mounted = result.mounted;
+            outcome.native_fault = result.native_fault;
             if (result.mounted) {
                 outcome.container = result.container;
                 return outcome;
@@ -764,9 +766,8 @@ DWORD PreparePakMods(
                 anomaly::DisableUe5PakSignatureGate(binding, &gate_byte);
             const bool gate_ok = gate == anomaly::Ue5PakGateStatus::Patched ||
                 gate == anomaly::Ue5PakGateStatus::AlreadyPatched;
-            // The gate only covers "is a signature present". The verifier that decrypts and compares
-            // it still runs, and an unsigned container fails there; its only product is the status
-            // it writes, so reporting success cannot change how a container is read.
+            // Containers that declare a signature section still parse it and invoke the verifier.
+            // Only that verifier's status is replaced; unsigned containers skip the section entirely.
             const bool verify =
                 anomaly::InstallUe5PakSignatureVerificationBypass(binding.signature_verify);
             RuntimeLog(context, flag ? anomaly::LogLevel::Info : anomaly::LogLevel::Warning,
@@ -1566,6 +1567,10 @@ extern "C" __declspec(dllexport) DWORD WINAPI AnomalyStart(
                 *control.pak_compatibility_mode != core_context->pak_compatibility_mode)
                 throw std::runtime_error("pak loading mode requires a new game process");
             control.pak_compatibility_mode = core_context->pak_compatibility_mode;
+            // Native startup mounting does not pass through PakModRuntime's desired set.
+            // Disable restricted containers before enabling the legacy signature bypass.
+            if (core_context->pak_compatibility_mode && core_context->pak_startup_enabled)
+                anomaly::DisableRestrictedPakMods(ResolvePaksDirectory(core_context->game_module) / L"~mods");
             core_context->pak_settings_valid = true;
             // Start before service/profile initialization: the engine scans startup paks early.
             if (core_context->pak_compatibility_mode && core_context->pak_startup_enabled &&

@@ -538,6 +538,8 @@ anomaly::MessageId ProxyStateMessageId(
     return anomaly::MessageId::LauncherProxyStateUnavailable;
 }
 
+std::filesystem::path LauncherModsDirectory(const LauncherSnapshot& snapshot);
+
 class LauncherController final {
 public:
     explicit LauncherController(std::filesystem::path payload_root)
@@ -705,6 +707,7 @@ public:
                 PublishRuntimeFailure(selected);
                 return;
             }
+            anomaly::DisableRestrictedPakMods(LauncherModsDirectory(Snapshot()));
             anomaly::launcher::ManualMapLaunchOptions options;
             // NTELauncher.exe is what the player's own shortcut starts: it opens the launcher window,
             // and the press of its start button is what creates HTGame.exe.
@@ -2934,6 +2937,12 @@ void LauncherRefreshMods(
         const auto settings = loaded_settings ? *loaded_settings : LauncherPakSettings(snapshot);
         static anomaly::PakModCatalogCache catalog_cache;
         const auto catalog = catalog_cache.Read(directory, settings);
+        std::erase_if(mods, [&](const auto& entry) {
+            const auto key = anomaly::NormalizePakModKey(LauncherModStateKey(entry));
+            return std::any_of(catalog->begin(), catalog->end(), [&](const auto& row) {
+                return row.key == key && row.restricted;
+            });
+        });
         for (auto& entry : mods) {
             const auto key = anomaly::NormalizePakModKey(LauncherModStateKey(entry));
             for (const auto& row : *catalog) if (anomaly::NormalizePakModKey(row.key) == key) {
@@ -2963,8 +2972,12 @@ void LauncherRefreshMods(
             }
         }
     } catch (...) {
-        // A malformed configuration must not replace a previously saved selection.
+        // Do not expose entries whose resource restrictions could not be determined.
+        mods.clear();
     }
+    std::erase_if(mods, [](const auto& entry) {
+        return anomaly::PakModNameRestricted(entry.key) || anomaly::PakModNameRestricted(entry.display_name);
+    });
     for (auto& entry : mods) {
         // A hand-written group replaces the automatic one: nothing can tell two classes of the
         // same name apart, and a renamed character has to keep all of its mods together.
@@ -3223,6 +3236,12 @@ bool LauncherSetModEnabled(const LauncherSnapshot& snapshot, const LauncherModEn
     try {
         const bool compatibility = LauncherCompatibilityMode(snapshot);
         if (compatibility && LauncherGameRunning()) return false;
+        const auto settings = LauncherPakSettings(snapshot);
+        const auto catalog = anomaly::ReadPakModCatalog(LauncherModsDirectory(snapshot), settings);
+        const auto selected = std::find_if(catalog.begin(), catalog.end(), [&](const auto& row) {
+            return anomaly::NormalizePakModKey(row.key) == anomaly::NormalizePakModKey(key);
+        });
+        if (selected == catalog.end() || (enabled && selected->restricted)) return false;
         const auto write = [&](bool value) {
             return LauncherWritePakSettings(snapshot, [&](auto& document) {
                 const auto catalog = anomaly::ReadPakModCatalog(LauncherModsDirectory(snapshot), document);
@@ -3230,12 +3249,6 @@ bool LauncherSetModEnabled(const LauncherSnapshot& snapshot, const LauncherModEn
             });
         };
         if (compatibility) {
-            const auto settings = LauncherPakSettings(snapshot);
-            const auto catalog = anomaly::ReadPakModCatalog(LauncherModsDirectory(snapshot), settings);
-            const auto selected = std::find_if(catalog.begin(), catalog.end(), [&](const auto& row) {
-                return anomaly::NormalizePakModKey(row.key) == anomaly::NormalizePakModKey(key);
-            });
-            if (selected == catalog.end()) return false;
             if (enabled && !anomaly::PakModForceLoad(settings)) {
                 std::vector<LauncherModEntry> all;
                 LauncherRefreshMods(snapshot, all);
@@ -3256,6 +3269,8 @@ bool LauncherSetModEnabled(const LauncherSnapshot& snapshot, const LauncherModEn
 
 bool LauncherWriteCompatibilityMode(const LauncherSnapshot& snapshot, const bool compatibility) {
     if (LauncherGameRunning()) return false;
+    try { anomaly::DisableRestrictedPakMods(LauncherModsDirectory(snapshot)); }
+    catch (...) { return false; }
     std::vector<LauncherModEntry> mods;
     LauncherRefreshMods(snapshot, mods);
     if (!LauncherWriteLegacyBypass(snapshot,
@@ -3418,12 +3433,17 @@ bool LauncherFinishModWrite(const LauncherSnapshot& snapshot, const LauncherModE
     try {
         const bool compatibility = LauncherCompatibilityMode(snapshot);
         const auto settings = LauncherPakSettings(snapshot);
+        const auto catalog = anomaly::ReadPakModCatalog(LauncherModsDirectory(snapshot), settings);
+        const auto selected = std::find_if(catalog.begin(), catalog.end(), [&](const auto& row) {
+            return anomaly::NormalizePakModKey(row.key) == anomaly::NormalizePakModKey(LauncherModStateKey(target));
+        });
+        if (selected == catalog.end()) return false;
+        if (selected->restricted) {
+            static_cast<void>(LauncherSetModFilesEnabled(snapshot, target, false));
+            return false;
+        }
         if (compatibility && enable_after && !anomaly::PakModForceLoad(settings)) {
-            const auto catalog = anomaly::ReadPakModCatalog(LauncherModsDirectory(snapshot), settings);
-            const auto selected = std::find_if(catalog.begin(), catalog.end(), [&](const auto& row) {
-                return anomaly::NormalizePakModKey(row.key) == anomaly::NormalizePakModKey(LauncherModStateKey(target));
-            });
-            if (selected != catalog.end()) for (const auto& row : catalog) {
+            for (const auto& row : catalog) {
                 if (!anomaly::PakModsConflict(*selected, row)) continue;
                 LauncherModEntry other;
                 other.key = row.key;
@@ -4409,7 +4429,7 @@ ID3D11ShaderResourceView* LauncherThumbTexture(const std::string& url) {
 }
 
 bool LauncherLoadGbPage(const int page, const std::string& query, const std::string& sort,
-    const std::string& category_id, std::vector<LauncherGbItem>& items) {
+    const std::string& category_id, std::vector<LauncherGbItem>& items, bool& exhausted) {
     // Empty query browses the game feed; a query goes through the search endpoint. The game filter
     // is `_idGameRow`; `_idGame` is silently ignored.
     std::string path_text;
@@ -4451,6 +4471,8 @@ bool LauncherLoadGbPage(const int page, const std::string& query, const std::str
     }
     const auto records = parsed.find("_aRecords");
     if (records == parsed.end() || !records->is_array()) return false;
+    // Filtering every row on a page must not hide later pages of eligible mods.
+    exhausted = records->empty();
     for (const auto& record : *records) {
         if (!record.is_object()) continue;
         const int id = record.value("_idRow", 0);
@@ -4458,6 +4480,7 @@ bool LauncherLoadGbPage(const int page, const std::string& query, const std::str
         LauncherGbItem item;
         item.id = std::to_string(id);
         item.name = record.value("_sName", std::string{});
+        if (anomaly::PakModNameRestricted(item.name)) continue;
         item.page_url = record.value("_sProfileUrl", std::string{});
         if (const auto root = record.find("_aRootCategory");
             root != record.end() && root->is_object()) {
@@ -4621,6 +4644,8 @@ bool LauncherFetchFileFallback(const std::string& mod_id, LauncherGbFile& file,
 std::string LauncherInstallFromGameBanana(
     const LauncherSnapshot& snapshot, const std::string& mod_id, const std::string& display_name) {
     try {
+        if (anomaly::PakModNameRestricted(display_name))
+            return Tr(anomaly::MessageId::LauncherModsFileChangeFailed);
         const std::wstring profile_path = std::wstring(L"/apiv11/Mod/") +
             std::wstring(mod_id.begin(), mod_id.end()) + L"/ProfilePage";
         std::string body = LauncherHttpGet(L"gamebanana.com", profile_path);
@@ -4761,7 +4786,7 @@ void DrawBrowseMode(
     g_decode_budget = 1;  // one image per frame
     struct PageResult final {
         int page{};
-        bool ok{};
+        bool ok{}, exhausted{};
         std::vector<LauncherGbItem> items;
     };
     static char search[96]{};
@@ -4801,7 +4826,7 @@ void DrawBrowseMode(
             PageResult result;
             result.page = page;
             try {
-                result.ok = LauncherLoadGbPage(page, query, sort, category, result.items);
+                result.ok = LauncherLoadGbPage(page, query, sort, category, result.items, result.exhausted);
             } catch (...) {
                 LauncherUpdateLog("browse: page load failed");
             }
@@ -4832,7 +4857,7 @@ void DrawBrowseMode(
                     if (!item.category_id.empty() && !item.category.empty())
                         g_gb_categories[item.category_id] = item.category;
                 }
-                exhausted = result.items.empty();
+                exhausted = result.exhausted;
                 loaded_pages = result.page;
                 if (result.page == 1) {
                     items = std::move(result.items);

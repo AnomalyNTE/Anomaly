@@ -186,12 +186,41 @@ struct PakListEntryScratch final {
 // pak.listEntryPakFileOffset is checked against this member instead of trusting a literal.
 static_assert(offsetof(PakListEntryScratch, pak_file) == 0x08);
 
-// Returns the raw engine verdict; the caller copies code/message out before this frame ends.
+// Separate from FIoStatus: its 128-character engine ABI cannot hold a fatal assertion.
+struct PakMountException final {
+    DWORD code{};
+    void* address{};
+    void* program_counter{};
+    wchar_t message[2048]{};
+};
+
+int CaptureMountException(EXCEPTION_POINTERS* exception, PakMountException& fault) noexcept {
+    fault.code = exception->ExceptionRecord->ExceptionCode;
+    fault.address = exception->ExceptionRecord->ExceptionAddress;
+    // UE's ReportAssert passes one FAssertInfo pointer to RaiseException. Keep the assertion
+    // itself: ExceptionAddress otherwise points only to KERNELBASE!RaiseException.
+    if (exception->ExceptionRecord->ExceptionCode == 0x4000 &&
+        exception->ExceptionRecord->NumberParameters == 1) {
+        struct AssertInfo { const wchar_t* message; void* program_counter; };
+        __try {
+            const auto* info = reinterpret_cast<const AssertInfo*>(exception->ExceptionRecord->ExceptionInformation[0]);
+            if (info->message) {
+                wcsncpy_s(fault.message, info->message, _TRUNCATE);
+                fault.program_counter = info->program_counter;
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
+// Returns the raw engine verdict; a guarded fault must not look like EIoErrorCode::Ok.
 bool CallMountWithStatus(std::uintptr_t pak_platform_file, MountWithStatusFn function,
-    const PakMountArgs& args, PakIoStatus& status, PakListEntryScratch& entry) noexcept {
+    const PakMountArgs& args, PakIoStatus& status, PakListEntryScratch& entry,
+    PakMountException& fault) noexcept {
     __try {
         return function(pak_platform_file, &args, &status, &entry);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    } __except (CaptureMountException(GetExceptionInformation(), fault)) {
+        status.code = -1;
         return false;
     }
 }
@@ -682,6 +711,7 @@ std::size_t ReadBoundedText(const wchar_t* text, wchar_t* buffer, std::size_t ca
 
 // The verifier's own signature: (cache object, request byte, request object, slice index).
 using CacheVerifyFn = std::int64_t(__fastcall*)(void*, std::uint8_t, void*, std::uint32_t);
+constexpr std::uint32_t kCacheVerifyDiagnosticSamples = 8;
 
 // Deliberately leaked for the same reason as the signature bypass: the detour has to stay valid while
 // the engine may still call through it.
@@ -697,6 +727,7 @@ struct CacheVerifyDetour final {
     void* context{};
     bool installed{};
     std::mutex sink_mutex;
+    std::atomic<std::uint32_t> diagnostic_samples_remaining{};
 };
 
 CacheVerifyDetour* g_cache_verify{};
@@ -802,10 +833,15 @@ std::int64_t __fastcall CacheVerifyDetourFn(void* cache, std::uint8_t request_by
     if (!lease) return original(cache, request_byte, request, slice);
     Ue5PakCacheVerifySample sample{};
     ReadLockedCacheVerifySample(detour->layout, reinterpret_cast<std::uintptr_t>(cache), slice, sample);
-    {
+    if (sample.element != 1 && detour->diagnostic_samples_remaining.load(std::memory_order_relaxed) != 0) {
         // Removal detaches the sink under this lock even if a trampoline cannot be removed.
         std::scoped_lock lock(detour->sink_mutex);
-        if (detour->sink != nullptr) detour->sink(detour->context, sample);
+        const auto remaining = detour->diagnostic_samples_remaining.load(std::memory_order_relaxed);
+        if (detour->sink != nullptr && remaining != 0) {
+            // Bound attempts, not unique containers: even one unsigned mod can stream indefinitely.
+            detour->diagnostic_samples_remaining.store(remaining - 1, std::memory_order_relaxed);
+            detour->sink(detour->context, sample);
+        }
     }
     // Only a successfully read null signature table is eligible. An unreadable record must
     // never be treated as an unsigned container. Completion owns GetReadResults and its lock;
@@ -844,6 +880,7 @@ Ue5PakCacheVerifyStatus InstallUe5PakBlockCacheVerifyDetour(
         std::scoped_lock sink_lock(g_cache_verify->sink_mutex);
         g_cache_verify->sink = sink;
         g_cache_verify->context = context;
+        g_cache_verify->diagnostic_samples_remaining.store(kCacheVerifyDiagnosticSamples, std::memory_order_relaxed);
         return Ue5PakCacheVerifyStatus::AlreadyInstalled;
     }
     if (g_cache_verify->original != nullptr) return Ue5PakCacheVerifyStatus::Unavailable;
@@ -851,6 +888,7 @@ Ue5PakCacheVerifyStatus InstallUe5PakBlockCacheVerifyDetour(
     g_cache_verify->complete = complete;
     g_cache_verify->sink = sink;
     g_cache_verify->context = context;
+    g_cache_verify->diagnostic_samples_remaining.store(kCacheVerifyDiagnosticSamples, std::memory_order_relaxed);
     if (!g_cache_verify->hooks.Create(std::string(kCacheVerifyOwner), kCacheVerifyGeneration,
             std::string(kCacheVerifyLabel), reinterpret_cast<void*>(verify),
             reinterpret_cast<void*>(&CacheVerifyDetourFn), &g_cache_verify->original)) {
@@ -879,6 +917,7 @@ void RemoveUe5PakBlockCacheVerifyDetour() noexcept {
         std::scoped_lock sink_lock(detour->sink_mutex);
         detour->sink = nullptr;
         detour->context = nullptr;
+        detour->diagnostic_samples_remaining.store(0, std::memory_order_relaxed);
     }
     if (!detour->installed || !detour->hooks.DisableOwner(kCacheVerifyOwner, kCacheVerifyGeneration)) return;
     {
@@ -903,6 +942,7 @@ void DetachUe5PakBlockCacheVerifySink() noexcept {
     std::scoped_lock sink_lock(detour->sink_mutex);
     detour->sink = nullptr;
     detour->context = nullptr;
+    detour->diagnostic_samples_remaining.store(0, std::memory_order_relaxed);
 }
 
 namespace {
@@ -1167,11 +1207,19 @@ Ue5PakMountResult MountUe5Pak(const Ue5PakBinding& binding, std::uintptr_t pak_p
     // UE 5.6 FPakMountOptions::SkipContainerFile; pure paks have no IoStore sidecar.
     args.mount_flags = request.pak_only ? 4U : 0U;
     args.load_index = 1;
-    PakIoStatus status{};
+    PakIoStatus status{-1, {}};
+    PakMountException fault;
     result.mounted = CallMountWithStatus(pak_platform_file,
-        reinterpret_cast<MountWithStatusFn>(binding.mount_with_status), args, status, entry);
+        reinterpret_cast<MountWithStatusFn>(binding.mount_with_status), args, status, entry, fault);
     result.error_code = status.code;
-    if (status.code != 0) {
+    result.native_fault = fault.code != 0;
+    if (result.native_fault) {
+        wchar_t text[128]{};
+        swprintf_s(text, L"mount exception 0x%08lX at %p (assert pc %p): ",
+            fault.code, fault.address, fault.program_counter);
+        result.error_message = text;
+        result.error_message += fault.message;
+    } else if (status.code != 0) {
         std::size_t length{};
         while (length < ARRAYSIZE(status.message) && status.message[length] != L'\0') ++length;
         result.error_message.assign(status.message, length);
@@ -1279,7 +1327,11 @@ Ue5PakGateStatus DisableUe5PakSignatureGate(
     }
     if (observed != nullptr) *observed = byte;
     if (byte == 0xEB) return Ue5PakGateStatus::AlreadyPatched;
-    if (byte != 0x75) return Ue5PakGateStatus::UnexpectedByte;
+    // Force the IsSigningEnabled()==false path. Its destination still tests the container's
+    // Signed flag before consuming a signature section. Forcing the later JNZ instead reads
+    // directory/hash bytes as HashSize in unsigned containers and can fatal in TArray::Reserve.
+    // Requiring JZ also rejects Profiles that still resolve that old JNZ patch site.
+    if (byte != 0x74) return Ue5PakGateStatus::UnexpectedByte;
     const std::uint8_t jump{0xEB};
     DWORD previous{};
     if (VirtualProtect(reinterpret_cast<void*>(binding.signature_gate), sizeof(jump),

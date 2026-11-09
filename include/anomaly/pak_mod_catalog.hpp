@@ -1,5 +1,7 @@
 #pragma once
+#include "anomaly/directory_change_monitor.hpp"
 #include "anomaly/pak_mod_settings.hpp"
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
@@ -27,20 +29,33 @@ struct PakModCatalogEntry {
     // Index-only content fingerprints. Empty means unknown or inconsistent across containers.
     // IoStore chunk keys are raw 12-byte IDs, independent of directory mount-point spelling.
     std::map<std::string, std::string> asset_fingerprints, chunk_fingerprints;
-    bool enabled{}, disabled_files{}, index_complete{true};
+    // Keep restricted rows internally so every container of a multi-pak mod is refused together.
+    // User-facing enumerations omit them; forceLoad only overrides conflicts.
+    bool enabled{}, disabled_files{}, index_complete{true}, restricted{};
+    std::vector<std::filesystem::path> containers;
     std::string analysis_error;
 };
 // Reads only container indices, never resource payloads. Unsupported/encrypted indices are explicit.
 std::vector<std::string> ReadModContainerIndex(const std::filesystem::path& file);
 std::vector<PakModCatalogEntry> ReadPakModCatalog(const std::filesystem::path& directory,
     const nlohmann::json& settings);
-// Owned by a caller that serializes Read. Stable polls inspect metadata only and share the
-// immutable snapshot; paths, file sizes, write times and selection changes invalidate it.
+bool PakModNameRestricted(std::string_view name);
+// For explicit/manifest paths outside the managed mod directory, including their IoStore sidecar.
+bool PakModFileRestricted(const std::filesystem::path& file);
+// Before native startup scanning: rename restricted pak/utoc files to .disabled, never delete them.
+// Throws on a failed rename so the caller cannot enable native loading after a partial operation.
+void DisableRestrictedPakMods(const std::filesystem::path& directory);
+// Owned by a caller that serializes Read. Stable polls share the immutable snapshot without walking
+// the directory. File notifications and selection changes invalidate it; failed watches scan normally.
 class PakModCatalogCache {
 public:
     std::shared_ptr<const std::vector<PakModCatalogEntry>> Read(
         const std::filesystem::path& directory, const nlohmann::json& settings);
+    [[nodiscard]] std::uint64_t MetadataScans() const noexcept { return metadata_scans_; }
 private:
+    DirectoryChangeMonitor changes_;
+    bool dirty_{true};
+    std::uint64_t metadata_scans_{};
     std::filesystem::path directory_;
     std::map<std::filesystem::path, std::pair<std::filesystem::file_time_type, std::uintmax_t>> files_;
     nlohmann::json states_;

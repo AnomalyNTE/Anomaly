@@ -40,6 +40,7 @@ struct PakModEntrySnapshot {
     std::string fingerprint;
     PakModState state{PakModState::Pending};
     std::string message;
+    bool native_fault{};
 };
 
 // The engine's mount verdict and transferred strong reference.
@@ -47,6 +48,7 @@ struct PakModMountOutcome {
     bool mounted{};
     std::string detail;
     std::uintptr_t container{};
+    bool native_fault{};
 };
 
 // Verdict of a repeat priming pass requested through the diagnostic pipe.
@@ -86,8 +88,8 @@ struct PakModRuntimeOptions {
     // never mounts or unmounts, so it can be driven from the pipe without restarting the game.
     std::function<PakModPrimeOutcome(std::uintptr_t, std::uintptr_t)> prime_pak;
     // Installs the block-cache verifier detour once per session and reports its status through the
-    // engine's own vocabulary. The sink is invoked from the verifier's thread for every request the
-    // detour sees; the runtime ignores healthy samples and caps first-failure diagnostics.
+    // engine's own vocabulary. The sink receives unsigned or unreadable samples on the verifier's
+    // thread; healthy requests avoid the diagnostic sink lock. First-failure diagnostics are capped.
     std::function<Ue5PakCacheVerifyStatus(Ue5PakCacheVerifySink, void*, std::uintptr_t&)>
         apply_cache_verify;
     // Clears the engine's container signature requirement once per session, before the first
@@ -112,8 +114,8 @@ public:
     PakModRuntime(const PakModRuntime&) = delete;
     PakModRuntime& operator=(const PakModRuntime&) = delete;
 
-    // Scans once, then keeps polling until Stop. Returns false only when the watcher thread could
-    // not start; an unavailable engine is a degraded start, not a failure.
+    // Scans once, then polls change notifications until Stop. Ordinary engine failures retry;
+    // native faults wait for a file change or explicit operation. False means the watcher could not start.
     bool Start();
     // Joins the watcher and attempts to unmount every owned container. Native engine calls are
     // synchronous and cannot be cancelled; this operation has no bounded timeout.
@@ -122,7 +124,7 @@ public:
     [[nodiscard]] PakModRuntimeOptions Options() const;
     [[nodiscard]] std::string StatusJson() const;
     [[nodiscard]] const AnomalyModsServiceV1* Service() const noexcept;
-    // "status", "reload", "mount <path> [order]", "release <id>", "unmount <id>", "prime <id>". Runs
+    // "status", "performance", "reload", "mount <path> [order]", "release <id>", "unmount <id>", "prime <id>". Runs
     // the engine calls on the calling thread; used by the diagnostic pipe.
     [[nodiscard]] std::string Execute(std::string_view arguments) noexcept;
 

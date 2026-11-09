@@ -100,7 +100,7 @@ predicate directly. Other raw patch sequences are rejected. `verifiedFor` is des
 
 ## Runtime loading and hot replacement
 
-The Runtime scans `Paks\~mods` every 750 ms by default, skipping `.disabled` files/directories and reparse
+The Runtime checks change notifications for `Paks\~mods` every 750 ms by default and scans initially or after changes, skipping `.disabled` files/directories and reparse
 entries. Each `.pak` is one container. Default read orders start at **100000** and increase; the engine's
 read-order rules determine which duplicate resource wins. Default ids are relative paths without the
 extension, such as `Outfit/Shared`, so equal basenames in different folders remain distinct.
@@ -116,12 +116,18 @@ Relative paths resolve against `Paks\~mods`. A `mods` array is authoritative; wi
 scanned. `enabled: false` stops automatic mounting and attempts to unmount containers owned by this Runtime.
 Invalid configuration, missing manifest files or duplicate ids/paths preserve the current set. Failed unmounts remain tracked and
 block all new mounts in that pass, preventing two conflicting variants with different ids from becoming active together.
-Each pass also copies actual mounted filenames under the engine's mount-list lock and removes startup
+Initial loading, file/configuration changes and explicit synchronization copy mounted filenames under the engine's mount-list lock and remove startup
 mounts under `~mods` that this Runtime does not own before applying the selection. Unmount uses the
 engine's original filename spelling so relative paths cannot leave an old or disabled container mounted.
+Stable polls check directory change notifications without rescanning, replanning mounts or taking the engine's
+mount-list lock. Catalog snapshots also use notification invalidation. Directory moves, deletion, recreation and
+external manifest directories remain watched. Unavailable notifications fall back to scanning, and ordinary mount
+or unmount failures still retry automatically. A native mount exception sets `nativeFault: true` and stops background
+retries for that file until the file changes or an explicit reload requests another attempt.
 
 ```text
 anomaly-cli --pid <game PID> pak status
+anomaly-cli --pid <game PID> pak performance
 anomaly-cli --pid <game PID> pak release "My Mod/MyMod"
 anomaly-cli --pid <game PID> pak reload
 anomaly-cli --pid <game PID> pak mount "My Mod/MyMod.pak" 100100
@@ -143,6 +149,9 @@ anomaly-cli --pid <game PID> pak unmountall
 State is published to `Anomaly\state\pak-mods.json` and to the `pakMods` node in `diagnostics-summary.json`.
 `mode` identifies the process's loading strategy and `pid` identifies its owner. The explicit
 `residentAssetsReloaded: false` field means container switching did not refresh resident assets.
+`pak performance` reads counters without triggering scans. While stable and idle, `reconcilePasses`,
+`mountedListReads` (list reads during reconciliation) and `catalogMetadataScans` should stay unchanged,
+with `retryPending` set to `false`.
 
 ### Native calls and diagnostics
 

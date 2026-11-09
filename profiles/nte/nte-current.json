@@ -400,7 +400,7 @@
       "pattern": "74 6B F6 C3 04 75 6F 48 8D 05 ?? ?? ?? ?? 8B CF",
       "resolve": {
         "kind": "direct",
-        "addend": 5
+        "addend": 0
       },
       "validators": [
         "address-in-module",
