@@ -230,7 +230,7 @@ Known conflicts introduced by manual configuration edits freeze only the conflic
 unrelated mods continue synchronizing and hot replacing. The status file lists affected mods in `conflicts`.
 Selecting a single variant resolves the conflict.
 
-**Load conflicting mods anyway** (switch at the top of the mods page; it writes `forceLoad` in
+**Load conflicting mods anyway** (switch on the top switch row of the mods page, right of Compatibility mode; it writes `forceLoad` in
 `config/pak-mods.json`): exclusivity no longer stops two mods from being enabled together, and Runtime no longer
 freezes their mount changes because of resource conflicts. The engine's effective read priority selects overlapping
 resources. The switch does not change that priority or guarantee that the last selection or mount wins. For example,

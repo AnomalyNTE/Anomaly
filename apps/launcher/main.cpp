@@ -2407,6 +2407,10 @@ std::map<std::filesystem::path, LauncherModIconCache> g_mod_icons;
 // Remote versions learned by the update check, keyed by mod name: a refresh rebuilds the
 // entries, and without this cache the "new version" marker would disappear with them.
 std::map<std::string, std::string> g_mod_remote_versions;
+// The force-load switch belongs to the row of page-wide switches at the top of the mods page, while
+// the list it changes is rebuilt further down. Flipping it therefore asks the next draw of that list
+// to re-classify its rows at once, instead of leaving the conflict marks stale until the timer runs.
+bool g_mods_refresh_requested{};
 
 // Category names are shipped data rather than UI text: a category token is a container identifier
 // the classification and the conflict checks match on, so the table names it without renaming it.
@@ -5432,7 +5436,9 @@ void DrawModsMode(
         refreshed = true;
         last_refresh = ImGui::GetTime();
     };
-    if (!refreshed || cached_game != snapshot.game_directory || cached_client != snapshot.selected_client ||
+    const bool refresh_requested = std::exchange(g_mods_refresh_requested, false);
+    if (refresh_requested || !refreshed ||
+        cached_game != snapshot.game_directory || cached_client != snapshot.selected_client ||
         (ImGui::GetTime() - last_refresh > 2.0 && !check_running)) refresh_mods();
 
     if (directory.empty()) {
@@ -5464,24 +5470,9 @@ void DrawModsMode(
         import_message = LauncherOrganizeMessage(LauncherOrganizeModFolders(snapshot, mods));
         refresh_mods();
     }
-    // The exclusivity of the mods page: a patch that ships the same body as the mod it patches is a
-    // conflict by resource, and this is how the player says "load both anyway". It sits with the
-    // page-wide commands rather than on a row, because it applies to the whole selection.
-    ImGui::SameLine();
-    {
-        bool force_load = mod_settings.force_load;
-        ImGui::BeginDisabled(snapshot.game_directory.empty());
-        if (anomaly::glass::Switch(Text(translator, anomaly::MessageId::LauncherModsForceLoad), &force_load)) {
-            if (LauncherWriteForceLoad(snapshot, force_load)) {
-                mod_settings.force_load = force_load;
-                import_message.clear();
-                refresh_mods();
-            } else {
-                import_message = Text(translator, anomaly::MessageId::SettingsSaveFailed);
-            }
-        }
-        ImGui::EndDisabled();
-    }
+    // The exclusivity of the mods page -- "load both anyway" -- is a switch of the page, not a
+    // command on this list, so it is drawn on the first row next to compatibility mode; the row of
+    // commands below stays with the list it acts on.
     ImGui::SameLine();
     if (check_running) {
         ImGui::TextDisabled("%s", Text(translator, anomaly::MessageId::LauncherModsChecking));
@@ -6531,8 +6522,28 @@ void DrawModMode(
             settings_error = Text(translator, anomaly::MessageId::LauncherModsModeSaveFailed);
         }
     }
+    const float compatibility_switch_right = ImGui::GetItemRectMax().x;
     ImGui::EndDisabled();
     Tooltip(Text(translator, anomaly::MessageId::LauncherModsCompatibilityHint));
+    // The exclusivity switch lives on this row rather than next to the list: it answers the same
+    // question as the two switches left of it -- how the mods are loaded -- and this row stays put
+    // while the list below scrolls. It only changes what the next classification of that list does,
+    // so it asks for one instead of rebuilding the rows from here.
+    ImGui::SetCursorScreenPos(
+        ImVec2(compatibility_switch_right + ImGui::GetStyle().ItemSpacing.x, switch_row_y));
+    bool force_load = settings.force_load;
+    ImGui::BeginDisabled(snapshot.game_directory.empty());
+    if (anomaly::glass::Switch(
+            Text(translator, anomaly::MessageId::LauncherModsForceLoad), &force_load)) {
+        if (LauncherWriteForceLoad(snapshot, force_load)) {
+            settings.force_load = force_load;
+            g_mods_refresh_requested = true;
+            settings_error.clear();
+        } else {
+            settings_error = Text(translator, anomaly::MessageId::SettingsSaveFailed);
+        }
+    }
+    ImGui::EndDisabled();
     if (!settings_error.empty()) ImGui::TextDisabled("%s", settings_error.c_str());
     if (ImGui::BeginChild(mod_mode == 0 ? "ModManagementContent" : "ModDownloadContent", ImVec2(0.0f, 0.0f))) {
         if (mod_mode == 0) DrawModsMode(window, controller, snapshot, translator);
