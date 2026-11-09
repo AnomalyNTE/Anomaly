@@ -75,6 +75,7 @@ AnalyzerConfig AnalyzerConfig::Load(const std::filesystem::path& path) {
             "unsupported language preference '" + language + "'; using en-US"});
     }
     result.plugin_directory = ReadWide(path, L"Platform", L"PluginDirectory", L"plugins");
+    result.telemetry_enabled = ReadBool(path, L"Telemetry", L"Enabled", true);
     result.update_slow_milliseconds = static_cast<double>(
         std::max<std::size_t>(1, ReadSize(path, L"Performance", L"UpdateSlowMilliseconds", 2)));
     result.draw_slow_milliseconds = static_cast<double>(

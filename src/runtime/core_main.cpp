@@ -16,6 +16,7 @@
 #include "anomaly/service_graph.hpp"
 #include "anomaly/service_graph_diagnostics.hpp"
 #include "anomaly/structured_logger.hpp"
+#include "anomaly/telemetry.hpp"
 #include "anomaly/websocket_server.hpp"
 #include "config.hpp"
 #include "pipe_server.hpp"
@@ -62,6 +63,7 @@ struct CoreContext {
     std::unique_ptr<anomaly::CrashReporter> crash_reporter;
     std::shared_ptr<anomaly::DiagnosticPipeService> diagnostic_pipe;
     std::shared_ptr<anomaly::StructuredLogger> logger;
+    std::shared_ptr<anomaly::TelemetryClient> telemetry;
     std::shared_ptr<anomaly::PlatformSettingsStore> settings;
     std::shared_ptr<anomaly::WebSocketServer> websocket;
     HMODULE game_module{};
@@ -317,6 +319,14 @@ DWORD InitializeCore(const std::shared_ptr<CoreContext>& context, std::stop_toke
             "catalog_path=" + diagnostic.path + " reason=" + diagnostic.message);
     }
     context->translator = std::move(translator.translator);
+    if (context->config.telemetry_enabled) {
+        try {
+            anomaly::TelemetryOptions options;
+            options.endpoint = L"https://telemetry.anomalynte.com/v1/collect";
+            options.language = anomaly::LocaleName(context->translator->locale());
+            context->telemetry = std::make_shared<anomaly::TelemetryClient>(std::move(options));
+        } catch (...) {} // Optional telemetry must never fail runtime startup.
+    }
     context->profile_diagnostics = "null";
     if (!WriteDiagnosticsSummary(context, "starting")) {
         LogDiagnosticsSummaryFailure(context);
@@ -857,6 +867,19 @@ DWORD PreparePluginHost(
                     domain, std::move(owner), generation, std::move(callback)));
             });
         plugins->SetTranslator(context->translator);
+        if (context->telemetry) {
+            plugins->SetUsageObserver([session = context->session, telemetry = context->telemetry](
+                std::vector<ue5mem::PluginUsageObservation> observations) {
+                if (const auto runtime = session.lock()) {
+                    static_cast<void>(runtime->Dispatchers().Post(
+                        anomaly::ExecutionDomain::Worker, "anomaly.telemetry", 1,
+                        [telemetry, observations = std::move(observations)] {
+                            for (const auto& observation : observations)
+                                telemetry->ObservePlugins({observation.id}, observation.observed_at);
+                        }));
+                }
+            });
+        }
         const auto session = context->session;
         plugins->SetQueuedCallbackCanceller(
             [session](std::string_view owner, std::uint64_t generation) {
@@ -1461,6 +1484,10 @@ anomaly::RuntimeSessionOptions BuildSessionOptions(
     }});
     options.workers.push_back({"runtime-health", [context](std::stop_token stop_token) {
         return ConfirmRuntimeHealth(context, stop_token);
+    }});
+    options.workers.push_back({"telemetry", [context](std::stop_token stop_token) {
+        if (context->telemetry) context->telemetry->Run(stop_token);
+        return ERROR_SUCCESS;
     }});
     return options;
 }
