@@ -171,6 +171,8 @@ struct PakModRuntime::Impl final {
     std::uint64_t unmounts{};
     std::string last_error;
     std::set<std::string> conflicting_mods;
+    // Conflicts the player chose to load anyway, reported for diagnostics and never frozen.
+    std::set<std::string> forced_conflicts;
     std::string configuration_source{"scan"};
     bool enabled{true};
     SignatureState signature_state{SignatureState::Unknown};
@@ -503,12 +505,16 @@ struct PakModRuntime::Impl final {
         const auto states = settings.value("modStates", nlohmann::json::object());
         // Validate even when no containers exist; a corrupt selection must never unload the set.
         ValidatePakModStates(states);
+        // A patch mod ships the same body as the mod it patches, so the player can ask for the
+        // overlapping mounts to be kept: the engine's effective read priority selects shared paths.
+        const bool force_load = PakModForceLoad(settings);
         {
             std::scoped_lock lock(mutex);
             enabled = true;
             configuration_source = "scan";
             last_error.clear();
             conflicting_mods.clear();
+            forced_conflicts.clear();
         }
         std::vector<DesiredPak> desired;
         // Keyed before the set is planned: the conflict pass compares these keys with the catalogue's
@@ -564,7 +570,13 @@ struct PakModRuntime::Impl final {
             }
         }
         std::scoped_lock lock(mutex);
-        conflicting_mods = std::move(conflicts);
+        if (force_load) {
+            // Keep both containers; the engine's effective read priority selects their shared paths.
+            // The set is still reported so the state file says what is being overridden.
+            forced_conflicts = std::move(conflicts);
+        } else {
+            conflicting_mods = std::move(conflicts);
+        }
         if (!conflicting_mods.empty()) {
             // Freeze only the conflicting mods at their currently mounted versions. Other
             // selections and file replacements must still reach the engine in this pass.
@@ -948,6 +960,7 @@ struct PakModRuntime::Impl final {
         result["mounts"] = mounts;
         result["unmounts"] = unmounts;
         if (!last_error.empty()) result["lastError"] = last_error;
+        if (!forced_conflicts.empty()) result["forcedConflicts"] = forced_conflicts;
         if (!conflicting_mods.empty()) {
             result["conflicts"] = conflicting_mods;
             if (last_error.empty()) {

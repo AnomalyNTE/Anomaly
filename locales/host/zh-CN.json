@@ -508,6 +508,7 @@
     "launcher.mods.organize_keys": "文件夹已归类，但开关状态未能保存，请检查配置目录权限",
     "launcher.mods.organize_nothing": "没有需要归类的模组",
     "launcher.mods.organize_busy": "游戏正在运行，被占用的模组已跳过；退出游戏后再整理一次即可完成",
+    "launcher.mods.force_load": "强制加载冲突模组",
     "launcher.mods.compatibility_mode": "兼容模式",
     "launcher.mods.switch_selected": "切换到此模组（替换已选）",
     "launcher.mods.compatibility_hint": "兼容模式：退出游戏后切换模组，使用代理启动",

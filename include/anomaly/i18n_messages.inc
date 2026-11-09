@@ -593,6 +593,7 @@ ANOMALY_I18N_MESSAGE(LauncherModsOrganizeFailed, "launcher.mods.organize_failed"
 ANOMALY_I18N_MESSAGE(LauncherModsOrganizeKeys, "launcher.mods.organize_keys")
 ANOMALY_I18N_MESSAGE(LauncherModsOrganizeNothing, "launcher.mods.organize_nothing")
 ANOMALY_I18N_MESSAGE(LauncherModsOrganizeBusy, "launcher.mods.organize_busy")
+ANOMALY_I18N_MESSAGE(LauncherModsForceLoad, "launcher.mods.force_load")
 ANOMALY_I18N_MESSAGE(LauncherStateWorking, "launcher.state.working")
 ANOMALY_I18N_MESSAGE(LauncherStateReady, "launcher.state.ready")
 ANOMALY_I18N_MESSAGE(LauncherSectionGameDirectory, "launcher.section.game_directory")

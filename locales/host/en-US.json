@@ -508,6 +508,7 @@
     "launcher.mods.organize_keys": "Folders were reorganised but the selection could not be saved; check the configuration folder",
     "launcher.mods.organize_nothing": "No mod needs a folder",
     "launcher.mods.organize_busy": "The game is running, so folders it holds open were skipped; close it and organise again to finish",
+    "launcher.mods.force_load": "Load conflicting mods anyway",
     "launcher.mods.compatibility_mode": "Compatibility mode",
     "launcher.mods.switch_selected": "Switch selected mods to this",
     "launcher.mods.compatibility_hint": "Compatibility: close the game to switch mods; launch through the proxy.",

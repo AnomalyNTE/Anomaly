@@ -202,6 +202,17 @@ Known conflicts introduced by manual configuration edits freeze only the conflic
 unrelated mods continue synchronizing and hot replacing. The status file lists affected mods in `conflicts`.
 Selecting a single variant resolves the conflict.
 
+**Load conflicting mods anyway** (switch at the top of the mods page; it writes `forceLoad` in
+`config/pak-mods.json`): exclusivity no longer stops two mods from being enabled together, and Runtime no longer
+freezes their mount changes because of resource conflicts. The engine's effective read priority selects overlapping
+resources. The switch does not change that priority or guarantee that the last selection or mount wins. For example,
+a vehicle replacement and a patch for its body textures can load together, but still need the correct resource priority.
+The switch does not merge their contents; textures and skeletons from different packages may still be incompatible.
+Turning it off restores exclusivity for subsequent enable operations. In hot mode, existing conflicting mounts stay
+in place and their changes freeze until a single variant is selected. In compatibility mode, turning it off does not
+rename already enabled files; select a variant again before starting the game.
+While it is on, hot-mode status lists affected mods under `forcedConflicts` and leaves `conflicts` empty.
+
 #### Mod folders: a mod or a category
 
 Folders under `~mods` are read by what they contain, never by their name:

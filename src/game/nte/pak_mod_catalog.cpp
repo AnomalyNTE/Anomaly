@@ -521,7 +521,9 @@ void SelectPakMod(nlohmann::json& settings, const std::vector<PakModCatalogEntry
     const auto normalized = NormalizePakModKey(std::string(key));
     const auto selected = std::find_if(catalog.begin(), catalog.end(), [&](const auto& row) { return NormalizePakModKey(row.key) == normalized; });
     if (selected == catalog.end()) throw std::runtime_error("mod no longer exists");
-    if (enabled)
+    // A forced selection keeps every conflicting mod: a patch that ships the same body as the mod it
+    // patches has to load beside it, and the engine's effective read priority selects shared paths.
+    if (enabled && !PakModForceLoad(settings))
         for (const auto& row : catalog) if (PakModsConflict(*selected, row)) {
             DropMovedPakModSelections(settings["modStates"], catalog, row.key);
             SetPakModEnabled(settings["modStates"], row.key, false);
@@ -545,6 +547,7 @@ void UpdatePakModSettings(const std::vector<std::filesystem::path>& paths,
         auto settings = ReadPakModSettings(path.parent_path().parent_path());
         update(settings); settings["schemaVersion"] = 1;
         static_cast<void>(PakModCompatibilityMode(settings)); static_cast<void>(settings.value("enabled", true));
+        static_cast<void>(PakModForceLoad(settings));
         ValidatePakModStates(settings.value("modStates", nlohmann::json::object()));
         writes.emplace_back(path, settings.dump(2) + '\n');
     }

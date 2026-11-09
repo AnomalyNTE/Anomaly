@@ -58,6 +58,12 @@ inline void ValidatePakModStates(const nlohmann::json& states) {
     }
 }
 
+// Explicit opt-in to overlapping mods. The engine's effective read priority selects each shared
+// resource; enabling this option does not change that priority or merge the conflicting contents.
+inline bool PakModForceLoad(const nlohmann::json& document) {
+    return document.value("forceLoad", false);
+}
+
 // The name a mod keeps when its folder moves: the folder a directory mod lives in, or the file
 // name of a loose container. A key is a path, so everything above the mod is what a move rewrites.
 inline std::string PakModSelectionName(std::string_view key) {
