@@ -322,8 +322,12 @@ DWORD InitializeCore(const std::shared_ptr<CoreContext>& context, std::stop_toke
     if (context->config.telemetry_enabled) {
         try {
             anomaly::TelemetryOptions options;
-            options.endpoint = L"https://telemetry.anomalynte.com/v1/collect";
             options.language = anomaly::LocaleName(context->translator->locale());
+            if (const auto session = context->session.lock()) {
+                const auto type = session->StartContext().bootstrap_type;
+                if (type == ANOMALY_BOOTSTRAP_TYPE_DWMAPI_PROXY) options.mode = "proxy";
+                else if (type == ANOMALY_BOOTSTRAP_TYPE_EXTERNAL) options.mode = "inject";
+            }
             context->telemetry = std::make_shared<anomaly::TelemetryClient>(std::move(options));
         } catch (...) {} // Optional telemetry must never fail runtime startup.
     }

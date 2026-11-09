@@ -1262,6 +1262,7 @@ target_compile_definitions(
 target_compile_options(anomaly_launcher PRIVATE /W4 /permissive- /EHsc)
 target_link_options(anomaly_launcher PRIVATE /MANIFESTUAC:NO /DELAYLOAD:dwmapi.dll)
 target_link_libraries(anomaly_launcher PRIVATE
+    anomaly_telemetry
     anomaly_config anomaly_imgui anomaly_launcher_configuration anomaly_launcher_proxy
     anomaly_manual_map
     anomaly_platform_settings anomaly_platform_ui_layout

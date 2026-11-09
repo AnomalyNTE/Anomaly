@@ -285,6 +285,48 @@ std::string TelemetryDay(std::chrono::system_clock::time_point now) {
     return value;
 }
 
+void ReportLauncherUsage(const TelemetryOptions& options,
+    const LauncherTelemetryUsage& usage, std::stop_token stop) noexcept {
+    try {
+        Endpoint endpoint;
+        constexpr std::array<std::string_view, 7> themes{
+            "moss", "aurora", "ember", "paper", "anomalyhub", "naiwa", "custom"};
+        if (!options.enabled || stop.stop_requested() ||
+            (options.language != "en-US" && options.language != "zh-CN") ||
+            std::ranges::find(themes, usage.theme) == themes.end() || !ParseEndpoint(options, endpoint)) return;
+        const auto identity = options.identity_file.empty() ? DefaultIdentityFile() : options.identity_file;
+        const auto uuid = LoadIdentity(identity, stop);
+        if (uuid.empty() || stop.stop_requested()) return;
+        auto path = identity;
+        path += L".launcher-daily-v1";
+        FileHandle file{CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+            OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr)};
+        if (file.value == INVALID_HANDLE_VALUE) return;
+        BY_HANDLE_FILE_INFORMATION info{};
+        if (!GetFileInformationByHandle(file.value, &info) ||
+            (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 || info.nFileSizeHigh != 0 ||
+            (info.nFileSizeLow != 0 && info.nFileSizeLow != 10)) return;
+        const auto day = TelemetryDay(std::chrono::system_clock::now());
+        if (info.nFileSizeLow != 0) {
+            std::string previous(10, '\0');
+            DWORD read{};
+            if (!ReadFile(file.value, previous.data(), 10, &read, nullptr) || read != 10 ||
+                previous[4] != '-' || previous[7] != '-' ||
+                !std::ranges::all_of(previous, [](char c) { return (c >= '0' && c <= '9') || c == '-'; }) ||
+                previous >= day) return;
+        }
+        LARGE_INTEGER zero{};
+        DWORD written{};
+        if (!SetFilePointerEx(file.value, zero, nullptr, FILE_BEGIN) ||
+            !WriteFile(file.value, day.data(), 10, &written, nullptr) || written != 10 ||
+            !FlushFileBuffers(file.value)) return;
+        const auto body = nlohmann::json{{"schemaVersion", 2}, {"source", "launcher"},
+            {"uuid", uuid}, {"day", day}, {"language", options.language},
+            {"theme", usage.theme}, {"customBackground", usage.custom_background}}.dump();
+        static_cast<void>(Send(endpoint, body, stop));
+    } catch (...) {} // Optional statistics never fail launcher initialization.
+}
+
 class TelemetryClient::Impl {
 public:
     explicit Impl(TelemetryOptions value) : options(std::move(value)) {}
@@ -310,7 +352,8 @@ public:
 
     void Run(std::stop_token stop) {
         Endpoint endpoint;
-        if (!options.enabled || (options.language != "en-US" && options.language != "zh-CN") ||
+        if (!options.enabled || (!options.mode.empty() && options.mode != "inject" && options.mode != "proxy") ||
+            (options.language != "en-US" && options.language != "zh-CN") ||
             !ParseEndpoint(options, endpoint)) return;
         const auto identity = options.identity_file.empty() ? DefaultIdentityFile() : options.identity_file;
         const auto uuid = LoadIdentity(identity, stop);
@@ -377,15 +420,14 @@ public:
                     batch.push_back(id);
                 }
             }
-            // All interpolated strings are generated or strictly ASCII-validated.
-            std::string body = "{\"schemaVersion\":1,\"uuid\":\"" + uuid +
-                "\",\"day\":\"" + request_day + "\",\"language\":\"" + options.language + "\",\"plugins\":[";
-            for (std::size_t i = 0; i < batch.size(); ++i) {
-                if (i != 0) body += ',';
-                body += '"' + batch[i] + '"';
+            nlohmann::json report{{"schemaVersion", 1}, {"uuid", uuid}, {"day", request_day},
+                {"language", options.language}, {"plugins", batch}};
+            if (!options.mode.empty()) {
+                report["schemaVersion"] = 2;
+                report["source"] = "core";
+                report["mode"] = options.mode;
             }
-            body += "]}";
-            const bool success = Send(endpoint, body, stop);
+            const bool success = Send(endpoint, report.dump(), stop);
             if (!success) continue;
             state.active = true;
             for (const auto& id : batch) state.sent.insert(id);
