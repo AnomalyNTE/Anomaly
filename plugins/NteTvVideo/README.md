@@ -1,4 +1,4 @@
-# NTE TV Video
+# NTE Better TV
 
 把《异环》住宅电视播放的视频替换为本地视频。插件只接管住宅电视
 （`BP_FurnitureActorBase_TV_C`），影院、剧情、技能、房间邀请等其它视频保持游戏原样。

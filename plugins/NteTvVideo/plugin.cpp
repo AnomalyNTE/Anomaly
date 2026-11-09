@@ -1,4 +1,4 @@
-// NTE TV Video: replaces the residence TV video source with a local video.
+// NTE Better TV: replaces the residence TV video source with a local video.
 //
 // The residence TV (BP_FurnitureActorBase_TV_C) plays CRI Mana movies through
 // MovieAudioPlayerComponent. Each program switch calls SetVideoFilePath(FString);
@@ -2552,7 +2552,7 @@ void DrawTelevisions(Context& context, const AnomalyUiServiceV1* ui) {
 void Draw(void* plugin_context, const AnomalyUiServiceV1* ui_v1) {
     auto* context = static_cast<Context*>(plugin_context);
     if (context == nullptr || ui_v1 == nullptr || context->ui == nullptr) return;
-    const std::string title = context->localizer.Text("window.title", "NTE TV Video");
+    const std::string title = context->localizer.Text("window.title", "NTE Better TV");
     anomaly::sdk::UiWindow window(context->ui, title);
     if (!window) return;
 
@@ -2848,8 +2848,8 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
                    ANOMALY_PLUGIN_API_V1_MAJOR,
                    ANOMALY_PLUGIN_API_V1_MINOR,
                    anomaly::sdk::StringView("anomaly.nte-tv-video"),
-                   anomaly::sdk::StringView("NTE TV Video"),
-                   anomaly::sdk::StringView("Anomaly"),
+                   anomaly::sdk::StringView("NTE Better TV"),
+                   anomaly::sdk::StringView("Shikari"),
                    anomaly::sdk::StringView("0.3.0"),
                    Load,
                    Start,

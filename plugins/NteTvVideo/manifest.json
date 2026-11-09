@@ -1,9 +1,9 @@
 {
   "schemaVersion": 2,
   "id": "anomaly.nte-tv-video",
-  "name": "NTE TV Video",
+  "name": "NTE Better TV",
   "description": "Replaces the video played on the residence TV with a local custom video or a Bilibili link.",
-  "author": "Anomaly",
+  "author": "Shikari",
   "license": "AGPL-3.0-only",
   "version": "0.3.0",
   "entry": "plugin.dll",
