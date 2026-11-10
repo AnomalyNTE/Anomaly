@@ -509,6 +509,12 @@ target_compile_definitions(
 target_compile_options(anomaly_config PRIVATE /W4 /permissive- /EHsc)
 target_link_libraries(anomaly_config PUBLIC anomaly_i18n)
 
+add_library(anomaly_telemetry STATIC src/services/telemetry.cpp)
+target_include_directories(anomaly_telemetry PUBLIC include)
+target_compile_definitions(anomaly_telemetry PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_options(anomaly_telemetry PRIVATE /W4 /permissive- /EHsc)
+target_link_libraries(anomaly_telemetry PRIVATE winhttp bcrypt shell32 ole32 nlohmann_json::nlohmann_json)
+
 add_library(anomaly_bootstrap_client STATIC src/bootstrap/bootstrap_client.cpp)
 target_include_directories(anomaly_bootstrap_client PUBLIC include)
 target_compile_definitions(
@@ -1059,6 +1065,7 @@ target_compile_options(anomaly_core PRIVATE /W4 /permissive- /EHsc)
 # function-local static guards. These targets initialize their process-scoped
 # local statics on the lifecycle thread before publishing concurrent services.
 set(ANOMALY_MANUAL_MAP_TLS_FREE_TARGETS
+    anomaly_telemetry
     anomaly_blake3
     anomaly_pak_mod_catalog
     anomaly_core
@@ -1082,6 +1089,7 @@ endforeach()
 target_link_libraries(
     anomaly_core PRIVATE
     bcrypt d3dcompiler
+    anomaly_telemetry
     ue5mem_core anomaly_runtime_kernel anomaly_imgui anomaly_minhook_backend anomaly_ui_service
     anomaly_platform_ui_model
     anomaly_platform_settings
@@ -1197,6 +1205,93 @@ target_link_libraries(anomaly_test_host PRIVATE
 
 if(ANOMALY_BUILD_TEST_FIXTURES)
     enable_testing()
+    add_executable(anomaly_nte_tv_startup_fixture EXCLUDE_FROM_ALL
+        plugins/NteBetterTV/tests/nte_tv_startup_fixture.cpp plugins/NteBetterTV/audio_output.cpp
+        plugins/NteBetterTV/bilibili_source.cpp plugins/NteBetterTV/media_prepare.cpp
+        plugins/NteBetterTV/bilibili_api.cpp plugins/NteBetterTV/media_download.cpp
+        plugins/NteBetterTV/media_validate.cpp plugins/NteBetterTV/http_client.cpp
+        plugins/NteBetterTV/file_picker.cpp)
+    target_include_directories(anomaly_nte_tv_startup_fixture PRIVATE "${CMAKE_SOURCE_DIR}" include)
+    target_compile_definitions(anomaly_nte_tv_startup_fixture PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+    target_compile_options(anomaly_nte_tv_startup_fixture PRIVATE /utf-8 /EHsc)
+    target_link_libraries(anomaly_nte_tv_startup_fixture PRIVATE Anomaly::sdk nlohmann_json::nlohmann_json
+        mfplay mfreadwrite mfplat mfuuid propsys ole32 xaudio2 shell32 uuid user32 winhttp bcrypt)
+    add_test(NAME nte_tv_startup_isolation COMMAND anomaly_nte_tv_startup_fixture)
+    add_executable(anomaly_nte_tv_restore_fixture EXCLUDE_FROM_ALL
+        plugins/NteBetterTV/tests/nte_tv_restore_fixture.cpp plugins/NteBetterTV/audio_output.cpp
+        plugins/NteBetterTV/bilibili_source.cpp plugins/NteBetterTV/media_prepare.cpp
+        plugins/NteBetterTV/bilibili_api.cpp plugins/NteBetterTV/media_download.cpp
+        plugins/NteBetterTV/media_validate.cpp plugins/NteBetterTV/http_client.cpp
+        plugins/NteBetterTV/file_picker.cpp)
+    target_include_directories(anomaly_nte_tv_restore_fixture PRIVATE "${CMAKE_SOURCE_DIR}" include)
+    target_compile_definitions(anomaly_nte_tv_restore_fixture PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+    target_compile_options(anomaly_nte_tv_restore_fixture PRIVATE /utf-8 /EHsc)
+    target_link_libraries(anomaly_nte_tv_restore_fixture PRIVATE Anomaly::sdk nlohmann_json::nlohmann_json
+        mfplay mfreadwrite mfplat mfuuid propsys ole32 xaudio2 shell32 uuid user32 winhttp bcrypt)
+    add_test(NAME nte_tv_restore COMMAND anomaly_nte_tv_restore_fixture
+        "${CMAKE_SOURCE_DIR}/plugins/NteBetterTV/profile/compatibility.profile.json")
+    add_executable(anomaly_nte_tv_picker_fixture EXCLUDE_FROM_ALL
+        plugins/NteBetterTV/tests/nte_tv_picker_fixture.cpp plugins/NteBetterTV/file_picker.cpp)
+    target_include_directories(anomaly_nte_tv_picker_fixture PRIVATE "${CMAKE_SOURCE_DIR}")
+    target_compile_definitions(anomaly_nte_tv_picker_fixture PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+    target_compile_options(anomaly_nte_tv_picker_fixture PRIVATE /utf-8 /EHsc)
+    target_link_libraries(anomaly_nte_tv_picker_fixture PRIVATE ole32 shell32 uuid user32)
+    add_test(NAME nte_tv_picker_lifecycle COMMAND anomaly_nte_tv_picker_fixture)
+    set_tests_properties(nte_tv_picker_lifecycle PROPERTIES TIMEOUT 15)
+    add_executable(anomaly_nte_tv_audio_fixture EXCLUDE_FROM_ALL
+        plugins/NteBetterTV/tests/nte_tv_audio_fixture.cpp plugins/NteBetterTV/audio_output.cpp)
+    target_include_directories(anomaly_nte_tv_audio_fixture PRIVATE "${CMAKE_SOURCE_DIR}")
+    target_compile_definitions(anomaly_nte_tv_audio_fixture PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_compile_options(anomaly_nte_tv_audio_fixture PRIVATE /utf-8 /EHsc)
+    target_link_libraries(anomaly_nte_tv_audio_fixture PRIVATE mfplay mfreadwrite mfplat mfuuid propsys ole32 xaudio2)
+    add_executable(anomaly_nte_tv_link_fixture EXCLUDE_FROM_ALL
+        plugins/NteBetterTV/tests/nte_tv_link_fixture.cpp plugins/NteBetterTV/bilibili_source.cpp)
+    target_include_directories(anomaly_nte_tv_link_fixture PRIVATE "${CMAKE_SOURCE_DIR}")
+    target_compile_definitions(anomaly_nte_tv_link_fixture PRIVATE
+        NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+    target_compile_options(anomaly_nte_tv_link_fixture PRIVATE /utf-8 /W4 /permissive- /EHsc)
+    target_link_libraries(anomaly_nte_tv_link_fixture PRIVATE winhttp)
+    add_test(NAME nte_tv_bilibili_link COMMAND anomaly_nte_tv_link_fixture)
+    add_executable(anomaly_nte_tv_prepare_fixture EXCLUDE_FROM_ALL
+        plugins/NteBetterTV/tests/nte_tv_prepare_fixture.cpp
+        plugins/NteBetterTV/media_prepare.cpp plugins/NteBetterTV/bilibili_source.cpp
+        plugins/NteBetterTV/bilibili_api.cpp plugins/NteBetterTV/media_download.cpp
+        plugins/NteBetterTV/media_validate.cpp plugins/NteBetterTV/http_client.cpp)
+    target_include_directories(anomaly_nte_tv_prepare_fixture PRIVATE "${CMAKE_SOURCE_DIR}")
+    target_compile_definitions(anomaly_nte_tv_prepare_fixture PRIVATE
+        NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+    target_compile_options(anomaly_nte_tv_prepare_fixture PRIVATE /utf-8 /W4 /permissive- /EHsc)
+    target_link_libraries(anomaly_nte_tv_prepare_fixture PRIVATE
+        nlohmann_json::nlohmann_json winhttp shell32 ole32 bcrypt
+        mfplat mfreadwrite mfuuid)
+    add_test(NAME nte_tv_bilibili_prepare COMMAND anomaly_nte_tv_prepare_fixture
+        "${CMAKE_SOURCE_DIR}/plugins/NteBetterTV/tests/data")
+    add_executable(anomaly_nte_tv_bilibili_api_fixture EXCLUDE_FROM_ALL
+        plugins/NteBetterTV/tests/nte_tv_bilibili_api_fixture.cpp
+        plugins/NteBetterTV/bilibili_api.cpp plugins/NteBetterTV/bilibili_source.cpp
+        plugins/NteBetterTV/http_client.cpp)
+    target_include_directories(anomaly_nte_tv_bilibili_api_fixture PRIVATE "${CMAKE_SOURCE_DIR}")
+    target_compile_definitions(anomaly_nte_tv_bilibili_api_fixture PRIVATE
+        NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+    target_compile_options(anomaly_nte_tv_bilibili_api_fixture PRIVATE
+        /utf-8 /W4 /permissive- /EHsc)
+    target_link_libraries(anomaly_nte_tv_bilibili_api_fixture PRIVATE winhttp bcrypt)
+    add_test(NAME nte_tv_bilibili_api COMMAND anomaly_nte_tv_bilibili_api_fixture)
+    add_executable(anomaly_nte_tv_media_fixture EXCLUDE_FROM_ALL
+        plugins/NteBetterTV/tests/nte_tv_media_fixture.cpp
+        plugins/NteBetterTV/media_download.cpp plugins/NteBetterTV/media_validate.cpp
+        plugins/NteBetterTV/http_client.cpp)
+    target_include_directories(anomaly_nte_tv_media_fixture PRIVATE "${CMAKE_SOURCE_DIR}")
+    target_compile_definitions(anomaly_nte_tv_media_fixture PRIVATE
+        NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+    target_compile_options(anomaly_nte_tv_media_fixture PRIVATE
+        /utf-8 /W4 /permissive- /EHsc)
+    target_link_libraries(anomaly_nte_tv_media_fixture PRIVATE
+        winhttp shell32 ole32 mfplat mfreadwrite mfuuid)
+    add_test(NAME nte_tv_media COMMAND anomaly_nte_tv_media_fixture
+        "${CMAKE_SOURCE_DIR}/plugins/NteBetterTV/tests/data")
+    add_test(NAME nte_tv_video_localization COMMAND pwsh -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/check_plugin_i18n.ps1" -Plugin NteBetterTV)
     add_executable(anomaly_ue5_assets_fixture
         apps/test_host/ue5_assets_fixture.cpp apps/test_host/ue5_assets_c_fixture.c)
     target_link_libraries(anomaly_ue5_assets_fixture PRIVATE anomaly_adapter_services Anomaly::sdk)
@@ -1271,6 +1366,7 @@ target_compile_definitions(
 target_compile_options(anomaly_launcher PRIVATE /W4 /permissive- /EHsc)
 target_link_options(anomaly_launcher PRIVATE /MANIFESTUAC:NO /DELAYLOAD:dwmapi.dll)
 target_link_libraries(anomaly_launcher PRIVATE
+    anomaly_telemetry
     anomaly_config anomaly_imgui anomaly_launcher_configuration anomaly_launcher_proxy
     anomaly_launcher_release anomaly_manual_map
     anomaly_platform_notice anomaly_platform_settings anomaly_platform_ui_layout
@@ -1950,6 +2046,18 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/HiFiVehicleMusic/manifest.json
         PACKAGE_NAME HiFiVehicleMusic
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/HiFiVehicleMusic")
+    anomaly_add_plugin(anomaly_builtin_nte_better_tv
+        SOURCES plugins/NteBetterTV/plugin.cpp plugins/NteBetterTV/audio_output.cpp
+            plugins/NteBetterTV/bilibili_source.cpp plugins/NteBetterTV/media_prepare.cpp
+            plugins/NteBetterTV/bilibili_api.cpp plugins/NteBetterTV/media_download.cpp
+            plugins/NteBetterTV/media_validate.cpp plugins/NteBetterTV/http_client.cpp
+            plugins/NteBetterTV/file_picker.cpp
+        MANIFEST plugins/NteBetterTV/manifest.json
+        PACKAGE_NAME NteBetterTV
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteBetterTV")
+    target_link_libraries(anomaly_builtin_nte_better_tv PRIVATE
+        nlohmann_json::nlohmann_json mfplay mfreadwrite mfplat mfuuid propsys ole32 xaudio2
+        winhttp shell32 bcrypt)
     anomaly_add_plugin(anomaly_builtin_model_scale
         SOURCES plugins/ModelScale/plugin.cpp
         MANIFEST plugins/ModelScale/manifest.json
@@ -2079,7 +2187,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         anomaly_builtin_deserted anomaly_builtin_jelly anomaly_builtin_night999
         anomaly_builtin_npc_summon anomaly_builtin_training_dummy
         anomaly_builtin_summon_lab anomaly_builtin_memory_dump anomaly_builtin_nailong
-        anomaly_builtin_nte_combat_tracker)
+        anomaly_builtin_nte_better_tv anomaly_builtin_nte_combat_tracker)
 
     if(ANOMALY_BUILD_TEST_PLUGINS)
         list(APPEND ANOMALY_BUILTIN_PLUGIN_TARGETS
@@ -2113,6 +2221,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         target_compile_options(anomaly_builtin_ui_buttons PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_deserted PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_hifi_vehicle_music PRIVATE /utf-8)
+        target_compile_options(anomaly_builtin_nte_better_tv PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_night999 PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_npc_summon PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_nailong PRIVATE /utf-8)

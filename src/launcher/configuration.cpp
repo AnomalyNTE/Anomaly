@@ -14,6 +14,15 @@
 #include <utility>
 
 namespace anomaly::launcher {
+
+bool IsCustomLauncherBackground(PlatformUiPalette palette,
+    std::string_view background_path, bool enabled) {
+    if (!enabled || background_path.empty()) return false;
+    auto normalized = std::filesystem::path(std::u8string(background_path.begin(), background_path.end()))
+        .lexically_normal().generic_u8string();
+    for (auto& c : normalized) if (c >= u8'A' && c <= u8'Z') c = static_cast<char8_t>(c - u8'A' + u8'a');
+    return palette != PlatformUiPalette::Naiwa || normalized != u8"assets/images/naiwa-background.png";
+}
 namespace {
 
 constexpr std::uint64_t kMaximumConfigurationBytes = 64U * 1024U;
