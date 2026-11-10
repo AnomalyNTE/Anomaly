@@ -152,6 +152,20 @@ Pure pak files use `SkipContainerFile`; the presence of `.utoc` selects native I
 sizes do not determine the container type. The output entry transfers a strong reference that the
 Runtime releases after unmount or during shutdown. Every required signature step must succeed.
 
+Before mounting an IoStore mod, the Runtime compares its Blueprint, struct and enum serialization
+definitions with the currently mounted game containers, including parents, field order, array dimensions
+and nested types. An incompatible definition and its affected dependencies within the candidate container
+are retained from the game in a separate compatibility container. Other mod resources can still load.
+Retained package names are reported in mount status and logs; this policy has no mod-name or vehicle exceptions.
+Unreadable formats, inseparable new dependencies and unsupported optional packages are refused before mounting,
+preserving the existing mounted set for that pass. This inspection covers supported Zen package formats;
+legacy standalone pak files keep their existing path, and schema compatibility does not guarantee script behavior.
+
+Unmount drains async package loading on the Game thread, then removes the source before its compatibility
+container. Partial failures retain ownership for cleanup on a later pass and block new replacement mounts.
+Compatibility cache files are addressed by content and verified on reuse; existing files are never overwritten
+while the engine may still hold them.
+
 The cache hook samples ownership while holding the engine's cache lock. Existing signature tables use
 the original verifier. A confirmed null table goes through native completion, which obtains the read
 results and maintains queues/counters. Unreadable state uses the original function. The hook does not
@@ -175,6 +189,11 @@ This feature manages container mounts. Unmounting does not destroy loaded `UObje
 rebuild the Asset Registry, refresh materials/audio, or replace resident assets. A `mounted` state does
 not mean existing resources have been reloaded. Resident assets, outstanding asynchronous loads and full
 replacement behavior still need in-game validation. Restart when a clean resource replacement is needed.
+
+When ModManager refreshes a mesh, it preserves a dynamic material instance only when the slot mapping
+and material identity remain continuous. A different material uses the new mesh's defaults, preventing
+an old skin's textures from being carried to another model. Detached instances with no other compatible consumers keep their parent
+and textures so a failed transaction can restore the previous component bindings.
 
 The independent **Mod Manager** plugin and Launcher classify mods from `.pak` and `.utoc` directory indices.
 The classification has two levels: one group per character, and the skins inside it. Zero's base outfit and
@@ -202,6 +221,17 @@ Known conflicts introduced by manual configuration edits freeze only the conflic
 unrelated mods continue synchronizing and hot replacing. The status file lists affected mods in `conflicts`.
 Selecting a single variant resolves the conflict.
 
+**Load conflicting mods anyway** (switch at the top of the mods page; it writes `forceLoad` in
+`config/pak-mods.json`): exclusivity no longer stops two mods from being enabled together, and Runtime no longer
+freezes their mount changes because of resource conflicts. The engine's effective read priority selects overlapping
+resources. The switch does not change that priority or guarantee that the last selection or mount wins. For example,
+a vehicle replacement and a patch for its body textures can load together, but still need the correct resource priority.
+The switch does not merge their contents; textures and skeletons from different packages may still be incompatible.
+Turning it off restores exclusivity for subsequent enable operations. In hot mode, existing conflicting mounts stay
+in place and their changes freeze until a single variant is selected. In compatibility mode, turning it off does not
+rename already enabled files; select a variant again before starting the game.
+While it is on, hot-mode status lists affected mods under `forcedConflicts` and leaves `conflicts` empty.
+
 #### Mod folders: a mod or a category
 
 Folders under `~mods` are read by what they contain, never by their name:
@@ -224,6 +254,14 @@ would quietly turn off mods back on. Mods already in place stay where they are, 
 exists is skipped instead of merged. It also runs while the game is open: a folder the engine still holds
 open is skipped and reported, and one more pass after closing the game finishes it; a mod filed by hand
 under some other folder is moved to the folder its category names.
+
+After a manual folder move, each container with no saved selection for its current path inherits the selection
+saved for its mod's name: the folder name, or the `.pak` filename of a loose container. Multiple containers in
+one mod count as one mod. Current file or directory selections take precedence, and physically disabled files
+stay disabled. Inheritance requires a unique mod name across the complete directory tree; namesakes are not
+resolved by name. If historical locations disagree, OFF takes precedence so an old ON entry cannot reactivate
+the mod. An explicit selection, or an automatic disable due to a conflict, removes uniquely attributable old
+keys that no longer reach an existing mod and saves the selection at the current path.
 
 #### Category names
 

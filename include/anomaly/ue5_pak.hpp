@@ -1,5 +1,7 @@
 #pragma once
 
+#include "anomaly/ue5_mod_compatibility.hpp"
+
 #include "anomaly/symbol_resolver.hpp"
 
 #include <cstddef>
@@ -31,6 +33,7 @@ inline constexpr std::string_view kUe5PakPlatformFileManagerSymbol =
 inline constexpr std::string_view kUe5PakMountSymbol = "ue5.FPakPlatformFile.Mount";
 inline constexpr std::string_view kUe5PakMountWithStatusSymbol = "ue5.FPakPlatformFile.MountWithStatus";
 inline constexpr std::string_view kUe5PakUnmountSymbol = "ue5.FPakPlatformFile.Unmount";
+inline constexpr std::string_view kUe5PakFlushAsyncLoadingSymbol = "ue5.FlushAsyncLoading";
 inline constexpr std::string_view kUe5PakReleaseSymbol = "ue5.FPakFile.Release";
 inline constexpr std::string_view kUe5PakCacheLockKey = "pak.cacheLockOffset";
 // The game adds its own container gate that rejects an unsigned pak with
@@ -252,6 +255,7 @@ struct Ue5PakBinding {
     // explainable instead of just "rejected".
     std::uintptr_t mount_with_status{};
     std::uintptr_t unmount{};
+    std::uintptr_t flush_async_loading{};
     std::uintptr_t release{};
     // Optional: the byte that turns the game's "Missing signature" rejection into an accept.
     std::uintptr_t signature_gate{};
@@ -276,10 +280,12 @@ struct Ue5PakBinding {
     Ue5PakPrimeLayout prime;
     // Optional: the layout the block-cache verifier detour reads its attribution from.
     Ue5PakCacheVerifyLayout cache_verify_layout;
+    std::uintptr_t encryption_key_manager{}, try_encryption_key{}, uncompress_memory{}, name_from_enum{};
+    std::uint32_t compression_zlib{}, compression_gzip{}, compression_lz4{}, compression_oodle{};
 
     [[nodiscard]] bool Complete() const noexcept {
         return platform_file_manager != 0 && mount != 0 && mount_with_status != 0 &&
-            unmount != 0 && release != 0 &&
+            unmount != 0 && flush_async_loading != 0 && release != 0 &&
             manager_topmost_offset % sizeof(void*) == 0 &&
             lower_level_vtable_offset % sizeof(void*) == 0 &&
             name_vtable_offset % sizeof(void*) == 0 && signed_flag_offset != 0 &&
@@ -307,6 +313,9 @@ void RegisterUe5PakValidator(FeatureLayoutValidatorRegistry& validators);
 // instead of probing addresses.
 bool BindUe5Pak(const BuildProfile& profile, const ProfileResolutionSnapshot& resolution,
     Ue5PakBinding& binding, std::string& error, const SymbolMemory* memory = nullptr);
+
+// Worker-safe native codec calls, validated with the same active Profile as mounts.
+Ue5ContainerCodecs Ue5PakContainerCodecs(const Ue5PakBinding& binding);
 
 // Walks the platform file chain and returns the engine's FPakPlatformFile instance. Returns 0
 // while the engine has not built the chain yet, when no layer reports the name "PakFile", or when
@@ -337,6 +346,8 @@ std::optional<std::vector<Ue5MountedPakFile>> MountedUe5PakFiles(
 // Native calls have an SEH boundary; a fault can still leave engine-side partial changes.
 Ue5PakMountResult MountUe5Pak(const Ue5PakBinding& binding, std::uintptr_t pak_platform_file,
     const Ue5PakMountRequest& request) noexcept;
+// Flushes all pending async package requests. Call on the UE Game thread before unmounting.
+bool FlushUe5AsyncLoading(const Ue5PakBinding& binding) noexcept;
 bool UnmountUe5Pak(const Ue5PakBinding& binding, std::uintptr_t pak_platform_file,
     const std::wstring& pak_file) noexcept;
 // Drops the strong reference transferred through Mount's FPakListEntry output.

@@ -2755,6 +2755,7 @@ struct LauncherModSettingsCache final {
     bool initialized{};
     bool compatibility{true};
     bool bypass{};
+    bool force_load{};
 };
 
 LauncherModSettingsCache& RefreshLauncherModSettings(
@@ -2775,9 +2776,11 @@ LauncherModSettingsCache& RefreshLauncherModSettings(
             ? *loaded_settings : LauncherPakSettings(snapshot);
         cache.compatibility = anomaly::PakModCompatibilityMode(settings);
         cache.bypass = settings.value("enabled", true);
+        cache.force_load = anomaly::PakModForceLoad(settings);
     } catch (...) {
         cache.compatibility = true;
         cache.bypass = false;
+        cache.force_load = false;
     }
     return cache;
 }
@@ -3237,6 +3240,15 @@ bool LauncherWriteBypassEnabled(const LauncherSnapshot& snapshot, const bool ena
     });
 }
 
+// The master bypass decides whether mods load at all; this decides what the exclusivity does with a
+// mod that ships the same resources as another one. Off by default: two variants of one body are a
+// mixture nobody asked for, while a patch mod next to the mod it patches is exactly the point.
+bool LauncherWriteForceLoad(const LauncherSnapshot& snapshot, const bool enabled) {
+    return LauncherWritePakSettings(snapshot, [enabled](auto& document) {
+        document["forceLoad"] = enabled;
+    });
+}
+
 bool LauncherSetModEnabled(const LauncherSnapshot& snapshot, const LauncherModEntry& entry,
     const bool enabled) {
     const auto key = LauncherModStateKey(entry);
@@ -3256,7 +3268,7 @@ bool LauncherSetModEnabled(const LauncherSnapshot& snapshot, const LauncherModEn
                 return anomaly::NormalizePakModKey(row.key) == anomaly::NormalizePakModKey(key);
             });
             if (selected == catalog.end()) return false;
-            if (enabled) {
+            if (enabled && !anomaly::PakModForceLoad(settings)) {
                 std::vector<LauncherModEntry> all;
                 LauncherRefreshMods(snapshot, all);
                 for (const auto& other : catalog) if (anomaly::PakModsConflict(*selected, other)) {
@@ -3437,8 +3449,9 @@ bool LauncherFinishModWrite(const LauncherSnapshot& snapshot, const LauncherModE
     const bool enable_after) {
     try {
         const bool compatibility = LauncherCompatibilityMode(snapshot);
-        if (compatibility && enable_after) {
-            const auto catalog = anomaly::ReadPakModCatalog(LauncherModsDirectory(snapshot), LauncherPakSettings(snapshot));
+        const auto settings = LauncherPakSettings(snapshot);
+        if (compatibility && enable_after && !anomaly::PakModForceLoad(settings)) {
+            const auto catalog = anomaly::ReadPakModCatalog(LauncherModsDirectory(snapshot), settings);
             const auto selected = std::find_if(catalog.begin(), catalog.end(), [&](const auto& row) {
                 return anomaly::NormalizePakModKey(row.key) == anomaly::NormalizePakModKey(LauncherModStateKey(target));
             });
@@ -5419,6 +5432,7 @@ void DrawModsMode(
         } catch (...) {
             mod_settings.compatibility = true;
             mod_settings.bypass = false;
+            mod_settings.force_load = false;
         }
         LauncherRefreshMods(snapshot, mods, &settings);
         for (auto& entry : mods) entry.selected = selected_names.count(LauncherModStateKey(entry)) != 0;
@@ -5456,6 +5470,24 @@ void DrawModsMode(
     if (LauncherChip(Text(translator, anomaly::MessageId::LauncherModsOrganize))) {
         import_message = LauncherOrganizeMessage(LauncherOrganizeModFolders(snapshot, mods));
         refresh_mods();
+    }
+    // The exclusivity of the mods page: a patch that ships the same body as the mod it patches is a
+    // conflict by resource, and this is how the player says "load both anyway". It sits with the
+    // page-wide commands rather than on a row, because it applies to the whole selection.
+    ImGui::SameLine();
+    {
+        bool force_load = mod_settings.force_load;
+        ImGui::BeginDisabled(snapshot.game_directory.empty());
+        if (anomaly::glass::Switch(Text(translator, anomaly::MessageId::LauncherModsForceLoad), &force_load)) {
+            if (LauncherWriteForceLoad(snapshot, force_load)) {
+                mod_settings.force_load = force_load;
+                import_message.clear();
+                refresh_mods();
+            } else {
+                import_message = Text(translator, anomaly::MessageId::SettingsSaveFailed);
+            }
+        }
+        ImGui::EndDisabled();
     }
     ImGui::SameLine();
     if (check_running) {

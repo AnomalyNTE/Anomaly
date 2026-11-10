@@ -186,12 +186,15 @@ public:
                         if (component.post_instance) tx.Pin(component.post_instance);
                         for (const auto instance : component.linked) if (instance) tx.Pin(instance);
                         tx.components.push_back(std::move(component));
+                    } else {
+                        for (const auto material : component.materials)
+                            if (candidate_dynamic_materials.contains(material)) tx.unchanged_material_consumers.insert(material);
                     }
                 }
             }
             for (const auto material : candidate_dynamic_materials) {
                 Object object;
-                if (!ReadObject(material, object) || !n_->IsA(object.type, dynamic_class)) continue;
+                if (!ReadObject(material, object) || !Derived(object.type, dynamic_class)) continue;
                 const auto parent = ObjectField(material, "Parent");
                 auto textures = TextureParameters(material);
                 if (identity.contains(parent) || std::any_of(textures.begin(), textures.end(),
@@ -307,7 +310,7 @@ private:
     struct MaterialSlot { uintptr_t material{}; uint64_t name{}; };
     struct ParameterInfo { uint64_t name{}; uint8_t association{}; uint8_t padding[3]{}; int32_t index{}; };
     struct TextureParameter { ParameterInfo info; uintptr_t texture{}; };
-    struct DynamicMaterial { Handle handle{}; uintptr_t object{}, parent{}; std::vector<TextureParameter> textures; uintptr_t updated_parent{}; };
+    struct DynamicMaterial { Handle handle{}; uintptr_t object{}, parent{}; std::vector<TextureParameter> textures; uintptr_t updated_parent{}; bool update_textures{true}; };
     struct CharacterAnimationRefresh { Handle actor{}, function{}; uintptr_t object{}; };
     struct WheelSetupRef { uintptr_t address{}, wheel_class{}; };
     struct WheelSetupChange { uintptr_t owner{}, address{}, original{}, replacement{}; };
@@ -319,6 +322,7 @@ private:
         std::vector<PackageEntry> packages;
         std::vector<Component> components;
         std::vector<DynamicMaterial> dynamic;
+        std::unordered_set<uintptr_t> unchanged_material_consumers;
         std::vector<CharacterAnimationRefresh> character_animation_refreshes;
         std::vector<ChildActorChange> child_actors;
         std::vector<WheelSetupChange> wheel_setups;
@@ -711,9 +715,15 @@ inline std::vector<VisualReload::MaterialSlot> VisualReload::MeshMaterials(uintp
 
 inline void VisualReload::PrepareConsumers(Transaction& tx, const ReplacementMap& map, uintptr_t dynamic_class) {
     std::unordered_map<uintptr_t, uintptr_t> requested_parents;
+    std::unordered_set<uintptr_t> incompatible_dynamic_materials;
     std::unordered_set<uint64_t> refreshed_actors;
     uintptr_t ability_character_class{};
-    for (auto& material : tx.dynamic) material.updated_parent = map.Find(material.parent);
+    for (auto& material : tx.dynamic) {
+        material.updated_parent = map.Find(material.parent);
+        // A MID shared with an unaffected component still needs its compatible texture reload.
+        if (tx.unchanged_material_consumers.contains(material.object))
+            requested_parents.emplace(material.object, material.updated_parent ? material.updated_parent : material.parent);
+    }
     for (auto& component : tx.components) {
         component.updated_anim_class = map.Find(component.anim_class);
         component.updated_post_class = map.Find(component.post_class);
@@ -747,37 +757,66 @@ inline void VisualReload::PrepareConsumers(Transaction& tx, const ReplacementMap
             for (size_t i = 0; i < component.materials.size(); ++i) {
                 const auto original = component.materials[i];
                 if (!original) continue;
+                const bool dynamic = n_->IsA(original, dynamic_class);
                 auto destination = i;
+                bool same_slot = i < old_slots.size() && old_slots.size() == new_slots.size();
                 if (i < old_slots.size() && old_slots[i].name) {
                     const auto match = std::find_if(new_slots.begin(), new_slots.end(), [&](const auto& slot) { return slot.name == old_slots[i].name; });
-                    if (match != new_slots.end()) destination = static_cast<size_t>(match - new_slots.begin());
+                    same_slot = match != new_slots.end() &&
+                        std::count_if(old_slots.begin(), old_slots.end(), [&](const auto& slot) { return slot.name == old_slots[i].name; }) == 1 &&
+                        std::count_if(new_slots.begin(), new_slots.end(), [&](const auto& slot) { return slot.name == old_slots[i].name; }) == 1;
+                    if (same_slot) destination = static_cast<size_t>(match - new_slots.begin());
                 }
-                if (destination >= new_slots.size()) continue;
+                if (!same_slot || destination >= new_slots.size()) {
+                    if (dynamic) incompatible_dynamic_materials.insert(original);
+                    continue;
+                }
                 auto replacement = map.Find(original);
                 if (!replacement) replacement = original;
-                const bool dynamic = n_->IsA(original, dynamic_class);
                 const auto parent = dynamic ? ObjectField(original, "Parent") : 0;
                 const bool follows_slot = i < old_slots.size() &&
                     (original == old_slots[i].material || (parent && parent == old_slots[i].material));
-                if (follows_slot) {
-                    const auto target = new_slots[destination].material;
-                    if (dynamic && target) {
+                const auto target = new_slots[destination].material;
+                if (dynamic) {
+                    const auto replacement_parent = map.Find(parent);
+                    if (!target || (target != parent && target != replacement_parent)) {
+                        // A per-component MID belongs to its parent material. Do not carry its
+                        // texture overrides onto a different material merely because the slot name matches.
+                        incompatible_dynamic_materials.insert(original);
+                        replacement = target;
+                    } else {
                         const auto [it, inserted] = requested_parents.emplace(original, target);
                         if (!inserted && it->second != target) {
                             detail_ = n_->Name(original + n_->l.ObjectName); throw Unsupported{};
                         }
                         auto entry = std::find_if(tx.dynamic.begin(), tx.dynamic.end(), [&](const auto& value) { return value.object == original; });
                         if (entry == tx.dynamic.end()) {
-                            DynamicMaterial value{HandleOf(original), original, parent, TextureParameters(original), target};
+                            DynamicMaterial value{HandleOf(original), original, parent, TextureParameters(original),
+                                target == parent ? 0 : target};
                             ValidateTextures(value.handle); tx.Pin(original); tx.dynamic.push_back(std::move(value));
-                        } else entry->updated_parent = target;
+                        } else entry->updated_parent = target == parent ? 0 : target;
                         replacement = original; // Preserve the live MID's scalar/vector overrides.
-                    } else replacement = target;
+                    }
+                } else if (follows_slot) {
+                    replacement = target;
+                } else if (target != old_slots[i].material && target != map.Find(old_slots[i].material)) {
+                    replacement = target;
                 }
                 component.updated_materials[destination] = replacement;
             }
+        } else {
+            for (const auto material : component.materials) if (material && n_->IsA(material, dynamic_class)) {
+                const auto parent = ObjectField(material, "Parent");
+                const auto updated = map.Find(parent);
+                requested_parents.emplace(material, updated ? updated : parent);
+            }
         }
         for (const auto material : component.materials) if (material) tx.Pin(material);
+    }
+    for (auto& material : tx.dynamic) if (incompatible_dynamic_materials.contains(material.object) &&
+        !requested_parents.contains(material.object)) {
+        material.updated_parent = 0;
+        material.update_textures = false;
     }
     // Rollback must also retain dependencies belonging only to the disabled mod.
     for (const auto& material : tx.dynamic) {
@@ -1025,7 +1064,7 @@ inline void VisualReload::ApplyConsumers(Transaction& tx, const ReplacementMap& 
             const auto target = restore ? value.parent : value.updated_parent;
             if (!SetParent(parent_, value.object, target) || ObjectField(value.object, "Parent") != target) throw Failure{};
         }
-        for (const auto& texture : value.textures) if (const auto replacement = map.Find(texture.texture)) {
+        if (value.update_textures) for (const auto& texture : value.textures) if (const auto replacement = map.Find(texture.texture)) {
             TextureParameter p{texture.info, restore ? texture.texture : replacement};
             const std::array<Parameter, 2> shape{{{"ParameterInfo", "StructProperty", 0, sizeof(ParameterInfo), {}, "/Script/Engine.MaterialParameterInfo"},
                 {"Value", "ObjectProperty", sizeof(ParameterInfo), sizeof(uintptr_t), "/Script/Engine.Texture"}}};

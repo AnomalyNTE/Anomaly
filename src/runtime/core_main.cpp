@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cwctype>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -650,6 +651,42 @@ DWORD PreparePakMods(
             const anomaly::LiveSymbolMemory memory(memory_services);
             return anomaly::FindUe5PakPlatformFile(binding, memory);
         };
+        const auto compatibility = std::make_shared<anomaly::Ue5ModCompatibility>();
+        const auto compatibility_directory = context->runtime_root / L"cache" / L"mod-compatibility";
+        const auto path_key = [](const std::filesystem::path& path) {
+            auto key = std::filesystem::absolute(path).lexically_normal().generic_wstring();
+            std::transform(key.begin(), key.end(), key.begin(),
+                [](wchar_t value) { return static_cast<wchar_t>(std::towlower(value)); });
+            return key;
+        };
+        auto compatibility_mod_root = path_key(options.mod_directory);
+        if (!compatibility_mod_root.ends_with(L'/')) compatibility_mod_root += L'/';
+        auto compatibility_cache_root = path_key(compatibility_directory);
+        if (!compatibility_cache_root.ends_with(L'/')) compatibility_cache_root += L'/';
+        const auto compatibility_base = options.engine_base_directory;
+        options.prepare_compatibility = [bind, memory_services, compatibility, compatibility_directory,
+            compatibility_mod_root, compatibility_cache_root, compatibility_base, path_key](const std::filesystem::path& candidate) {
+            anomaly::Ue5PakBinding binding{};
+            if (!bind(binding)) throw std::runtime_error("pak compatibility binding unavailable");
+            const anomaly::LiveSymbolMemory memory(memory_services);
+            const auto engine = anomaly::FindUe5PakPlatformFile(binding, memory);
+            const auto mounted = anomaly::MountedUe5PakFiles(binding, engine, memory);
+            if (!mounted) throw std::runtime_error("mounted game package baseline unavailable");
+            const auto candidate_key = path_key(candidate);
+            std::vector<std::filesystem::path> official;
+            for (const auto& item : *mounted) {
+                auto path = std::filesystem::path(item.filename);
+                if (path.is_relative()) path = compatibility_base / path;
+                path = std::filesystem::absolute(path).lexically_normal();
+                // Windows spelling differences must not let a mounted mod become its own baseline.
+                const auto key = path_key(path);
+                if (key.starts_with(compatibility_mod_root) || key.starts_with(compatibility_cache_root) ||
+                    key == candidate_key) continue;
+                official.push_back(std::move(path));
+            }
+            return compatibility->Prepare(candidate, official, compatibility_directory,
+                anomaly::Ue5PakContainerCodecs(binding));
+        };
         options.mount_pak = [bind](
             const std::uintptr_t engine,
             const anomaly::Ue5PakMountRequest& request) -> anomaly::PakModMountOutcome {
@@ -673,11 +710,28 @@ DWORD PreparePakMods(
             }
             return outcome;
         };
-        options.unmount_pak = [bind](
+        const auto runtime_session = context->session;
+        options.unmount_pak = [bind, runtime_session](
             const std::uintptr_t engine, const std::wstring& pak_file) {
             anomaly::Ue5PakBinding binding{};
             if (!bind(binding)) return false;
-            return anomaly::UnmountUe5Pak(binding, engine, pak_file);
+            const auto session = runtime_session.lock();
+            if (session == nullptr) return false;
+            auto& dispatchers = session->Dispatchers();
+            if (dispatchers.BoundThread(anomaly::ExecutionDomain::Game) == std::thread::id{})
+                return false;
+
+            bool unmounted{};
+            // FlushAsyncLoading is a Game-thread barrier. Wait without a timeout so an invocation
+            // that has started cannot unmount after the watcher has recorded a failed release.
+            const DWORD invoke_result = dispatchers.Invoke(
+                anomaly::ExecutionDomain::Game,
+                [binding, engine, path = pak_file, &unmounted] {
+                    if (!anomaly::FlushUe5AsyncLoading(binding)) return;
+                    unmounted = anomaly::UnmountUe5Pak(binding, engine, path);
+                },
+                std::chrono::milliseconds::max());
+            return invoke_result == ERROR_SUCCESS && unmounted;
         };
         options.mounted_files = [bind, memory_services](const std::uintptr_t engine)
             -> std::optional<std::vector<anomaly::Ue5MountedPakFile>> {
