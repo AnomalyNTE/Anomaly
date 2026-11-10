@@ -6,8 +6,8 @@
 // exercised without touching the network. The media URL safety predicate and
 // the offline part of the WinHTTP client are covered as well.
 
-#include "plugins/NteTvVideo/bilibili_api.hpp"
-#include "plugins/NteTvVideo/http_client.hpp"
+#include "plugins/NteBetterTV/bilibili_api.hpp"
+#include "plugins/NteBetterTV/http_client.hpp"
 
 #include <array>
 #include <cstddef>

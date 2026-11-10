@@ -3,11 +3,11 @@
 // The download side runs against a scripted in-memory HttpMediaStream, so the
 // whole transfer path (chunking, size limits, cancellation, cleanup) is
 // exercised offline. The validation side runs Media Foundation against the
-// fixed MP4 files under plugins/NteTvVideo/tests/data. Assertions only use the public
+// fixed MP4 files under plugins/NteBetterTV/tests/data. Assertions only use the public
 // results and independently computed expectations.
 
-#include "plugins/NteTvVideo/media_download.hpp"
-#include "plugins/NteTvVideo/media_validate.hpp"
+#include "plugins/NteBetterTV/media_download.hpp"
+#include "plugins/NteBetterTV/media_validate.hpp"
 
 #include <Windows.h>
 
@@ -583,7 +583,7 @@ void TestCorruptMedia(const std::filesystem::path& temporary) {
 int main(int argc, char** argv) {
     const std::wstring supplied = argc > 1 ? Widen(argv[1]) : std::wstring{};
     const std::filesystem::path data_directory =
-        supplied.empty() ? std::filesystem::path(L"plugins/NteTvVideo/tests/data")
+        supplied.empty() ? std::filesystem::path(L"plugins/NteBetterTV/tests/data")
                          : std::filesystem::path(supplied);
     const std::filesystem::path temporary = CreateTempDirectory();
     if (temporary.empty()) {

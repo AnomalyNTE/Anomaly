@@ -1,4 +1,4 @@
-#include "plugins/NteTvVideo/audio_output.hpp"
+#include "plugins/NteBetterTV/audio_output.hpp"
 
 #include <chrono>
 #include <iostream>

@@ -1,4 +1,4 @@
-// NTE Better TV: replaces the residence TV video source with a local video.
+// Better TV: replaces the residence TV video source with a local video.
 //
 // The residence TV (BP_FurnitureActorBase_TV_C) plays CRI Mana movies through
 // MovieAudioPlayerComponent. Each program switch calls SetVideoFilePath(FString);
@@ -59,7 +59,7 @@ constexpr std::size_t kMaxNameBytes = 256;
 // The bilibili link input keeps its own edited copy until the user parses it.
 constexpr std::size_t kMaxLinkChars = 1024;
 
-constexpr std::string_view kConfigSchemaId = "anomaly.nte-tv-video.settings";
+constexpr std::string_view kConfigSchemaId = "shikari.nte-better-tv.settings";
 constexpr std::uint32_t kConfigSchemaVersion = 1;
 constexpr std::string_view kConfigSchemaJson =
     R"({"type":"object","properties":{"enabled":{"type":"boolean"},)"
@@ -2552,7 +2552,7 @@ void DrawTelevisions(Context& context, const AnomalyUiServiceV1* ui) {
 void Draw(void* plugin_context, const AnomalyUiServiceV1* ui_v1) {
     auto* context = static_cast<Context*>(plugin_context);
     if (context == nullptr || ui_v1 == nullptr || context->ui == nullptr) return;
-    const std::string title = context->localizer.Text("window.title", "NTE Better TV");
+    const std::string title = context->localizer.Text("window.title", "Better TV");
     anomaly::sdk::UiWindow window(context->ui, title);
     if (!window) return;
 
@@ -2847,7 +2847,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     *descriptor = {sizeof(*descriptor),
                    ANOMALY_PLUGIN_API_V1_MAJOR,
                    ANOMALY_PLUGIN_API_V1_MINOR,
-                   anomaly::sdk::StringView("shikari.nte-tv-video"),
+                   anomaly::sdk::StringView("shikari.nte-better-tv"),
                    anomaly::sdk::StringView("Better TV"),
                    anomaly::sdk::StringView("Shikari"),
                    anomaly::sdk::StringView("0.3.0"),

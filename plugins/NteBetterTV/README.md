@@ -1,4 +1,4 @@
-# NTE Better TV
+# Better TV
 
 把《异环》住宅电视播放的视频替换为本地视频。插件只接管住宅电视
 （`BP_FurnitureActorBase_TV_C`），影院、剧情、技能、房间邀请等其它视频保持游戏原样。
@@ -123,7 +123,7 @@
 
 ## 测试源码归属
 
-住宅电视专用 fixture 位于 `plugins/NteTvVideo/tests/`，专用视频素材位于其 `data/` 子目录。
+住宅电视专用 fixture 位于 `plugins/NteBetterTV/tests/`，专用视频素材位于其 `data/` 子目录。
 构建注册仍集中在根 CMakeLists.txt，原 target 和 CTest 名称保持不变，测试不进入发布包。
 恢复 fixture 同时验证手动选择、候选重排、过期身份、跨世界清理及多电视音频事件隔离。
 `nte_tv_picker_lifecycle` 验证真实文件对话框的排队取消、打开后取消和线程回收；运行时会短暂显示对话框。

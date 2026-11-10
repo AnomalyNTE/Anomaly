@@ -6,7 +6,7 @@
 // canonical URL, cache key, error class and the fetched chain); they never
 // re-implement the parser's own matching rules.
 
-#include "plugins/NteTvVideo/bilibili_source.hpp"
+#include "plugins/NteBetterTV/bilibili_source.hpp"
 
 #include <cstdint>
 #include <iostream>

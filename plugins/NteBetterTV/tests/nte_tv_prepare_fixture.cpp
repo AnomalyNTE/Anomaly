@@ -23,7 +23,7 @@
 // the artifact itself, its cache placement and its Media Foundation validation
 // are produced by production code. Fixture links use the form
 // "prep:<bvid>:p<page>" and the API documents are plain JSON.
-#include "plugins/NteTvVideo/media_prepare.hpp"
+#include "plugins/NteBetterTV/media_prepare.hpp"
 
 #include <Windows.h>
 #include <ShlObj.h>
@@ -1506,7 +1506,7 @@ int RunFixture(const std::wstring& data_directory) {
 int main() {
     const std::vector<std::wstring> arguments = Arguments();
     const std::wstring data_directory =
-        arguments.size() > 1 ? arguments[1] : std::wstring(L"plugins/NteTvVideo/tests/data");
+        arguments.size() > 1 ? arguments[1] : std::wstring(L"plugins/NteBetterTV/tests/data");
     // The plugin resolves the default cache directory through the shell and the
     // fixture checks it; a shell apartment is harmless for the Media Foundation
     // worker threads, which initialize COM on their own threads.

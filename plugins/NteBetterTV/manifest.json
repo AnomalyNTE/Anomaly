@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "id": "shikari.nte-tv-video",
+  "id": "shikari.nte-better-tv",
   "name": "Better TV",
   "description": "Replaces the video played on the residence TV with a local custom video or a Bilibili link.",
   "author": "Shikari",

@@ -1,4 +1,4 @@
-#include "plugins/NteTvVideo/plugin.cpp"
+#include "plugins/NteBetterTV/plugin.cpp"
 #include <iostream>
 #include <stdexcept>
 

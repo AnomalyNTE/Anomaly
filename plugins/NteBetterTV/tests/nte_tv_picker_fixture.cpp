@@ -1,4 +1,4 @@
-#include "plugins/NteTvVideo/file_picker.hpp"
+#include "plugins/NteBetterTV/file_picker.hpp"
 #include <chrono>
 #include <iostream>
 #include <thread>
