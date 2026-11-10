@@ -5,7 +5,7 @@
   "description": "Deserted: once enabled, crowd and vehicle spawning stops, without affecting the stationary NPCs.",
   "author": "WawMew",
   "license": "AGPL-3.0-only",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "entry": "plugin.dll",
   "api": {
     "major": 1,

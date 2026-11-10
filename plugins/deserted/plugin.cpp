@@ -2,9 +2,17 @@
 // Anomaly 插件：空无一人（一键把人群密度环境倍率压到近乎为 0）
 //    勾选：读取当前 昼/夜/晴/雨/雪 环境倍率作为初值 → 全部置 0.01
 //    取消：恢复初值
-// 目标字段：HTMassCrowdSpawner（+0x458 DefaultDensityProfile、+0x478 DensityProfiles）
+// 目标字段：HTMassCrowdSpawner（默认档 +kDefaultProfileOffset、数组 +kDensityProfilesOffset）
 //          内 HTMassCrowdDensityProfile 的 +0x0C/+0x10/+0x14/+0x18/+0x1C（1.4b 起未变）。
 // 窗口热键固定 F8；开关热键可改键，默认未绑定。
+//
+// 兼容策略（游戏每次更新只会动这几处）：
+//   1. 版本无关的字段全部来自 Profile 的 layout 块；随版本变化的三处偏移放在 layout 符号的
+//      candidates[].values 里，签名命中时优先采用。
+//   2. 签名全部失配（补丁改了函数体）时，改由真实生成器对象的形状判定唯一候选：数组 TArray
+//      头、默认档 5 个倍率、车辆保底数量都必须自洽，且只有一个候选成立才生效；否则整插件
+//      停用并显示原因，绝不回退到代码里的数字。
+//   3. 天气切换/关卡刷新会让游戏重算密度，所以勾选期间按慢周期重新对齐（读-比-写）。
 
 #include "anomaly/sdk/cpp.hpp"
 #include "anomaly/sdk/services/platform.h"
@@ -12,11 +20,13 @@
 
 #include <windows.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string_view>
 
 namespace {
 
@@ -44,6 +54,10 @@ constexpr std::uint32_t kCondFirstUseEver = 4u;
 
 constexpr std::uint32_t kMaxProfiles = 16;
 constexpr int kMaxSpawners = 16;
+// 勾选期间按慢周期重新对齐：游戏在天气切换/关卡刷新时会重算密度。
+constexpr double kReapplySeconds = 1.0;
+// 扫描走完但仍缺目标（换关、布局待判定）时的重试周期。
+constexpr double kRetrySeconds = 2.0;
 const float kEmptyScales[5] = {0.01F, 0.01F, 0.01F, 0.01F, 0.01F};  // 空街值（昼/夜/晴/雨/雪）
 const float kDefaultScales[5] = {1.0F, 1.0F, 1.0F, 1.0F, 1.0F};     // 游戏默认环境倍率（兜底初值）
 
@@ -117,6 +131,8 @@ struct State {
     int baseline_valid{};
     int need_apply{};
     double validate_accum{};
+    double reapply_accum{};  // 勾选期间重新对齐的慢周期累计
+    double retry_accum{};    // 扫描走完但仍缺目标时的重试累计
 
     // 热键 / 窗口
     std::uint32_t hotkey{0};
@@ -316,14 +332,63 @@ bool IsSpawnerName(const char* name) {
     return std::strstr(name, "MassCrowdSpawner") != nullptr;
 }
 
-// 结构校验：密度 Profile 数组必须正常，防止索引过期指向别的对象
-bool IsSpawnerObject(std::uintptr_t addr) {
-    if (!LooksLikePointer(addr)) return false;
-    if (!ClassNameContains(addr, "MassCrowdSpawner")) return false;
+// ------------------------- 布局候选与对象形状 -----------------------------
+const deserted_profile::Candidate& ActiveCandidate() {
+    return deserted_profile::candidates[static_cast<std::size_t>(deserted_profile::selected_candidate)];
+}
+
+// 默认档的 5 个倍率：有限、0..1000。判定候选时还要求至少一个明显非零，因为写入后的空街值
+// （0.01）不能当作“这组偏移是对的”的证据。
+bool DefaultScalesSane(std::uintptr_t addr, std::uint32_t profile_offset, bool require_active_values) {
+    bool any = false;
+    for (int i = 0; i < 5; ++i) {
+        float value = -1.0F;
+        if (!SafeReadF32(addr + profile_offset + deserted_profile::base_layout.kScaleOffsets[i], &value)) return false;
+        if (!(value >= 0.0F) || value > 1000.0F) return false;  // NaN 在这里被拒
+        if (value > 0.2F) any = true;
+    }
+    return require_active_values ? any : true;
+}
+
+// 密度 Profile 数组：空数组必须是空指针，非空必须是 1..kMaxProfiles 且数据指针可读。
+bool DensityArraySane(std::uintptr_t addr, std::uint32_t profiles_offset) {
     std::uintptr_t data = 0;
-    if (!SafeReadPtr(addr + deserted_profile::native_layout.kDensityProfilesOffset, &data) || !LooksLikePointer(data)) return false;
-    const std::uint32_t num = SafeReadU32(addr + deserted_profile::native_layout.kDensityProfilesOffset + deserted_profile::native_layout.kArrayNumOffset);
-    return num > 0 && num <= kMaxProfiles;
+    if (!SafeReadPtr(addr + profiles_offset, &data)) return false;
+    const std::uint32_t num = SafeReadU32(addr + profiles_offset + deserted_profile::base_layout.kArrayNumOffset);
+    if (num == 0) return data == 0;
+    return num <= kMaxProfiles && LooksLikePointer(data);
+}
+
+bool ShapeMatchesCrowd(std::uintptr_t addr, const deserted_profile::Candidate& candidate,
+                       bool require_active_values) {
+    if (!LooksLikePointer(addr)) return false;
+    if (!DensityArraySane(addr, candidate.kDensityProfilesOffset)) return false;
+    return DefaultScalesSane(addr, candidate.kDefaultProfileOffset, require_active_values);
+}
+
+bool ShapeMatchesVehicle(std::uintptr_t addr, const deserted_profile::Candidate& candidate) {
+    if (!LooksLikePointer(addr)) return false;
+    const std::int32_t count = static_cast<std::int32_t>(
+        SafeReadU32(addr + deserted_profile::base_layout.kSpawnCountOffset));
+    float scale = 0.0F;
+    if (!SafeReadF32(addr + deserted_profile::base_layout.kSpawnScaleOffset, &scale)) return false;
+    if (count < 0 || count > 1000000) return false;
+    if (!(scale >= 0.0F) || scale > 100.0F) return false;
+    const std::int32_t min_active = static_cast<std::int32_t>(SafeReadU32(addr + candidate.kVehMinActiveOffset));
+    return min_active >= 0 && min_active <= 10000;
+}
+
+// 版本无关：只按类名收敛候选地址。
+bool IsCrowdSpawnerCandidate(std::uintptr_t addr) {
+    return LooksLikePointer(addr) && ClassNameContains(addr, "MassCrowdSpawner");
+}
+
+// 结构校验：布局选定后，用该候选的偏移核对真实对象，防止索引过期指向别的对象。
+bool IsSpawnerObject(std::uintptr_t addr) {
+    if (!deserted_profile::LayoutSelected()) return false;
+    if (!IsCrowdSpawnerCandidate(addr)) return false;
+    // 本插件写入空街值后这里必须仍然成立，否则勾选后目标会自己失效。
+    return ShapeMatchesCrowd(addr, ActiveCandidate(), false);
 }
 
 // --------------------------- 车辆生成器 --------------------------------------
@@ -334,14 +399,17 @@ bool IsVehicleSpawnerName(const char* name) {
     return std::strstr(name, "MassVehicleSpawner") != nullptr;
 }
 
-bool IsVehicleSpawnerObject(std::uintptr_t addr) {
+bool IsVehicleSpawnerCandidate(std::uintptr_t addr) {
     if (!LooksLikePointer(addr)) return false;
     if (!ClassNameContains(addr, "VehicleSpawner")) return false;  // 挡掉同名 UFunction
     if (ClassNameContains(addr, "SpawnDataGenerator")) return false;
-    const std::int32_t count = static_cast<std::int32_t>(SafeReadU32(addr + deserted_profile::native_layout.kSpawnCountOffset));
-    float scale = 0.0F;
-    if (!SafeReadF32(addr + deserted_profile::native_layout.kSpawnScaleOffset, &scale)) return false;
-    return count >= 0 && count <= 1000000 && scale >= 0.0F && scale <= 100.0F;
+    return true;
+}
+
+bool IsVehicleSpawnerObject(std::uintptr_t addr) {
+    if (!deserted_profile::LayoutSelected()) return false;
+    if (!IsVehicleSpawnerCandidate(addr)) return false;
+    return ShapeMatchesVehicle(addr, ActiveCandidate());
 }
 
 void ReadVehicleParams(std::uintptr_t addr, int* count, float* scale, int* min_active) {
@@ -475,24 +543,73 @@ void ResetScan() {
     s.walk_done = 0;
     s.walk_cursor = 0;
     s.walk_total = 0;
+    s.retry_accum = 0.0;
+    s.reapply_accum = 0.0;
     s.need_apply = (s.checked != 0) ? 1 : 0;  // 换关后重新应用（只在勾选状态下有意义）
+}
+
+// 候选布局判定：签名全失配时用真实对象做证据，只有唯一候选自洽才采用，否则不猜。
+bool SelectLayoutFromObjects(const std::uintptr_t* crowd, int crowd_count,
+                             const std::uintptr_t* vehicles, int vehicle_count) {
+    int winner = -1;
+    int matches = 0;
+    for (std::size_t i = 0; i < deserted_profile::candidate_count; ++i) {
+        const deserted_profile::Candidate& candidate = deserted_profile::candidates[i];
+        int score = 0;
+        for (int k = 0; k < crowd_count; ++k) {
+            // 判定候选时要求默认档仍是游戏原始值，空街值不能反过来当作证据。
+            if (ShapeMatchesCrowd(crowd[k], candidate, true)) ++score;
+        }
+        for (int k = 0; k < vehicle_count; ++k) {
+            if (ShapeMatchesVehicle(vehicles[k], candidate)) ++score;
+        }
+        if (score == 0) continue;
+        ++matches;
+        winner = static_cast<int>(i);
+    }
+    if (matches != 1 || winner < 0) return false;
+    return deserted_profile::SelectCandidate(static_cast<std::size_t>(winner));
 }
 
 void ResolveFoundObjects() {
     State& s = g_state;
-    int n = 0;
-    for (int i = 0; i < s.spawner_found && n < kMaxSpawners; ++i) {
+    std::uintptr_t crowd[kMaxSpawners]{};
+    std::uintptr_t vehicles[kMaxSpawners]{};
+    int crowd_found = 0;
+    int vehicles_found = 0;
+    for (int i = 0; i < s.spawner_found && crowd_found < kMaxSpawners; ++i) {
         const std::uintptr_t addr = IndexToAddress(s.spawner_index[i]);
-        if (!IsSpawnerObject(addr)) continue;
-        s.spawner[n++] = addr;
+        if (!IsCrowdSpawnerCandidate(addr)) continue;
+        // 跳过「本身是类」的对象（UClass / BlueprintGeneratedClass）
+        if (ClassNameContains(addr, "Class")) continue;
+        crowd[crowd_found++] = addr;
+    }
+    for (int i = 0; i < s.veh_found && vehicles_found < kMaxSpawners; ++i) {
+        const std::uintptr_t addr = IndexToAddress(s.veh_index[i]);
+        if (!IsVehicleSpawnerCandidate(addr)) continue;
+        if (ClassNameContains(addr, "Class")) continue;
+        vehicles[vehicles_found++] = addr;
+    }
+    if (!deserted_profile::LayoutSelected() &&
+        !SelectLayoutFromObjects(crowd, crowd_found, vehicles, vehicles_found)) {
+        s.spawner_count = 0;
+        s.veh_count = 0;
+        s.need_apply = 0;
+        SetStatus(g_localizer.Text("status.layout_unverified",
+            "The crowd density layout could not be verified for this game build").c_str());
+        return;
+    }
+    int n = 0;
+    for (int i = 0; i < crowd_found; ++i) {
+        if (!IsSpawnerObject(crowd[i])) continue;
+        s.spawner[n++] = crowd[i];
     }
     s.spawner_count = n;
 
     int v = 0;
-    for (int i = 0; i < s.veh_found && v < kMaxSpawners; ++i) {
-        const std::uintptr_t addr = IndexToAddress(s.veh_index[i]);
-        if (!IsVehicleSpawnerObject(addr)) continue;
-        s.veh[v++] = addr;
+    for (int i = 0; i < vehicles_found; ++i) {
+        if (!IsVehicleSpawnerObject(vehicles[i])) continue;
+        s.veh[v++] = vehicles[i];
     }
     s.veh_count = v;
 
@@ -501,12 +618,15 @@ void ResolveFoundObjects() {
 }
 
 // 分片遍历对象表，找 HTMassCrowdSpawner 实例
-void AdvanceScan() {
+void AdvanceScan(double dt) {
     State& s = g_state;
     if (s.walk_done != 0 && s.spawner_count > 0 && s.veh_count > 0) return;
     if (s.sig_tried == 0) TryResolveGobjectsSlot();
     if (s.gobjects_slot == 0) return;
-    if (s.walk_done != 0) {  // 已走完：补齐缺失的一类
+    if (s.walk_done != 0) {  // 已走完但仍缺目标：换关或布局待判定时按慢周期重试
+        s.retry_accum += (dt > 0.0) ? dt : 0.0;
+        if (s.retry_accum < kRetrySeconds) return;
+        s.retry_accum = 0.0;
         ResolveFoundObjects();
         return;
     }
@@ -831,11 +951,20 @@ void DrawMain(const AnomalyUiServiceV1* ui) {
         ? g_localizer.Text("status.deserted", "Status: deserted")
         : g_localizer.Text("status.normal", "Status: normal");
     Text(ui, state_text.c_str());
-    if (s.spawner_count == 0) {
+    if (s.status[0] != '\0') {
+        Text(ui, s.status);
+    } else if (s.spawner_count == 0 && s.veh_count == 0) {
         Text(ui, g_localizer.Text("status.locating_spawners",
                                  "Locating the crowd spawners...").c_str());
-    } else if (s.status[0] != '\0') {
-        Text(ui, s.status);
+    } else {
+        char crowd_count[16]{};
+        char vehicle_count[16]{};
+        std::snprintf(crowd_count, sizeof(crowd_count), "%d", s.spawner_count);
+        std::snprintf(vehicle_count, sizeof(vehicle_count), "%d", s.veh_count);
+        const std::string targets = g_localizer.Format("status.targets",
+            "Located: {0} crowd spawners / {1} vehicles",
+            std::array<std::string_view, 2>{crowd_count, vehicle_count});
+        Text(ui, targets.c_str());
     }
 
     if (HAS(ui, separator)) ui->separator(ui->user);
@@ -989,7 +1118,7 @@ void ANOMALY_CALL Update(void* context, double delta_seconds) {
         s.struct_version = kStateVersion;
     }
 
-    AdvanceScan();
+    AdvanceScan(dt);
     ValidateTargets(dt);
     CaptureTick();
 
@@ -1016,9 +1145,18 @@ void ANOMALY_CALL Update(void* context, double delta_seconds) {
             s.need_apply = 0;
             if (s.spawner_count > 0) SyncScales(kEmptyScales);
             if (s.veh_count > 0) SyncVehicles(1);
+            s.reapply_accum = 0.0;
             return;
         }
-        return;  // 只写这一次，之后不再周期性检测/回写
+        // 天气切换/关卡刷新会让游戏重算密度，按慢周期再对齐一次；值没变时 SyncScales /
+        // SyncVehicles 只做读-比，不落写。
+        s.reapply_accum += dt;
+        if (s.reapply_accum >= kReapplySeconds) {
+            s.reapply_accum = 0.0;
+            if (s.spawner_count > 0) SyncScales(kEmptyScales);
+            if (s.veh_count > 0) SyncVehicles(1);
+        }
+        return;  // 其余时间不做逐帧检测
     }
 
     // 未勾选：恢复初值（只在确实置 0 过之后才写）
@@ -1041,7 +1179,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     }
     *descriptor = {sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
                    StringView("wawmew.deserted"), StringView("Deserted"),
-                   StringView("WawMew"), StringView("0.6.3"), Load, Start, Stop, Unload, Update,
+                   StringView("WawMew"), StringView("0.6.4"), Load, Start, Stop, Unload, Update,
                    Draw};
     return anomaly::sdk::Ok();
 }
