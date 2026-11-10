@@ -32,7 +32,7 @@ The plugin only reads data and does not modify game state. Use it to quickly con
 | **Required services** | `anomaly.ui`, `anomaly.config`; `anomaly.input`, `anomaly.json`, `anomaly.scheduler`, `anomaly.plugin-state`, `anomaly.nte.session/player/player-teleport` (all V1, optional) |
 | **Requires Profile** | Yes (player, session and the teleport bridge depend on validated symbols) |
 
-Crosshair teleport advances a preset distance along the current camera direction and clamps the target Z axis above the camera height plus a safety lift, so you do not land underground; forward teleport moves a preset distance along the horizontal facing. You can re-capture both hotkeys in the plugin window. Clicking **Import points** reads a point array from a JSON file path (relative paths resolve against the plugin's private state directory) and supports `color`, `name`, `x/y/z` and an optional `category`; when `category` is missing, the plugin derives the category from prefixes such as `1. Name`. The import result persists with the settings when the plugin is disabled.
+Crosshair teleport advances a preset distance along the current camera direction and clamps the target Z axis above the camera height plus a safety lift, so you do not land underground; forward teleport moves a preset distance along the horizontal facing. You can re-capture both hotkeys in the plugin window; a capture or an option edit is written to `anomaly.config` on the next tick (the host owns validation and the atomic replace) instead of waiting for the plugin to be disabled, and `on_stop` writes once more as a backstop. Clicking **Import points** reads a point array from a JSON file path (relative paths resolve against the plugin's private state directory) and supports `color`, `name`, `x/y/z` and an optional `category`; when `category` is missing, the plugin derives the category from prefixes such as `1. Name`. The import result persists with the settings when the plugin is disabled.
 
 ## 999 Nights Script
 
@@ -167,11 +167,13 @@ The extra draw distance defaults to `0`, which means the game default draw dista
 | | |
 | --- | --- |
 | **ID** | `mou-mou-sama.nte-free-fly` |
-| **Purpose** | Let the character move freely through the air and through walls: hold WASD to fly horizontally, Space to rise and Ctrl to descend; the toggle hotkey can be captured and saved in the panel. |
-| **Required services** | `anomaly.ui`, `anomaly.localization`, `anomaly.input`; `anomaly.config`, `anomaly.nte.session`, `anomaly.nte.player`, `anomaly.nte.player-teleport`, `anomaly.nte.player-hold` (all V1, optional) |
+| **Purpose** | Let the character move freely through the air and through walls: hold WASD to fly horizontally, Space to rise and Ctrl to descend; the toggle hotkey and both speeds are edited in the panel and kept across sessions by `anomaly.config`. |
+| **Required services** | `anomaly.ui`, `anomaly.localization`, `anomaly.input`; `anomaly.config`, `anomaly.json`, `anomaly.nte.session`, `anomaly.nte.player`, `anomaly.nte.player-teleport`, `anomaly.nte.player-hold` (all V1, optional) |
 | **Requires Profile** | Yes (player, session and the teleport bridge depend on validated symbols) |
 
 While flying, the plugin has exclusive control of the character: regular movement that is suppressed by the freeze is instead driven by the plugin with the same key set. Movement is placed through `anomaly.nte.player-teleport`, which the host executes with `bSweep=false` and without collision checks, so you can pass straight through walls; gravity freeze prefers the hold entry at the end of the `player` service table, with the standalone service as a fallback. When the camera direction is unavailable, `WASD` degrades to movement along the world axes. The toggle hotkey defaults to F6 and can be re-captured and persisted in the plugin window.
+
+The three panel settings (toggle hotkey, horizontal speed, vertical speed) share one `anomaly.config` document: the host owns the storage location, JSON Schema validation, the atomic replace and version migration, and the plugin only registers the schema and reads or writes the document. A slider drag produces no disk write while it lasts and writes once after it settles (about 0.4 s); a hotkey capture is a single action and writes immediately. The older schema v1 stored the hotkey alone; upgrading fills in both speeds through the host's migration channel and keeps the existing hotkey. When `anomaly.config` is unavailable the panel degrades to session-only settings and says so in place.
 
 Placement is triggered on demand (when there is input, or when the character deviates from the target by more than 15 centimeters), not every frame: host teleports go through ProcessEvent, and calling it every frame visibly drops frames. Disabling, `on_stop` and `on_unload` all `release` the hold, hand gravity back and turn control off, so no persistent change is left behind.
 

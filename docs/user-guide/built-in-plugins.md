@@ -115,7 +115,9 @@
 | **需要 Profile** | 是（玩家、会话与传送桥接依赖已验证符号） |
 
 准心传送沿当前相机朝向前进预设距离，并把目标 Z 轴钳制在相机高度加安全抬升之上，
-避免落到地下；向前传送沿水平朝向移动预设距离。两个快捷键都可以在插件窗口中重新捕获。
+避免落到地下；向前传送沿水平朝向移动预设距离。两个快捷键都可以在插件窗口中重新捕获，
+捕获和选项改动在下一帧就写入 `anomaly.config`（宿主负责校验与原子替换），不需要等到停用；
+停用时还会再写一次兜底。
 点击 **Import points** 会从 JSON 文件路径（相对路径基于插件私有状态目录）读取点位数组，
 支持 `color`、`name`、`x/y/z`，可选 `category`；缺少 `category` 时会按 `1. Name` 这类
 前缀派生分类。导入结果会在插件停用时随设置一起持久化。
@@ -323,14 +325,20 @@ pickup 调用只存在于插件内；宿主提供签名扫描、Game 回调、AH
 | | |
 | --- | --- |
 | **ID** | `mou-mou-sama.nte-free-fly` |
-| **作用** | 按住 WASD 水平飞行、空格上升、Ctrl 下降，让角色在空中自由移动并穿过墙体；开关快捷键可在面板里捕获并保存。 |
-| **依赖服务** | `anomaly.ui`、`anomaly.localization`、`anomaly.input`；`anomaly.config`、`anomaly.nte.session`、`anomaly.nte.player`、`anomaly.nte.player-teleport`、`anomaly.nte.player-hold`（均为 V1，可选） |
+| **作用** | 按住 WASD 水平飞行、空格上升、Ctrl 下降，让角色在空中自由移动并穿过墙体；开关快捷键与两条速度都在面板里改，并由 `anomaly.config` 跨会话保留。 |
+| **依赖服务** | `anomaly.ui`、`anomaly.localization`、`anomaly.input`；`anomaly.config`、`anomaly.json`、`anomaly.nte.session`、`anomaly.nte.player`、`anomaly.nte.player-teleport`、`anomaly.nte.player-hold`（均为 V1，可选） |
 | **需要 Profile** | 是（玩家、会话与传送桥接依赖已验证符号） |
 
 飞行期间角色由插件独占控制：被冻结抑制的常规移动改由插件按同一套按键驱动。位移通过
 `anomaly.nte.player-teleport` 落位，宿主以 `bSweep=false` 执行，不经过碰撞检测，因此可以直接
 穿过墙体；重力冻结优先走 `player` 服务表尾的 hold 入口，独立服务作为回退。相机朝向不可用时
 `WASD` 退化为沿世界坐标轴移动。开关快捷键默认 F6，可以在插件窗口里重新捕获并持久化。
+
+面板上的三项设置（开关快捷键、水平速度、垂直速度）共用一份 `anomaly.config` 文档：位置、
+JSON Schema 校验、原子替换与版本迁移全部由宿主完成，插件只注册 schema 并读写文档。滑杆
+在拖动期间不产生任何磁盘写入，松手后（数值停住约 0.4 秒）写一次；改键是单次操作，捕获后
+立即写。旧版（schema v1）只存了快捷键，升级时会经宿主的迁移通道补齐两条速度，原有快捷键
+保持不变。`anomaly.config` 不可用时整段降级为「仅本次会话生效」，面板会就地提示。
 
 落位是按需触发的（有输入、或角色偏离目标超过 15 厘米），不是逐帧：宿主传送走 ProcessEvent，
 逐帧调用会明显掉帧。停用、`on_stop` 与 `on_unload` 都会 `release` hold 交还重力并关闭控制，

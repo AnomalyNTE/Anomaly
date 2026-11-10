@@ -244,7 +244,10 @@ struct Context {
     PendingTeleport pending{};
     bool has_result{};
     bool current_position_unavailable{};
-    bool settings_dirty{};
+    // A settings write is pending. Draw (Render domain) only raises the flag; Update and
+    // on_stop do the write, because a Render callback must not touch the disk. The write
+    // itself belongs to the host's anomaly.config service.
+    std::atomic_bool settings_dirty{};
     std::uint32_t result_code{ANOMALY_STATUS_V1_UNAVAILABLE};
     char result_message[192]{};
     std::mutex mutex;
@@ -2209,6 +2212,14 @@ void ANOMALY_CALL Update(void* context, double) {
     }
 
     ProcessLandingMonitor(host);
+
+    // Persist a rebind or an option edit on the tick it happens. Writing only in on_stop
+    // loses the change whenever the game exits abruptly (crash, force kill); the host's
+    // anomaly.config service owns validation and the atomic replace, so this is only the
+    // moment to write.
+    if (g_context.settings_dirty.load(std::memory_order_relaxed)) {
+        static_cast<void>(SaveSettings());
+    }
 
     if (import_folder_selected) ScheduleFolderScan(g_context);
     if (import_file_selected) ScheduleImportFile(g_context);
