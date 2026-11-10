@@ -3,7 +3,7 @@
   "locale": "zh-CN",
   "messages": {
     "plugin.description": "把住宅电视播放的视频替换为本地自定义视频或哔哩哔哩链接（只改内存，不写游戏文件）。",
-    "window.title": "NTE更好的电视",
+    "window.title": "更好的电视",
     "option.enabled": "替换住宅电视视频",
     "option.media_player": "强制使用 MediaPlayer 管线（实验）",
     "action.browse": "选择视频...",
