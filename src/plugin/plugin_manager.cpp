@@ -4463,6 +4463,10 @@ void PluginManager::SetCallbackEvidenceObserver(
     callback_evidence_observer_ = std::move(observer);
 }
 
+void PluginManager::SetUsageObserver(std::function<void(std::vector<PluginUsageObservation>)> observer) {
+    usage_observer_ = std::move(observer);
+}
+
 std::vector<PluginStopDiagnostic> PluginManager::StopDiagnostics() const {
     std::scoped_lock lock(stop_diagnostics_mutex_);
     return stop_diagnostics_;
@@ -4748,6 +4752,14 @@ bool PluginManager::Activate(LoadedPlugin& plugin) {
     plugin.waiting_detail.clear();
     plugin.started = true;
     ReconcileWindowVisibility(plugin);
+    if (usage_observer_) {
+        // Preserve brief activations even if disabled before maintenance. Repeated
+        // toggles replace one entry; they never enqueue one dispatcher task each.
+        try {
+            if (pending_usage_.size() < 256 || pending_usage_.contains(plugin.view.id))
+                pending_usage_.insert_or_assign(plugin.view.id, std::chrono::system_clock::now());
+        } catch (...) {}
+    }
     Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO, "ABI v1 plugin started: " + plugin.view.id);
     return true;
 }
@@ -5604,6 +5616,25 @@ bool PluginManager::PerformanceDiagnosticsEnabled() const noexcept {
 
 PluginMaintenanceTiming PluginManager::MaintenancePluginState() {
     const ScopedLogThreadDomain log_domain(anomaly::LogThreadDomain::Worker);
+    // Publish copies from the existing serialized maintenance domain. Telemetry
+    // never reads PluginManager from a network thread or observes render callbacks.
+    const auto usage_now = std::chrono::steady_clock::now();
+    if (usage_observer_ && usage_now - last_usage_observation_ >= std::chrono::minutes(1)) {
+        last_usage_observation_ = usage_now;
+        try {
+            const auto observed_at = std::chrono::system_clock::now();
+            for (const auto& plugin : plugins_) {
+                if (plugin->started && !plugin->faulted && !plugin->waiting_for_service &&
+                    (pending_usage_.size() < 256 || pending_usage_.contains(plugin->view.id)))
+                    pending_usage_.insert_or_assign(plugin->view.id, observed_at);
+            }
+            std::vector<PluginUsageObservation> observations;
+            observations.reserve(pending_usage_.size());
+            for (const auto& [id, time] : pending_usage_) observations.push_back({id, time});
+            if (!observations.empty()) usage_observer_(std::move(observations));
+            pending_usage_.clear();
+        } catch (...) {}
+    }
     if (!PerformanceDiagnosticsEnabled()) {
         RetryWaitingForAdapterServices();
         PollForChanges();

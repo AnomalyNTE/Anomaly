@@ -34,6 +34,10 @@ struct LauncherThemeArtwork final {
     float surface_opacity{0.0f};
 };
 
+// Classifies the effective, enabled background without reporting its path.
+[[nodiscard]] bool IsCustomLauncherBackground(PlatformUiPalette palette,
+    std::string_view background_path, bool enabled);
+
 // How the launcher lays out its own pages. These are choices about this window -- the mods
 // grid, its pager and the download page filters -- so they are stored with the rest of the
 // launcher configuration instead of in a second file next to the payload.

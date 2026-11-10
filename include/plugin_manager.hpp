@@ -41,6 +41,11 @@ struct UiResourceWorkerGate;
 struct PluginCacheOwnerLease;
 struct NteEscMenuButtonRegistry;
 
+struct PluginUsageObservation {
+    std::string id;
+    std::chrono::system_clock::time_point observed_at;
+};
+
 struct CallbackMetricsView {
     std::uint64_t calls{};
     std::uint64_t faults{};
@@ -188,6 +193,9 @@ public:
         std::function<void(std::string_view, std::uint64_t)> canceller);
     void SetCallbackEvidenceObserver(
         std::function<void(const PluginCallbackEvidence&)> observer);
+    // Set before LoadAll. Coalesces successful starts and active plugins (including
+    // those without frame callbacks), at most once a minute. Must only enqueue.
+    void SetUsageObserver(std::function<void(std::vector<PluginUsageObservation>)> observer);
     [[nodiscard]] anomaly::PluginScope::CallbackLease AcquireCallback(
         std::string_view plugin_id, std::uint64_t generation) noexcept;
     [[nodiscard]] std::vector<PluginStopDiagnostic> StopDiagnostics() const;
@@ -384,6 +392,9 @@ private:
     std::shared_ptr<anomaly::UiResourceRenderBackend> ui_resource_render_backend_;
     std::function<void(std::string_view, std::uint64_t)> queued_callback_canceller_;
     std::function<void(const PluginCallbackEvidence&)> callback_evidence_observer_;
+    std::function<void(std::vector<PluginUsageObservation>)> usage_observer_;
+    std::unordered_map<std::string, std::chrono::system_clock::time_point> pending_usage_;
+    std::chrono::steady_clock::time_point last_usage_observation_{};
     mutable std::mutex stop_diagnostics_mutex_;
     std::vector<PluginStopDiagnostic> stop_diagnostics_;
 };
