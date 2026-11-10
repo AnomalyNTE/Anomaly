@@ -29,7 +29,7 @@
 namespace nte_tv_video {
 namespace {
 
-constexpr wchar_t kUserAgent[] = L"Anomaly-NteTvVideo/1.0";
+constexpr wchar_t kUserAgent[] = L"Anomaly-NteBetterTV/1.0";
 constexpr wchar_t kReferer[] = L"https://www.bilibili.com/";
 constexpr wchar_t kOrigin[] = L"https://www.bilibili.com";
 constexpr wchar_t kDefaultAccept[] = L"application/json, text/plain, */*";

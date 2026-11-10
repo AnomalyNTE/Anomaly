@@ -1049,7 +1049,7 @@ void CaseLifecycle() {
 void CasePaths() {
     const std::wstring cache = tv::DefaultMediaCacheDirectory();
     Check(!cache.empty(), "paths: the default cache directory is available");
-    Check(Lowercase(cache).find(L"\\anomaly\\ntetvvideo\\media-cache") != std::wstring::npos,
+    Check(Lowercase(cache).find(L"\\anomaly\\ntebettertv\\media-cache") != std::wstring::npos,
           "paths: the default cache directory uses the LocalAppData layout");
 }
 

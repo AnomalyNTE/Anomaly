@@ -550,7 +550,7 @@ std::wstring DefaultMediaCacheDirectory() {
     std::wstring path(local_app_data);
     CoTaskMemFree(local_app_data);
     if (path.empty()) return {};
-    return JoinPath(path, L"Anomaly\\NteTvVideo\\media-cache");
+    return JoinPath(path, L"Anomaly\\NteBetterTV\\media-cache");
 }
 
 }  // namespace nte_tv_video

@@ -116,7 +116,7 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-// %LOCALAPPDATA%\Anomaly\NteTvVideo\media-cache
+// %LOCALAPPDATA%\Anomaly\NteBetterTV\media-cache
 std::wstring DefaultMediaCacheDirectory();
 
 }  // namespace nte_tv_video

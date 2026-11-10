@@ -25,7 +25,7 @@
 namespace nte_tv_video {
 namespace {
 
-constexpr wchar_t kUserAgent[] = L"Anomaly-NteTvVideo/1.0";
+constexpr wchar_t kUserAgent[] = L"Anomaly-NteBetterTV/1.0";
 constexpr std::string_view kShortHost = "b23.tv";
 constexpr std::array<std::string_view, 3> kVideoHosts{
     "bilibili.com", "www.bilibili.com", "m.bilibili.com"};
