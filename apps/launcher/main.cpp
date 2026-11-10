@@ -7765,14 +7765,11 @@ void DrawSupportSettings(const anomaly::Translator& translator) {
         graphics.sponsor_width, graphics.sponsor_height);
     const ImVec2 kofi = SupportButtonSize(graphics.kofi,
         graphics.kofi_width, graphics.kofi_height);
-    // The pair is centred on the section and on one line, each picture centred vertically against the
-    // taller of the two: a left-aligned pair of different heights reads as a list, not as an offer.
+    // The pair sits on one line at the section's own left edge, so it starts where the heading and
+    // every row above it start. Each picture is still centred vertically against the taller of the
+    // two, because the cards are not the same height and a shared baseline would stagger them.
     const float row_height = (std::max)(afdian.y, kofi.y);
-    const float pair_width = afdian.x + kofi.x + Scale(12.0f);
     const float row_top = ImGui::GetCursorPosY();
-    const float row_left = ImGui::GetCursorPosX() +
-        (std::max)(0.0f, (ImGui::GetContentRegionAvail().x - pair_width) * 0.5f);
-    ImGui::SetCursorPosX(row_left);
     ImGui::SetCursorPosY(row_top + (row_height - afdian.y) * 0.5f);
     SupportButton(graphics.sponsor, graphics.sponsor_width, graphics.sponsor_height,
         "##support-afdian", Text(translator, anomaly::MessageId::LauncherSupportAfdian),
