@@ -1203,21 +1203,48 @@ private:
         return state_.launcher_executable;
     }
 
-    [[nodiscard]] std::filesystem::path RuntimeSettingsRoot() const {
-        const auto game_directory = GameDirectory();
-        if (!game_directory.empty()) {
+    // Which runtime the game ends up loading depends on the mode: a proxy installation keeps its
+    // runtime inside the game folder, while the core this launcher maps itself runs from the
+    // bundled payload. Both read their own anomaly.ini, so both have to carry the startup hotkey --
+    // writing only the installed one left an attached game toggling on the payload's shipped
+    // default, and writing only the payload one left a proxy-installed game on its old key.
+    // The installed runtime comes first because that is the file the row reads back from.
+    [[nodiscard]] std::vector<std::filesystem::path> RuntimeSettingsRoots() const {
+        std::vector<std::filesystem::path> roots;
+        std::vector<std::filesystem::path> game_directories;
+        {
+            std::scoped_lock lock(state_mutex_);
+            game_directories.push_back(state_.game_directory);
+            game_directories.push_back(
+                configuration_.selected_client == anomaly::launcher::NteClient::Global
+                    ? configuration_.mainland_china.game_directory
+                    : configuration_.global.game_directory);
+        }
+        const auto add = [&roots](const std::filesystem::path& root) {
+            std::error_code error;
+            if (root.empty() || !std::filesystem::is_directory(root, error) || error) return;
+            if (std::find(roots.begin(), roots.end(), root) == roots.end()) roots.push_back(root);
+        };
+        for (const auto& game_directory : game_directories) {
+            if (game_directory.empty()) continue;
             const auto installed = game_directory / L"Anomaly";
             std::error_code error;
+            // Only an installation the game folder really holds: creating the runtime directory
+            // from a settings write would make an empty one look installed.
             if (std::filesystem::is_regular_file(
                     installed / L"Anomaly.Core.dll", error) && !error) {
-                return installed;
+                add(installed);
             }
         }
-        return source_.runtime_directory;
+        // The launcher's own runtime last: a manual map starts the core from here, and this ini is
+        // the file the launcher itself reads at start-up.
+        add(source_.runtime_directory);
+        return roots;
     }
 
     void RefreshHotkeyImpl() {
-        const auto root = RuntimeSettingsRoot();
+        const auto roots = RuntimeSettingsRoots();
+        const auto root = roots.empty() ? source_.runtime_directory : roots.front();
         const auto config = ue5mem::AnalyzerConfig::Load(root / L"anomaly.ini");
         std::scoped_lock lock(state_mutex_);
         state_.toggle_key = config.platform_toggle_key;
@@ -1225,9 +1252,17 @@ private:
 
     [[nodiscard]] bool SaveToggleKeyImpl(const std::uint32_t key) const {
         const std::wstring value = std::to_wstring(key);
-        return WritePrivateProfileStringW(
-            L"Platform", L"ToggleKey", value.c_str(),
-            (RuntimeSettingsRoot() / L"anomaly.ini").c_str()) != FALSE;
+        const auto roots = RuntimeSettingsRoots();
+        // Nothing written is not a saved preference, so an empty list starts out failed instead of
+        // reporting a success the game never sees.
+        bool saved = !roots.empty();
+        for (const auto& root : roots) {
+            const bool written = WritePrivateProfileStringW(
+                L"Platform", L"ToggleKey", value.c_str(),
+                (root / L"anomaly.ini").c_str()) != FALSE;
+            saved = written && saved;
+        }
+        return saved;
     }
 
     // The launcher's own ini, which is the file this process reads at start-up. The runtime's
