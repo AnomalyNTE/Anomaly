@@ -407,9 +407,10 @@ std::filesystem::path ExecutableDirectory() {
     return ExecutablePath().parent_path();
 }
 
-// The hook that goes into the official launcher. It is built with this executable and ships in the
-// runtime payload directory. The path is absolute because the launcher it is injected into runs from
-// an install location this process does not own.
+// The hook that goes into the official launcher. Its source still lives in this tree
+// (src/launcher/hook/nte_game_hook.cpp) but nothing builds or ships it, so the file is absent from an
+// installed package. The path is absolute because the launcher it is injected into runs from an
+// install location this process does not own.
 std::filesystem::path GameHookLibrary() {
     return ExecutableDirectory() / L"Anomaly" / L"NTEGameHook.dll";
 }
@@ -417,8 +418,8 @@ std::filesystem::path GameHookLibrary() {
 // Auto-starting the official client is off. The launcher is started the way its own shortcut starts
 // it, and the player presses start game in the window that opens, so capture waits for the HTGame.exe
 // that press produces. Everything auto-starting needs -- resolving the client out of the bootstrap's
-// update section, injecting the hook, and the hook itself -- is kept behind this switch, still
-// compiled and still shipped, so turning it back on is this one line.
+// update section and injecting the hook -- stays compiled behind this switch, but the hook library is
+// no longer built or shipped, so turning it back on also means building it again.
 constexpr bool kAutoStartOfficialClient = false;
 
 struct AdministratorLaunchResult final {

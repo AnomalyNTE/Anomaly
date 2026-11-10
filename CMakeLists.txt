@@ -751,28 +751,11 @@ target_compile_definitions(
 target_compile_options(anomaly_manual_map PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/W4 /permissive- /EHsc>)
 target_link_libraries(anomaly_manual_map PUBLIC Advapi32 Psapi)
 
-# Injected into the official launcher (NTEGame.exe) to hide its window and ask it to start the game on
-# its own. It is deliberately free-standing: it runs inside a process this repository does not own, has
-# no dependency on any other target here, and reaches Qt only through exports it resolves at runtime.
-# The launcher's kAutoStartOfficialClient switch is off, so nothing injects it; it is still built and
-# shipped so that the auto-start path stays compiled and that one switch is the whole of turning it
-# back on.
-add_library(anomaly_nte_game_hook SHARED src/launcher/hook/nte_game_hook.cpp)
-# It sits with the runtime payload rather than beside the launcher: it is a runtime component, and the
-# launcher's own directory is the one the game install occupies.
-set_target_properties(anomaly_nte_game_hook PROPERTIES
-    OUTPUT_NAME "NTEGameHook"
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/Anomaly")
-# The launcher ships its own copies of MSVCP140/VCRUNTIME140 and loads them from its runtime directory,
-# so a dynamically linked hook would resolve against that older CRT instead of the one it was built
-# against -- module base names are unique per process, so there is no way to reach the newer one. A
-# static CRT keeps the hook's dependencies to system DLLs whose versions it does not constrain.
-set_target_properties(anomaly_nte_game_hook PROPERTIES
-    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-target_compile_definitions(
-    anomaly_nte_game_hook PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-target_compile_options(anomaly_nte_game_hook PRIVATE /W4 /permissive- /EHsc)
-target_link_libraries(anomaly_nte_game_hook PRIVATE User32)
+# The NTEGameHook library that hides the official launcher's window and asks it to start the game is no
+# longer part of this build: the launcher only ever loads it from the kAutoStartOfficialClient path in
+# apps/launcher/main.cpp, that switch is off, so the DLL was built and shipped for nothing. Its source
+# stays at src/launcher/hook/nte_game_hook.cpp without a build rule; bringing it back means adding the
+# target here, in ANOMALY_RELEASE_PE_TARGETS and as a GameRuntime install component.
 
 add_library(anomaly_semver STATIC src/plugin/semver.cpp)
 target_include_directories(anomaly_semver PUBLIC include)
@@ -1293,9 +1276,9 @@ target_link_libraries(anomaly_launcher PRIVATE
     anomaly_platform_notice anomaly_platform_settings anomaly_platform_ui_layout
     anomaly_runtime_launch anomaly_ui_resources
     ole32 shell32 delayimp dcomp)
-# The hook is part of the runtime payload the launcher is installed with, so it is built before the
-# launcher that would inject it.
-add_dependencies(anomaly_launcher dwmapi anomaly_core anomaly_nte_game_hook)
+# The runtime payload the launcher is installed with is complete without a plugin hook, so the launcher
+# depends only on the pieces it actually loads.
+add_dependencies(anomaly_launcher dwmapi anomaly_core)
 
 option(ANOMALY_BUILD_SDK_EXAMPLES "Build the Anomaly 1.0 SDK example plugins" ON)
 option(ANOMALY_BUILD_BUILTIN_PLUGINS "Build Anomaly bundled plugins" ON)
@@ -2216,7 +2199,7 @@ if(TARGET anomaly-platform-preview)
 endif()
 
 set(ANOMALY_RELEASE_PE_TARGETS
-    dwmapi anomaly_core anomaly_launcher anomaly_nte_game_hook
+    dwmapi anomaly_core anomaly_launcher
     anomaly-plugin anomaly_abi_snapshot anomaly_test_host
     anomaly-profile anomaly_cli anomaly_inspect anomaly_injector)
 get_property(ANOMALY_RELEASE_PLUGIN_TARGETS GLOBAL PROPERTY ANOMALY_RELEASE_PLUGIN_TARGETS)
@@ -2241,9 +2224,6 @@ install(TARGETS dwmapi
 install(TARGETS anomaly_launcher
     RUNTIME DESTINATION . COMPONENT GameRuntime)
 install(TARGETS anomaly_core
-    RUNTIME DESTINATION Anomaly COMPONENT GameRuntime
-    LIBRARY DESTINATION Anomaly COMPONENT GameRuntime)
-install(TARGETS anomaly_nte_game_hook
     RUNTIME DESTINATION Anomaly COMPONENT GameRuntime
     LIBRARY DESTINATION Anomaly COMPONENT GameRuntime)
 # Plugin packages install themselves: `anomaly_add_plugin` emits the package rules for
