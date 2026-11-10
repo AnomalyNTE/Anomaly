@@ -1211,7 +1211,12 @@
     "pak.compressionZlibName": 257,
     "pak.compressionGzipName": 258,
     "pak.compressionLz4Name": 259,
-    "pak.compressionOodleName": 261
+    "pak.compressionOodleName": 261,
+    "account.digits": 12,
+    "account.scanBatch": 2048,
+    "account.source0.size": 8,
+    "account.source1.size": 8,
+    "account.source2.size": 16
   },
   "layoutCandidates": [
     {

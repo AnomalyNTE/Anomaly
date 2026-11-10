@@ -61,6 +61,21 @@ struct LauncherViewSettings final {
     bool browse_hide_mature{true};
 };
 
+// Whether the launcher looks for a newer release on its own. It is the user's answer to the one
+// question an update check asks -- whether this window may talk to the network unasked -- so it is
+// stored with the launcher configuration rather than assumed, and a launcher that has never stored
+// it checks: finding out that a build is outdated is the point of shipping the check at all.
+// The endpoint is the mirror prefix that answered the last lookup (empty for the direct address).
+// Asking it first is what makes a check take a second on a network where github.com itself is
+// blocked, instead of spending the timeout budget on an address that is known not to answer here.
+// The skipped version is the release the user answered "skip" to: the check may keep reporting it --
+// the settings page still offers it -- but the launcher stops asking about that one version.
+struct LauncherUpdateSettings final {
+    bool auto_check{true};
+    std::string endpoint;
+    std::string skipped_version;
+};
+
 struct LauncherConfiguration final {
     NteClient selected_client{NteClient::MainlandChina};
     LauncherClientConfiguration mainland_china;
@@ -80,6 +95,7 @@ struct LauncherConfiguration final {
     LauncherThemeArtwork artwork;
     anomaly::PlatformUiCustomColors custom_colors;
     LauncherViewSettings view;
+    LauncherUpdateSettings update;
 
     [[nodiscard]] LauncherClientConfiguration& Selected() noexcept {
         return selected_client == NteClient::Global ? global : mainland_china;

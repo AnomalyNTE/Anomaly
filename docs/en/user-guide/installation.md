@@ -71,6 +71,49 @@ The structured logs under `Anomaly\logs\` roll over by size, and old log files a
 
 If pressing `Insert` does nothing, first check whether these two files were created, then continue with [Troubleshooting](troubleshooting.md).
 
+## Automatic update check
+
+The launcher looks for a newer release on GitHub by itself, so there is no ZIP to hunt down:
+
+1. Start `AnomalyLauncher.exe`. It reads this repository's newest GitHub release and compares it with the version this build carries. Once an endpoint has answered, the launcher remembers which one it was (in `AnomalyLauncher.json`, `update.endpoint`) and asks that one first next time instead of waiting out an address this network cannot reach.
+2. When a newer release exists, the launcher opens a dialog: the current version above, that release's **notes** in the middle, and **Skip this version** at the lower left with **Update to x.y.z** at the lower right.
+3. Nothing happens until **Update to x.y.z** is pressed. It downloads that release's `Anomaly-<version>-runtime.zip` (the dialog shows a progress bar -- received of total, percentage, elapsed -- with **Cancel** beside it), extracts it over this folder and restarts the launcher on the new build. **Skip this version** stops the dialog for that one release (it is stored in `AnomalyLauncher.json`, so a restart does not ask again); **Settings → Updates** still installs it when asked. Cancelling a download is not a failure: the release stays offered.
+
+After a skipped or dismissed prompt the mode band (the Launch / Mods / Settings row) shows "Version x.y.z is available"; clicking it opens the same dialog again.
+
+**Settings → Updates** checks by hand at any time; if GitHub answers with its rate limit (HTTP 403), the page says so and offers the release page.
+
+### Mirrors and verification
+
+The **update check** -- reading the release -- asks GitHub directly first and falls back to the gh-proxy mirrors:
+
+```text
+https://v4.gh-proxy.org/<original url>
+https://gh-proxy.org/<original url>
+https://v6.gh-proxy.org/<original url>
+https://cdn.gh-proxy.org/<original url>
+https://axisnow.gh-proxy.org/<original url>
+```
+
+The **package itself does not go through them**: it is downloaded from the `github.com` address the release publishes, and only extracted after its length and **SHA-256** (GitHub's asset digest) match. The verified size and digest are written to `Anomaly\logs\launcher-update.log`.
+
+Automatic updates accept only this repository's Runtime package for the selected version. Packages without a size or valid SHA-256 must be downloaded manually from the release page.
+
+When the network cannot reach `github.com` at all, the dialog also offers **Quark drive** and **Baidu Netdisk** buttons pointing at the same release (Quark `https://pan.quark.cn/s/81a25f50de52?pwd=gGdV`, Baidu `https://pan.baidu.com/s/1x5PpiYT8GM2z0_axmcAJ9w?pwd=hfs5`); extract that Runtime ZIP by hand as described in [Updating to a new version](#updating-to-a-new-version).
+
+An update replaces the files the package ships and keeps the ones you own:
+
+- `AnomalyLauncher.json` (the launcher's own settings);
+- `Anomaly\anomaly.ini`, `repository.json`, `plugin-repositories.json`;
+- `Anomaly\config\`, `state\`, `logs\`, `crashes\`.
+
+The old image is renamed to `AnomalyLauncher.exe.old-<id>` first. The new process waits for the old process to save its settings and exit before reading configuration and removing the old image.
+
+Turn **Check for updates automatically** off to keep the launcher off the network.
+
+> [!NOTE]
+> The update applies to this extracted folder only. A `dwmapi.dll` and `Anomaly\` already installed into the game directory are not replaced with it; use **Launch → Proxy mode → Update** for those.
+
 ## Updating to a new version
 
 Do not extract the new ZIP over the old extracted folder. Extract the new Runtime completely into a new folder, then:

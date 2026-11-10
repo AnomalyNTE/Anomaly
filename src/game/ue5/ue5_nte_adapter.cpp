@@ -324,6 +324,22 @@ std::int64_t Layout(
     return found == profile.layout.end() ? fallback : found->second;
 }
 
+// NTE account observation. The class that carries the role id, the property that
+// holds it, and the HUD widget template that mirrors it are content names of the
+// game; they are the same on every supported build, so they live with the code
+// that reads them instead of in the profile. The element sizes and the role-id
+// width are build facts, so they are read from the profile layout instead.
+constexpr const wchar_t* kNtePlayerStateClass = L"/Script/HottaFramework.HottaPlayerState";
+constexpr std::string_view kNteRoleIdProperty = "m_nRoleId";
+constexpr const wchar_t* kNteRoleIdWidgetTemplate =
+    L"/Game/UI/Blueprints/Common/BPUI_RoleID.BPUI_RoleID_C:WidgetTree.TextBlock_RoleID";
+
+std::uint64_t TenToPower(const int exponent) noexcept {
+    std::uint64_t value = 1;
+    for (int index = 0; index < exponent; ++index) value *= 10;
+    return value;
+}
+
 template <typename T>
 bool ReadValue(const SymbolMemory& memory, std::uintptr_t address, T& value) noexcept {
     return address != 0 && memory.Read(address, &value, sizeof(value));
@@ -623,6 +639,7 @@ bool DecodeExactObjectPath(
                count) == count;
 }
 
+
 }  // namespace
 
 struct Ue5NteAdapter::State {
@@ -669,6 +686,17 @@ struct Ue5NteAdapter::State {
     std::size_t session_event_start{};
     std::size_t session_event_count{};
     std::uint64_t session_event_sequence{};
+    NteAccountSample account_sample;
+    std::chrono::steady_clock::time_point account_update_time{}, account_next_poll{};
+    std::uintptr_t account_world{};
+    std::uint64_t account_object_generation{};
+    AnomalyGenerationHandleV1 account_widget{};
+    std::uint32_t account_widget_name{}, account_scan_cursor{};
+    struct AccountField {
+        AnomalyGenerationHandleV1 owner_class;
+        std::int32_t offset{-1};
+    };
+    std::array<AccountField, 3> account_fields{};
     std::uintptr_t world_pointer{};
     std::uint64_t world_generation{};
     std::uint64_t world_change_sequence{};
@@ -3116,6 +3144,72 @@ struct Ue5NteAdapter::State {
         return true;
     }
 
+    // Slot 0 and 2 are engine-owned types: Controller::PlayerState and
+    // TextBlock::Text; slot 1 is the NTE player state. The reflected names are
+    // engine and content facts and live with this code, while the element size of
+    // every slot is profile data cross-checked against that reflection.
+    [[nodiscard]] bool AccountSourceSpec(
+        const std::size_t slot,
+        const wchar_t*& declaring_path,
+        std::string_view& name,
+        std::string_view& type,
+        std::int32_t& size) const {
+        const std::string prefix = "account.source" + std::to_string(slot) + ".";
+        const auto declared = Layout(profile, prefix + "size", -1);
+        if (declared <= 0 || declared > (std::numeric_limits<std::int32_t>::max)())
+            return false;
+        switch (slot) {
+            case 0:
+                declaring_path = L"/Script/Engine.Controller";
+                name = "PlayerState";
+                type = "ObjectProperty";
+                break;
+            case 1:
+                declaring_path = kNtePlayerStateClass;
+                name = kNteRoleIdProperty;
+                type = "UInt64Property";
+                break;
+            case 2:
+                declaring_path = L"/Script/UMG.TextBlock";
+                name = "Text";
+                type = "TextProperty";
+                break;
+            default:
+                return false;
+        }
+        size = static_cast<std::int32_t>(declared);
+        return true;
+    }
+
+    [[nodiscard]] bool AccountFieldAddressLocked(
+        const std::uintptr_t object, const std::size_t slot, std::uintptr_t& address) {
+        if (slot >= account_fields.size()) return false;
+        std::uintptr_t owner_class{};
+        AnomalyGenerationHandleV1 handle{};
+        if (!ReadPointerAt(*memory, object, Layout(profile, "object.class"), owner_class) ||
+            !ObjectHandleLocked(owner_class, handle)) return false;
+        auto& cached = account_fields[slot];
+        if (cached.owner_class.id != handle.id || cached.owner_class.generation != handle.generation) {
+            cached = {};
+            // Bind from the declaring class so a large Blueprint-derived class
+            // cannot turn the first observation into a long property-list walk.
+            const wchar_t* declaring_path{};
+            std::string_view name{}, type{};
+            std::int32_t size{};
+            if (!AccountSourceSpec(slot, declaring_path, name, type, size)) return false;
+            std::uintptr_t declaring_class{};
+            ReflectedPropertyInfo field;
+            if (!FindExactObjectLocked(declaring_path, declaring_class) ||
+                !IsClassDerivedFromLocked(owner_class, declaring_class) ||
+                !FindReflectedPropertyLocked(declaring_class, name, field, false) ||
+                field.type != type || field.array_dim != 1 || field.element_size != size ||
+                field.offset < 0) return false;
+            cached.owner_class = handle;
+            cached.offset = field.offset;
+        }
+        return AddAddress(object, cached.offset, address);
+    }
+
     [[nodiscard]] bool CurrentAbilitySystemLocked(
         const std::uintptr_t pawn,
         std::uintptr_t& ability_system) const noexcept {
@@ -4808,6 +4902,33 @@ struct Ue5NteAdapter::State {
             display_table_scan_complete = display_table_loaded_mask == 0x1DU;
         } catch (...) {
         }
+    }
+
+    // Role-id width in the shipped build; out-of-range profile data disables
+    // every consumer instead of assuming a width.
+    [[nodiscard]] int AccountDigits() const noexcept {
+        const auto digits = Layout(profile, "account.digits", -1);
+        return digits >= 1 && digits <= 19 ? static_cast<int>(digits) : 0;
+    }
+
+    [[nodiscard]] std::uint64_t ReadReplicatedValueLocked() {
+        if (!SemanticFeatureAvailable("nte.player")) return 0;
+        const auto digits = AccountDigits();
+        if (digits == 0) return 0;
+        std::uintptr_t instance{}, players{}, local_player{}, controller{}, state{}, address{};
+        std::int32_t count{};
+        if (!ReadPointerAt(*memory, world_pointer, Layout(profile, "world.gameInstance"), instance) ||
+            !ReadPointerAt(*memory, instance, Layout(profile, "gameInstance.localPlayers"), players) ||
+            !AddAddress(instance, Layout(profile, "gameInstance.localPlayers") + sizeof(std::uintptr_t), address) ||
+            !ReadValue(*memory, address, count) || count < 1 ||
+            !ReadValue(*memory, players, local_player) || local_player == 0 ||
+            !ReadPointerAt(*memory, local_player, Layout(profile, "localPlayer.controller"), controller) ||
+            !AccountFieldAddressLocked(controller, 0, address) ||
+            !ReadValue(*memory, address, state) || state == 0 ||
+            !AccountFieldAddressLocked(state, 1, address)) return 0;
+        std::uint64_t value{};
+        return ReadValue(*memory, address, value) && value > 0 &&
+                value < TenToPower(digits) ? value : 0;
     }
 
     [[nodiscard]] static bool CombatHandleCompatible(
@@ -8473,6 +8594,25 @@ struct Ue5NteAdapter::State {
         }
     }
 
+    [[nodiscard]] std::uint64_t ReadHudValueLocked(const std::uintptr_t widget) {
+        if (!resolution.FeatureAvailable(kUe5FTextFeature)) return 0;
+        const auto digits = AccountDigits();
+        if (digits == 0) return 0;
+        std::uintptr_t address{};
+        std::string text;
+        if (!AccountFieldAddressLocked(widget, 2, address) ||
+            !ResolveFTextLocked(address, text)) return 0;
+        auto end = text.find_last_of("0123456789");
+        if (end == std::string::npos) return 0;
+        ++end;
+        auto begin = end;
+        while (begin != 0 && text[begin - 1] >= '0' && text[begin - 1] <= '9') --begin;
+        if (end - begin != static_cast<std::size_t>(digits)) return 0;
+        std::uint64_t value{};
+        for (auto index = begin; index < end; ++index) value = value * 10 + text[index] - '0';
+        return value;
+    }
+
     static int ANOMALY_CALL AhudDrawLine(
         void* user,
         const float start_x,
@@ -11457,6 +11597,75 @@ struct Ue5NteAdapter::State {
             name += "_" + std::to_string(value.number - 1U);
         }
         return CopyString(name, destination, size);
+    }
+
+    void RefreshAccountSampleLocked() noexcept {
+        const auto now = std::chrono::steady_clock::now();
+        if (account_world != world_pointer || account_object_generation != object_generation) {
+            account_sample = {};
+            account_update_time = {};
+            account_next_poll = {};
+            account_fields = {};
+            account_widget = {};
+            account_widget_name = 0;
+            account_scan_cursor = object_registry.count;
+            account_world = world_pointer;
+            account_object_generation = object_generation;
+        }
+        if (world_pointer == 0 || object_registry.items == 0 ||
+            !resolution.FeatureAvailable("ue5.names")) return;
+        try {
+            // Resolve the template's stable name id, then discover live widgets in
+            // bounded batches. No pointer leaves this Game-domain observation.
+            if (account_widget_name == 0 && now >= account_next_poll) {
+                std::uintptr_t widget_template{};
+                if (FindExactObjectLocked(kNteRoleIdWidgetTemplate, widget_template)) {
+                    static_cast<void>(ReadValue(*memory,
+                        widget_template + Layout(profile, "object.nameOffset"), account_widget_name));
+                }
+            }
+            std::uintptr_t widget{};
+            if (account_widget.id != 0 && !ResolveObjectHandleLocked(account_widget, widget)) {
+                account_widget = {};
+                account_scan_cursor = object_registry.count;
+            }
+            if (account_widget.id == 0 && account_widget_name != 0) {
+                if (account_scan_cursor == 0 && now >= account_next_poll)
+                    account_scan_cursor = object_registry.count;
+                const auto batch = Layout(profile, "account.scanBatch", -1);
+                if (batch <= 0 || batch > 65536) return;
+                const auto count = (std::min)(
+                    account_scan_cursor, static_cast<std::uint32_t>(batch));
+                for (std::uint32_t index = 0; index < count; ++index) {
+                    std::uintptr_t candidate{};
+                    std::uint32_t serial{}, name{};
+                    const auto slot = --account_scan_cursor;
+                    if (!ReadObjectSlot(*memory, object_registry, slot, candidate, serial) || candidate == 0 ||
+                        !ReadValue(*memory, candidate + Layout(profile, "object.nameOffset"), name) ||
+                        name != account_widget_name) continue;
+                    // Keep a live edited HUD handle even if its text is no longer numeric.
+                    std::uintptr_t text_address{};
+                    std::string text;
+                    if (AccountFieldAddressLocked(candidate, 2, text_address) &&
+                        ResolveFTextLocked(text_address, text) && !text.empty()) {
+                        account_widget = {EncodeObjectHandle(slot, serial), object_generation};
+                        widget = candidate;
+                        break;
+                    }
+                }
+            }
+            if (now < account_next_poll) return;
+            account_next_poll = now + std::chrono::seconds(1);
+            NteAccountSample observation;
+            observation.replicated_value = ReadReplicatedValueLocked();
+            observation.hud_value = widget != 0 ? ReadHudValueLocked(widget) : 0;
+            account_sample = observation;
+            account_update_time = now;
+        } catch (...) {
+            account_sample = {};
+            account_update_time = {};
+            account_next_poll = now + std::chrono::seconds(1);
+        }
     }
 
     [[nodiscard]] bool ActorReflectionCallAvailableLocked() const noexcept {
@@ -15052,6 +15261,7 @@ void Ue5NteAdapter::OnGameTick(double delta_seconds) noexcept {
         state->RefreshDeferredResolution(sequence, state);
         state->RefreshWorld(sequence);
         state->RefreshObjects();
+        state->RefreshAccountSampleLocked();
         state->RefreshTeleportBindingLocked();
         state->ExpireStreamingOverride();
         state->RefreshMapLandmarksLocked(sequence);
@@ -15293,6 +15503,26 @@ bool Ue5NteAdapter::CombatFeatureAvailable() const noexcept {
     const auto state = state_;
     std::scoped_lock lock(state->mutex);
     return state->SemanticFeatureAvailable("nte.combat");
+}
+
+std::optional<std::string> Ue5NteAdapter::AccountKey(bool* sources_disagree) const {
+    const auto state = state_;
+    std::scoped_lock lock(state->mutex);
+    if (sources_disagree) *sources_disagree = false;
+    if (!state->started.load(std::memory_order_acquire) ||
+        std::chrono::steady_clock::now() - state->account_update_time > std::chrono::seconds(2))
+        return std::nullopt;
+    if (sources_disagree) *sources_disagree = state->account_sample.SourcesDisagree();
+    const auto digits = state->AccountDigits();
+    if (digits == 0) return std::nullopt;
+    // The replicated account state is authoritative over editable HUD text.
+    const auto value = state->account_sample.replicated_value != 0
+        ? state->account_sample.replicated_value
+        : state->account_sample.hud_value;
+    if (value == 0 || value >= TenToPower(digits)) return std::nullopt;
+    auto key = std::to_string(value);
+    key.insert(0, static_cast<std::size_t>(digits) - key.size(), '0');
+    return key;
 }
 
 NteCombatExecFunctionTargetsSnapshot

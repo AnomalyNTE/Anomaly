@@ -34,6 +34,8 @@ The launcher's **Settings** page lists the same palettes (Naiwa / Moss / Aurora 
 
 The launcher resolves its layout for the palette it wears: `config/themes/<palette>.launcher.json` first (the launcher's own file), then `config/themes/<palette>.json`, then the shared `config/themes/layout.json`. The light presets (Naiwa / Paper) get dark ink and the dark ones (Moss / Aurora / Ember / AnomalyHub) switch to light ink.
 
+**The mod placeholder follows the palette too**: a card on the mods page with no cover (`icon.png`) draws a placeholder — the Naiwa palette keeps its own character, while every other palette (custom included) draws just the interface's own picture icon in the middle of the cover slot: muted ink at about 1.25× the body type size, so it hints at the missing picture instead of competing with the page, and no theme ever shows another theme's character.
+
 **The two surfaces have different shapes, so they keep separate layouts**: the launcher window is 1100 × 860 and the in-game main window is 1180 × 700, and the same normalized sticker lands on different controls in each. The launcher therefore reads `<palette>.launcher.json` while the in-game shell keeps reading `<palette>.json` — with both `naiwa.json` and `naiwa.launcher.json` in place, each surface gets stickers placed for its own proportions. If only one file exists, the other surface falls back to it and the artwork drifts.
 
 ## Launcher language

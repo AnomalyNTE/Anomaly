@@ -477,6 +477,15 @@ LauncherConfigurationLoadResult LoadLauncherConfiguration(
                 target.surface_opacity = std::clamp(
                     artwork.value("surfaceOpacity", target.surface_opacity), -1.0f, 1.0f);
             }
+            if (document.contains("update") && document.at("update").is_object()) {
+                const auto& update = document.at("update");
+                result.configuration.update.auto_check =
+                    update.value("autoCheck", result.configuration.update.auto_check);
+                result.configuration.update.endpoint =
+                    update.value("endpoint", std::string{});
+                result.configuration.update.skipped_version =
+                    update.value("skippedVersion", std::string{});
+            }
             if (document.contains("customColors") && document.at("customColors").is_object()) {
                 const auto& colors = document.at("customColors");
                 anomaly::PlatformUiCustomColors& target = result.configuration.custom_colors;
@@ -558,6 +567,11 @@ LauncherConfigurationSaveResult SaveLauncherConfiguration(
             {"clients", {
                 {"mainlandChina", client_document(configuration.mainland_china)},
                 {"global", client_document(configuration.global)},
+            }},
+            {"update", {
+                {"autoCheck", configuration.update.auto_check},
+                {"endpoint", configuration.update.endpoint},
+                {"skippedVersion", configuration.update.skipped_version},
             }},
         };
         const std::string text = document.dump(2) + '\n';

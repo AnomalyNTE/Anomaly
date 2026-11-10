@@ -57,8 +57,6 @@ bool IsTransientMoveFailure(DWORD error) noexcept {
 // A directory cannot be renamed while any process keeps it as its working directory, or while a
 // filter holds a handle to it. Files stay writable in that state, so publish by copying over the
 // installed tree instead of moving it.
-bool PreservesInstalledFile(const std::filesystem::path& relative) noexcept;
-
 bool PublishRuntimeInPlace(
     const std::filesystem::path& staging, const std::filesystem::path& installed,
     std::string& failure) {
@@ -93,7 +91,7 @@ bool PublishRuntimeInPlace(
         const auto relative = std::filesystem::relative(iterator->path(), installed, error);
         if (error || relative.empty()) continue;
         if (!std::filesystem::exists(staging / relative, error) &&
-            !PreservesInstalledFile(relative)) {
+            !PreservesInstalledRuntimeFile(relative)) {
             stale.push_back(iterator->path());
         }
     }
@@ -289,18 +287,6 @@ bool CopyRuntimeTree(
     return true;
 }
 
-bool PreservesInstalledFile(const std::filesystem::path& relative) noexcept {
-    if (relative == L"anomaly.ini" || relative == L"repository.json" ||
-        relative == L"plugin-repositories.json" ||
-        relative == L"anomaly-platform.log") {
-        return true;
-    }
-    const auto first = relative.begin();
-    return first != relative.end() &&
-        (*first == L"config" || *first == L"state" || *first == L"logs" ||
-         *first == L"crashes");
-}
-
 bool MergeInstalledRuntime(
     const std::filesystem::path& installed,
     const std::filesystem::path& staging,
@@ -323,7 +309,7 @@ bool MergeInstalledRuntime(
             std::filesystem::create_directories(target, error);
         } else if (!error && entry.is_regular_file(error)) {
             const bool target_exists = std::filesystem::exists(target, error);
-            if (!error && (!target_exists || PreservesInstalledFile(relative))) {
+            if (!error && (!target_exists || PreservesInstalledRuntimeFile(relative))) {
                 std::filesystem::create_directories(target.parent_path(), error);
                 if (!error) {
                     std::filesystem::copy_file(
@@ -357,6 +343,18 @@ std::filesystem::path UniqueSibling(
 }
 
 }  // namespace
+
+bool PreservesInstalledRuntimeFile(const std::filesystem::path& relative) noexcept {
+    if (relative == L"anomaly.ini" || relative == L"repository.json" ||
+        relative == L"plugin-repositories.json" ||
+        relative == L"anomaly-platform.log") {
+        return true;
+    }
+    const auto first = relative.begin();
+    return first != relative.end() &&
+        (*first == L"config" || *first == L"state" || *first == L"logs" ||
+         *first == L"crashes");
+}
 
 ProxyInstallationStatus InspectProxyInstallation(
     const std::filesystem::path& game_directory,

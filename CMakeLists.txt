@@ -390,6 +390,8 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${CMAKE_SOURCE_DIR}/logo-header.png"
     "${CMAKE_SOURCE_DIR}/logo.png"
     "${CMAKE_SOURCE_DIR}/apps/launcher/assets/mod-placeholder.png"
+    "${CMAKE_SOURCE_DIR}/apps/launcher/assets/afdian-sponsor.png"
+    "${CMAKE_SOURCE_DIR}/apps/launcher/assets/kofi.png"
     "${CMAKE_SOURCE_DIR}/apps/launcher/AnomalyLauncher.ico")
 configure_file(
     "${CMAKE_SOURCE_DIR}/cmake/platform_ui_resources.rc.in"
@@ -778,6 +780,18 @@ target_compile_definitions(
     anomaly_semver PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_compile_options(anomaly_semver PRIVATE /W4 /permissive- /EHsc)
 
+# The launcher's own update check. It reads a GitHub release, decides whether that release is newer
+# than this build, and publishes the downloaded package over the installation. It sits beside the
+# proxy installer because it reuses that installer's list of files an update must not overwrite.
+add_library(anomaly_launcher_release STATIC src/launcher/release_update.cpp)
+target_include_directories(anomaly_launcher_release PUBLIC include)
+target_compile_definitions(
+    anomaly_launcher_release PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_options(anomaly_launcher_release PRIVATE /W4 /permissive- /EHsc)
+target_link_libraries(anomaly_launcher_release
+    PUBLIC anomaly_launcher_proxy anomaly_semver
+    PRIVATE nlohmann_json::nlohmann_json)
+
 add_library(anomaly_plugin_manifest STATIC
     src/plugin/plugin_manifest.cpp
     src/plugin/plugin_capability_policy.cpp)
@@ -1084,6 +1098,7 @@ foreach(target IN LISTS ANOMALY_MANUAL_MAP_TLS_FREE_TARGETS)
 endforeach()
 target_link_libraries(
     anomaly_core PRIVATE
+    bcrypt d3dcompiler
     ue5mem_core anomaly_runtime_kernel anomaly_imgui anomaly_minhook_backend anomaly_ui_service
     anomaly_platform_ui_model
     anomaly_platform_settings
@@ -1274,8 +1289,8 @@ target_compile_options(anomaly_launcher PRIVATE /W4 /permissive- /EHsc)
 target_link_options(anomaly_launcher PRIVATE /MANIFESTUAC:NO /DELAYLOAD:dwmapi.dll)
 target_link_libraries(anomaly_launcher PRIVATE
     anomaly_config anomaly_imgui anomaly_launcher_configuration anomaly_launcher_proxy
-    anomaly_manual_map
-    anomaly_platform_settings anomaly_platform_ui_layout
+    anomaly_launcher_release anomaly_manual_map
+    anomaly_platform_notice anomaly_platform_settings anomaly_platform_ui_layout
     anomaly_runtime_launch anomaly_ui_resources
     ole32 shell32 delayimp dcomp)
 # The hook is part of the runtime payload the launcher is installed with, so it is built before the

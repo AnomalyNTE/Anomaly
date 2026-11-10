@@ -72,6 +72,49 @@ Win64\
 
 如果按 `Insert` 没反应，先看这两个文件有没有生成，再按[故障排查](troubleshooting.md)继续检查。
 
+## 自动检查更新
+
+启动器会自己去 GitHub 看有没有新版，不需要手动找 ZIP：
+
+1. 打开 `AnomalyLauncher.exe`，它会读取本仓库在 GitHub 上的最新 release，并与当前构建的版本比较。第一次成功后，启动器会记住是哪个加速入口答的（记在 `AnomalyLauncher.json` 的 `update.endpoint`），下次启动直接问它，不会先卡在连不上的地址上。
+2. 有新版本时，启动器会弹出一个窗口：上面是当前版本，中间是这个版本的**更新说明**，下面左边是 **跳过此版本**、右边是 **更新到 x.y.z**。
+3. 只有点了 **更新到 x.y.z** 才会开始：下载该版本的 `Anomaly-<版本号>-runtime.zip`（窗口里有进度条：已下载/总量、百分比、耗时，旁边还有 **取消**），解压后覆盖这个解压目录，然后自动重启到新版本。点 **跳过此版本** 就不再为这**一个**版本弹窗（记在 `AnomalyLauncher.json` 里，重启后也不再问），需要时仍然可以在 **设置 → 更新** 里更新。取消下载不算失败，版本还在，可以再来一次。
+
+已经跳过或关掉弹窗后，模式栏（启动 / 模组 / 设置 那一行）会显示“发现新版本 x.y.z”，点它重新打开同一个窗口。
+
+**设置 → 更新** 里随时可以手动点 **检查更新**；如果 GitHub 返回限流（HTTP 403），页面会直接说明，并给出去发布页的入口。
+
+### 镜像与校验
+
+**检查更新**（读取 release 信息）先直连 GitHub，失败或限流时依次换 gh-proxy 镜像重试：
+
+```text
+https://v4.gh-proxy.org/<原始地址>
+https://gh-proxy.org/<原始地址>
+https://v6.gh-proxy.org/<原始地址>
+https://cdn.gh-proxy.org/<原始地址>
+https://axisnow.gh-proxy.org/<原始地址>
+```
+
+**安装包本身不走镜像**：只从 release 自己公布的 `github.com` 地址下载，下载完先校验文件大小和 **SHA-256**（GitHub 的 asset digest），通过才解压。校验值会写进 `Anomaly\logs\launcher-update.log`。
+
+自动更新只接受本仓库对应版本的 Runtime 包；缺少文件大小或有效 SHA-256 的包不能自动安装，可从发布页手动下载。
+
+如果这个网络根本连不上 `github.com`，更新弹窗下面还有 **夸克网盘** 和 **百度网盘** 两个按钮，指向同一版本的国内下载源（夸克 `https://pan.quark.cn/s/81a25f50de52?pwd=gGdV`，百度 `https://pan.baidu.com/s/1x5PpiYT8GM2z0_axmcAJ9w?pwd=hfs5`）；从网盘下到的 Runtime ZIP 按[更新版本](#更新版本)的步骤手动解压即可。
+
+更新只替换新版包里的文件，你写的东西会保留：
+
+- `AnomalyLauncher.json`（启动器自己的设置）；
+- `Anomaly\anomaly.ini`、`repository.json`、`plugin-repositories.json`；
+- `Anomaly\config\`、`state\`、`logs\`、`crashes\`。
+
+旧版本会先被改名成 `AnomalyLauncher.exe.old-<编号>`；新进程等待旧进程保存设置并退出后，再读取配置和清理旧文件。
+
+不想让它自己联网，就把 **自动检查更新** 关掉。
+
+> [!NOTE]
+> 更新只作用于当前这个解压目录。已经装到游戏目录里的 `dwmapi.dll` 和 `Anomaly\` 不会跟着换，需要在 **启动 → 代理模式** 再点一次 **更新**。
+
 ## 更新版本
 
 更新时不要把新 ZIP 直接覆盖到旧的解压目录里。把新版 Runtime 完整解压到一个新文件夹，然后：
