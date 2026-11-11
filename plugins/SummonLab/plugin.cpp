@@ -370,6 +370,9 @@ struct Context {
     std::vector<ClassEntry> catalog;
     std::map<std::string, BlueprintOptions, std::less<>> blueprint_options;
     char catalog_filter[64]{};
+    std::string catalog_matched_filter;
+    std::vector<std::size_t> catalog_matches;
+    bool catalog_matches_valid{};
     bool catalog_loaded{};
     std::uint64_t selected_record_id{};
     std::size_t management_page{};
@@ -967,6 +970,7 @@ bool PublishCatalog(CatalogCollection& collection) {
     {
         std::scoped_lock lock(g_context.mutex);
         g_context.catalog.swap(parsed);
+        g_context.catalog_matches_valid = false;
         g_context.blueprint_options.swap(options);
         g_context.catalog_loaded = true;
         g_context.blueprint_config = {};
@@ -4770,6 +4774,9 @@ void ResetState() {
     g_context.catalog.clear();
     g_context.blueprint_options.clear();
     g_context.catalog_filter[0] = '\0';
+    g_context.catalog_matched_filter.clear();
+    g_context.catalog_matches.clear();
+    g_context.catalog_matches_valid = false;
     g_context.catalog_loaded = false;
     g_context.catalog_labels.store({}, std::memory_order_release);
     g_context.catalog_base.clear();
@@ -5184,36 +5191,33 @@ void DrawBlueprintTab(const AnomalyUiServiceV1* ui) {
         std::size_t page_count{};
         {
             std::scoped_lock lock(g_context.mutex);
-            // 先统计匹配总数，再按页截取，页码越界时钳回最后一页
-            for (const auto& entry : g_context.catalog) {
-                bool keep = true;
-                if (g_context.catalog_filter[0] != '\0') {
-                    keep = ui->filter_match != nullptr
-                               ? ui->filter_match(ui->user,
-                                                  anomaly::sdk::StringView(g_context.catalog_filter),
-                                                  anomaly::sdk::StringView(entry.search_text)) != 0
-                               : entry.search_text.find(g_context.catalog_filter) != std::string::npos;
+            // The catalog can contain thousands of paths. Search only when its
+            // contents or the query change; idle frames and paging reuse indices.
+            // PublishCatalog invalidates them under this same mutex.
+            if (!g_context.catalog_matches_valid ||
+                g_context.catalog_matched_filter != g_context.catalog_filter) {
+                g_context.catalog_matches_valid = false;
+                g_context.catalog_matches.clear();
+                const std::string_view filter(g_context.catalog_filter);
+                for (std::size_t index = 0; index < g_context.catalog.size(); ++index) {
+                    const auto& entry = g_context.catalog[index];
+                    const bool keep = filter.empty() || (ui->filter_match != nullptr
+                        ? ui->filter_match(ui->user, anomaly::sdk::StringView(filter),
+                            anomaly::sdk::StringView(entry.search_text)) != 0
+                        : entry.search_text.find(filter) != std::string::npos);
+                    if (keep) g_context.catalog_matches.push_back(index);
                 }
-                if (keep) ++matched;
+                g_context.catalog_matched_filter = filter;
+                g_context.catalog_matches_valid = true;
             }
+            matched = g_context.catalog_matches.size();
             page_count = matched == 0 ? 1 : (matched + kPageSize - 1) / kPageSize;
             page = g_context.catalog_page < page_count ? g_context.catalog_page : page_count - 1;
-            std::size_t seen{};
-            for (const auto& entry : g_context.catalog) {
-                bool keep = true;
-                if (g_context.catalog_filter[0] != '\0') {
-                    keep = ui->filter_match != nullptr
-                               ? ui->filter_match(ui->user,
-                                                  anomaly::sdk::StringView(g_context.catalog_filter),
-                                                  anomaly::sdk::StringView(entry.search_text)) != 0
-                               : entry.search_text.find(g_context.catalog_filter) != std::string::npos;
-                }
-                if (!keep) continue;
-                if (seen >= page * kPageSize) {
-                    if (visible.size() < kPageSize) visible.push_back(entry);
-                    else break;
-                }
-                ++seen;
+            const std::size_t first = page * kPageSize;
+            const std::size_t last = std::min(first + kPageSize, matched);
+            visible.reserve(last - first);
+            for (std::size_t index = first; index < last; ++index) {
+                visible.push_back(g_context.catalog[g_context.catalog_matches[index]]);
             }
         }
 

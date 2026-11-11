@@ -2663,25 +2663,18 @@ private:
         }
     }
 
-    void RefreshCatalog() {
-        std::shared_ptr<const CatalogCache> cached;
-        {
-            std::scoped_lock lock(catalog_mutex_);
-            cached = catalog_cache_;
-        }
-        if (!cached || !cached->catalog || !cached->dependencies) return;
-        catalog_ = cached->catalog;
-        dependencies_ = cached->dependencies;
-        plugin_display_names_ = cached->display_names;
-        plugin_descriptions_ = cached->descriptions;
-        catalog_ready_ = true;
+    std::shared_ptr<const CatalogCache> CatalogSnapshot() const {
+        std::scoped_lock lock(catalog_mutex_);
+        return catalog_cache_;
     }
 
     void RefreshSnapshot(const bool measure) {
         const auto refresh_started = measure ? std::chrono::steady_clock::now()
                                              : std::chrono::steady_clock::time_point{};
         auto phase_started = refresh_started;
-        RefreshCatalog();
+        // The worker publishes immutable catalogs. Retain this generation for
+        // the frame instead of copying every manifest, dependency and label.
+        const auto catalog = CatalogSnapshot();
         RecordPerformance(PlatformUiPerformanceStage::RefreshCatalog, phase_started);
         phase_started = measure ? std::chrono::steady_clock::now()
                                 : std::chrono::steady_clock::time_point{};
@@ -2696,10 +2689,10 @@ private:
         phase_started = measure ? std::chrono::steady_clock::now()
                                 : std::chrono::steady_clock::time_point{};
         anomaly::PlatformUiSnapshot snapshot;
-        if (catalog_ready_) {
+        if (catalog && catalog->catalog && catalog->dependencies) {
             snapshot = anomaly::BuildPlatformUiSnapshot(
-                ++revision_, runtime_plugins, *catalog_, *dependencies_,
-                enablement, plugin_display_names_, plugin_descriptions_);
+                ++revision_, runtime_plugins, *catalog->catalog, *catalog->dependencies,
+                enablement, catalog->display_names, catalog->descriptions);
         } else {
             snapshot = anomaly::BuildPlatformUiSnapshot(++revision_, runtime_plugins);
         }
@@ -8621,11 +8614,6 @@ private:
     std::optional<ContactInformation> contact_;
     anomaly::PlatformUiModel model_;
     std::uint64_t revision_{};
-    bool catalog_ready_{};
-    std::optional<anomaly::PluginCatalogSnapshot> catalog_;
-    std::optional<anomaly::PluginDependencyPlan> dependencies_;
-    anomaly::PluginDisplayNameMap plugin_display_names_;
-    anomaly::PluginDescriptionMap plugin_descriptions_;
     mutable std::mutex catalog_mutex_;
     mutable std::mutex submission_mutex_;
     mutable std::recursive_mutex operation_mutex_;
