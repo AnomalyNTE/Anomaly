@@ -841,6 +841,21 @@ static uintptr_t object_by_index(uint32_t index) {
     return object;
 }
 
+// 演员服务和 objects 服务给的是两种句柄:
+//   actors.page()                 → 实体句柄,id = internalIndex + 1,高 32 位没有 serial
+//   objects.find_exact()          → 对象句柄,高 32 位是对象槽的 serial
+// 两者不能混用:objects.snapshot_by_handle 会按对象句柄校验 serial/generation,
+// 拿实体句柄去校验必然失配。类表存实体句柄,生成时按索引回到对象表并核对类名。
+static uintptr_t actor_from_entity_handle(AnomalyGenerationHandleV1 handle) {
+    AnomalyUe5ObjectSnapshotV1 snapshot{};
+    if (handle.id == 0u || g_objects == nullptr || g_objects->snapshot_at == nullptr) return 0u;
+    snapshot.struct_size = sizeof(snapshot);
+    if (!ok(g_objects->snapshot_at(g_objects->user, (uint32_t)handle.id - 1u, &snapshot))) {
+        return 0u;
+    }
+    return object_by_index((uint32_t)handle.id - 1u);
+}
+
 static void signature_probe(void) {
     uintptr_t insn = 0u;
     if (g_signature == NULL || g_signature->resolve == NULL) {
@@ -916,6 +931,7 @@ static int g_spawned_count = 0;
 
 static int classify_actor(uintptr_t actor, const char* class_name, char* root_out,
     size_t root_capacity);
+static int class_name_matches(uintptr_t actor, const char* expected);
 
 static int kind_cache_lookup(const char* name, char* root_out, size_t root_capacity) {
     int i;
@@ -1159,9 +1175,9 @@ static void actors_probe(void) {
             {
                 // 每个类只判定一次(缓存),没有实体的类只计数、不占类表名额
                 int kind = kind_cache_lookup(cls, root_cls, sizeof(root_cls));
+                uintptr_t actor = actor_from_entity_handle(page[i].handle);
+                if (actor != 0u && class_name_matches(actor, cls) == 0) actor = 0u;
                 if (kind < 0) {
-                    uintptr_t actor = (page[i].handle.id != 0u)
-                        ? object_by_index((uint32_t)page[i].handle.id - 1u) : 0u;
                     kind = classify_actor(actor, cls, root_cls, sizeof(root_cls));
                     if (kind < 0) {
                         kind = 0;   // 判定失败:先按「其它」处理,不写缓存,下次再试
@@ -1169,7 +1185,8 @@ static void actors_probe(void) {
                         kind_cache_store(cls, kind, root_cls);
                     }
                 }
-                if (kind != 0) {
+                if (kind != 0 && actor != 0u) {
+                    // 存实体句柄:对象表可能因流式加载换代,生成时再按索引解析
                     class_entry_add(cls, page[i].handle, kind, root_cls);
                 }
             }
@@ -1251,6 +1268,16 @@ static int object_class_name(uintptr_t object, char* buffer, size_t capacity) {
     if (object == 0u) return 0;
     if (!read_value(object + (uintptr_t)npc_profile::Layout.L_object_class, &cls) || cls == 0u) return 0;
     return object_name(cls, buffer, capacity);
+}
+
+// 实体索引只有在对象槽里确实是这个类的实例时才算数:没有 internalIndex 的实体
+// 用的是兜底索引,可能指向别的对象,不能拿来当生成样例。
+static int class_name_matches(uintptr_t actor, const char* expected) {
+    char actual[100];
+    actual[0] = '\0';
+    if (actor == 0u || expected == NULL || expected[0] == '\0') return 0;
+    if (!object_class_name(actor, actual, sizeof(actual))) return 0;
+    return strcmp(actual, expected) == 0;
 }
 
 // 给类表定性:1=NPC 2=车辆 0=其它(不显示)
@@ -1937,8 +1964,8 @@ static uintptr_t find_class_from_world(const char* class_name_substring) {
             cls[0] = '\0';
             if (!actor_class_name(page[i].class_id, cls, sizeof(cls))) continue;
             if (strstr(cls, class_name_substring) == NULL) continue;
-            actor = object_by_handle(page[i].handle);
-            if (actor == 0u) continue;
+            actor = actor_from_entity_handle(page[i].handle);
+            if (actor == 0u || class_name_matches(actor, cls) == 0) continue;
             if (read_value(actor + (uintptr_t)npc_profile::Layout.L_object_class, &uclass) && uclass != 0u) {
                 return uclass;
             }
@@ -2639,7 +2666,10 @@ static int run_spawn_class(int index) {
     }
     stage_log("SPAWN request index=%d class=%s handle=%llu", index, g_class_entries[index].name,
         (unsigned long long)g_class_entries[index].sample.id);
-    actor = object_by_handle(g_class_entries[index].sample);
+    actor = actor_from_entity_handle(g_class_entries[index].sample);
+    if (actor != 0u && class_name_matches(actor, g_class_entries[index].name) == 0) {
+        actor = 0u;   // 对象槽已被别的类复用,样例失效
+    }
     if (actor == 0u) {
         snprintf(g_call_result, sizeof(g_call_result), "%s",
             g_localizer.Text("text.handle_stale",
@@ -3378,7 +3408,7 @@ static AnomalyStatusV1 ANOMALY_CALL plugin_load(
     }
     if (!npc_profile::Load(host)) return mk_status(ANOMALY_STATUS_V1_UNAVAILABLE);
     test_mode_load();
-    stage_log("NPC Summon 1.1.0 (settings persistence) loaded mode=%d", g_test_mode);
+    stage_log("NPC Summon 1.1.1 (settings persistence) loaded mode=%d", g_test_mode);
     *plugin_context = (void*)g_probes;
     return mk_status(ANOMALY_STATUS_V1_OK);
 }
@@ -3921,7 +3951,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     }
     *descriptor = AnomalyPluginDescriptorV1{
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
-        sv("ouo.npc-summon"), sv("NPC Summon"), sv("OUO"), sv("1.1.0"),
+        sv("ouo.npc-summon"), sv("NPC Summon"), sv("OUO"), sv("1.1.1"),
         plugin_load, plugin_start, plugin_stop, plugin_unload, plugin_update, plugin_draw};
     return mk_status(ANOMALY_STATUS_V1_OK);
 }
