@@ -3864,21 +3864,26 @@ bool FindDuelCamps(std::uint8_t player_camp, std::vector<std::uint8_t>& camps) {
     if (!FindHandle("/Script/HTGame.Default__HTGameData", &cdo) ||
         !InvokeByPath(cdo, "/Script/HTGame.HTGameData:GetGameData", &pointer, sizeof(pointer)) ||
         !HandleFromPointer(pointer, &data)) return false;
-    const auto hostile = [&](std::uint8_t from, std::uint8_t to) {
+    const auto attitude = [&](std::uint8_t from, std::uint8_t to, std::uint8_t& result) {
         std::array<std::uint8_t, 3> params{from, to, 1};
-        return InvokeByPath(data, "/Script/HTGame.HTGameData:GetTeamAttitude",
-                             params.data(), params.size()) && params[2] == 2;
+        if (!InvokeByPath(data, "/Script/HTGame.HTGameData:GetTeamAttitude",
+                          params.data(), params.size()) || params[2] > 2) return false;
+        result = params[2];
+        return true;
     };
-    // Select the largest mutually hostile palette from the active game data.
-    // Same-camp hostility is rejected by native code, even if its table says
-    // otherwise. Never edit the global table to force an unsupported graph.
+    // Area skills still hit the player if their camp is hostile, even when
+    // aggro excludes the player. Require a player-safe palette from game data.
     const auto count = g_context.camp_count;
     std::vector<bool> eligible(count);
     std::vector<std::vector<bool>> enemies(count, std::vector<bool>(count));
     for (std::uint8_t a = 0; a < count; ++a) {
-        eligible[a] = hostile(a, player_camp) && hostile(player_camp, a);
+        std::uint8_t to_player{}, from_player{};
+        if (!attitude(a, player_camp, to_player) || !attitude(player_camp, a, from_player)) return false;
+        eligible[a] = to_player != 2 && from_player != 2;
         for (std::uint8_t b = a + 1; b < count; ++b) {
-            enemies[a][b] = enemies[b][a] = hostile(a, b) && hostile(b, a);
+            std::uint8_t to_b{}, from_b{};
+            if (!attitude(a, b, to_b) || !attitude(b, a, from_b)) return false;
+            enemies[a][b] = enemies[b][a] = to_b == 2 && from_b == 2;
         }
     }
     for (unsigned mask = 1; mask < (1U << count); ++mask) {
@@ -4164,13 +4169,17 @@ void ChangeBattle(const PendingOp& op, bool forgetting = false) {
         !InvokeByPath(controller, "/Script/HTGame.HTPlayerController:GetHTPlayerState",
                        &player_state_pointer, sizeof(player_state_pointer)) ||
         !HandleFromPointer(player_state_pointer, &player_state) ||
-        !ReadCamp(player_pointer, &player_camp) ||
-        !FindDuelCamps(player_camp, camps))) {
+        !ReadCamp(player_pointer, &player_camp))) {
         fail(); return;
+    }
+    if (!assignments.empty() && !FindDuelCamps(player_camp, camps)) {
+        DuelResult(false, g_context.localizer.Text("duel.camps_unavailable",
+            "No player-safe native camps are available for this opponent graph"));
+        return;
     }
     if (!summon_lab::AssignBattleCamps(next, camps, assignments)) {
         DuelResult(false, g_context.localizer.Text("duel.camps_unavailable",
-            "This opponent graph exceeds the native camp limit"));
+            "No player-safe native camps are available for this opponent graph"));
         return;
     }
     bool ok = true;
@@ -6633,7 +6642,8 @@ void ANOMALY_CALL Draw(void* /*context*/, const AnomalyUiServiceV1* ui) {
         const auto editor = localizer.Label("tab.editor", "Editor", "editor");
         bool clone_mode{};
         { std::scoped_lock lock(g_context.mutex); clone_mode = g_context.player_clone; }
-        if (!clone_mode && ui->begin_tab_item(ui->user, anomaly::sdk::StringView(editor), nullptr, 0, 1)) {
+        if (ui->begin_tab_item(ui->user, anomaly::sdk::StringView(editor), nullptr, 0,
+                               clone_mode ? 0 : 1)) {
             DrawBlueprintEditor(ui, world_ready && invoke_ready);
             ui->end_tab_item(ui->user);
         }

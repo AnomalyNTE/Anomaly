@@ -247,6 +247,29 @@ The plugin adjusts two existing sets of knobs directly and does not add or repla
 
 When checked, it first reads the **current values** of these fields as the initial values and writes them to disk, then pushes them to the minimum; it only writes once when checking and once when unchecking, with no periodic polling or write-back. Disabling or reloading the plugin also restores the initial values, so the world is not left with empty streets. The window hotkey is fixed at F8, the toggle hotkey is changeable and unbound by default; the checked state and the initial values persist in the plugin storage directory.
 
+## Summon Lab
+
+| | |
+| --- | --- |
+| **ID** | `anomaly.summon-lab` |
+| **Purpose** | Summon and manage blueprints and playable character clones, including attributes, model scale and battle relationships. |
+| **Required services** | `anomaly.ui`, `anomaly.localization`, `anomaly.config`, `anomaly.profile`, `anomaly.json`, `anomaly.core`, `anomaly.ue5.objects`, `anomaly.ue5.names`, `anomaly.ue5.process-event`, `anomaly.nte.session`, `anomaly.nte.player`, `anomaly.interop.signature`, `anomaly.interop.hook`, `anomaly.scheduler`, `anomaly.storage` |
+| **Requires Profile** | Yes; the host loads and validates the package profile before the plugin uses its compatible layouts and symbols. |
+
+The window pages are **Blueprints / Characters / Presets / Attributes / Editor / Summon / Manage**. The **Editor** tab remains visible in character mode, but is greyed out and cannot be clicked because its blueprint-only field, ability and effect rules do not apply to playable character clones. It becomes available again when blueprint mode is selected.
+
+**Characters** lists public playable character entries and excludes NPC and non-public entries. Select a character, configure the next batch's health, attack, defense and other supported attributes on **Attributes**, then set the name, quantity and spacing on **Summon**. Character clones use the game's native mirrored-character construction, combat effects and automatic skill flow, with the player's level. Failed initialization or attribute verification removes the affected clone and stops the remaining batch.
+
+The **Manage** page contains clones and ordinary summoned entities together. It provides opponent selection, battle groups, target priorities, chase distance and stop controls. Clones can fight other clones and ordinary summons, subject to the game's native camp relationships. The **Do not target the player** option can be selected before summoning; without an assigned opponent, the clone stays idle.
+
+Blueprint mode provides the asset catalog, optional source combat configuration, per-blueprint editor rules and batch summon controls. The blueprint catalog is refreshed from the game's Asset Registry and cached through the host storage service. The editor can override supported boolean, 32-bit integer and floating-point blueprint fields, remove selected GameplayAbility classes, and continuously clear selected GameplayEffect classes for future summons. These rules apply only to plugin-managed instances and may not undo logic that already ran during construction.
+
+Blueprints and character clones share **Model Scale**. Set the next batch's scale on **Summon**, or adjust an individual entity or group on **Manage**; **Restore Original Size** returns the first recorded scale. Attached effects that inherit model scale follow the model, while independently spawned or absolute/world-space effects are not guaranteed to scale with it. Scale settings and presets are persisted through `anomaly.config`.
+
+Summon batches use the selected blueprint or character, name, level and attributes captured when the summon button is clicked. The grid starts from the player's position and facing, avoids managed entities and blocked cells, and can be cancelled while pending. Boss music, boss dialogue and cutscene suppression are independent per-batch options.
+
+The plugin stores the current selection, filters, summon settings and presets through the host configuration service, so they survive plugin reloads and game restarts. Profile compatibility data stays in the package profile and is never written back by user settings.
+
 ## NTE Vehicle
 
 | | |

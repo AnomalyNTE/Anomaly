@@ -508,7 +508,7 @@
     "duel.updated": "对手已更新",
     "duel.failed": "无法设置对战，请确认 Boss 存活且已完成初始化",
     "duel.apply_failed": "设置失败，已停止关联对战",
-    "duel.camps_unavailable": "该对手组合超出原生阵营限制",
+    "duel.camps_unavailable": "当前原生阵营无法让这组对手互斗且不误伤玩家",
     "duel.no_pets": "请取消“作为宠物”后召唤",
     "status.tabs_unavailable": "当前宿主不支持页签控件",
     "summon.hp": "血量上限：{0}",
