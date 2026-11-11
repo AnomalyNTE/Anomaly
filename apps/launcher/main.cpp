@@ -6398,6 +6398,19 @@ void DrawModsMode(
         return tags;
     };
 
+    const auto draw_notes = [](const std::string& notes, const float width) {
+        // Notes are edited as multiline text; keep the preview on one line and
+        // show the original text on hover so long notes cannot widen a card.
+        std::string preview = notes;
+        for (char& character : preview) {
+            if (character == '\r' || character == '\n' || character == '\t') character = ' ';
+        }
+        const float gray = LauncherSurfaceIsLight() ? 0.4f : 0.65f;
+        ImGui::TextColored(ImVec4(gray, gray, gray, 1.0f), "%s",
+            Ellipsize(preview, width).c_str());
+        Tooltip(notes.c_str());
+    };
+
     const float grid_width = anomaly::launcher::BeginModsList();
     if (scroll_to_top) {
         ImGui::SetScrollY(0.0f);
@@ -6440,6 +6453,11 @@ void DrawModsMode(
         }
         const std::string title = entry.display_name.empty() ? entry.name : entry.display_name;
         ImGui::TextUnformatted(Ellipsize(title, card_inner).c_str());
+        if (entry.notes.empty()) {
+            ImGui::Dummy(ImVec2(0.0f, ImGui::GetTextLineHeight()));
+        } else {
+            draw_notes(entry.notes, card_inner);
+        }
         std::string meta = skin_tags(entry, category);
         if (!entry.version.empty()) {
             if (!meta.empty()) meta += "  ·  ";
@@ -6744,7 +6762,16 @@ void DrawModsMode(
                     meta += Tr(anomaly::MessageId::LauncherModsNewVersionInline,
                         {entry.remote_version});
                 }
-                ImGui::TextWrapped("%s", title.c_str());
+                if (entry.notes.empty()) {
+                    ImGui::TextWrapped("%s", title.c_str());
+                } else {
+                    const float title_row_width = ImGui::GetContentRegionAvail().x;
+                    const float title_width = title_row_width * 0.6f;
+                    ImGui::TextUnformatted(Ellipsize(title, title_width).c_str());
+                    Tooltip(title.c_str());
+                    ImGui::SameLine();
+                    draw_notes(entry.notes, ImGui::GetContentRegionAvail().x);
+                }
                 ImGui::TextDisabled("%zu  ·  %.1f MB%s", entry.files,
                     static_cast<double>(entry.bytes) / (1024.0 * 1024.0), meta.c_str());
                 // Every action is a button inside a disabled scope: the click is evaluated first and the
