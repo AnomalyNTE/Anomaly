@@ -89,6 +89,10 @@ constexpr int kIconResourceId = 201;
 // Where the support buttons point. Data, not copy -- a translated address leads nowhere.
 constexpr std::wstring_view kSponsorUrl{L"https://afdian.com/a/bananachicken"};
 constexpr std::wstring_view kKofiUrl{L"https://ko-fi.com/bananachicken"};
+// Where the project itself answers. The about section at the foot of the settings page offers these
+// two, so the addresses live here with the other links rather than inside the drawing code.
+constexpr std::string_view kRepositoryUrl{"https://github.com/AnomalyNTE/Anomaly"};
+constexpr std::string_view kDiscordUrl{"https://discord.gg/tfeh8QQ9Vy"};
 // The width each support button is drawn at, in canvas pixels before the DPI scale. It is the width
 // the platforms publish their artwork for.
 constexpr float kSupportButtonWidth = 200.0f;
@@ -7838,6 +7842,44 @@ void DrawSupportSettings(const anomaly::Translator& translator) {
         Text(translator, anomaly::MessageId::LauncherSupportKofi), kKofiUrl);
 }
 
+// The about section closes the page: the project's own two addresses -- where its source lives, and
+// where the people using it gather -- side by side under one heading. Neither is a page this window
+// draws; both are handed to the shell, the way every other link here leaves the machine.
+void DrawAboutSettings(const anomaly::Translator& translator) {
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    ImGui::TextDisabled("%s", Text(translator, anomaly::MessageId::LauncherSectionAbout));
+    struct Address final {
+        anomaly::MessageId label;
+        const char* id;         // names the chip; the drawn caption is the label
+        std::string_view url;   // data, not copy -- a translated address leads nowhere
+    };
+    constexpr std::array<Address, 2> addresses{{
+        {anomaly::MessageId::LauncherAboutGithub, "##about-github", kRepositoryUrl},
+        {anomaly::MessageId::LauncherAboutDiscord, "##about-discord", kDiscordUrl},
+    }};
+    const float row_height = ButtonHeight(40.0f);
+    for (std::size_t index = 0; index < addresses.size(); ++index) {
+        const Address& address = addresses[index];
+        const char* const label = Text(translator, address.label);
+        // The capsule is measured from its own caption rather than from a constant: the two names are
+        // the platforms' and are spelled the same way in both locales, but the padding around them
+        // belongs to this window and follows its scale.
+        const float width = ImGui::CalcTextSize(label).x + Scale(40.0f);
+        if (index > 0) ImGui::SameLine(0.0f, Scale(12.0f));
+        const std::string chip = std::string(label) + address.id;
+        if (LauncherChip(chip.c_str(), ImVec2(width, row_height))) {
+            const std::wstring url = Utf8Wide(address.url);
+            ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        }
+        // The address itself, for the user who would rather copy it than follow it.
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("%.*s", static_cast<int>(address.url.size()), address.url.data());
+        }
+    }
+}
+
 void DrawSettingsMode(
     HWND window, LauncherController& controller, const LauncherSnapshot& snapshot,
     const anomaly::Translator& translator) {
@@ -8085,6 +8127,7 @@ void DrawSettingsMode(
     DrawStartupSettings(controller, snapshot, translator);
     DrawUpdateSettings(controller, snapshot, translator);
     DrawSupportSettings(translator);
+    DrawAboutSettings(translator);
 
     // The page reports the outcome of its own writes. Everything it can change is saved
     // with the shared scope, so a failure is the only thing that has to be said out
