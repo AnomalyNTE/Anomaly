@@ -2205,6 +2205,9 @@ struct Ue5NteAdapter::State {
         if (id == ANOMALY_UE5_WORLD_SERVICE_V1_ID) {
             return framework_hook_ready && resolution.FeatureAvailable("ue5.world");
         }
+        if (id == ANOMALY_UE5_STREAMING_SOURCE_SERVICE_V1_ID) {
+            return framework_hook_ready && Ue5StreamingSourceAvailable();
+        }
         if (id == ANOMALY_NTE_SESSION_SERVICE_V1_ID) {
             return framework_hook_ready && SemanticFeatureAvailable("nte.session");
         }
