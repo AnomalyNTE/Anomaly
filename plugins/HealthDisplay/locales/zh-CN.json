@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "locale": "zh-CN",
+  "messages": {
+    "window.title": "血量显示",
+    "plugin.description": "独立显示怪物与角色的血条和当前／最大生命值",
+    "health.values": "{0} / {1}",
+    "display.enabled": "启用血量显示",
+    "display.monsters": "怪物",
+    "display.clones": "角色",
+    "display.bars": "显示条形血条",
+    "display.numbers": "显示当前／最大血量",
+    "display.distance": "最大显示距离（米）",
+    "display.width": "血条宽度",
+    "display.scale": "文字大小",
+    "display.count": "已追踪实体：{0}",
+    "config.load_failed": "无法读取设置，自动保存已停用",
+    "config.save_failed": "设置保存失败",
+    "display.height": "血条高度"
+  }
+}
