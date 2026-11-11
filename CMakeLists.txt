@@ -382,6 +382,7 @@ configure_file(
     "${GENERATED_DIR}/anomaly/i18n_embedded_catalog.hpp"
     @ONLY)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/locales/host/en-US.json"
     "${CMAKE_SOURCE_DIR}/schemas/plugin-manifest.schema.json"
     "${CMAKE_SOURCE_DIR}/schemas/build-profile.schema.json"
     "${CMAKE_SOURCE_DIR}/schemas/repository-cache.schema.json"
@@ -1109,9 +1110,9 @@ add_custom_command(TARGET anomaly_core POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "${CMAKE_SOURCE_DIR}/CONTACT"
             "$<TARGET_FILE_DIR:anomaly_core>/CONTACT"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${CMAKE_SOURCE_DIR}/config/anomaly.ini"
-            "$<TARGET_FILE_DIR:anomaly_core>/anomaly.ini"
+    COMMAND "${CMAKE_COMMAND}"
+            "-DANOMALY_RUNTIME_ROOT=$<TARGET_FILE_DIR:anomaly_core>"
+            -P "${CMAKE_SOURCE_DIR}/cmake/initialize_runtime_config.cmake"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "${CMAKE_SOURCE_DIR}/config/repository.json"
             "$<TARGET_FILE_DIR:anomaly_core>/repository.json"
@@ -1339,8 +1340,9 @@ if(ANOMALY_BUILD_TEST_FIXTURES)
     set_target_properties(anomaly-platform-preview PROPERTIES
         OUTPUT_NAME "anomaly-platform-preview")
     target_include_directories(anomaly-platform-preview PRIVATE include src "${GENERATED_DIR}" "")
-    target_compile_definitions(anomaly-platform-preview PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-    target_compile_options(anomaly-platform-preview PRIVATE /W4 /permissive- /EHsc)
+    target_compile_definitions(anomaly-platform-preview PRIVATE
+        UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_options(anomaly-platform-preview PRIVATE /W4 /permissive- /EHsc /utf-8)
     target_link_libraries(
         anomaly-platform-preview PRIVATE
         ue5mem_core anomaly_imgui anomaly_plugin_shadow anomaly_plugin_dependency_resolver
@@ -1348,7 +1350,7 @@ if(ANOMALY_BUILD_TEST_FIXTURES)
         anomaly_platform_settings anomaly_platform_ui_layout anomaly_platform_notice
         anomaly_plugin_runtime
         anomaly_structured_logger anomaly_scoped_platform anomaly_ui_resources
-        anomaly_i18n anomaly_plugin_profile nlohmann_json::nlohmann_json ole32 shell32)
+        anomaly_i18n anomaly_plugin_profile nlohmann_json::nlohmann_json ole32 shell32 comdlg32)
     add_dependencies(anomaly-platform-preview anomaly_stage_nte_profiles)
 endif()
 
@@ -1391,9 +1393,6 @@ option(ANOMALY_BUILD_TEST_PLUGINS
 set(ANOMALY_PLATFORM_PREVIEW_STAGE_COMMANDS
     COMMAND "${CMAKE_COMMAND}" -E make_directory
             "$<TARGET_FILE_DIR:anomaly-platform-preview>/Anomaly"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${CMAKE_SOURCE_DIR}/config/anomaly.ini"
-            "$<TARGET_FILE_DIR:anomaly-platform-preview>/Anomaly/anomaly.ini"
     COMMAND "${CMAKE_COMMAND}" -E copy_directory
             "${CMAKE_SOURCE_DIR}/locales/host"
             "$<TARGET_FILE_DIR:anomaly-platform-preview>/Anomaly/locales/host"
@@ -1449,14 +1448,6 @@ if(ANOMALY_BUILD_SDK_EXAMPLES)
             anomaly_example_nte_combat_demo)
         target_compile_definitions(${example_target} PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
     endforeach()
-    if(TARGET anomaly-platform-preview)
-        add_dependencies(anomaly-platform-preview
-            anomaly_example_hello_ui
-            anomaly_example_tick_counter
-            anomaly_example_reliable_config
-            anomaly_example_nte_inspector
-            anomaly_example_nte_combat_demo)
-    endif()
 endif()
 
 if(ANOMALY_BUILD_BUILTIN_PLUGINS)
@@ -1576,6 +1567,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         SOURCES plugins/BetterPose/plugin.cpp plugins/BetterPose/blender_motion.hpp
         MANIFEST plugins/BetterPose/manifest.json
         PACKAGE_NAME BetterPose
+        RESOURCE_DIRECTORIES data
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/BetterPose")
     # MMD (VMD) -> Bip001 motion conversion. The Python converter in tools/mmd2bip is the
     # reference implementation; this is its C++ port, kept in a library because both the
@@ -1694,12 +1686,6 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         target_link_libraries(anomaly_better_pose_t_pose_calibration_fixture PRIVATE
             anomaly_mmd2bip_converter winmm ws2_32 user32 ole32 shell32 uuid comdlg32 advapi32 shlwapi)
     endif()
-    # The in-game conversion needs the reference MMD bone table next to the plugin.
-    add_custom_command(TARGET anomaly_builtin_better_pose POST_BUILD
-        COMMAND "${CMAKE_COMMAND}" -E copy_directory
-                "${CMAKE_CURRENT_SOURCE_DIR}/plugins/BetterPose/data"
-                "$<TARGET_FILE_DIR:anomaly_builtin_better_pose>/data"
-        VERBATIM)
     add_executable(anomaly_mmd2bip apps/mmd2bip/main.cpp)
     set_target_properties(anomaly_mmd2bip PROPERTIES OUTPUT_NAME "anomaly-mmd2bip")
     target_compile_options(anomaly_mmd2bip PRIVATE /W4 /permissive- /EHsc /utf-8)
@@ -1832,19 +1818,10 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
             ${CMAKE_SOURCE_DIR}/${ANOMALY_NTE_COMBAT_DIR}/src/character_attribute_source.cpp
         MANIFEST ${ANOMALY_NTE_COMBAT_DIR}/manifest.json
         PACKAGE_NAME NteCombatTracker
+        BUNDLED_TARGETS anomaly_nte_combat_overlay
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteCombatTracker")
     target_link_libraries(anomaly_builtin_nte_combat_tracker PRIVATE
         anomaly_nte_combat_model anomaly_nte_combat_uid)
-    # anomaly_add_plugin 只镜像 locales/ 与 assets/，不处理额外可执行文件；Overlay 由这里
-    # 显式打进构建树包目录并随 GameRuntime 组件安装，插件的独立进程才有可启动的目标。
-    add_dependencies(anomaly_builtin_nte_combat_tracker anomaly_nte_combat_overlay)
-    add_custom_command(TARGET anomaly_builtin_nte_combat_tracker POST_BUILD
-        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-                "$<TARGET_FILE:anomaly_nte_combat_overlay>"
-                "$<TARGET_FILE_DIR:anomaly_builtin_nte_combat_tracker>/NteCombatTracker.exe"
-        VERBATIM)
-    install(TARGETS anomaly_nte_combat_overlay
-        RUNTIME DESTINATION "Anomaly/plugins/NteCombatTracker" COMPONENT GameRuntime)
 
     if(ANOMALY_BUILD_TEST_FIXTURES)
         # 离线夹具：采集引擎/日志仓库 与 界面模型/协议/ABI 两组各自在没有游戏进程时验证。
@@ -2237,84 +2214,55 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         target_compile_options(anomaly_builtin_nailong PRIVATE /utf-8)
     endif()
     add_dependencies(anomaly_test_host ${ANOMALY_BUILTIN_PLUGIN_TARGETS})
-    if(TARGET anomaly-platform-preview)
-        add_dependencies(anomaly-platform-preview ${ANOMALY_BUILTIN_PLUGIN_TARGETS})
-    endif()
 endif()
 
-function(anomaly_stage_platform_preview_plugin target package_name)
-    if(NOT TARGET ${target} OR NOT TARGET anomaly-platform-preview)
-        return()
-    endif()
-    add_custom_command(TARGET ${target} POST_BUILD
-        COMMAND "${CMAKE_COMMAND}" -E make_directory
-                "$<TARGET_FILE_DIR:anomaly-platform-preview>/Anomaly/plugins/${package_name}"
-        COMMAND "${CMAKE_COMMAND}" -E copy_directory
-                "$<TARGET_FILE_DIR:${target}>"
-                "$<TARGET_FILE_DIR:anomaly-platform-preview>/Anomaly/plugins/${package_name}"
-        VERBATIM)
-    list(APPEND ANOMALY_PLATFORM_PREVIEW_STAGE_COMMANDS
-        COMMAND "${CMAKE_COMMAND}" -E copy_directory
-                "$<TARGET_FILE_DIR:${target}>"
-                "$<TARGET_FILE_DIR:anomaly-platform-preview>/Anomaly/plugins/${package_name}")
-    set(ANOMALY_PLATFORM_PREVIEW_STAGE_COMMANDS
-        "${ANOMALY_PLATFORM_PREVIEW_STAGE_COMMANDS}" PARENT_SCOPE)
-endfunction()
-anomaly_stage_platform_preview_plugin(anomaly_example_hello_ui HelloUi)
-anomaly_stage_platform_preview_plugin(anomaly_example_tick_counter TickCounter)
-anomaly_stage_platform_preview_plugin(anomaly_example_reliable_config ReliableConfig)
-anomaly_stage_platform_preview_plugin(anomaly_example_nte_inspector NteInspector)
-anomaly_stage_platform_preview_plugin(anomaly_example_nte_combat_demo NteCombatDemo)
-anomaly_stage_platform_preview_plugin(anomaly_builtin_nte_position NtePosition)
-anomaly_stage_platform_preview_plugin(anomaly_builtin_nte_teleport NteTeleport)
-anomaly_stage_platform_preview_plugin(anomaly_builtin_nte_vehicle NteVehicle)
-anomaly_stage_platform_preview_plugin(anomaly_builtin_night999 Night999)
-anomaly_stage_platform_preview_plugin(anomaly_builtin_nte_navigation NteNavmeshDemo)
-anomaly_stage_platform_preview_plugin(anomaly_builtin_nte_pickup_demo NtePickupDemo)
-anomaly_stage_platform_preview_plugin(anomaly_builtin_entity_esp EntityESP)
-anomaly_stage_platform_preview_plugin(anomaly_builtin_pink_paw_heist_esp PinkPawHeistESP)
-anomaly_stage_platform_preview_plugin(anomaly_builtin_fake_uid FakeUID)
-anomaly_stage_platform_preview_plugin(anomaly_builtin_camera_tools CameraTools)
-anomaly_stage_platform_preview_plugin(anomaly_builtin_camera_blur_fix CameraBlurFix)
-anomaly_stage_platform_preview_plugin(anomaly_builtin_better_pose BetterPose)
-anomaly_stage_platform_preview_plugin(
-    anomaly_builtin_teleport_landmarks_probe TeleportLandmarksProbe)
-anomaly_stage_platform_preview_plugin(
-    anomaly_builtin_map_spawn_exporter MapSpawnExporter)
-anomaly_stage_platform_preview_plugin(anomaly_builtin_wallet_collector WalletCollector)
-anomaly_stage_platform_preview_plugin(anomaly_builtin_box_auto BoxAuto)
-anomaly_stage_platform_preview_plugin(anomaly_builtin_combat_box CombatBox)
-anomaly_stage_platform_preview_plugin(anomaly_builtin_clone_enter CloneEnter)
-anomaly_stage_platform_preview_plugin(anomaly_builtin_scene_loader SceneLoader)
-anomaly_stage_platform_preview_plugin(
-    anomaly_builtin_damage_dashboard DamageDashboard)
-anomaly_stage_platform_preview_plugin(
-    anomaly_builtin_nte_combat_tracker NteCombatTracker)
-anomaly_stage_platform_preview_plugin(
-    anomaly_builtin_nte_quick_ultimate QuickUltimate)
-anomaly_stage_platform_preview_plugin(anomaly_builtin_nte_free_fly NteFreeFly)
-anomaly_stage_platform_preview_plugin(anomaly_builtin_skin_changer SkinChanger)
-anomaly_stage_platform_preview_plugin(anomaly_builtin_autofish AutoFish)
-anomaly_stage_platform_preview_plugin(anomaly_builtin_autotaxi Autotaxi)
-anomaly_stage_platform_preview_plugin(anomaly_builtin_autoclaw AutoClaw)
-anomaly_stage_platform_preview_plugin(anomaly_builtin_ui_buttons UiButtons)
-anomaly_stage_platform_preview_plugin(anomaly_builtin_dll_loader DllLoader)
-anomaly_stage_platform_preview_plugin(anomaly_builtin_time_accel TimeAccel)
-anomaly_stage_platform_preview_plugin(anomaly_builtin_status_bar StatusBar)
-anomaly_stage_platform_preview_plugin(anomaly_builtin_deserted Deserted)
-anomaly_stage_platform_preview_plugin(anomaly_builtin_hifi_vehicle_music HiFiVehicleMusic)
-anomaly_stage_platform_preview_plugin(anomaly_builtin_jelly Jelly)
-anomaly_stage_platform_preview_plugin(anomaly_builtin_memory_dump MemoryDump)
-
 if(TARGET anomaly-platform-preview)
-    add_custom_command(TARGET anomaly-platform-preview POST_BUILD
+    # Use the package metadata owned by the installation rules. NO_RELEASE examples
+    # and TestPlugins do not belong to the GameRuntime preview.
+    get_property(preview_candidates GLOBAL PROPERTY ANOMALY_RELEASE_PLUGIN_TARGETS)
+    set(ANOMALY_PREVIEW_PACKAGE_NAMES)
+    set(ANOMALY_PREVIEW_PACKAGE_COMMANDS "")
+    set(preview_plugin_targets)
+    foreach(preview_plugin IN LISTS preview_candidates)
+        get_target_property(preview_component ${preview_plugin} ANOMALY_PACKAGE_INSTALL_COMPONENT)
+        if(NOT preview_component STREQUAL "GameRuntime")
+            continue()
+        endif()
+        list(APPEND preview_plugin_targets ${preview_plugin})
+        get_target_property(preview_name ${preview_plugin} ANOMALY_PACKAGE_NAME)
+        get_target_property(preview_manifest ${preview_plugin} ANOMALY_PACKAGE_MANIFEST)
+        get_target_property(preview_resources ${preview_plugin} ANOMALY_PACKAGE_RESOURCE_DIRECTORIES)
+        get_target_property(preview_bundled_targets ${preview_plugin} ANOMALY_PACKAGE_BUNDLED_TARGETS)
+        get_filename_component(preview_source "${preview_manifest}" DIRECTORY)
+        list(APPEND ANOMALY_PREVIEW_PACKAGE_NAMES "${preview_name}")
+        string(APPEND ANOMALY_PREVIEW_PACKAGE_COMMANDS
+            "file(COPY_FILE [==[$<TARGET_FILE:${preview_plugin}>]==] \"\${preview_plugins}/${preview_name}/plugin.dll\" ONLY_IF_DIFFERENT)\n"
+            "file(COPY_FILE [==[${preview_manifest}]==] \"\${preview_plugins}/${preview_name}/manifest.json\" ONLY_IF_DIFFERENT)\n")
+        foreach(preview_resource IN LISTS preview_resources)
+            string(APPEND ANOMALY_PREVIEW_PACKAGE_COMMANDS
+                "file(COPY [==[${preview_source}/${preview_resource}]==] DESTINATION \"\${preview_plugins}/${preview_name}\")\n")
+        endforeach()
+        foreach(preview_bundled_target IN LISTS preview_bundled_targets)
+            string(APPEND ANOMALY_PREVIEW_PACKAGE_COMMANDS
+                "file(COPY_FILE [==[$<TARGET_FILE:${preview_bundled_target}>]==] \"\${preview_plugins}/${preview_name}/$<TARGET_FILE_NAME:${preview_bundled_target}>\" ONLY_IF_DIFFERENT)\n")
+        endforeach()
+    endforeach()
+    configure_file(cmake/stage_platform_preview.cmake.in
+        "${GENERATED_DIR}/stage_platform_preview.cmake.in" @ONLY)
+    file(GENERATE OUTPUT "${GENERATED_DIR}/stage_platform_preview-$<CONFIG>.cmake"
+        INPUT "${GENERATED_DIR}/stage_platform_preview.cmake.in")
+    # A custom target also runs when only JSON/assets changed or the executable is
+    # already current; POST_BUILD alone leaves those resources stale.
+    add_custom_target(anomaly_stage_platform_preview
         COMMAND "${CMAKE_COMMAND}" -E make_directory
                 "$<TARGET_FILE_DIR:anomaly-platform-preview>/Anomaly"
-        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-                "${CMAKE_SOURCE_DIR}/CONTACT"
-                "$<TARGET_FILE_DIR:anomaly-platform-preview>/Anomaly/CONTACT"
+        COMMAND "${CMAKE_COMMAND}"
+                "-DANOMALY_PREVIEW_ROOT=$<TARGET_FILE_DIR:anomaly-platform-preview>/Anomaly"
+                -P "${GENERATED_DIR}/stage_platform_preview-$<CONFIG>.cmake"
         ${ANOMALY_PLATFORM_PREVIEW_STAGE_COMMANDS}
+        DEPENDS ${preview_plugin_targets}
         VERBATIM)
+    add_dependencies(anomaly-platform-preview anomaly_stage_platform_preview)
 endif()
 
 set(ANOMALY_RELEASE_PE_TARGETS
@@ -2349,14 +2297,6 @@ install(TARGETS anomaly_core
 # `Anomaly/plugins/<PackageName>` in the GameRuntime component, or in the opt-in
 # TestPlugins component for TEST_PLUGIN packages, so a registered plugin cannot be
 # missing from the runtime tree.
-if(TARGET anomaly_builtin_better_pose)
-    # `data/` is plugin-specific content rather than part of the manifest package layout,
-    # so the package rules above do not carry it: the in-game conversion reads its
-    # reference bone tables from `data/` next to the DLL, and without this rule a release
-    # install ships a plugin that cannot convert a motion.
-    install(DIRECTORY plugins/BetterPose/data/
-        DESTINATION Anomaly/plugins/BetterPose/data COMPONENT GameRuntime)
-endif()
 install(FILES CONTACT config/anomaly.ini config/repository.json config/plugin-repositories.json
     DESTINATION Anomaly COMPONENT GameRuntime)
 install(DIRECTORY locales/host

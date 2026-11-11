@@ -695,6 +695,12 @@
     "launcher.update.baidu": "Baidu Netdisk",
     "launcher.section.support": "Support us",
     "launcher.support.afdian": "Sponsor on Afdian",
-    "launcher.support.kofi": "Sponsor on Ko-fi"
+    "launcher.support.kofi": "Sponsor on Ko-fi",
+    "preview.background.title": "Preview background",
+    "preview.background.green": "Green",
+    "preview.background.white": "White",
+    "preview.background.custom": "Custom...",
+    "preview.window.menu": "Window",
+    "preview.window.always_on_top": "Always on top"
   }
 }

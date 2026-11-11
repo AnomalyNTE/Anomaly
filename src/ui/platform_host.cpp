@@ -59,13 +59,6 @@ extern "C" IMAGE_DOS_HEADER __ImageBase;
 namespace ue5mem {
 namespace {
 
-// Fully transparent clear colour. Composition takes the swap chain's alpha
-// literally, so clearing to zero alpha leaves the desktop showing through
-// everywhere the panels do not draw. A layered window cannot be used for this:
-// WS_EX_LAYERED redirects the window to a surface the D3D swap chain never
-// reaches, which paints an opaque rectangle instead.
-constexpr float kHostClearColor[4]{0.0f, 0.0f, 0.0f, 0.0f};
-
 // Half extent of the clip rectangle a theme sticker draws under. It is far
 // larger than any display so the clip never becomes the thing that cuts a
 // sticker off; the renderer clamps every command to the swap chain anyway.
@@ -73,6 +66,7 @@ constexpr float kThemeStickerClipExtent = 16384.0f;
 
 struct HostWindow {
     HWND window{};
+    PlatformWindowAppearance appearance;
     HWND target{};
     ID3D11Device* device{};
     ID3D11DeviceContext* context{};
@@ -264,6 +258,12 @@ bool CreateRenderTarget(HostWindow& host) {
 LRESULT WINAPI WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
     if (ImGui_ImplWin32_WndProcHandler(window, message, wparam, lparam)) return TRUE;
     switch (message) {
+    case WM_COMMAND:
+        if (lparam == 0 && g_window != nullptr && g_window->appearance.menu_command) {
+            g_window->appearance.menu_command(window, LOWORD(wparam));
+            return 0;
+        }
+        break;
     case WM_SIZE:
         if (g_window != nullptr && g_window->device != nullptr && wparam != SIZE_MINIMIZED) {
             // ResizeBuffers requires every backbuffer reference to be unbound.
@@ -285,10 +285,14 @@ LRESULT WINAPI WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpara
         // between a native resize and the next rendered frame.
         return 1;
     case WM_SYSCOMMAND:
-        if ((wparam & 0xfff0) == SC_KEYMENU) return 0;
+        if ((wparam & 0xfff0) == SC_KEYMENU && GetMenu(window) == nullptr) return 0;
         break;
     case WM_CLOSE:
         if (g_window != nullptr) {
+            if (g_window->appearance.close_exits) {
+                PostQuitMessage(0);
+                return 0;
+            }
             g_window->visible = false;
             ShowWindow(window, SW_HIDE);
         }
@@ -9008,7 +9012,8 @@ void RunPlatform(
     anomaly::CoreMemoryServices memory_services,
     std::shared_ptr<anomaly::Ue5NteAdapter> adapter,
     PlatformDiagnostics diagnostics,
-    std::shared_ptr<PluginManager> plugin_owner) {
+    std::shared_ptr<PluginManager> plugin_owner,
+    PlatformWindowAppearance appearance) {
     static_cast<void>(memory_services);
     if (plugin_owner == nullptr) return;
     PluginManager& plugins = *plugin_owner;
@@ -9016,6 +9021,7 @@ void RunPlatform(
     // retain the ImGui/D3D generation after this worker returns.
     auto host_owner = std::make_unique<HostWindow>();
     HostWindow& host = *host_owner;
+    host.appearance = std::move(appearance);
     host.plugin_owner = plugin_owner;
     const HINSTANCE instance = GetModuleHandleW(nullptr);
     WNDCLASSEXW window_class{
@@ -9161,7 +9167,8 @@ void RunPlatform(
     g_window = &host;
 
     class_registered = RegisterClassExW(&window_class) != 0;
-    const DWORD extended_style = WS_EX_TOOLWINDOW;
+    const DWORD extended_style =
+        host.appearance.show_in_taskbar ? WS_EX_APPWINDOW : WS_EX_TOOLWINDOW;
     const DWORD window_style = host.attached ? WS_POPUP : WS_OVERLAPPEDWINDOW;
     // The attached window covers a game client area, so it is sized to that.
     // The standalone window is a fixed-size surface that has to be deliberately
@@ -9174,6 +9181,9 @@ void RunPlatform(
         extended_style, window_class.lpszClassName, L"Anomaly Plugin Platform", window_style,
         120, 100, kStandaloneWindowWidth, kStandaloneWindowHeight,
         host.attached ? host.target : nullptr, nullptr, instance, nullptr);
+    if (host.window != nullptr && host.appearance.setup_window) {
+        host.appearance.setup_window(host.window);
+    }
     if (host.window == nullptr || !CreateDevice(host)) {
         std::ofstream(root / L"anomaly-platform.log", std::ios::app)
             << "platform window/device creation failed: " << GetLastError() << '\n';
@@ -9374,7 +9384,10 @@ void RunPlatform(
         ImGui::Render();
         UpdateHostWindowRegion(host);
         host.context->OMSetRenderTargets(1, &host.render_target, nullptr);
-        host.context->ClearRenderTargetView(host.render_target, kHostClearColor);
+        if (host.appearance.background_color) {
+            host.appearance.clear_color = host.appearance.background_color();
+        }
+        host.context->ClearRenderTargetView(host.render_target, host.appearance.clear_color.data());
         anomaly::glass::PrepareDrawData(ImGui::GetDrawData());
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
         host.swap_chain->Present(1, 0);

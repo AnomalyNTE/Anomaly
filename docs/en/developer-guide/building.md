@@ -55,6 +55,24 @@ For the runtime package layout, see [Installation and updates](../user-guide/ins
 ## Preview UI (no game)
 
 `anomaly-platform-preview.exe` is a development fixture and requires enabling `ANOMALY_BUILD_TEST_FIXTURES` first (`.\build.cmd fixtures`). Once enabled, run it directly to preview and debug the interface and plugins in a standalone process through the same Platform and PluginManager path used inside the game.
+The native menu bar offers green (`#00FF00`), white and custom background colors, outside the preview canvas.
+The Window menu includes an Always on top toggle; the preview appears in the taskbar and Win+Tab.
+Green and no topmost behavior are the defaults. Closing the window exits normally and saves
+`[Preview] BackgroundColor` and `AlwaysOnTop` in `anomaly.ini`.
+
+The preview synchronizes its plugins from the `GameRuntime` installation list, including DLLs,
+manifests, localization and resources. `NO_RELEASE` examples and `TestPlugins` packages are excluded.
+Building the preview target refreshes the mirror and removes preview packages no longer installed.
+Existing `anomaly.ini`, configuration and runtime state are preserved. To update only the preview:
+
+```powershell
+cmake --preset windows-vs2022 -DANOMALY_BUILD_TEST_FIXTURES=ON
+cmake --build --preset windows-relwithdebinfo --target anomaly-platform-preview --parallel
+```
+
+Rebuild the preview after updating host localization so its embedded message definitions match
+the catalogs. Copying a newer catalog beside an older EXE can reject the catalog for unknown keys
+and fall back to English.
 
 ## Release packaging
 
