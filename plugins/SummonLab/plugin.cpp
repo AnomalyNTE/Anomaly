@@ -13,6 +13,7 @@
 #include "attribute_descriptions.hpp"
 #include "battle_graph.hpp"
 #include "native_layout.hpp"
+#include "clone_contract.hpp"
 #include "blueprint_names.hpp"
 #include "presets.hpp"
 #include "blueprint_editor_state.hpp"
@@ -109,7 +110,8 @@ enum class OpKind : std::uint32_t {
     SelectAllOpponents = 10,
     SetGroupBattle = 11,
     StopGroupBattle = 12,
-    SetAggroSettings = 13
+    SetAggroSettings = 13,
+    SetModelScale = 14
 };
 
 struct SummonBatch;
@@ -133,6 +135,7 @@ struct PendingOp {
     std::vector<std::uint64_t> members;
     std::vector<std::uint64_t> opponents;
     AggroSettings aggro;
+    double model_scale{1.0};
 };
 
 struct ClassEntry {
@@ -202,12 +205,20 @@ struct SummonIdentity {
     std::int32_t index{-1};
 };
 
+struct ModelScaleState {
+    double requested{1.0}, applied{1.0};
+    summon_lab::Vector base{};
+    AnomalyGenerationHandleV1 component{};
+    bool pending{};
+};
+
 struct Record {
     std::uint64_t id{};
     AnomalyGenerationHandleV1 handle{};
     std::uintptr_t pointer{};      // SummonAI 返回的 Actor 指针，Dismiss 需要它
     float hp{};
     float max_hp{};
+    bool player_clone{}, clone_pending{};
     bool pet{};
     bool mute_boss_music{}, mute_boss_dialogue{};
     SummonIdentity registration;
@@ -224,12 +235,15 @@ struct Record {
     std::shared_ptr<summon_lab::EditorRuntime> editor;
     std::string editor_warning;
     std::string editor_rule_warning;
+    ModelScaleState model_scale;
     char label[96]{};
 };
 
 struct ManagementRecord {
     std::uint64_t id{};
+    double model_scale{1.0};
     float hp{}, max_hp{};
+    bool player_clone{}, clone_pending{};
     bool pet{};
     std::string class_path;
     std::array<char, 96> label{};
@@ -295,6 +309,7 @@ struct Context {
     std::map<std::string, BlueprintOptions, std::less<>> catalog_policy;
     using CatalogLabels = std::map<std::string, std::string, std::less<>>;
     std::atomic<std::shared_ptr<const CatalogLabels>> catalog_labels;
+    std::atomic<std::shared_ptr<const CatalogLabels>> clone_labels;
     std::atomic<bool> catalog_stop{false}, catalog_busy{false}, catalog_refresh_requested{true};
     bool catalog_preparing{}; // Game only
     std::chrono::steady_clock::time_point catalog_preparation_started;
@@ -332,6 +347,12 @@ struct Context {
     std::uint64_t session_event_cursor{};
     std::uint32_t frame_counter{};
 
+    bool player_clone{};
+    std::vector<ClassEntry> clone_catalog;
+    std::string clone_catalog_status;
+    std::atomic<bool> clone_refresh{true};
+    std::array<char, 64> clone_filter{};
+
     // 可编辑参数
     std::array<char, kPathCapacity> class_path{};
     std::string combat_config_blueprint;
@@ -354,12 +375,14 @@ struct Context {
     int pet{};
     int aggressive{};
     int ignore_player{};
+    int hide_clone_effect{};
     int mute_boss_music{};
     int mute_boss_dialogue{};
     int skip_cutscenes{};
     int ft_compatibility{};
     std::uint32_t summon_count{1};
     double summon_spacing{5.0};
+    double model_scale{1.0}, management_scale{1.0};
 
     // Game-thread-only scratch. Native Conv_StringToText replaces its previous
     // FText through UE's move assignment. Retain the final reference for this
@@ -392,6 +415,8 @@ std::atomic<std::uint32_t> g_pending_hint{0};
 // Configuration snapshots contain values only, never live actor handles.
 SummonSettings CaptureSettingsLocked() {
     SummonSettings settings;
+    settings.player_clone = g_context.player_clone;
+    settings.hide_clone_effect = g_context.hide_clone_effect != 0;
     settings.class_path = g_context.class_path.data();
     settings.combat_config_blueprint = g_context.combat_config_blueprint;
     settings.advanced_combat_blueprint = g_context.advanced_combat_blueprint;
@@ -410,12 +435,16 @@ SummonSettings CaptureSettingsLocked() {
     settings.presets = g_context.birth_presets;
     settings.count = g_context.summon_count;
     settings.spacing = g_context.summon_spacing;
+    settings.model_scale = g_context.model_scale;
     if (const auto it = g_context.editor.blueprints.find(settings.class_path); it != g_context.editor.blueprints.end())
         settings.editor = it->second;
     return settings;
 }
 
 void ApplySettingsLocked(const SummonSettings& settings) {
+    g_context.player_clone = settings.player_clone;
+    g_context.hide_clone_effect = settings.hide_clone_effect;
+    g_context.model_scale = settings.model_scale;
     std::snprintf(g_context.class_path.data(), g_context.class_path.size(), "%s", settings.class_path.c_str());
     g_context.combat_config_blueprint = settings.combat_config_blueprint;
     g_context.advanced_combat_blueprint = settings.advanced_combat_blueprint;
@@ -442,6 +471,7 @@ void ApplySettingsLocked(const SummonSettings& settings) {
 
 SavedConfiguration CaptureConfigurationLocked() {
     SavedConfiguration saved;
+    saved.management_scale = g_context.management_scale;
     saved.current = CaptureSettingsLocked();
     saved.presets = g_context.saved_presets;
     saved.editor_blueprints = g_context.editor.blueprints;
@@ -546,6 +576,7 @@ bool LoadConfiguration() noexcept {
         g_context.preset_export_folder = std::move(saved.export_folder);
         g_context.preset_import_file = std::move(saved.import_file);
         g_context.only_overrides = saved.only_overrides;
+        g_context.management_scale = saved.management_scale;
         g_context.presets_current_blueprint = saved.only_current_blueprint;
         g_context.config_writable = true;
         g_context.config_dirty = false;
@@ -1381,13 +1412,24 @@ bool ReadReflectedValue(std::uintptr_t object, const char* name,
     char type[64]{};
     if (object == 0 || !ReadValue(object + g_layout.objectClass, &uclass)) return false;
     const auto property = FindProperty(uclass, name);
-    return property != 0 && ReadValue(property + g_layout.fieldClass, &field_class) &&
+    const bool matched = property != 0 && ReadValue(property + g_layout.fieldClass, &field_class) &&
         ReadValue(field_class + g_layout.fieldClassName, &type_id) && ResolveName(type_id, type, sizeof(type)) &&
         (expected_type == type || (expected_type == "ByteProperty" && std::strcmp(type, "EnumProperty") == 0)) &&
         ReadValue(property + g_layout.propertyElementSize, &size) && size == sizeof(T) &&
         ReadValue(property + g_layout.propertyArrayDim, &dimension) && dimension == 1 &&
-        ReadValue(property + g_layout.propertyOffset, &offset) && offset >= 0 &&
-        ReadValue(object + offset, value);
+        ReadValue(property + g_layout.propertyOffset, &offset) && offset >= 0;
+    if (!matched) return false;
+    if constexpr (std::is_same_v<T, std::uint8_t>) {
+        if (expected_type == "BoolProperty") {
+            std::uint8_t byte{}, mask{}, storage{};
+            if (!ReadValue(property + g_layout.boolByteOffset, &byte) || byte != 0 ||
+                !ReadValue(property + g_layout.boolFieldMask, &mask) || !mask ||
+                !ReadValue(object + offset, &storage)) return false;
+            *value = (storage & mask) != 0;
+            return true;
+        }
+    }
+    return ReadValue(object + offset, value);
 }
 
 template <typename T>
@@ -1462,6 +1504,9 @@ struct CombatConfigSource {
 CombatConfigSource PrepareCombatConfig(std::string_view config_name, std::string_view source_blueprint = {});
 
 struct BirthInitialization {
+    bool player_clone{}, clone_build_finished{}, clone_hold{}, clone_control_failed{};
+    AnomalyGenerationHandleV1 clone_effect_handle{};
+    std::uintptr_t clone_effect_class{};
     std::uintptr_t actor_class{};
     std::uintptr_t actor{};
     std::uintptr_t attribute_set{};
@@ -1480,6 +1525,23 @@ struct BirthInitialization {
     bool editor_attempted{}, editor_applied{};
 };
 
+struct PlayerClone {
+    AnomalyGenerationHandleV1 handle{};
+    std::uintptr_t actor{};
+    std::shared_ptr<BirthInitialization> birth;
+    std::chrono::steady_clock::time_point started;
+    bool battle_mode{};
+};
+struct CloneRuntime {
+    summon_lab::CloneLayout layout;
+    std::uintptr_t spawn{}, assign_weak{}, ability_data{}, attribute_copy{};
+    std::uint32_t attribute_size{};
+    NativeCombatHook build_hook;
+    bool ready{};
+    std::atomic<DWORD> game_thread{0};
+    std::vector<PlayerClone> actors; // Game thread; hook reads only on this thread.
+} g_clones;
+
 using AttributeBaseInputFn = void (ANOMALY_CALL*)(void*, const void*, float);
 std::atomic<DWORD> g_birth_thread{0};
 BirthInitialization* g_birth_initialization{}; // Owned exclusively by g_birth_thread.
@@ -1493,6 +1555,7 @@ struct LocalBirthBinding {
     CombatConfigSource combat_config;
     SummonIdentity registration;
     std::uint32_t health_observations{}, mirror_observations{}, damage_observations{};
+    bool custom_attack{};
 };
 struct PendingBirthConfiguration {
     AnomalyGenerationHandleV1 actor_handle{};
@@ -1521,11 +1584,13 @@ void ForgetLocalBirth(AnomalyGenerationHandleV1 handle) {
     std::erase_if(g_local_births, same_actor);
     std::erase_if(g_birth_configurations, same_actor);
     g_observe_ft_health.store(std::any_of(g_local_births.begin(), g_local_births.end(),
-        [](const auto& entry) { return entry.combat_config.config_name.starts_with("FT_"); }),
+        [](const auto& entry) { return entry.custom_attack || entry.combat_config.config_name.starts_with("FT_"); }),
         std::memory_order_release);
 }
 
 void ClearSummonedState() {
+    g_clones.actors.clear();
+    g_context.clone_refresh.store(true, std::memory_order_release);
     {
         std::scoped_lock lock(g_local_birth_mutex);
         g_local_births.clear();
@@ -1561,21 +1626,22 @@ void ClearSummonedState() {
 void RegisterLocalBirth(AnomalyGenerationHandleV1 handle, std::uintptr_t actor,
                         std::uintptr_t ability_system, std::uintptr_t attribute_set,
                         float exact_hp, const CombatConfigSource& config = {},
-                        const SummonIdentity& registration = {}) {
+                        const SummonIdentity& registration = {}, bool custom_attack = false) {
     std::scoped_lock lock(g_local_birth_mutex);
     g_local_births.erase(std::remove_if(g_local_births.begin(), g_local_births.end(),
         [](const LocalBirthBinding& binding) { return !ProbeHandle(binding.actor_handle); }),
         g_local_births.end());
     g_local_births.push_back({handle, actor, ability_system, attribute_set, exact_hp, config,
         registration});
-    if (config.config_name.starts_with("FT_"))
+    g_local_births.back().custom_attack = custom_attack;
+    if (custom_attack || config.config_name.starts_with("FT_"))
         g_observe_ft_health.store(true, std::memory_order_release);
 }
 
 // Passive FT diagnostics: observe native replies before the engine consumes
 // them. Never invoke gameplay code or retain a borrowed RPC parameter buffer.
 bool DiagnosticStruct(std::uintptr_t property, const char* expected_name,
-                      std::uintptr_t* type, std::int32_t* size) {
+                      std::uintptr_t* type, std::int32_t* size, std::int32_t maximum_size = 512) {
     std::uintptr_t field_class{};
     std::uint32_t id{};
     std::int32_t dimension{}, declared_size{};
@@ -1584,7 +1650,7 @@ bool DiagnosticStruct(std::uintptr_t property, const char* expected_name,
         ReadValue(field_class + g_layout.fieldClassName, &id) && ResolveName(id, name, sizeof(name)) &&
         std::strcmp(name, "StructProperty") == 0 &&
         ReadValue(property + g_layout.propertyArrayDim, &dimension) && dimension == 1 &&
-        ReadValue(property + g_layout.propertyElementSize, size) && *size > 0 && *size <= 512 &&
+        ReadValue(property + g_layout.propertyElementSize, size) && *size > 0 && *size <= maximum_size &&
         ReadValue(property + g_layout.propertyStruct, type) && *type != 0 &&
         ReadValue(*type + g_layout.objectName, &id) && ResolveName(id, name, sizeof(name)) &&
         std::strcmp(name, expected_name) == 0 &&
@@ -1593,10 +1659,10 @@ bool DiagnosticStruct(std::uintptr_t property, const char* expected_name,
 
 bool DiagnosticNestedStruct(std::uintptr_t data, std::uintptr_t owner, const char* field,
                             const char* expected_type, std::uintptr_t* nested_data,
-                            std::uintptr_t* nested_type) {
+                            std::uintptr_t* nested_type, std::int32_t maximum_size = 512) {
     const auto property = FindProperty(owner, field);
     std::int32_t size{}, offset{}, owner_size{};
-    if (!DiagnosticStruct(property, expected_type, nested_type, &size) ||
+    if (!DiagnosticStruct(property, expected_type, nested_type, &size, maximum_size) ||
         !ReadValue(property + g_layout.propertyOffset, &offset) || offset < 0 ||
         !ReadValue(owner + g_layout.structSize, &owner_size) ||
         offset > owner_size || size > owner_size - offset) return false;
@@ -1648,7 +1714,7 @@ void ObserveFinalTowerHealth(const char* event, AnomalyGenerationHandleV1 contro
         ReadReflectedValue(ability_system, "MaxHPTemp", "FloatProperty", &local_max);
     char message[320]{};
     std::snprintf(message, sizeof(message),
-        "SummonLab FT-health-reply: event=%s actor=%p index=%d incomingHP=%.9g deadState=%d localBefore=%.9g/%.9g localReadable=%s",
+        "SummonLab native-health-reply: event=%s actor=%p index=%d incomingHP=%.9g deadState=%d localBefore=%.9g/%.9g localReadable=%s",
         event, reinterpret_cast<void*>(actor), index, hp, dead_state, local_hp, local_max,
         local_read ? "yes" : "no");
     g_context.core->log(g_context.core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
@@ -1870,6 +1936,10 @@ void TransferLocalBirths(bool save) noexcept {
                         {"actor", binding.actor}, {"abilitySystem", binding.ability_system},
                         {"attributeSet", binding.attribute_set},
                         {"exactHP", binding.exact_hp},
+                        {"customAttack", binding.custom_attack},
+                        {"registration", {{"controllerId", binding.registration.controller.id},
+                            {"controllerGeneration", binding.registration.controller.generation},
+                            {"leader", binding.registration.leader}, {"index", binding.registration.index}}},
                         {"combatConfig", binding.combat_config.config_name},
                         {"combatSource", binding.combat_config.server_blueprint}});
             }
@@ -1893,6 +1963,13 @@ void TransferLocalBirths(bool save) noexcept {
                 item.value("attributeSet", static_cast<std::uintptr_t>(0)),
                 item.value("exactHP", 0.0F)};
             binding.combat_config.config_name = item.value("combatConfig", std::string{});
+            binding.custom_attack = item.value("customAttack", false);
+            if (const auto registration = item.find("registration"); registration != item.end()) {
+                binding.registration.controller = {registration->at("controllerId").get<std::uint64_t>(),
+                    registration->at("controllerGeneration").get<std::uint64_t>()};
+                binding.registration.leader = registration->at("leader").get<NativeIdentity>();
+                binding.registration.index = registration->at("index").get<std::int32_t>();
+            }
             binding.combat_config.server_blueprint = item.value("combatSource", std::string{});
             g_pending_local_births.push_back(std::move(binding));
         }
@@ -1915,7 +1992,8 @@ void RestoreLocalBirthsOnGameThread() {
             ResolveActorAttributeSet(binding.actor, &asc, &set) && asc == binding.ability_system)
         {
             RegisterLocalBirth(current, binding.actor, asc, set, binding.exact_hp,
-                PrepareCombatConfig(binding.combat_config.config_name, binding.combat_config.server_blueprint));
+                PrepareCombatConfig(binding.combat_config.config_name, binding.combat_config.server_blueprint),
+                ProbeHandle(binding.registration.controller) ? binding.registration : SummonIdentity{}, binding.custom_attack);
         }
     }
     g_pending_local_births.clear();
@@ -1929,7 +2007,7 @@ bool IsBirthAttributeSet(std::uintptr_t self, BirthInitialization& birth) {
             return false;
         std::uintptr_t owner_class{};
         if (!ReadValue(owner + g_layout.objectClass, &owner_class)) return false;
-        if (owner_class != birth.actor_class) continue;
+        if (owner_class != birth.actor_class || (birth.actor != 0 && owner != birth.actor)) continue;
         std::uint32_t flags{};
         if (!ReadValue(owner + g_layout.objectFlags, &flags) || (flags & 0x30U) != 0) return false;
         birth.actor = owner;
@@ -1939,8 +2017,8 @@ bool IsBirthAttributeSet(std::uintptr_t self, BirthInitialization& birth) {
     return false;
 }
 
-void OverrideBirthBaseInput(std::uintptr_t container, const void* attribute, float& value) {
-    auto* birth = g_birth_initialization;
+void OverrideBirthBaseInput(std::uintptr_t container, const void* attribute, float& value,
+                            BirthInitialization* birth) {
     if (birth == nullptr || attribute == nullptr) return;
 
     std::uintptr_t property{};
@@ -2000,7 +2078,12 @@ void ANOMALY_CALL AttributeBaseInputDetour(void* self, const void* attribute,
             leased = g_context.hooks->begin_callback(g_context.hooks->user,
                          g_context.attribute_hook, &lease).code == ANOMALY_STATUS_V1_OK;
         if (leased && g_birth_thread.load(std::memory_order_acquire) == GetCurrentThreadId())
-            OverrideBirthBaseInput(reinterpret_cast<std::uintptr_t>(self), attribute, new_base);
+            OverrideBirthBaseInput(reinterpret_cast<std::uintptr_t>(self), attribute, new_base, g_birth_initialization);
+        else if (leased && g_clones.game_thread.load(std::memory_order_acquire) == GetCurrentThreadId()) {
+            for (const auto& clone : g_clones.actors)
+                if (clone.birth && ProbeHandle(clone.handle))
+                    OverrideBirthBaseInput(reinterpret_cast<std::uintptr_t>(self), attribute, new_base, clone.birth.get());
+        }
     } catch (...) {
     }
     // Supply the value before GAS stores the base and updates its aggregator.
@@ -2132,7 +2215,7 @@ AnomalyStatusV1 ReleaseLocalCombatHooks() {
 }
 
 // The native mirror deserializes cached fields after GAS has initialized them.
-// Local custom births own their MaxHP caches; replicated players do not.
+// Local custom births own their selected derived caches; replicated players do not.
 // Filter a borrowed local view before assignment, never rewrite HP or RPC data.
 using LocalAttributeMirrorFn = void (ANOMALY_CALL*)(void*, void*, const void*, void*);
 void ANOMALY_CALL PreserveLocalBirthMaxHP(void* context, void* owner,
@@ -2147,17 +2230,18 @@ void ANOMALY_CALL PreserveLocalBirthMaxHP(void* context, void* owner,
         try {
             std::uintptr_t target{};
             std::uintptr_t actor{}, current_ability_system{};
-            bool protect_max{}, observe_ft{};
+            bool protect_max{}, protect_attack{}, observe_ft{};
             AnomalyGenerationHandleV1 handle{};
             if (lease && record != nullptr &&
                 ReadValue(reinterpret_cast<std::uintptr_t>(record) + g_layout.mirrorObject, &target)) {
                 std::scoped_lock lock(g_local_birth_mutex);
                 for (const auto& binding : g_local_births) {
                     if (binding.ability_system == target &&
-                        (binding.exact_hp > 0.0F || binding.combat_config.config_name.starts_with("FT_"))) {
+                        (binding.exact_hp > 0.0F || binding.custom_attack || binding.combat_config.config_name.starts_with("FT_"))) {
                         handle = binding.actor_handle;
                         actor = binding.actor;
                         protect_max = binding.exact_hp > 0.0F;
+                        protect_attack = binding.custom_attack;
                         observe_ft = binding.combat_config.config_name.starts_with("FT_");
                         break;
                     }
@@ -2193,7 +2277,8 @@ void ANOMALY_CALL PreserveLocalBirthMaxHP(void* context, void* owner,
                             const bool protected_max = protect_max && max_field;
                             if (protected_max && std::strcmp(name, "MaxHPTemp") == 0)
                                 CaptureNativeBirthMaximum(target, entry);
-                            if (!protected_max) filtered.push_back(entry);
+                            const bool protected_attack = protect_attack && named && std::strcmp(name, "Atk") == 0;
+                            if (!protected_max && !protected_attack) filtered.push_back(entry);
                         }
                         if (filtered.size() != entries.size()) {
                             const auto pointer = reinterpret_cast<std::uintptr_t>(filtered.data());
@@ -2230,7 +2315,7 @@ std::uintptr_t ANOMALY_CALL ObserveNativeDamageReport(std::uintptr_t controller,
                 [target](const auto& value) { return value.ability_system == target; });
             if (a == g_local_births.end() || b == g_local_births.end() || a == b ||
                 a->damage_observations >= 24 ||
-                (!a->combat_config.config_name.starts_with("FT_") &&
+                (!a->custom_attack && !b->custom_attack && !a->combat_config.config_name.starts_with("FT_") &&
                  !b->combat_config.config_name.starts_with("FT_"))) return report;
             ++a->damage_observations;
             attacker = *a;
@@ -2240,7 +2325,7 @@ std::uintptr_t ANOMALY_CALL ObserveNativeDamageReport(std::uintptr_t controller,
         const auto& layout = g_context.damage_report;
         NativeIdentity source_identity{}, target_identity{};
         std::int32_t effect{-1};
-        float reported_damage{}, reported_hp{}, local_hp{};
+        float reported_damage{}, reported_hp{}, local_hp{}, attack{};
         const bool readable = report != 0 &&
             ReadValue(report + layout.source, &source_identity) &&
             ReadValue(report + layout.target, &target_identity) &&
@@ -2254,10 +2339,11 @@ std::uintptr_t ANOMALY_CALL ObserveNativeDamageReport(std::uintptr_t controller,
                 g_layout.diagnosticSummonIndex) == 0;
         };
         static_cast<void>(ReadReflectedValue(target, "HPCurrent", "FloatProperty", &local_hp));
+        static_cast<void>(ReadReflectedValue(source, "Atk", "FloatProperty", &attack));
         char message[384]{};
         std::snprintf(message, sizeof(message),
-            "SummonLab FT-damage-report: source=%p target=%p input=%.9g built=%s effect=%d damage=%.9g reportHP=%.9g localHP=%.9g sourceMatch=%d targetMatch=%d",
-            reinterpret_cast<void*>(attacker.actor), reinterpret_cast<void*>(victim.actor), damage,
+            "SummonLab native-damage-report: source=%p target=%p atk=%.9g input=%.9g built=%s effect=%d damage=%.9g reportHP=%.9g localHP=%.9g sourceMatch=%d targetMatch=%d",
+            reinterpret_cast<void*>(attacker.actor), reinterpret_cast<void*>(victim.actor), attack, damage,
             readable ? "yes" : "no", effect, reported_damage, reported_hp, local_hp,
             readable && matches(source_identity, attacker.registration),
             readable && matches(target_identity, victim.registration));
@@ -3201,8 +3287,10 @@ bool FinishBatchPlacement(AnomalyGenerationHandleV1 actor, SummonBatch& batch,
 }
 
 #include "cutscenes.hpp"
+#include "player_clones.hpp"
 
 SummonResult SummonOne(SummonBatch& batch) {
+    if (batch.settings.player_clone) return SummonPlayerClone(batch);
     SummonResult result;
     const auto& settings = batch.settings;
     if (settings.skip_cutscenes && !g_cutscenes.ready.load(std::memory_order_acquire)) {
@@ -3647,6 +3735,7 @@ struct DuelActor {
     float hp{}, max_hp{};
     summon_lab::Vector location{};
     bool location_valid{}, target_paused{};
+    bool player_clone{}, explicit_targets{};
 };
 
 const DuelActor* ChooseBattleTarget(const DuelActor& actor, const std::vector<DuelActor>& actors,
@@ -3703,8 +3792,21 @@ bool ResolveDuelController(DuelActor& actor) {
     return InvokeByPath(actor.handle, "/Script/Engine.Pawn:GetController",
                         &actor.controller_pointer, sizeof(actor.controller_pointer)) &&
         HandleFromPointer(actor.controller_pointer, &actor.controller) &&
-        InvokeByPath(actor.controller, "/Script/HTGame.HTAIController:GetUseFindAggroTarget",
-                      &finding, sizeof(finding));
+        (actor.player_clone || InvokeByPath(actor.controller, "/Script/HTGame.HTAIController:GetUseFindAggroTarget",
+                      &finding, sizeof(finding)));
+}
+
+const char* BattleTargetQuery(const DuelActor& actor) {
+    return actor.player_clone ? "/Script/HTGame.HTAbilityCharacter:GetAttackTarget" :
+        "/Script/HTGame.HTAICharacter:GetCurrentAggroTarget";
+}
+
+bool SetCloneCombat(const DuelActor& actor, std::uintptr_t target) {
+    const auto clone = std::find_if(g_clones.actors.begin(), g_clones.actors.end(),
+        [&](const PlayerClone& c) { return c.actor == actor.pointer && !c.birth; });
+    if (clone == g_clones.actors.end()) return false;
+    clone->battle_mode = true;
+    return SetCloneCombatState(*clone, target);
 }
 
 void DuelResult(bool ok, std::string_view detail) {
@@ -3718,6 +3820,7 @@ void DuelResult(bool ok, std::string_view detail) {
 }
 
 bool PauseDuelActor(const DuelActor& actor) {
+    if (actor.player_clone) return SetCloneCombat(actor, 0);
     std::uint8_t disabled = 1, searching = 0, forced = 0;
     std::array<std::uint8_t, 2> paused{1, 1};
     std::uintptr_t target{};
@@ -3737,9 +3840,10 @@ bool PauseDuelActor(const DuelActor& actor) {
 }
 
 bool ActivateBattleTarget(const DuelActor& actor, const DuelActor& opponent) {
+    if (actor.player_clone) return SetCloneCombat(actor, opponent.pointer);
     std::array<std::uint8_t, 2> resumed{0, 0};
     std::uint8_t disabled = 0, forced = 1;
-    std::uint8_t searching = actor.aggro.policy == TargetPolicy::Native &&
+    std::uint8_t searching = !actor.explicit_targets && actor.aggro.policy == TargetPolicy::Native &&
         actor.aggro.priority_target == 0 && actor.aggro.chase_distance == 0 ? 1 : 0;
     struct { std::uintptr_t target; float aggro_percent; } target{opponent.pointer, 1.0F};
     return InvokeByPath(actor.handle, "/Script/HTGame.HTAICharacter:ForceSetAttackDisable",
@@ -3804,6 +3908,7 @@ bool FindLocalPlayerState(AnomalyGenerationHandleV1* player_state) {
 }
 
 bool ShowDuelBossHpBar(const DuelActor& actor, AnomalyGenerationHandleV1 player_state) {
+    if (actor.player_clone) return true;
     // SetDisableBossHPBar only notifies an aggro target that is a PlayerState.
     // A duel targets another AI, so register and show each Boss for the local
     // viewer explicitly. The native HUD owns the widgets and their lifetime.
@@ -3822,6 +3927,7 @@ bool ShowDuelBossHpBar(const DuelActor& actor, AnomalyGenerationHandleV1 player_
 }
 
 bool HideDuelBossHpBar(const DuelActor& actor, AnomalyGenerationHandleV1 player_state) {
+    if (actor.player_clone) return true;
     std::array<std::uint8_t, 2> disabled{1, 1};
     summon_lab::ObjectBool hide{actor.pointer, 1};
     return InvokeByPath(actor.handle, "/Script/HTGame.HTAICharacter:SetDisableBossHPBar",
@@ -3855,6 +3961,7 @@ bool SetReflectedBool(std::uintptr_t object, const char* name, std::uint8_t valu
 }
 
 bool DisableLeaderFollowing(const DuelActor& actor) {
+    if (actor.player_clone) return true;
     // Retain the leader registration; only disable movement following.
     return SetReflectedBool(actor.pointer, "bFollowMyLeader", 0);
 }
@@ -3869,6 +3976,7 @@ bool SetControllerChaseRange(const DuelActor& actor, float range) {
 }
 
 bool TuneDuelController(DuelActor& actor) {
+    if (actor.player_clone) { actor.battle_tuned = true; return true; }
     if (!actor.battle_tuned) {
         if (g_context.current_chase_range_offset == 0 ||
             !ReadValue(actor.controller_pointer + g_context.current_chase_range_offset,
@@ -3883,6 +3991,7 @@ bool TuneDuelController(DuelActor& actor) {
 }
 
 bool RestoreDuelController(DuelActor& actor) {
+    if (actor.player_clone) { actor.battle_tuned = false; return true; }
     if (!actor.battle_tuned) return true;
     const bool range_restored = SetControllerChaseRange(actor, actor.original_chase_range);
     const bool leave_restored = SetReflectedBool(actor.controller_pointer, "bUseLeaveBattle",
@@ -3930,9 +4039,14 @@ void ChangeBattle(const PendingOp& op, bool forgetting = false) {
     {
         std::scoped_lock lock(g_context.mutex);
         previous = g_context.battles;
+        const bool clones = std::any_of(g_context.records.begin(), g_context.records.end(),
+            [](const Record& record) { return record.player_clone; });
         for (std::size_t i = 0; i < g_context.records.size(); ++i) {
             const auto& record = g_context.records[i];
+            if (record.clone_pending) continue;
             DuelActor actor{record.id, record.handle, record.pointer, {}, record.pet, record.registration};
+            actor.player_clone = record.player_clone;
+            actor.explicit_targets = clones;
             actor.battle_tuned = record.battle_tuned;
             actor.original_chase_range = record.original_chase_range;
             actor.original_leave_battle = record.original_leave_battle;
@@ -4004,18 +4118,18 @@ void ChangeBattle(const PendingOp& op, bool forgetting = false) {
                     record.target_paused = true;
                 }
     };
-    bool ready = g_context.current_chase_range_offset != 0;
+    bool ready = true;
     std::vector<summon_lab::BattleCamp> assignments;
     for (auto& actor : actors) {
         if (!actor.involved) continue;
         std::uint8_t role{};
         const bool resolved = actor.alive && !actor.pet &&
             InvokeByPath(actor.handle, "/Script/Engine.Actor:GetLocalRole", &role, sizeof(role)) &&
-            role == 3 && ResolveDuelController(actor);
+            role == 3 && (actor.player_clone || g_context.current_chase_range_offset != 0) && ResolveDuelController(actor);
         ready = resolved && ready;
         if (!resolved || !next.Contains(actor.id)) continue;
         ready = ReadCamp(actor.pointer, &actor.camp) &&
-            InvokeByPath(actor.handle, "/Script/HTGame.HTAICharacter:GetCurrentAggroTarget",
+            InvokeByPath(actor.handle, BattleTargetQuery(actor),
                            &actor.previous_target, sizeof(actor.previous_target)) && ready;
         assignments.push_back({actor.id, actor.camp});
     }
@@ -4070,6 +4184,7 @@ void ChangeBattle(const PendingOp& op, bool forgetting = false) {
             continue;
         }
         ok = TuneDuelController(actor) && ok;
+        if (actor.player_clone) continue;
         // Native 1.4b converts a player pawn to its PlayerState here, so the
         // exclusion survives switching the active player character.
         ok = InvokeByPath(actor.handle, "/Script/HTGame.HTAICharacter:SetIgnoredAggroTarget",
@@ -4094,6 +4209,7 @@ void ChangeBattle(const PendingOp& op, bool forgetting = false) {
     for (const auto& actor : actors) {
         if (!ok) break;
         if (!actor.involved || !next.Contains(actor.id)) continue;
+        if (actor.player_clone) continue;
         std::uint8_t disabled = 0;
         ok = InvokeByPath(actor.handle, "/Script/HTGame.HTAICharacter:ForceSetAttackDisable",
                            &disabled, sizeof(disabled));
@@ -4104,7 +4220,7 @@ void ChangeBattle(const PendingOp& op, bool forgetting = false) {
         const auto* opponent = ChooseBattleTarget(actor, actors, next);
         std::uintptr_t actual_target{};
         ok = opponent ? ActivateBattleTarget(actor, *opponent) &&
-            InvokeByPath(actor.handle, "/Script/HTGame.HTAICharacter:GetCurrentAggroTarget",
+            InvokeByPath(actor.handle, BattleTargetQuery(actor),
                 &actual_target, sizeof(actual_target)) && actual_target == opponent->pointer : PauseDuelActor(actor);
         actor.previous_target = actual_target;
         actor.target_paused = opponent == nullptr;
@@ -4136,18 +4252,23 @@ void ChangeBattle(const PendingOp& op, bool forgetting = false) {
     DuelResult(true, g_context.localizer.Text("duel.updated", "Opponents updated"));
 }
 
-void ExcludeNewSummon(const SummonResult& result) {
+void ExcludeNewSummon(const SummonResult& result, bool player_clone) {
     std::vector<DuelActor> fighters;
     {
         std::scoped_lock lock(g_context.mutex);
         for (std::size_t i = 0; i < g_context.records.size(); ++i) {
             const auto& record = g_context.records[i];
-            if (g_context.battles.Contains(record.id))
+            if (!record.player_clone && g_context.battles.Contains(record.id))
                 fighters.push_back({record.id, record.handle, record.pointer});
         }
     }
     // An existing fight must not acquire a newly summoned, unlinked Boss.
-    for (const auto& actor : fighters) {
+    for (auto& actor : fighters) {
+        if (player_clone && ResolveDuelController(actor)) {
+            std::uint8_t searching{};
+            static_cast<void>(InvokeByPath(actor.controller, "/Script/HTGame.HTAIController:SetUseFindAggroTarget",
+                &searching, sizeof(searching)));
+        }
         auto target = result.pointer;
         if (IsActorAlive(actor.handle, actor.pointer))
             static_cast<void>(InvokeByPath(actor.handle,
@@ -4184,6 +4305,7 @@ void ForgetRecord(std::uint64_t record_id) {
         }
     }
     if (handle.id != 0) {
+        std::erase_if(g_clones.actors, [&](const PlayerClone& clone) { return clone.handle.id == handle.id && clone.handle.generation == handle.generation; });
         ForgetLocalBirth(handle);
         static_cast<void>(UnregisterNativeSummon(registration));
     }
@@ -4220,28 +4342,108 @@ void ClearAll() {
     g_pending_hint.store(static_cast<std::uint32_t>(g_context.pending.size()), std::memory_order_release);
 }
 
+bool ApplyModelScale(AnomalyGenerationHandleV1 actor_handle, std::uintptr_t actor,
+                     ModelScaleState& state) {
+    if (!summon_lab::ValidModelScale(state.requested) || !IsActorUsable(actor_handle, actor)) return false;
+    std::uintptr_t actor_class{}, component{}, component_class{}, data{}, type{};
+    AnomalyGenerationHandleV1 handle{};
+    if (!ReadValue(actor + g_layout.objectClass, &actor_class)) return false;
+    // ModelScale targets Mesh because the game's gameplay scale resets the capsule.
+    // Actor blueprints without a character mesh use their root scene component.
+    const char* field = FindProperty(actor_class, "Mesh") ? "Mesh" : "RootComponent";
+    if (!ReadReflectedValue(actor, field, "ObjectProperty", &component) || !component ||
+        !HandleFromPointer(component, &handle) ||
+        !ReadValue(component + g_layout.objectClass, &component_class) ||
+        !DiagnosticNestedStruct(component, component_class, "RelativeScale3D", "Vector", &data, &type))
+        return false;
+    std::int32_t size{};
+    summon_lab::Vector live{};
+    if (!ReadValue(type + g_layout.structSize, &size) || size != sizeof(live) ||
+        !ReadValue(data, &live) || !std::all_of(live.begin(), live.end(), [](double v) { return std::isfinite(v); }))
+        return false;
+    if (state.component.id != handle.id || state.component.generation != handle.generation) {
+        // Capture once per component, never multiply our previous output again.
+        state.component = handle;
+        state.base = live;
+    }
+    summon_lab::Vector target{};
+    for (std::size_t axis = 0; axis < target.size(); ++axis) {
+        target[axis] = state.base[axis] * state.requested;
+        if (!std::isfinite(target[axis]) || std::abs(target[axis]) > std::numeric_limits<float>::max()) return false;
+    }
+    // The engine updates component transforms, bounds and attached children.
+    if (target != live && (!InvokeByPath(handle, "/Script/Engine.SceneComponent:SetRelativeScale3D",
+            &target, sizeof(target)) || !ReadValue(data, &live))) return false;
+    for (std::size_t axis = 0; axis < target.size(); ++axis)
+        if (!std::isfinite(live[axis]) || std::abs(live[axis] - target[axis]) >
+            1e-6 * std::max(1.0, std::abs(target[axis]))) return false;
+    state.applied = state.requested;
+    return true;
+}
+
+void UpdateModelScales() {
+    struct Target { std::uint64_t id; AnomalyGenerationHandleV1 handle; std::uintptr_t actor; ModelScaleState scale; };
+    std::vector<Target> targets;
+    {
+        std::scoped_lock lock(g_context.mutex);
+        for (auto& record : g_context.records) {
+            // Character construction can replace its mesh; wait for the existing initializer.
+            if (!record.model_scale.pending || record.clone_pending) continue;
+            record.model_scale.pending = false;
+            targets.push_back({record.id, record.handle, record.pointer, record.model_scale});
+        }
+    }
+    bool all_applied = true;
+    for (auto& target : targets) {
+        const bool applied = ApplyModelScale(target.handle, target.actor, target.scale);
+        all_applied = all_applied && applied;
+        if (g_context.core && g_context.core->log) {
+            char message[160]{};
+            std::snprintf(message, sizeof(message), "SummonLab model-scale: actor=%p factor=%.9g applied=%s",
+                reinterpret_cast<void*>(target.actor), target.scale.requested, applied ? "yes" : "no");
+            g_context.core->log(g_context.core->user, applied ? ANOMALY_CORE_LOG_LEVEL_V1_INFO :
+                ANOMALY_CORE_LOG_LEVEL_V1_WARNING, anomaly::sdk::StringView(message));
+        }
+        std::scoped_lock lock(g_context.mutex);
+        for (auto& record : g_context.records) if (record.id == target.id) {
+            record.model_scale = target.scale;
+            break;
+        }
+    }
+    if (!targets.empty()) {
+        std::scoped_lock lock(g_context.mutex);
+        g_context.last_result_failed = !all_applied;
+        const auto message = all_applied ? g_context.localizer.Text("scale.applied", "Model scale applied") :
+            g_context.localizer.Text("scale.failed", "Model scale could not be applied to every selected entity");
+        std::snprintf(g_context.last_result.data(), g_context.last_result.size(), "%s", message.c_str());
+    }
+}
+
 void SetActorOption(const PendingOp& op) {
     AnomalyGenerationHandleV1 handle{};
     std::uintptr_t pointer{};
+    bool player_clone{};
     {
         std::scoped_lock lock(g_context.mutex);
         for (std::size_t i = 0; i < g_context.records.size(); ++i) {
             if (g_context.records[i].id == op.record_id) {
+                player_clone = g_context.records[i].player_clone;
                 handle = g_context.records[i].handle;
                 pointer = g_context.records[i].pointer;
                 break;
             }
         }
     }
+    if (player_clone && op.kind == OpKind::SetBossHpBar) return;
     bool applied = false;
     if (IsActorAlive(handle, pointer)) {
         // Reflected parameter layouts from the 1.4b SDK; all calls run in DrainOne.
         if (op.kind == OpKind::SetBossHpBar) {
             AnomalyGenerationHandleV1 player_state{};
             const DuelActor actor{op.record_id, handle, pointer};
-            applied = FindLocalPlayerState(&player_state) &&
+            applied = (FindLocalPlayerState(&player_state) &&
                 (op.enabled ? ShowDuelBossHpBar(actor, player_state) :
-                    HideDuelBossHpBar(actor, player_state));
+                    HideDuelBossHpBar(actor, player_state)));
         } else {
             std::uint8_t enabled = op.enabled ? 1 : 0;
             const char* path = op.kind == OpKind::SetCollision
@@ -4289,6 +4491,8 @@ void RefreshHealth(bool refresh_attributes) {
             ForgetRecord(snapshot[i].id);
             continue;
         }
+        if (std::any_of(g_clones.actors.begin(), g_clones.actors.end(), [&](const PlayerClone& c) {
+            return c.actor == snapshot[i].pointer && c.birth != nullptr; })) continue;
         float hp{};
         float max_hp{};
         if (!ReadHealth(snapshot[i].handle, &hp, &max_hp)) continue;
@@ -4321,12 +4525,16 @@ bool MaintainBattles(const std::vector<std::uint64_t>& changed = {}) {
     {
         std::scoped_lock lock(g_context.mutex);
         graph = g_context.battles;
+        const bool clones = std::any_of(g_context.records.begin(), g_context.records.end(),
+            [](const Record& record) { return record.player_clone; });
         for (std::size_t i = 0; i < g_context.records.size(); ++i) {
             const auto& record = g_context.records[i];
             if ((!graph.Contains(record.id) && !record.battle_tuned) ||
                 record.hp <= 0 || record.max_hp <= 0) continue;
             DuelActor actor{record.id, record.handle, record.pointer};
             actor.pet = record.pet;
+            actor.player_clone = record.player_clone;
+            actor.explicit_targets = clones;
             actor.battle_tuned = record.battle_tuned;
             actor.original_chase_range = record.original_chase_range;
             actor.original_leave_battle = record.original_leave_battle;
@@ -4361,14 +4569,16 @@ bool MaintainBattles(const std::vector<std::uint64_t>& changed = {}) {
             }
             continue;
         }
-        float range{};
-        std::uint8_t leave_battle{};
-        if (!ReadValue(actor.controller_pointer + g_context.current_chase_range_offset, &range) ||
-            !ReadReflectedValue(actor.controller_pointer, "bUseLeaveBattle", "BoolProperty",
-                                &leave_battle)) { if (reapply) applied = false; continue; }
-        if (range < std::max(actor.original_chase_range, kBattleChaseRange) || leave_battle != 0)
-            if (!TuneDuelController(actor)) { if (reapply) applied = false; continue; }
-        if (!InvokeByPath(actor.handle, "/Script/HTGame.HTAICharacter:GetCurrentAggroTarget",
+        if (!actor.player_clone) {
+            float range{};
+            std::uint8_t leave_battle{};
+            if (!ReadValue(actor.controller_pointer + g_context.current_chase_range_offset, &range) ||
+                !ReadReflectedValue(actor.controller_pointer, "bUseLeaveBattle", "BoolProperty",
+                                    &leave_battle)) { if (reapply) applied = false; continue; }
+            if (range < std::max(actor.original_chase_range, kBattleChaseRange) || leave_battle != 0)
+                if (!TuneDuelController(actor)) { if (reapply) applied = false; continue; }
+        }
+        if (!InvokeByPath(actor.handle, BattleTargetQuery(actor),
                           &actor.previous_target, sizeof(actor.previous_target))) {
             if (reapply) applied = false;
             continue;
@@ -4380,7 +4590,7 @@ bool MaintainBattles(const std::vector<std::uint64_t>& changed = {}) {
             if (reapply) applied = false;
             continue;
         }
-        if (retarget && !InvokeByPath(actor.handle, "/Script/HTGame.HTAICharacter:GetCurrentAggroTarget",
+        if (retarget && !InvokeByPath(actor.handle, BattleTargetQuery(actor),
                 &actor.previous_target, sizeof(actor.previous_target))) {
             if (reapply) applied = false;
             continue;
@@ -4470,6 +4680,7 @@ bool PushSummon(std::uint32_t count) {
     auto batch = std::make_shared<SummonBatch>();
     auto& settings = batch->settings;
     settings = CaptureSettingsLocked();
+
     if (settings.display_name.empty()) {
         const auto found = g_context.blueprint_options.find(settings.class_path);
         if (found != g_context.blueprint_options.end())
@@ -4553,7 +4764,7 @@ void DrainOne() {
     switch (op.kind) {
     case OpKind::Summon: {
         auto result = SummonOne(*op.batch);
-        if (result.ok) ExcludeNewSummon(result);
+        if (result.ok) ExcludeNewSummon(result, op.batch->settings.player_clone);
         if (g_context.core != nullptr) {
             g_context.core->log(g_context.core->user,
                 result.ok ? ANOMALY_CORE_LOG_LEVEL_V1_INFO : ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
@@ -4569,9 +4780,13 @@ void DrainOne() {
                     record.handle = result.handle;
                     record.pointer = result.pointer;
                     record.pet = result.pet;
-                    record.mute_boss_music = op.batch->settings.mute_boss_music;
-                    record.mute_boss_dialogue = op.batch->settings.mute_boss_dialogue;
-                    if (op.batch->settings.skip_cutscenes)
+                    record.player_clone = op.batch->settings.player_clone;
+                    record.clone_pending = record.player_clone;
+                    record.model_scale.requested = op.batch->settings.model_scale;
+                    record.model_scale.pending = record.model_scale.requested != 1.0;
+                    record.mute_boss_music = !record.player_clone && op.batch->settings.mute_boss_music;
+                    record.mute_boss_dialogue = !record.player_clone && op.batch->settings.mute_boss_dialogue;
+                    if (!record.player_clone && op.batch->settings.skip_cutscenes)
                         g_cutscenes.sources[result.pointer] = result.handle;
                     record.hp = result.hp;
                     record.max_hp = result.max_hp;
@@ -4626,6 +4841,16 @@ void DrainOne() {
     case OpKind::SetAggroSettings:
         ApplyAggroSettings(op);
         break;
+    case OpKind::SetModelScale: {
+        if (!summon_lab::ValidModelScale(op.model_scale)) break;
+        std::scoped_lock lock(g_context.mutex);
+        for (auto& record : g_context.records) if (record.id == op.record_id) {
+            record.model_scale.requested = op.model_scale;
+            record.model_scale.pending = true;
+            break;
+        }
+        break;
+    }
     }
 }
 
@@ -4669,6 +4894,14 @@ void EnsureServices() {
 namespace {
 
 void ResetState() {
+    g_clones.actors.clear();
+    g_clones.ready = false;
+    g_clones.game_thread.store(0, std::memory_order_release);
+    g_context.player_clone = false;
+    g_context.hide_clone_effect = 0;
+    g_context.model_scale = g_context.management_scale = 1.0;
+    g_context.clone_catalog.clear();
+    g_context.clone_catalog_status.clear();
     ResetCutscenes();
     g_context.preset_picker.Stop();
     static_cast<void>(g_context.preset_picker.TakeResult());
@@ -4779,6 +5012,7 @@ void ResetState() {
     g_context.catalog_matches_valid = false;
     g_context.catalog_loaded = false;
     g_context.catalog_labels.store({}, std::memory_order_release);
+    g_context.clone_labels.store({}, std::memory_order_release);
     g_context.catalog_base.clear();
     g_context.catalog_name_table.clear();
     g_context.catalog_policy.clear();
@@ -4821,6 +5055,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
 AnomalyStatusV1 ANOMALY_CALL Start(void* context) {
     if (context != &g_context) return {ANOMALY_STATUS_V1_INVALID_ARGUMENT, 0, {}};
     ResetState();
+    g_context.clone_refresh.store(true, std::memory_order_release);
 
     const anomaly::sdk::Host query(g_context.host);
     g_context.core = query.Query<AnomalyCoreServiceV1>(ANOMALY_CORE_SERVICE_V1_ID,
@@ -4841,6 +5076,10 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* context) {
         ANOMALY_STORAGE_SERVICE_V1_ID, ANOMALY_STORAGE_SERVICE_V1_VERSION).get();
     InitializeConfiguration(query);
 
+    // A reloaded generation reads the current snapshot. Historical world events
+    // predate its saved actor handles and would discard those bindings on tick 1.
+    if (g_context.session && g_context.session->latest_event_sequence)
+        g_context.session_event_cursor = g_context.session->latest_event_sequence(g_context.session->user);
     TransferLocalBirths(false);
 
     const auto events = query.Query<AnomalyUe5ProcessEventServiceV1>(
@@ -4852,11 +5091,12 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* context) {
         {"nte", "HTGame.exe", ".text", "summon-lab-v2"});
     if (loaded && ValidateSummonProfile(loaded.value(), &g_layout)) {
         const auto& profile = loaded.value();
-        constexpr std::array<std::string_view, 15> symbols{
+        constexpr std::string_view symbols[]{
             "story-boss-music", "story-multiple-voices", "story-debug-voices", "story-single-voice",
             "duel-current-chase-range", "monster-scene-row", "monster-property-pack", "final-tower-property-pack",
             "object-item-set-flags", "object-array-reference", "attribute-base-input", "summon-registration",
-            "local-attribute-mirror", "native-damage-report", "monster-default-level"};
+            "local-attribute-mirror", "native-damage-report", "monster-default-level",
+            "player-clone-spawn", "player-clone-target", "player-clone-build", "player-clone-ability-data", "clone-attribute-copy"};
         const auto scan_started = std::chrono::steady_clock::now();
         g_profile_scans.Prepare(query, profile, symbols);
         const auto scan_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -4876,6 +5116,7 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* context) {
         const bool attributes_ready = InstallBirthAttributeHook(query, profile);
         const bool combat_ready = attributes_ready && InstallLocalCombatHooks(profile);
         g_context.birth_attributes_ready.store(attributes_ready && combat_ready, std::memory_order_release);
+        InitializePlayerClones(profile);
         if (combat_ready && !InstallFinalTowerHooks(profile) && g_context.core != nullptr)
             g_context.core->log(g_context.core->user, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
                 anomaly::sdk::StringView("SummonLab: FinalTower config bridge unavailable"));
@@ -4944,6 +5185,11 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void* context, std::uint32_t) {
     if (cutscene_status.code != ANOMALY_STATUS_V1_OK) return cutscene_status;
     const auto audio_status = ReleaseStoryAudioHooks();
     if (audio_status.code != ANOMALY_STATUS_V1_OK) return audio_status;
+    if (g_context.hooks && g_clones.build_hook.handle.id) {
+        const auto status = g_context.hooks->release(g_context.hooks->user, g_clones.build_hook.handle);
+        if (status.code != ANOMALY_STATUS_V1_OK && status.code != ANOMALY_STATUS_V1_NOT_FOUND) return status;
+    }
+    g_clones.build_hook = {};
     const auto local_status = ReleaseLocalCombatHooks();
     if (local_status.code != ANOMALY_STATUS_V1_OK) return local_status;
     ReleaseFinalTowerData();
@@ -4988,7 +5234,12 @@ void ANOMALY_CALL Update(void* /*context*/, double delta_seconds) {
     // nested inside UI scripts or a native attribute mirror's deserialization.
     RestoreLocalBirthsOnGameThread();
     ConfigureNativeBirthsOnGameThread();
-    UpdateBlueprintConfig(delta_seconds);
+    g_clones.game_thread.store(GetCurrentThreadId(), std::memory_order_release);
+    if (g_context.clone_refresh.exchange(false, std::memory_order_acq_rel)) RefreshCloneCatalog();
+    UpdatePlayerClones();
+    bool clone_mode{};
+    { std::scoped_lock lock(g_context.mutex); clone_mode = g_context.player_clone; }
+    if (!clone_mode) UpdateBlueprintConfig(delta_seconds);
     UpdateAdvancedConfig();
     UpdateEditorFields();
     AdvanceEditorCatalog();
@@ -5012,7 +5263,7 @@ void ANOMALY_CALL Update(void* /*context*/, double delta_seconds) {
         ConfigureNativeBirthsOnGameThread();
         if (std::chrono::steady_clock::now() - work_started >= std::chrono::milliseconds(4)) break;
     }
-
+    UpdateModelScales();
 }
 
 // width 传 -1 表示填满当前可用宽度，避免列表按钮只占住左侧一小条。
@@ -5148,6 +5399,7 @@ void DrawBlueprintTab(const AnomalyUiServiceV1* ui) {
         std::scoped_lock lock(g_context.mutex);
         if (ui->input_text(ui->user, anomaly::sdk::StringView(label), g_context.class_path.data(),
                        g_context.class_path.size(), 0)) {
+            g_context.player_clone = false;
             g_context.combat_config_blueprint.clear();
             ConfigurationChangedLocked();
         }
@@ -5269,6 +5521,7 @@ void DrawBlueprintTab(const AnomalyUiServiceV1* ui) {
                     std::scoped_lock lock(g_context.mutex);
                     std::snprintf(g_context.class_path.data(), g_context.class_path.size(), "%s",
                                   entry.path.c_str());
+                    g_context.player_clone = false;
                     g_context.combat_config_blueprint.clear();
                     ConfigurationChangedLocked();
                     g_context.last_result_failed = false;
@@ -5285,7 +5538,7 @@ void DrawBlueprintTab(const AnomalyUiServiceV1* ui) {
 void DrawSettingsTab(const AnomalyUiServiceV1* ui) {
     const auto& localizer = g_context.localizer;
     std::scoped_lock lock(g_context.mutex);
-    if (ui->input_uint32 != nullptr) {
+    if (!g_context.player_clone && ui->input_uint32 != nullptr) {
         const auto level_label = localizer.Text("param.level", "Level (0 = default)");
         if (ui->input_uint32(ui->user, anomaly::sdk::StringView(level_label), &g_context.level, 0, 0))
             ConfigurationChangedLocked();
@@ -5391,7 +5644,36 @@ void DrawSettingsTab(const AnomalyUiServiceV1* ui) {
 }
 
 void DrawPresetSaveArea(const AnomalyUiServiceV1* ui);
+void DrawSummonTab(const AnomalyUiServiceV1* ui, bool ready);
 std::string BlueprintLabel(std::string_view path);
+
+void DrawPlayerClonesTab(const AnomalyUiServiceV1* ui, bool ready) {
+    const auto& localizer = g_context.localizer;
+    const auto refresh = localizer.Text("catalog.scan", "Refresh catalog");
+    if (ActionButton(ui, refresh.c_str(), ready)) g_context.clone_refresh.store(true, std::memory_order_release);
+    {
+        std::scoped_lock lock(g_context.mutex);
+        if (!g_context.clone_catalog_status.empty()) WrappedText(ui, g_context.clone_catalog_status);
+        if (ui->input_text) ui->input_text(ui->user,
+            anomaly::sdk::StringView(localizer.Text("catalog.filter", "Search")),
+            g_context.clone_filter.data(), g_context.clone_filter.size(), 0);
+        const bool child = ui->begin_child && ui->end_child;
+        const bool visible = !child || ui->begin_child(ui->user,
+            anomaly::sdk::StringView("##playable-clones"), 0, 220, 0);
+        if (visible) for (const auto& entry : g_context.clone_catalog) {
+            if (g_context.clone_filter[0] && ui->filter_match && !ui->filter_match(ui->user,
+                anomaly::sdk::StringView(g_context.clone_filter.data()), anomaly::sdk::StringView(entry.search_text))) continue;
+            const auto label = entry.label + "###clone-" + entry.path;
+            if (ActionButton(ui, label.c_str(), !g_context.player_clone || entry.path != g_context.class_path.data(), -1)) {
+                g_context.player_clone = true;
+                std::snprintf(g_context.class_path.data(), g_context.class_path.size(), "%s", entry.path.c_str());
+                g_context.display_name = {};
+                ConfigurationChangedLocked();
+            }
+        }
+        if (child) ui->end_child(ui->user);
+    }
+}
 
 #include "blueprint_editor_ui.hpp"
 
@@ -5481,12 +5763,13 @@ bool DrawAdvancedSummonOptions(const AnomalyUiServiceV1* ui) {
 void DrawSummonTab(const AnomalyUiServiceV1* ui, bool ready) {
     const auto& localizer = g_context.localizer;
     bool can_summon{};
+    bool clone_mode{};
     std::uint32_t summon_count{};
     {
         std::scoped_lock lock(g_context.mutex);
+        clone_mode = g_context.player_clone;
         const std::string_view path(g_context.class_path.data());
-        const auto separator = path.find_last_of("/.");
-        const auto name = separator == std::string_view::npos ? path : path.substr(separator + 1);
+        const auto name = BlueprintLabel(path);
         const std::array<std::string_view, 1> target_args{name};
         WrappedText(ui, localizer.Format("summon.target", "Blueprint: {0}", target_args));
         if (ui->input_text != nullptr) {
@@ -5500,6 +5783,15 @@ void DrawSummonTab(const AnomalyUiServiceV1* ui, bool ready) {
                 ConfigurationChangedLocked();
         }
         summon_count = g_context.summon_count;
+        if (ui->input_double != nullptr) {
+            double scale = g_context.model_scale;
+            const auto label = localizer.Text("scale.factor", "Model scale (1 = original)");
+            if (ui->input_double(ui->user, anomaly::sdk::StringView(label), &scale, 0.1, 1.0) &&
+                summon_lab::ValidModelScale(scale)) {
+                g_context.model_scale = scale;
+                ConfigurationChangedLocked();
+            }
+        }
         if (summon_count > 1 && ui->input_double != nullptr) {
             const auto label = localizer.Text("summon.spacing", "Spacing (m)");
             if (ui->input_double(ui->user, anomaly::sdk::StringView(label), &g_context.summon_spacing, 0, 0))
@@ -5517,7 +5809,7 @@ void DrawSummonTab(const AnomalyUiServiceV1* ui, bool ready) {
             g_context.birth_presets.begin(), g_context.birth_presets.end(),
             [](const BirthPreset& preset) { return preset.enabled != 0; }));
         const std::array<std::string_view, 3> args{level, skill, count};
-        WrappedText(ui, localizer.Format("summon.summary",
+        if (!clone_mode) WrappedText(ui, localizer.Format("summon.summary",
             "Level {0} / Skill level {1} / {2} custom attributes", args));
         const auto& hp = g_context.birth_presets[kMaxHpAttribute];
         if (hp.enabled) {
@@ -5528,7 +5820,13 @@ void DrawSummonTab(const AnomalyUiServiceV1* ui, bool ready) {
                 "summon.hp", "Max HP: {0}", value_args)));
         }
         if (ui->separator != nullptr) ui->separator(ui->user);
-        if (ui->checkbox != nullptr) {
+        if (clone_mode && ui->checkbox) {
+            const auto ignore_player = localizer.Text("param.ignore_player", "Do not target the player");
+            if (ui->checkbox(ui->user, anomaly::sdk::StringView(ignore_player), &g_context.ignore_player)) ConfigurationChangedLocked();
+            const auto effect = localizer.Text("clone.hide_effect", "Hide effect");
+            if (ui->checkbox(ui->user, anomaly::sdk::StringView(effect), &g_context.hide_clone_effect)) ConfigurationChangedLocked();
+        }
+        if (!clone_mode && ui->checkbox != nullptr) {
             const auto hostile = localizer.Text("param.hostile", "Hostile");
             if (ui->checkbox(ui->user, anomaly::sdk::StringView(hostile), &g_context.hostile)) ConfigurationChangedLocked();
             if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 12.0F);
@@ -5565,7 +5863,9 @@ void DrawSummonTab(const AnomalyUiServiceV1* ui, bool ready) {
         }
         const auto error = BirthPresetError(g_context.birth_presets);
         if (!error.empty()) WrappedText(ui, error);
-        can_summon = ready && g_context.class_path[0] != '\0' &&
+        can_summon = ready && (!clone_mode || (g_clones.ready && std::any_of(
+            g_context.clone_catalog.begin(), g_context.clone_catalog.end(),
+            [&](const ClassEntry& entry) { return entry.path == path; }))) && g_context.class_path[0] != '\0' &&
             summon_count > 0 &&
             (summon_count == 1 || spacing_valid) && !SummonBusyLocked() && error.empty();
         if (g_context.summon_batch && g_context.summon_batch->settings.count > 1) {
@@ -5582,7 +5882,7 @@ void DrawSummonTab(const AnomalyUiServiceV1* ui, bool ready) {
             if (ActionButton(ui, cancel.c_str(), true)) CancelSummonsLocked();
         }
     }
-    if (!DrawAdvancedSummonOptions(ui)) DrawBlueprintConfig(ui, true);
+    if (!clone_mode && !DrawAdvancedSummonOptions(ui)) DrawBlueprintConfig(ui, true);
     if (!g_context.birth_attributes_ready.load(std::memory_order_acquire)) {
         WrappedText(ui, localizer.Text("param.birth_unavailable",
             "The native summon initializer is unavailable"));
@@ -5598,6 +5898,10 @@ std::string BlueprintLabel(std::string_view path) {
     const auto labels = g_context.catalog_labels.load(std::memory_order_acquire);
     if (labels) {
         if (const auto found = labels->find(path); found != labels->end()) return found->second;
+    }
+    const auto clones = g_context.clone_labels.load(std::memory_order_acquire);
+    if (clones) {
+        if (const auto found = clones->find(path); found != clones->end()) return found->second;
     }
     const auto separator = path.find_last_of("/.");
     const auto name = separator == std::string_view::npos ? path : path.substr(separator + 1);
@@ -5902,6 +6206,38 @@ void DrawAggroEditor(const AnomalyUiServiceV1* ui, bool ready,
     }
 }
 
+void DrawModelScaleControls(const AnomalyUiServiceV1* ui, bool ready,
+                            const std::vector<std::uint64_t>& ids) {
+    const auto& localizer = g_context.localizer;
+    double scale{};
+    {
+        std::scoped_lock lock(g_context.mutex);
+        scale = g_context.management_scale;
+        const auto label = localizer.Text("scale.factor", "Model scale (1 = original)");
+        if (ui->input_double && ui->input_double(ui->user, anomaly::sdk::StringView(label), &scale, 0.1, 1.0) &&
+            summon_lab::ValidModelScale(scale)) {
+            g_context.management_scale = scale;
+            ConfigurationChangedLocked();
+        }
+    }
+    const auto apply = localizer.Text("scale.apply", "Apply model scale");
+    bool submit = ActionButton(ui, apply.c_str(), ready && !ids.empty() && summon_lab::ValidModelScale(scale));
+    if (ui->same_line) ui->same_line(ui->user, 0.0F, 8.0F);
+    const auto reset = localizer.Text("scale.reset", "Restore original size");
+    if (ActionButton(ui, reset.c_str(), ready && !ids.empty())) {
+        scale = 1.0;
+        submit = true;
+        std::scoped_lock lock(g_context.mutex);
+        g_context.management_scale = scale;
+        ConfigurationChangedLocked();
+    }
+    if (submit) for (const auto id : ids) {
+        PendingOp op{OpKind::SetModelScale, id};
+        op.model_scale = scale;
+        (void)PushOp(op);
+    }
+}
+
 void DrawGroupActions(const AnomalyUiServiceV1* ui, bool ready,
                       const std::string& blueprint, const std::vector<std::uint64_t>& ids,
                       const std::map<std::string, std::vector<std::uint64_t>>& combat_groups,
@@ -5912,6 +6248,7 @@ void DrawGroupActions(const AnomalyUiServiceV1* ui, bool ready,
     const auto count = std::to_string(ids.size());
     const std::array<std::string_view, 1> args{count};
     WrappedText(ui, localizer.Format("manage.group_count", "Group: {0} entities", args));
+    DrawModelScaleControls(ui, ready, ids);
     const auto remove = localizer.Text("manage.remove_group", "Remove group");
     if (ActionButton(ui, remove.c_str(), ready)) {
         if (blueprint.empty()) (void)PushOp(PendingOp{OpKind::ClearAll});
@@ -5949,9 +6286,17 @@ void DrawGroupActions(const AnomalyUiServiceV1* ui, bool ready,
         if (ActionButton(ui, std::string(label).c_str(), ready))
             (void)PushSelection(kind, ids, enabled);
     };
-    action(localizer.Text("manage.show_hp", "Show boss HP bar"), OpKind::SetBossHpBar, true);
-    if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
-    action(localizer.Text("manage.hide_hp", "Hide boss HP bar"), OpKind::SetBossHpBar, false);
+    bool has_monsters{};
+    {
+        std::scoped_lock lock(g_context.mutex);
+        for (const auto& record : g_context.records)
+            if (!record.player_clone && std::find(ids.begin(), ids.end(), record.id) != ids.end()) has_monsters = true;
+    }
+    if (has_monsters) {
+        action(localizer.Text("manage.show_hp", "Show HP bar"), OpKind::SetBossHpBar, true);
+        if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
+        action(localizer.Text("manage.hide_hp", "Hide HP bar"), OpKind::SetBossHpBar, false);
+    }
     action(localizer.Text("manage.enable_collision", "Enable collision"), OpKind::SetCollision, true);
     if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
     action(localizer.Text("manage.disable_collision", "Disable collision"), OpKind::SetCollision, false);
@@ -5988,7 +6333,10 @@ void DrawManagementTab(const AnomalyUiServiceV1* ui, bool ready) {
             records[i].id = source.id;
             records[i].hp = source.hp;
             records[i].max_hp = source.max_hp;
+            records[i].model_scale = source.model_scale.applied;
             records[i].pet = source.pet;
+            records[i].player_clone = source.player_clone;
+            records[i].clone_pending = source.clone_pending;
             records[i].class_path = source.class_path;
             records[i].aggro = source.aggro;
             records[i].current_target_id = source.current_target_id;
@@ -6132,6 +6480,7 @@ void DrawManagementTab(const AnomalyUiServiceV1* ui, bool ready) {
     ui->text(ui->user, anomaly::sdk::StringView(localizer.Format(
         "manage.selected", "Manage entity #{0}", selected_args)));
     WrappedText(ui, selected->label.data());
+    if (selected->clone_pending) WrappedText(ui, localizer.Text("clone.building", "Preparing character and skills..."));
     WrappedText(ui, BlueprintLabel(selected->class_path));
     if (!editor_warning.empty()) WrappedText(ui, editor_warning);
     if (!editor_rule_warning.empty()) WrappedText(ui, editor_rule_warning);
@@ -6145,6 +6494,11 @@ void DrawManagementTab(const AnomalyUiServiceV1* ui, bool ready) {
     const std::array<std::string_view, 2> hp_args{hp, max_hp};
     ui->text(ui->user, anomaly::sdk::StringView(localizer.Format(
         "manage.hp", "HP {0} / {1}", hp_args)));
+    char scale_text[48]{};
+    std::snprintf(scale_text, sizeof(scale_text), "%.6g", selected->model_scale);
+    const std::array<std::string_view, 1> scale_args{scale_text};
+    WrappedText(ui, localizer.Format("scale.current", "Current model scale: {0}x", scale_args));
+    DrawModelScaleControls(ui, ready && !selected->clone_pending, {selected->id});
     const auto remove = localizer.Text("action.remove", "Remove");
     if (ActionButton(ui, remove.c_str(), ready))
         (void)PushOp(PendingOp{OpKind::Remove, selected->id});
@@ -6167,18 +6521,18 @@ void DrawManagementTab(const AnomalyUiServiceV1* ui, bool ready) {
     if (opponents_visible) {
         for (std::size_t i = 0; i < count; ++i) {
             const auto& candidate = records[i];
-            if (candidate.id == selected->id || candidate.pet) continue;
+            if (candidate.id == selected->id || candidate.pet || candidate.clone_pending) continue;
             const std::string text = "#" + std::to_string(candidate.id) + " " + candidate.label.data();
             const std::string label = text + "###battle-" + selected_id + "-" + std::to_string(candidate.id);
             int linked = battles.Linked(selected->id, candidate.id) ? 1 : 0;
-            if (ready && !selected->pet && ui->checkbox != nullptr) {
+            if (ready && !selected->pet && !selected->clone_pending && ui->checkbox != nullptr) {
                 if (ui->checkbox(ui->user, anomaly::sdk::StringView(label), &linked))
                     (void)PushOp(PendingOp{OpKind::SetBattleEdge, selected->id, linked != 0, candidate.id});
             } else WrappedText(ui, text);
         }
     }
     if (has_child) ui->end_child(ui->user);
-    const auto stop_duel = localizer.Text("duel.stop", "Stop this Boss");
+    const auto stop_duel = localizer.Text("duel.stop", "Stop this entity's battles");
     if (ActionButton(ui, stop_duel.c_str(), ready && battles.Contains(selected->id)))
         (void)PushOp(PendingOp{OpKind::StopDuel, selected->id});
     DrawAggroEditor(ui, group_ready, records, count, {selected->id}, battles);
@@ -6187,9 +6541,11 @@ void DrawManagementTab(const AnomalyUiServiceV1* ui, bool ready) {
         if (ActionButton(ui, std::string(label).c_str(), ready))
             (void)PushOp(PendingOp{kind, selected->id, enabled});
     };
-    action(localizer.Text("manage.show_hp", "Show boss HP bar"), OpKind::SetBossHpBar, true);
-    if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
-    action(localizer.Text("manage.hide_hp", "Hide boss HP bar"), OpKind::SetBossHpBar, false);
+    if (!selected->player_clone) {
+        action(localizer.Text("manage.show_hp", "Show HP bar"), OpKind::SetBossHpBar, true);
+        if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
+        action(localizer.Text("manage.hide_hp", "Hide HP bar"), OpKind::SetBossHpBar, false);
+    }
     action(localizer.Text("manage.enable_collision", "Enable collision"), OpKind::SetCollision, true);
     if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 8.0F);
     action(localizer.Text("manage.disable_collision", "Disable collision"), OpKind::SetCollision, false);
@@ -6259,6 +6615,11 @@ void ANOMALY_CALL Draw(void* /*context*/, const AnomalyUiServiceV1* ui) {
             DrawBlueprintTab(ui);
             ui->end_tab_item(ui->user);
         }
+        const auto clones = localizer.Label("tab.clones", "Characters", "clones");
+        if (ui->begin_tab_item(ui->user, anomaly::sdk::StringView(clones), nullptr, 0, 1)) {
+            DrawPlayerClonesTab(ui, world_ready && invoke_ready);
+            ui->end_tab_item(ui->user);
+        }
         const auto settings = localizer.Label("tab.attributes", "Attributes", "attributes");
         const auto presets = localizer.Label("tab.presets", "Presets", "presets");
         if (ui->begin_tab_item(ui->user, anomaly::sdk::StringView(presets), nullptr, 0, 1)) {
@@ -6270,7 +6631,9 @@ void ANOMALY_CALL Draw(void* /*context*/, const AnomalyUiServiceV1* ui) {
             ui->end_tab_item(ui->user);
         }
         const auto editor = localizer.Label("tab.editor", "Editor", "editor");
-        if (ui->begin_tab_item(ui->user, anomaly::sdk::StringView(editor), nullptr, 0, 1)) {
+        bool clone_mode{};
+        { std::scoped_lock lock(g_context.mutex); clone_mode = g_context.player_clone; }
+        if (!clone_mode && ui->begin_tab_item(ui->user, anomaly::sdk::StringView(editor), nullptr, 0, 1)) {
             DrawBlueprintEditor(ui, world_ready && invoke_ready);
             ui->end_tab_item(ui->user);
         }

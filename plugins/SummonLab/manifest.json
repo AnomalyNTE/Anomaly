@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "id": "anomaly.summon-lab",
   "name": "Summon Lab",
-  "description": "Summon characters with gameplay attributes initialized during native spawning, before spawn completion",
+  "description": "Summon monsters and playable characters with custom attributes and shared battle management",
   "author": "Anomaly",
   "license": "AGPL-3.0-only",
   "audience": "user",
