@@ -20,6 +20,7 @@
 #include "anomaly/plugin_package.hpp"
 #include "anomaly/ui_resource_decoder.hpp"
 #include "config.hpp"
+#include "mod_list.hpp"
 
 #include <Windows.h>
 #include <nlohmann/json.hpp>
@@ -6397,15 +6398,12 @@ void DrawModsMode(
         return tags;
     };
 
-    // Measure inside the scrolling child so its scrollbar is excluded from the card widths.
-    ImGui::BeginChild("ModsList", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None,
-        ImGuiWindowFlags_None);
+    const float grid_width = anomaly::launcher::BeginModsList();
     if (scroll_to_top) {
         ImGui::SetScrollY(0.0f);
         scroll_to_top = false;
     }
     const float grid_spacing = Scale(12.0f);
-    const float grid_width = ImGui::GetContentRegionAvail().x;
     const int grid_columns = std::clamp(static_cast<int>(
         (grid_width + grid_spacing) / (Scale(176.0f) + grid_spacing)), 2, 6);
     const float card_width = std::floor(

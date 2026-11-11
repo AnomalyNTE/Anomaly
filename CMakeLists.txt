@@ -1205,6 +1205,10 @@ target_link_libraries(anomaly_test_host PRIVATE
 
 if(ANOMALY_BUILD_TEST_FIXTURES)
     enable_testing()
+    add_executable(anomaly_launcher_mod_list_fixture apps/launcher/tests/mod_list_test.cpp)
+    target_compile_options(anomaly_launcher_mod_list_fixture PRIVATE /W4 /permissive- /EHsc)
+    target_link_libraries(anomaly_launcher_mod_list_fixture PRIVATE anomaly_imgui)
+    add_test(NAME launcher_mod_list_scrollbar COMMAND anomaly_launcher_mod_list_fixture)
     add_executable(anomaly_better_tv_startup_fixture EXCLUDE_FROM_ALL
         plugins/BetterTV/tests/better_tv_startup_fixture.cpp plugins/BetterTV/audio_output.cpp
         plugins/BetterTV/bilibili_source.cpp plugins/BetterTV/media_prepare.cpp
