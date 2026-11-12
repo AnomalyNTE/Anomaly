@@ -310,6 +310,9 @@ struct Context final {
     std::atomic<std::uint32_t> food_empty_region_run{kFoodEmptyRegionRunDefault};
     std::string food_empty_group;
     std::uint32_t food_empty_run{};
+    // 本次耗时：从「开始自动拾取」到跑完或手动停止的分钟数，`< 0` 表示本轮还没结束。
+    std::chrono::steady_clock::time_point run_started_at{};
+    double run_elapsed_minutes{-1.0};
     std::chrono::steady_clock::time_point food_state_refresh_at{};
     const AnomalyNteSkillsServiceV1* skills{};
     const AnomalyNteSkillInvocationServiceV1* skill_invocation{};
@@ -2542,9 +2545,24 @@ bool Teleport(Context& context, const Point& p) noexcept {
 
 bool HasShopStealthSkill(Context& context);
 
+// 一轮结束时结算耗时：自然跑完、手动停止、以及商店流程自身的中止都走这里。
+// 调用方必须已持有 context.mutex；没有在跑的一轮（run_started_at 为空）时不做任何事，
+// 避免把上一轮的耗时重复刷新。
+void NoteRunElapsedLocked(
+    Context& context,
+    const std::chrono::steady_clock::time_point now) noexcept {
+    if (context.run_started_at == std::chrono::steady_clock::time_point{}) return;
+    context.run_elapsed_minutes =
+        std::chrono::duration<double, std::ratio<60>>(now - context.run_started_at)
+            .count();
+    context.run_started_at = {};
+}
+
 void Begin(Context& context) {
     std::lock_guard<std::mutex> lock(context.mutex);
     RebuildFilteredLocked(context);
+    context.run_started_at = std::chrono::steady_clock::now();
+    context.run_elapsed_minutes = -1.0;
     context.current_index = context.start_index < context.filtered_points.size()
         ? context.start_index : 0;
     // 最近距离拾取：开始这一刻按玩家当前位置重排一次，面板上看到的顺序就是接下来实际
@@ -2569,6 +2587,8 @@ void Begin(Context& context) {
     if (CategoryForChoice(context.type_choice) == "shop_steal" &&
         !HasShopStealthSkill(context)) {
         context.running = false;
+        // 这一轮根本没跑起来，清掉起点，免得上一轮的耗时残留。
+        context.run_started_at = {};
         context.status = context.localizer.Text(
             "status.shop_requires_zankou",
             "Shop stealing requires the Zankou skill.");
@@ -2579,9 +2599,16 @@ void Begin(Context& context) {
 
 void Stop(Context& context) {
     std::lock_guard<std::mutex> lock(context.mutex);
+    NoteRunElapsedLocked(context, std::chrono::steady_clock::now());
     context.running = false;
     context.stop_movement_pending.store(true, std::memory_order_release);
-    context.status = context.localizer.Text("status.stopped", "Stopped");
+    // 手动停止也带上本轮计数，和「跑完」的格式对齐，便于一眼看出停在哪。
+    const std::string picked_str = std::to_string(context.picked);
+    const std::string skipped_str = std::to_string(context.skipped);
+    const std::array args{std::string_view(picked_str),
+                          std::string_view(skipped_str)};
+    context.status = context.localizer.Format(
+        "status.stopped", "Stopped: picked {0}, skipped {1}", args);
 }
 
 struct InteractArrayHeader final {
@@ -4104,6 +4131,7 @@ void Tick(Context& context) {
     if (now < context.due) return;
     if (context.current_index >= context.filtered_points.size()) {
         context.running = false;
+        NoteRunElapsedLocked(context, now);
         const std::string picked_str = std::to_string(context.picked);
         const std::string skipped_str = std::to_string(context.skipped);
         const std::array completed_args{
@@ -5390,14 +5418,26 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_
         std::string status;
         std::size_t total{};
         std::size_t current{};
+        double elapsed_minutes{-1.0};
         {
             std::lock_guard<std::mutex> lock(context.mutex);
             status = context.status;
             total = context.filtered_points.size();
             current = context.current_index;
+            elapsed_minutes = context.run_elapsed_minutes;
         }
         if (!status.empty()) {
             ui->text(ui->user, anomaly::sdk::StringView(status));
+        }
+        // 跑完或手动停止后显示本轮耗时（分钟，保留一位小数）；新一轮开始前不显示。
+        if (elapsed_minutes >= 0.0) {
+            const long long tenths =
+                static_cast<long long>(elapsed_minutes * 10.0 + 0.5);
+            const std::string elapsed_text =
+                std::to_string(tenths / 10) + "." + std::to_string(tenths % 10);
+            const std::array elapsed_args{std::string_view(elapsed_text)};
+            ui->text(ui->user, anomaly::sdk::StringView(context.localizer.Format(
+                "label.run_elapsed", "Elapsed: {0} min", elapsed_args)));
         }
         const std::string current_str = std::to_string(current);
         const std::string total_str = std::to_string(total);
@@ -5476,6 +5516,6 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         anomaly::sdk::StringView("ccyellowstar.box-auto"),
         anomaly::sdk::StringView("Resource Auto Pickup"),
         anomaly::sdk::StringView("CCYellowStar"),
-        anomaly::sdk::StringView("0.1.15"), Load, Start, Stop, Unload, Update, Draw};
+        anomaly::sdk::StringView("0.1.16"), Load, Start, Stop, Unload, Update, Draw};
     return anomaly::sdk::Ok();
 }
