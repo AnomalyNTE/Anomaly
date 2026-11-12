@@ -27,6 +27,12 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0--only-blue" alt="License" /></a>
 </p>
 
+<img src="docs/images/launcher-launch-page.en-US.png" alt="Anomaly Launcher: inject mode on the Launch page" width="100%" />
+
+<p align="center">
+  <sub>Launcher interface</sub>
+</p>
+
 </div>
 
 ---
@@ -50,53 +56,89 @@
 
 This project is distributed under the [**GNU Affero General Public License v3.0 (AGPL-3.0-only)**](LICENSE). Third-party components and their respective licenses are listed in [`NOTICE`](NOTICE) and `third_party/licenses/`.
 
+## ❤️ Support us
+
+If Anomaly is useful to you, you can support the project's continued maintenance:
+
+<p>
+  <a href="https://afdian.com/a/bananachicken"><img height="40" style="height:40px;border:0;" src="https://pic1.afdiancdn.com/static/img/welcome/button-sponsorme.png" alt="Support me on Afdian"></a>
+  <a href='https://ko-fi.com/L1F621P7S2' target='_blank'><img height='40' style='border:0;height:40px;' src='https://storage.ko-fi.com/cdn/kofi6.png?v=6' alt='Buy Me a Coffee at ko-fi.com' /></a>
+</p>
+
 ## ✨ Features
 
-- 🚀 **Installation and updates**: extract the runtime package and open the launcher, then select the directory containing `HTGame.exe` to install; later versions update in place.
+- 🚀 **Installation and updates**: extract the runtime package and attach the launcher to the game with inject mode, which writes nothing into the game directory; proxy mode is still available, and later versions update from inside the launcher.
 - 🪟 **In-game management UI**: press `Insert` to open the Chinese or English UI and manage plugin enablement, disabling, reload, and settings in one place.
 - 🌐 **Third-party plugin downloads**: browse and install community plugins under **Plugins > Available**, upgrade them under **Updates**, and add trusted plugin sources yourself.
-- 🔌 **Practical built-in plugins**: the package ships Coordinate Display, Entity ESP, Pink Paw Heist ESP with bank loop, vehicle control, 999 Nights auto farming, a combat damage dashboard, Custom UID, camera tools with blur removal, skeleton pose adjustment, resource point auto pickup, combat resource points, automatic instance runs, and WalletCollector — all disabled by default and enabled on demand.
-- 🎥 **Camera tools**: Camera Tools folds draw distance and view FOV changes plus the free camera into a single camera hook, so two camera plugins enabled at once no longer conflict.
+- 🔥 **Hot mod loading**: in hot mode, enabling, swapping, or removing a mod takes effect immediately — appearances are refreshed in place, resources that cannot be rebound fall back to the **Mod Manager** plugin's world reload, and the game never restarts.
+- 🔌 **Practical built-in plugins**: the package ships 35 user-facing plugins covering coordinates and health, entity ESP, combat statistics, camera and blur removal, skins and model replacement, vehicles, scene switching, audio replacement, and automation scripts — all disabled by default and enabled on demand.
 - 🤖 **Automation tasks**: Resource Auto Pickup, Combat Resource Points, Clone Enter, WalletCollector, and 999 Nights Script can teleport, fight, or pick up automatically, and you can stop them at any time from the plugin window.
-- 🧭 **Status and troubleshooting**: plugin incompatibility, missing dependencies, or a Profile that is not ready are reported with the reason directly; full status is available under **Diagnostics** and in the logs.
 - 🧩 **Open plugin framework**: a pure C ABI v1 SDK and unified V1 services, so a plugin project needs neither the runtime source nor the C++ ABI.
-- 🔄 **Complete plugin lifecycle**: Manifest, SemVer, dependency and capability validation, package validation, file-watch hot reload, and rollback on failure.
-- 🧬 **UE5 / NTE adaptation**: validated UE5 symbol resolution plus high-level services for session, player, camera, entity, map landmarks, and teleport; a feature degrades when its conditions are not met.
 - 🔍 **Memory analysis and developer tools**: inspect process modules, PE sections, and memory regions, with a byte signature scan, an offline TestHost, and other developer tools.
-- 🛡️ **Fault isolation**: a single failing plugin is isolated, and a failed new version rolls back to the previous generation automatically.
 
 ### 🔌 Built-in plugins
 
-The runtime package contains the following common built-in plugins (see [built-in plugins](docs/en/user-guide/built-in-plugins.md) for the full description):
+The runtime package ships **35** user-facing built-in plugins, all disabled by default and enabled on demand. Each plugin is described in detail under [built-in plugins](docs/en/user-guide/built-in-plugins.md).
+
+**UI and information**
 
 | Plugin | Purpose |
 | --- | --- |
-| **Coordinate Display** | Shows player coordinates, session state, and sampling metrics |
-| **Entity ESP** | Draws entity bounding boxes and labels |
-| **Deserted** | Prevents pedestrian and traffic spawns without affecting stationary NPCs |
-| **Pink Paw Heist ESP** | Shows Pink Paw Heist loot and extraction points, with value filtering, bank loop pickup, count limits, and entry animation skip |
-| **NTE Vehicle** | Browse the vehicle catalog, summon plain or customized vehicles, adjust speed, torque and wheel friction, maintain land-vehicle durability, and batch-tune non-player vehicles |
-| **999 Nights Script** | Loops enemy farming in Red Dragon Castle in 999 Nights for a set number of runs: camp respawn and automatic combat at two combat points |
-| **NTE Damage Dashboard** | Live statistics for player damage, hits, crits, team and skill distribution, and recent hit records |
-| **Summon Lab** | Spawns entities from blueprints with preset levels and attributes, hostile or pet modes, paginated management, attribute inspection, and cleanup |
-| **Custom UID** | Sets a custom UID for the client UI |
-| **Skin Swapper Lite** | Character accessories, glider, awakened appearance previews, and custom license plates |
-| **Camera Tools** | Increases draw distance, adjusts view FOV and the free camera view, and optionally loads the scene at the free camera position |
-| **CameraBlurFix** | Removes the camera fade on the player, NPCs and crowd entities |
-| **Better Pose** | Adjusts animation speed, pause, and displacement scale, edits joint poses, and imports MMD motions and cameras, with playback speed, height correction, XYZ motion ratios, per-part amplitude, per-joint calibration, limb extension/landing points, and manual A/T-pose skeleton calibration |
-| **HiFi Vehicle Music** | Replaces in-vehicle music with a local lossless library, with WASAPI, DirectSound, and ASIO support |
-| **Quick Ultimate** | Hold Alt+1/2/3/4 to switch characters automatically and keep sending Q; release to stop |
-| **Resource Auto Pickup** | Reads the resource point table and picks up resource points such as character EXP books, furniture, food, and wallets by teleport or pathing |
-| **Combat Resource Points** | Visits combat chests and Anomaly furniture material points one by one, fights automatically, then marks and caches them locally |
-| **Clone Enter** | Enters an instance by instance and difficulty, fights, claims rewards, and exits, with optional looping |
-| **AutoFish** | Casts, reels, and plays fish automatically, with continuous fishing, bait restocking, and selling fish past a threshold |
-| **Free Fly** | Free flight and noclip: WASD to move, Space to ascend, Ctrl to descend, direction follows the view, and the toggle hotkey is configurable |
-| **WalletCollector** | Scans wallet spawn points, plans a route for the target count, and picks them up automatically |
-| **Model Scale** | Scales the local character mesh without affecting movement or collision |
-| **UI Buttons** | Lists clickable game UI buttons and clicks them through the UI service |
-| **Jelly** | Keeps characters, vehicles, and dynamic models in view squashing and stretching, with adjustable strength, frequency, stop interval, and self-rotation |
+| **Coordinate Display** | Player and camera coordinates, session state, and snapshot sampling metrics |
+| **Entity ESP** | Configurable 2D/3D bounding boxes and labels for NTE entities |
+| **Health Display** | Independent health bars with current/max HP for monsters and characters, adjustable range, size, and text |
+| **NTE Combat Tracker** | FF14-style DPS panel: capture runs inside the plugin, rendering in a bundled standalone overlay process |
+| **Status Bar** | Liquid-glass status bar: frame rate, 1% low, time, CPU/memory/GPU load, clocks, temperature, and power |
+| **UI Buttons** | Lists in-game UI buttons by clickability and clicks them through the UI service |
 
-Developer mode also shows debug plugins such as **Teleport**, **DLL Loader**, and **Time Accel**; the complete package catalog is in [`plugins/README.md`](plugins/README.md).
+**Visuals and appearance**
+
+| Plugin | Purpose |
+| --- | --- |
+| **Camera Blur Fix** | Removes camera fading for the player, NPCs, and crowds, including pitch-based fading and close-range hiding |
+| **Camera Tools** | View distance and FOV adjustment, forced camera rotation blocking, free camera, and optional scene loading around it |
+| **Model Scale** | Rescales the local character mesh without touching movement or collision |
+| **SkinChanger Lite** | Character accessories, glider, awakened appearance, custom license plates, and the current vehicle's appearance |
+| **NaiLong** | Engine-native model replacement for the player and nearby NPCs with 36-bone source-rig skinning, restored when out of range |
+| **Jelly** | Keeps characters, vehicles, and dynamic models in view squashing and stretching, with adjustable strength, frequency, rest interval, and spin |
+| **Better Pose** | Animation rate, pause, and displacement scale, joint pose editing, MMD motion and camera import, and Blender skeleton linking |
+| **Character Studio** | Spawns local character models from a complete catalog with Chinese names, unlimited duplicates, idle loops, and per-model move/destroy |
+| **Mod Manager** | Mod toggles, classification, in-place appearance refresh, and world reload |
+| **Custom UID** | Custom UID, colors, and dynamic effects on the client UI, without touching account data |
+
+**Combat and summoning**
+
+| Plugin | Purpose |
+| --- | --- |
+| **Pink Paw Heist ESP** | Loot and extraction points with value filters, bank loop pickup, run limits, and entry animation skip |
+| **Quick Ultimate** | Hold Alt+1..4 to switch characters and keep sending Q; release to stop |
+| **Summon Lab** | Spawns monsters and playable characters with custom attributes, hostile/pet modes, group battles, and unified management |
+| **NPC Summon** | Lists the NPC classes actually running in the world, filters them by keyword, spawns one in front of you, and clears your own spawns |
+| **Training Dummy** | Spawns dummies through the character's own summon path, driven entirely from a panel |
+
+**Vehicles and scenes**
+
+| Plugin | Purpose |
+| --- | --- |
+| **Vehicle Control** | Vehicle catalog, plain or customized summoning, speed/torque/wheel-friction tuning, and full durability for the current land vehicle |
+| **Scene Loader** | Lists the game's scenes and switches through the game's own entrances, including in-scene entrances, world return, and data layers |
+| **Deserted** | Stops crowd and traffic spawning without affecting stationary NPCs |
+| **HiFi Vehicle Music** | Replaces in-vehicle music with a local lossless library over WASAPI exclusive/shared, DirectSound, or ASIO |
+| **Better TV** | Replaces the residence TV video with a local clip or a Bilibili link; memory only, no game files written |
+
+**Automation**
+
+| Plugin | Purpose |
+| --- | --- |
+| **Resource Auto Pickup** | Reads the resource point table and picks up EXP books, gifts, furniture, food, wallets, Oracle stones, and more |
+| **Combat Resource Points** | Visits combat chests and Anomaly furniture material points one by one, fights, then marks and caches them locally |
+| **Clone Enter** | Enters a dungeon by dungeon and difficulty, fights, claims rewards, exits, and optionally loops |
+| **WalletCollector** | Scans wallet spawn points, plans a route for the target count, and collects the wallets automatically |
+| **Night 999** | Loops enemy farming in Crimson Dragon Castle for the configured number of rounds: camp respawn plus automatic combat at two fight points |
+| **AutoFish** | Automatic casting, hooking, and reeling with continuous fishing, bait restocking, and selling past a threshold |
+| **AutoTaxi** | Completes taxi orders automatically and shows the completion count the game confirms |
+| **AutoClaw** | Picks a doll in the active machine, auto-submits one capture after you pay a round, and shows the server's response |
+| **Free Fly** | WASD flight and noclip with Space to ascend and Ctrl to descend; the toggle hotkey is configurable |
 
 ### 🌐 Third-party plugins
 
@@ -117,13 +159,17 @@ The runtime package ships one enabled plugin source; the actual address is defin
 ## 🚀 Quickstart
 
 > [!NOTE]
-> Regular users do not need to build from source. Download `Anomaly-<version>-runtime.zip`, extract it completely, run the bundled `AnomalyLauncher.exe`, then on the **Launch → Proxy mode** page select the directory containing `HTGame.exe` and click **Install**.
+> Regular users do not need to build from source. Download `Anomaly-<version>-runtime.zip`, extract it completely, run the bundled `AnomalyLauncher.exe`, then confirm the paths on the **Launch** page and attach to the game with **Inject mode** — the default recommendation, which writes nothing into the game directory.
 
-1. Download and install the runtime package; see [installation and updates](docs/en/user-guide/installation.md) for the steps.
-2. Start the game as usual and press `Insert` to open the management UI.
-3. To use a built-in plugin, open **Plugins > Installed**, select the plugin, and enable it.
-4. To install a community plugin, open **Plugins > Available** and click **Install**; then return to **Installed** and enable it.
-5. When a plugin has a new version, upgrade it under **Plugins > Updates**.
+1. Download and **fully extract** the runtime package (do not run it from inside the archive, and do not take only `AnomalyLauncher.exe`); see [installation and updates](docs/en/user-guide/installation.md).
+2. On the launcher's **Launch** page, confirm the two paths at the top: **Launcher directory** points at the official `NTELauncher.exe`, and **Game directory** points at the folder that directly contains `HTGame.exe`. Use the button on the right to repick either one.
+3. Keep the default **Inject mode** and pick the button that matches the game's current state:
+   - Game not running: click **Launch and attach**; the launcher starts the official launcher, waits for the `HTGame.exe` it just created, then maps the core in.
+   - Game already running: click **Inject into running process**, which maps the core only and does not restart the game.
+   - Want the proxy inside the game directory so a shortcut always brings Anomaly along: switch to **Proxy mode** and click **Install**. The two modes are exclusive — while the proxy is enabled the inject actions are disabled, so disable it on the proxy page first.
+4. Start the game as usual and press `Insert` to open the management UI.
+5. Plugins: enable built-in plugins under **Plugins > Installed**; install community plugins from **Plugins > Available** and enable them under **Installed**; upgrade under **Plugins > Updates**.
+
 
 Building from source (developers):
 
@@ -148,12 +194,12 @@ Project-level references: [architecture overview](docs/en/developer-guide/archit
 > [!TIP]
 > For more questions, see [troubleshooting and FAQ](docs/en/user-guide/troubleshooting.md).
 
-- **`Insert` does nothing?** Change the **Main window hotkey** under **Anomaly Launcher > Startup settings** by pressing a key; you can also edit `[Platform] ToggleKey` in `anomaly.ini` (a Win32 virtual-key code, default `45` = `VK_INSERT`).
+- **`Insert` does nothing?** Change the main window hotkey under the launcher's **Settings → Startup settings** by pressing a key; you can also edit `[Platform] ToggleKey` in `anomaly.ini` (a Win32 virtual-key code, default `45` = `VK_INSERT`).
+- **Inject mode buttons stay disabled?** The inject actions are disabled while the proxy is enabled: go to **Launch → Proxy mode**, click **Disable**, and exit the game first. **Launch and attach** only works when no `HTGame.exe` is running; if the game is already running, use **Inject into running process**.
 - **No plugins under Available?** Go to **Plugins > Third-party plugins** and confirm that both the master switch and the plugin source are enabled, then return to **Available** and click refresh. See [third-party plugins](docs/en/user-guide/third-party-plugins.md) for details.
 - **Third-party plugin installation failed?** The usual causes are an unavailable download address, a wrong ZIP structure, or a plugin ID, version, game, or API that does not match the catalog. The UI shows the failure reason, and the detailed record is in `Anomaly\anomaly-platform.log`.
 - **Plugin failed to load?** Confirm that it is a directory package containing `manifest.json`; root-level DLLs and directories without a Manifest are not loaded.
 - **Coordinates, entities, or another feature shows as unavailable?** This usually means the active Profile lacks the required signature, or symbol or layout validation did not pass. See [NTE Build Profile](docs/en/user-guide/nte-profiles.md).
-- **Does it conflict with RE-UE4SS?** The proxy file name is also `dwmapi.dll`, so the two cannot share one directory; Anomaly is a separate entry point and does not load `UE4SS.dll`.
 
 ## 💬 Community
 
@@ -182,10 +228,26 @@ To start a standalone plugin repository, use the [Anomaly Plugin Template](https
 
 ## ❤️ Credits
 
-Anomaly uses the following open-source components at runtime or in its distribution packages:
+Anomaly uses the following open-source components at runtime or in its distribution packages (full license texts in [`NOTICE`](NOTICE) and `third_party/licenses/`):
+
+**Runtime and UI**
 
 - [Dear ImGui](https://github.com/ocornut/imgui) — embedded graphical UI
-- [MinHook](https://github.com/TsudaKageyu/minhook) — function hook backend
-- [nlohmann/json](https://github.com/nlohmann/json) and [JSON schema validator](https://github.com/pboettch/json-schema-validator) — JSON and Schema validation
+- [MinHook](https://github.com/TsudaKageyu/minhook), including Hacker Disassembler Engine 32/64 — function hooking and instruction-length decoding
+- [nlohmann/json](https://github.com/nlohmann/json) and [JSON schema validator](https://github.com/pboettch/json-schema-validator) — JSON parsing and Profile / Manifest Schema validation
+- [BLAKE3](https://github.com/BLAKE3-team/BLAKE3) — content hashing for mod compatibility containers and mod fingerprints
+- [miniz](https://github.com/richgel999/miniz) — plugin package ZIP parsing
 - [Noto Sans CJK](https://github.com/notofonts/noto-cjk) — Chinese and English UI font
+
+**Audio and decoding**
+
+- [miniaudio](https://github.com/mackron/miniaudio) and [RtAudio](https://github.com/thestk/rtaudio), including the ASIO SDK — format decoding and WASAPI / DirectSound / ASIO output for in-vehicle music
+- [Monkey's Audio SDK](https://www.monkeysaudio.com/) and [dsd2pcm](https://github.com/GiangLH/dsd2pcm) — APE and DSD decoding
+
+**Launcher**
+
+- [libarchive](https://github.com/libarchive/libarchive), [XZ Utils liblzma](https://github.com/tukaani-project/xz), and [zlib](https://zlib.net/) — mod and plugin archive extraction
+
+**Inspiration**
+
 - [Dalamud](https://github.com/goatcorp/Dalamud) — source of inspiration

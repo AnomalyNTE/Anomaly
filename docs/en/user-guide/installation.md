@@ -1,6 +1,6 @@
 # Installation and updates
 
-Regular users do not need to build from source. Download the Runtime ZIP, extract it completely, then run the launcher. For a first install, use "Launch → Proxy mode"; "Injection mode" suits temporary scenarios where you do not want proxy files in the game directory.
+Regular users do not need to build from source. Download the Runtime ZIP, extract it completely, then run the launcher. The recommended way in is **Launch → Inject mode** (the segment the launcher selects by default): it maps the core straight into `HTGame.exe` and writes nothing into the game directory. **Proxy mode** is for when you want the game directory to carry Anomaly so a shortcut picks it up automatically.
 
 > [!CAUTION]
 > Anomaly enters the game process and reads or modifies runtime state. Read the disclaimer in the root [README](../../../README.en.md) before use.
@@ -20,7 +20,7 @@ Extract the Runtime ZIP **completely** into an ordinary folder — do not run it
 The extracted package contains these main files:
 
 ```text
-AnomalyLauncher.exe          Install, update, and live attach
+AnomalyLauncher.exe          Install, inject, and update
 dwmapi.dll                   Proxy entry used when the game starts
 Anomaly\
   Anomaly.Core.dll           Runtime main program
@@ -35,14 +35,20 @@ Anomaly\
 
 When you build from source, the equivalent directory is `.build\windows-vs2022\game-package`. See [Building from source](../developer-guide/building.md) for the exact steps.
 
-## Recommended: install with the launcher
+## Recommended: attach with inject mode
 
-1. Exit the game first. When updating an older version, also close any `AnomalyLauncher.exe` still running.
-2. Run the `AnomalyLauncher.exe` you just extracted. A UAC prompt is normal — the launcher needs administrator rights to write into the game directory.
-3. Open the **Launch** tab at the top and select **Proxy mode**.
-4. Check "Game directory". If the auto-detected path is wrong, click the folder button and pick **the folder that directly contains `HTGame.exe`**, not the game installation root.
-5. Once the status shows "Not installed", click **Install**. Wait until the status becomes "Enabled" before you close the launcher.
-6. Start the game as usual, and press `Insert` after entering to bring up the Anomaly interface.
+Inject mode maps the core straight into `HTGame.exe` and writes neither `dwmapi.dll` nor `Anomaly\` into the game directory, so nothing there has to be mixed with your installed files.
+
+1. Close any `AnomalyLauncher.exe` still running (especially when updating an older version).
+2. Run the `AnomalyLauncher.exe` you just extracted. Allow the UAC prompt if one appears.
+3. Open the **Launch** page and confirm **Launcher directory** points at the official `NTELauncher.exe`; use the button on the right if the auto-detected path is wrong.
+4. Confirm **Game directory** points at **the folder that directly contains `HTGame.exe`**, not the game installation root. Repick it with the button on the right if needed.
+5. Keep the default **Inject mode** and pick the button that matches the game's current state:
+   - Game not running: click **Launch and attach**; the launcher starts the official launcher, waits for the `HTGame.exe` it just created, and maps the core in.
+   - Game already running: click **Inject into running process**, which maps the core only and does not restart the game.
+6. Start the game as usual and press `Insert` after entering to bring up the Anomaly interface.
+
+The two buttons are complementary: when a running `HTGame.exe` is already listed, **Launch and attach** is unavailable (it would start another process) — use **Inject into running process**. With no running game, the reverse applies.
 
 The game directory is usually:
 
@@ -50,7 +56,18 @@ The game directory is usually:
 Neverness To Everness\Client\WindowsNoEditor\HT\Binaries\Win64\
 ```
 
-After installation it contains at least:
+`AnomalyLauncher.exe` does not need to be copied into the game directory, and starting the game does not depend on the extracted folder either; you can keep it for future updates, or re-extract a new Runtime whenever you need one.
+
+## Proxy mode install (optional)
+
+Use proxy mode when you want the game directory to carry Anomaly so starting the game from a shortcut picks it up automatically. The cost is that `dwmapi.dll` and `Anomaly\` live in the game directory, and they cannot coexist with another proxy of the same name (RE-UE4SS, for example).
+
+1. Exit the game and the launcher first.
+2. Open the **Launch** page and switch the segmented control to **Proxy mode**.
+3. Once the status shows "Not installed", click **Install**. Wait until the status becomes "Enabled" before you close the launcher.
+4. Start the game as usual, and press `Insert` after entering to bring up the interface.
+
+After installation the game directory contains at least:
 
 ```text
 Win64\
@@ -59,8 +76,6 @@ Win64\
   Anomaly\
     Anomaly.Core.dll
 ```
-
-`AnomalyLauncher.exe` does not need to be copied into the game directory. Starting the game does not depend on the original extracted folder either; you can keep it for future updates, or re-extract a new Runtime whenever you need one.
 
 A successful start produces two log files:
 

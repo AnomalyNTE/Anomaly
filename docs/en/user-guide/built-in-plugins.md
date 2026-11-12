@@ -61,6 +61,10 @@ The check does not use damage readings: when the damage stream is unreadable (st
 
 ## NTE Damage Dashboard
 
+> [!WARNING]
+> Archived: it is no longer built or shipped, and it does not appear in the plugin list. The source stays in
+> `plugins/DamageDashboard/` (see `ARCHIVED.md`); what follows documents it as it was, for reference only.
+
 | | |
 | --- | --- |
 | **ID** | `haaland-a.damage-dashboard` |

@@ -1,10 +1,10 @@
 # Quickstart
 
-This page assumes you have already completed the proxy install as described in [Installation and updates](installation.md), or that you plan to use live attach from the launcher. It starts at your first time entering the game.
+This page assumes you have already attached through **inject mode** as described in [Installation and updates](installation.md), or that the proxy is installed in the game directory. It starts at your first time entering the game.
 
 ## 1. Start the game
 
-When the proxy is already enabled, just start the game as usual. With live attach, exit any running `HTGame.exe` first, then click **Start and attach** on the **Launch → Injection mode** page of `AnomalyLauncher`. Once Runtime enters the game process it writes two logs:
+In inject mode, if the game is not running yet click **Launch and attach** on the **Launch → Inject mode** page of `AnomalyLauncher`; if it is already running click **Inject into running process** instead, which needs no restart. With the proxy, just start the game as usual. Once Runtime enters the game process it writes two logs:
 
 - `Anomaly\logs\anomaly-runtime.log` — Runtime state, PID, named pipe name.
 - `Anomaly\anomaly-platform.log` — platform and plugin logs.

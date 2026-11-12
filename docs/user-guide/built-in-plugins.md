@@ -185,6 +185,11 @@
 
 ## NTE 伤害仪表盘
 
+> [!WARNING]
+> 已归档，不再随运行包构建与发布，插件列表里也不会出现。源码保留在
+> `plugins/DamageDashboard/`（含 `ARCHIVED.md`），下面是归档前的说明，仅作参考。
+> 需要实时战斗统计请用下方的 [NTE Combat Tracker](#nte-combat-tracker)。
+
 | | |
 | --- | --- |
 | **ID** | `haaland-a.damage-dashboard` |
@@ -208,7 +213,7 @@
 | **依赖服务** | `anomaly.ui`、`anomaly.localization`、`anomaly.json`、`anomaly.nte.combat`；`anomaly.core`、`anomaly.runtime-info`、`anomaly.nte.build`、`anomaly.nte.skills`、`anomaly.websocket`、`anomaly.interop.signature`、`anomaly.ue5.names`、`anomaly.ue5.objects`、`anomaly.ue5.world`（均为 V1，可选） |
 | **需要 Profile** | 是（战斗事件流来自已验证的 NTE Combat 服务） |
 
-与伤害仪表盘不同，这个插件的**数值显示在独立的 Overlay 进程里**，不占用游戏内菜单：插件
+这个插件的**数值显示在独立的 Overlay 进程里**，不占用游戏内菜单：插件
 只负责采集，通过宿主的 `anomaly.websocket` 把快照发给随包分发的 `NteCombatTracker.exe`。
 Overlay 用 Direct2D 自绘，提供输出 / 承伤 / 治疗 / 受疗四个页签、角色 → 来源 → 逐次命中
 三级下钻、可排序表头、按账号分组的历史浏览、`Ctrl+Shift+F12` 锁定穿透和托盘菜单。
