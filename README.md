@@ -58,7 +58,7 @@ qq交流群: 1037114140
 
 本项目以 [**GNU Affero General Public License v3.0（AGPL-3.0-only）**](LICENSE) 分发，第三方组件及其各自的许可证见 [`NOTICE`](NOTICE) 与 `third_party/licenses/`。
 
-## ❤️ 支持我们
+## ☕ 支持我们
 
 如果 Anomaly 对你有帮助，欢迎通过下面的方式支持项目继续维护：
 
