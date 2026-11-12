@@ -1,8 +1,5 @@
 #pragma once
-// The mods page classifies every mod from the containers it replaces: a category (a character, a
-// vehicle model, a content folder) and, inside it, the skins of that character. This turns that
-// per-mod classification into the flat ranges both views draw, so the page itself stays a
-// rendering problem and the arithmetic has one place to be checked.
+
 #include <algorithm>
 #include <cstddef>
 #include <string>
@@ -11,114 +8,124 @@
 
 namespace anomaly::launcher {
 
-// One mod's classification: the categories it belongs to, each with the skins it covers. An empty
-// skin list means the mod replaces the category as a whole.
+inline constexpr std::size_t kMaxModGroupDepth = 5;
+using ModGroupPath = std::vector<std::string>;
+
+inline ModGroupPath NormalizeModGroupPath(ModGroupPath path) {
+    path.resize((std::min)(path.size(), kMaxModGroupDepth));
+    path.erase(std::find(path.begin(), path.end(), std::string{}), path.end());
+    return path;
+}
+
 struct ModGroupingGroup {
     std::string name;
     std::vector<std::string> skins;
 };
 struct ModGroupingEntry {
-    std::string name;  // display name, orders the mods inside one skin
+    std::string name;
     std::vector<ModGroupingGroup> groups;
+    ModGroupPath custom_path;
 };
-// A skin of a category. `key` is the raw skin name, and empty for the category's own resources.
-struct ModGroupingSkin {
-    std::string key;
-    std::size_t first{}, count{};
-};
-struct ModGroupingCategory {
-    std::string key;
-    std::size_t first{}, count{};
-    std::size_t skins_first{}, skins_count{};
-    // The skins deserve a level of their own only when there is more than one and at least one of
-    // them is named.
-    bool named_skins{};
+struct ModGroupingNode {
+    ModGroupPath path;
+    std::vector<std::size_t> children;
+    std::size_t parent{};
+    std::size_t first{}, count{}, direct_count{};
+    bool explicit_group{};
 };
 struct ModGrouping {
-    std::vector<ModGroupingCategory> categories;
-    std::vector<ModGroupingSkin> skins;
-    // Indices into the entries, in display order: one per mod per category. A mod is filed under
-    // the first skin it covers, so no category lists a mod twice and the skins of a category add
-    // up to its count.
+    // Node zero is the root. Each subtree occupies one contiguous placement range,
+    // with its direct mods first, followed by its children.
+    std::vector<ModGroupingNode> nodes{1};
     std::vector<std::size_t> placements;
+    std::vector<std::size_t> placement_nodes;
 };
 
-inline const ModGroupingCategory* FindModCategory(const ModGrouping& layout, const std::string& key) {
-    for (const auto& category : layout.categories)
-        if (category.key == key) return &category;
-    return nullptr;
-}
-inline const ModGroupingSkin* FindModSkin(const ModGrouping& layout,
-    const ModGroupingCategory& category, const std::string& key) {
-    for (std::size_t index = category.skins_first;
-         index < category.skins_first + category.skins_count; ++index) {
-        if (layout.skins[index].key == key) return &layout.skins[index];
+// Resolve the deepest surviving ancestor after search, filtering or regrouping.
+inline std::size_t FindModGroup(const ModGrouping& layout, const ModGroupPath& path) {
+    std::size_t node{};
+    for (const auto& key : path) {
+        const auto& children = layout.nodes[node].children;
+        const auto found = std::find_if(children.begin(), children.end(), [&](const auto child) {
+            return layout.nodes[child].path.back() == key;
+        });
+        if (found == children.end()) break;
+        node = *found;
     }
-    return nullptr;
+    return node;
 }
-// The skin one placement belongs to: a list row knows its placement and needs the header it sits
-// under, and the skins of a category are a partition of its placements.
-inline const ModGroupingSkin* FindModSkinAt(const ModGrouping& layout,
-    const ModGroupingCategory& category, const std::size_t placement) {
-    for (std::size_t index = category.skins_first;
-         index < category.skins_first + category.skins_count; ++index) {
-        const auto& skin = layout.skins[index];
-        if (placement >= skin.first && placement < skin.first + skin.count) return &skin;
+
+// Automatic classification keeps the existing shortcut for a single skin. An explicit
+// custom level always remains navigable, even if it has just one child or one mod.
+inline std::size_t ModGroupContent(const ModGrouping& layout, const std::size_t node) {
+    const auto& group = layout.nodes[node];
+    if (group.path.size() == 1 && group.direct_count == 0 && group.children.size() == 1) {
+        const auto child = group.children.front();
+        if (!layout.nodes[child].explicit_group && layout.nodes[child].children.empty()) return child;
     }
-    return nullptr;
+    return node;
 }
+
 inline ModGrouping BuildModGrouping(const std::vector<ModGroupingEntry>& entries) {
     ModGrouping result;
-    std::vector<std::string> keys;
-    std::vector<std::vector<std::pair<std::string, std::size_t>>> pending;
-    const auto slot = [&](const std::string& key) {
-        for (std::size_t index = 0; index < keys.size(); ++index) {
-            if (keys[index] == key) return index;
+    std::vector<std::vector<std::size_t>> direct(1);
+    const auto add = [&](const ModGroupPath& path, const std::size_t entry, const bool explicit_group) {
+        std::size_t parent{};
+        for (const auto& key : path) {
+            const auto& children = result.nodes[parent].children;
+            const auto found = std::find_if(children.begin(), children.end(), [&](const auto child) {
+                return result.nodes[child].path.back() == key;
+            });
+            std::size_t node;
+            if (found != children.end()) {
+                node = *found;
+            } else {
+                node = result.nodes.size();
+                auto child_path = result.nodes[parent].path;
+                child_path.push_back(key);
+                result.nodes[parent].children.push_back(node);
+                result.nodes.push_back({std::move(child_path), {}, parent});
+                direct.emplace_back();
+            }
+            result.nodes[node].explicit_group |= explicit_group;
+            parent = node;
         }
-        keys.push_back(key);
-        pending.emplace_back();
-        result.categories.push_back(ModGroupingCategory{key, 0, 0, 0, 0, false});
-        return keys.size() - 1;
+        if (std::find(direct[parent].begin(), direct[parent].end(), entry) == direct[parent].end())
+            direct[parent].push_back(entry);
     };
     for (std::size_t index = 0; index < entries.size(); ++index) {
         const auto& entry = entries[index];
-        if (entry.groups.empty()) {
-            pending[slot(std::string{})].emplace_back(std::string{}, index);
-            continue;
-        }
-        for (const auto& group : entry.groups) {
-            const auto category = slot(group.name);
-            pending[category].emplace_back(
-                group.skins.empty() ? std::string{} : group.skins.front(), index);
-        }
-    }
-    for (std::size_t index = 0; index < result.categories.size(); ++index) {
-        auto& category = result.categories[index];
-        auto rows = std::move(pending[index]);
-        // One skin is one run of rows in both views.
-        std::sort(rows.begin(), rows.end(), [&](const auto& left, const auto& right) {
-            if (left.first != right.first) return left.first < right.first;
-            return entries[left.second].name < entries[right.second].name;
-        });
-        category.first = result.placements.size();
-        category.count = rows.size();
-        category.skins_first = result.skins.size();
-        for (auto& row : rows) {
-            if (result.skins.size() == category.skins_first || result.skins.back().key != row.first)
-                result.skins.push_back(ModGroupingSkin{row.first, result.placements.size(), 0});
-            ++result.skins.back().count;
-            result.placements.push_back(row.second);
-        }
-        category.skins_count = result.skins.size() - category.skins_first;
-        if (category.skins_count < 2) continue;
-        for (std::size_t skin = category.skins_first;
-             skin < category.skins_first + category.skins_count; ++skin) {
-            if (!result.skins[skin].key.empty()) {
-                category.named_skins = true;
-                break;
+        const auto custom = NormalizeModGroupPath(entry.custom_path);
+        if (!custom.empty()) {
+            add(custom, index, true);
+        } else if (entry.groups.empty()) {
+            add({""}, index, false);
+        } else {
+            for (const auto& group : entry.groups) {
+                ModGroupPath path{group.name};
+                if (!group.skins.empty() && !group.skins.front().empty()) path.push_back(group.skins.front());
+                add(path, index, false);
             }
         }
     }
+    const auto flatten = [&](auto&& self, const std::size_t node) -> void {
+        auto& group = result.nodes[node];
+        std::sort(group.children.begin(), group.children.end(), [&](const auto a, const auto b) {
+            return result.nodes[a].path.back() < result.nodes[b].path.back();
+        });
+        std::sort(direct[node].begin(), direct[node].end(), [&](const auto a, const auto b) {
+            return entries[a].name < entries[b].name;
+        });
+        group.first = result.placements.size();
+        group.direct_count = direct[node].size();
+        for (const auto entry : direct[node]) {
+            result.placements.push_back(entry);
+            result.placement_nodes.push_back(node);
+        }
+        for (const auto child : group.children) self(self, child);
+        group.count = result.placements.size() - group.first;
+    };
+    flatten(flatten, 0);
     return result;
 }
 

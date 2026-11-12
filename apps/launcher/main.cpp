@@ -2949,7 +2949,7 @@ struct LauncherModEntry final {
     std::string version;
     std::string link;          // mod.json "modLink" / "link" / "supportLink"
     std::string custom_name;   // user override stored in mod-notes.json
-    std::string custom_group;  // user override stored in mod-notes.json
+    anomaly::launcher::ModGroupPath custom_groups;  // user override stored in mod-notes.json
     // What the mod's own metadata calls the character or category. The container index is what
     // classifies the mod, so this is kept apart from `groups`: it is a name a mod author wrote, which
     // is what a category the name table does not know yet can be named with.
@@ -2995,6 +2995,13 @@ anomaly::ModGroupLanguage LauncherModGroupLanguage() {
     const auto translator = g_translator.load();
     return translator != nullptr && translator->locale() == anomaly::Locale::ZhCn
         ? anomaly::ModGroupLanguage::ZhCn : anomaly::ModGroupLanguage::EnUs;
+}
+
+std::string LauncherModGroupLabel(const anomaly::launcher::ModGroupPath& path) {
+    if (path.empty()) return Tr(anomaly::MessageId::LauncherModsGroupBack);
+    if (path.size() == 1) return path.front().empty() ? Tr(anomaly::MessageId::LauncherModsUngrouped)
+        : g_mod_group_names.Group(path.front(), LauncherModGroupLanguage());
+    return path.size() == 2 ? g_mod_group_names.Skin(path.back(), LauncherModGroupLanguage()) : path.back();
 }
 
 void LoadLauncherModGroupNames() {
@@ -3172,11 +3179,11 @@ std::filesystem::path LauncherModNotesPath(const LauncherModEntry& entry) {
 }
 
 bool LauncherWriteModNotes(const LauncherModEntry& entry, const std::string& display_name,
-    const std::string& notes, const std::string& group) {
+    const std::string& notes, const anomaly::launcher::ModGroupPath& groups) {
     std::ofstream out(LauncherModNotesPath(entry));
     out << "{\n  \"displayName\": " << nlohmann::json(display_name).dump()
         << ",\n  \"notes\": " << nlohmann::json(notes).dump()
-        << ",\n  \"group\": " << nlohmann::json(group).dump() << "\n}\n";
+        << ",\n  \"groupPath\": " << nlohmann::json(anomaly::launcher::NormalizeModGroupPath(groups)).dump() << "\n}\n";
     out.close();
     return static_cast<bool>(out);
 }
@@ -3188,7 +3195,27 @@ void LauncherReadModNotes(LauncherModEntry& entry) {
     if (!parsed.is_object()) return;
     entry.custom_name = parsed.value("displayName", std::string{});
     entry.notes = parsed.value("notes", std::string{});
-    entry.custom_group = parsed.value("group", std::string{});
+    entry.custom_groups.clear();
+    if (const auto path = parsed.find("groupPath"); path != parsed.end()) {
+        if (path->is_array()) {
+            for (const auto& level : *path) {
+                if (!level.is_string() || level.get_ref<const std::string&>().empty() ||
+                    entry.custom_groups.size() == anomaly::launcher::kMaxModGroupDepth) break;
+                entry.custom_groups.push_back(level.get<std::string>());
+            }
+        }
+    } else {
+        entry.custom_groups = anomaly::launcher::NormalizeModGroupPath({
+            parsed.value("group", std::string{}), parsed.value("subgroup", std::string{})});
+    }
+}
+
+anomaly::launcher::ModGroupingEntry LauncherClassifyMod(const LauncherModEntry& entry) {
+    anomaly::launcher::ModGroupingEntry value;
+    value.name = entry.display_name.empty() ? entry.name : entry.display_name;
+    value.custom_path = entry.custom_groups;
+    for (const auto& group : entry.groups) value.groups.push_back({group.name, group.skins});
+    return value;
 }
 
 
@@ -3587,17 +3614,14 @@ void LauncherRefreshMods(
     std::erase_if(mods, [](const auto& entry) {
         return anomaly::PakModNameRestricted(entry.key) || anomaly::PakModNameRestricted(entry.display_name);
     });
-    for (auto& entry : mods) {
-        // A hand-written group replaces the automatic one: nothing can tell two classes of the
-        // same name apart, and a renamed character has to keep all of its mods together.
-        if (!entry.custom_group.empty()) entry.groups = {{entry.custom_group, {""}}};
-    }
     std::sort(mods.begin(), mods.end(),
         [](const LauncherModEntry& left, const LauncherModEntry& right) {
             const std::string_view left_group =
-                left.groups.empty() ? std::string_view{} : left.groups.front().name;
+                !left.custom_groups.empty() ? left.custom_groups.front()
+                : left.groups.empty() ? std::string_view{} : left.groups.front().name;
             const std::string_view right_group =
-                right.groups.empty() ? std::string_view{} : right.groups.front().name;
+                !right.custom_groups.empty() ? right.custom_groups.front()
+                : right.groups.empty() ? std::string_view{} : right.groups.front().name;
             if (left_group != right_group) return left_group < right_group;
             return left.display_name < right.display_name;
         });
@@ -3714,31 +3738,52 @@ std::vector<std::filesystem::path> LauncherModFiles(const LauncherModEntry& entr
     return files;
 }
 
+std::string LauncherModFileError(const DWORD error) {
+    return error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION
+        ? Tr(anomaly::MessageId::LauncherModsFilesBusy)
+        : Tr(anomaly::MessageId::LauncherModsFileAccessFailed, {std::to_string(error)});
+}
+
 // A saved OFF selection can precede the runtime's unmount. Check file access before deleting
 // anything, so a still-open IoStore sidecar cannot leave a partially removed package.
-bool LauncherModFilesAvailable(const LauncherModEntry& entry) {
+bool LauncherModFilesAvailable(const LauncherModEntry& entry,
+    const bool for_rename = false, std::string* failure = nullptr) {
     try {
         for (const auto& file : LauncherModFiles(entry)) {
             if (!LauncherIsModFile(file)) continue;
-            const HANDLE handle = CreateFileW(file.c_str(), GENERIC_READ | GENERIC_WRITE | DELETE,
-                0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-            if (handle == INVALID_HANDLE_VALUE) return false;
+            // Moving does not write container contents. Readers that allow delete sharing
+            // can coexist with a rename; replacement and deletion still require exclusive access.
+            const HANDLE handle = CreateFileW(file.c_str(), for_rename ? DELETE : GENERIC_READ | GENERIC_WRITE | DELETE,
+                for_rename ? FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE : 0,
+                nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (handle == INVALID_HANDLE_VALUE) {
+                const auto error = GetLastError();
+                if (failure != nullptr) *failure = LauncherModFileError(error);
+                return false;
+            }
             CloseHandle(handle);
         }
         return true;
     } catch (...) { return false; }
 }
 
-bool LauncherCanEditMod(const LauncherSnapshot& snapshot, const LauncherModEntry& entry) {
+bool LauncherCanEditMod(const LauncherSnapshot& snapshot, const LauncherModEntry& entry,
+    const bool for_rename = false, std::string* failure = nullptr) {
     try {
-        if (!LauncherModTreeSafe(snapshot, entry)) return false;
+        if (!LauncherModTreeSafe(snapshot, entry)) {
+            if (failure != nullptr) *failure = Tr(anomaly::MessageId::LauncherModsInvalidPath);
+            return false;
+        }
         if (LauncherGameRunning()) {
             const auto catalog = anomaly::ReadPakModCatalog(LauncherModsDirectory(snapshot), LauncherPakSettings(snapshot));
             for (const auto& row : catalog)
                 if (anomaly::NormalizePakModKey(row.key) == anomaly::NormalizePakModKey(LauncherModStateKey(entry)) &&
-                    row.enabled) return false;
+                    row.enabled) {
+                    if (failure != nullptr) *failure = Tr(anomaly::MessageId::LauncherModsStillEnabled);
+                    return false;
+                }
         }
-        return LauncherModFilesAvailable(entry);
+        return LauncherModFilesAvailable(entry, for_rename, failure);
     } catch (...) { return false; }
 }
 
@@ -3926,6 +3971,8 @@ LauncherOrganizeResult LauncherOrganizeModFolders(const LauncherSnapshot& snapsh
     std::vector<Move> moves;
     std::set<std::string> destinations;
     for (const auto& entry : mods) {
+        // Manual categories also protect the user's folder layout from automatic organisation.
+        if (!entry.custom_groups.empty()) { ++result.skipped; continue; }
         if (!entry.directory || entry.groups.empty()) continue;
         // The category a mod is filed under first is the one its folder is named after; a mod that
         // covers two categories keeps its place in the page, but lives in one folder.
@@ -4256,32 +4303,93 @@ std::string LauncherImportArchive(
 
 bool LauncherRenameMod(
     const LauncherSnapshot& snapshot, const LauncherModEntry& entry, const std::string& new_name,
-    std::string* renamed_key = nullptr) {
+    std::string* renamed_key = nullptr, const std::filesystem::path& destination_parent = {},
+    std::string* failure = nullptr) {
+    const auto fail = [&](const anomaly::MessageId reason) {
+        if (failure != nullptr) *failure = Tr(reason);
+        return false;
+    };
+    const auto file_error = [&](const std::error_code& error) {
+        if (failure != nullptr) *failure = LauncherModFileError(static_cast<DWORD>(error.value()));
+        return false;
+    };
     try {
-        if (!LauncherCanEditMod(snapshot, entry)) return false;
-        if (new_name.empty() || new_name == entry.name || new_name == "." || new_name == ".." ||
+        if (new_name.empty() || new_name == "." || new_name == ".." ||
             new_name.find_first_of("<>:\"/\\|?*") != std::string::npos ||
-            new_name.back() == '.' || new_name.back() == ' ') return false;
+            new_name.back() == '.' || new_name.back() == ' ')
+            return fail(anomaly::MessageId::LauncherModsInvalidPath);
         std::error_code error;
         const auto directory = LauncherModsDirectory(snapshot);
-        const bool hot = !LauncherCompatibilityMode(snapshot);
         const auto old_key = LauncherModStateKey(entry);
         const bool priority_suffix = !entry.directory && LauncherModBaseName(old_key).ends_with("_P");
         const auto renamed_stem = new_name + (priority_suffix && !new_name.ends_with("_P") ? "_P" : "");
-        const auto parent_end = entry.directory ? old_key.find_last_of('/', old_key.size() - 2)
-                                                : std::string::npos;
-        const auto new_key = (parent_end == std::string::npos ? std::string{} : old_key.substr(0, parent_end + 1)) +
-            LauncherStripDisabled(renamed_stem) + (entry.directory ? "/" : ".pak");
-        const auto target_directory = entry.path.parent_path() / LauncherWiden(new_name);
+        const auto parent = destination_parent.empty() ? entry.path.parent_path() : destination_parent;
+        auto folder_name = new_name;
+        if (entry.directory && LauncherStripDisabled(entry.name) != entry.name &&
+            LauncherStripDisabled(folder_name) == folder_name) folder_name += ".disabled";
+        const auto target_directory = parent / LauncherWiden(folder_name);
+        std::string new_key;
+        if (entry.directory) {
+            if (anomaly::PakModLayoutFolder(LauncherStripDisabled(folder_name)))
+                return fail(anomaly::MessageId::LauncherModsInvalidPath);
+            for (const auto& part : target_directory.lexically_relative(directory))
+                new_key += LauncherStripDisabled(LauncherNarrow(part)) + "/";
+            if (target_directory == entry.path) {
+                if (renamed_key != nullptr) *renamed_key = old_key;
+                return true;
+            }
+            auto destination = entry;
+            destination.path = target_directory;
+            if (!LauncherModTreeSafe(snapshot, destination)) return fail(anomaly::MessageId::LauncherModsInvalidPath);
+            // A category must not sit inside an existing mod or an engine layout folder:
+            // the catalogue would otherwise merge the moved mod into its parent.
+            auto ancestor = directory;
+            for (const auto& part : parent.lexically_relative(directory)) {
+                if (part == L".") continue;
+                const auto name = LauncherStripDisabled(LauncherNarrow(part));
+                if (anomaly::PakModLayoutFolder(name)) return fail(anomaly::MessageId::LauncherModsInvalidPath);
+                ancestor /= part;
+                if (!std::filesystem::exists(ancestor)) continue;
+                for (const auto& file : std::filesystem::directory_iterator(ancestor)) {
+                    if (file.is_regular_file() && (LauncherIsModFile(file.path()) ||
+                        anomaly::PakModShippedFile(LauncherNarrow(file.path().filename()))))
+                        return fail(anomaly::MessageId::LauncherModsGroupInsideMod);
+                }
+            }
+        } else {
+            new_key = LauncherStripDisabled(renamed_stem) + ".pak";
+        }
+        if (!LauncherCanEditMod(snapshot, entry, true, failure)) return false;
         if (entry.directory && std::filesystem::exists(target_directory, error) &&
-            !std::filesystem::equivalent(entry.path, target_directory, error)) return false;
+            !std::filesystem::equivalent(entry.path, target_directory, error))
+            return fail(anomaly::MessageId::LauncherModsTargetExists);
+        if (entry.directory && std::filesystem::is_directory(parent)) {
+            const auto logical_name = anomaly::NormalizePakModKey(LauncherStripDisabled(folder_name));
+            for (const auto& sibling : std::filesystem::directory_iterator(parent)) {
+                if (sibling.is_directory() && anomaly::NormalizePakModKey(
+                        LauncherStripDisabled(LauncherNarrow(sibling.path().filename()))) == logical_name &&
+                    !std::filesystem::equivalent(entry.path, sibling.path()))
+                    return fail(anomaly::MessageId::LauncherModsTargetExists);
+            }
+        }
         const auto prepare = [&] {
-            return !hot || LauncherWritePakSettings(snapshot, [&](auto& document) {
-                anomaly::SetPakModEnabled(document["modStates"], new_key, entry.enabled);
+            return LauncherWritePakSettings(snapshot, [&](auto& document) {
+                auto& states = document["modStates"];
+                if (states.is_null()) states = nlohmann::json::object();
+                anomaly::ValidatePakModStates(states);
+                const auto previous = states;
+                anomaly::SetPakModEnabled(states, new_key,
+                    anomaly::PakModSelectionApplied(previous, old_key)
+                        ? anomaly::PakModEnabled(previous, old_key) : entry.enabled);
+                const auto old = anomaly::NormalizePakModKey(old_key);
+                if (entry.directory) for (const auto& [key, value] : previous.items()) {
+                    const auto normalized = anomaly::NormalizePakModKey(key);
+                    if (normalized.starts_with(old) && normalized.size() > old.size())
+                        states[new_key + normalized.substr(old.size())] = value;
+                }
             });
         };
         const auto finish = [&] {
-            if (!hot) return true;
             if (anomaly::NormalizePakModKey(old_key) == anomaly::NormalizePakModKey(new_key)) return true;
             return LauncherWritePakSettings(snapshot, [&](auto& document) {
                 auto& states = document["modStates"];
@@ -4294,16 +4402,13 @@ bool LauncherRenameMod(
             });
         };
         if (entry.directory) {
-            if (!prepare()) return false;
-            if (!hot && !entry.enabled && !LauncherSetModFilesEnabled(snapshot, entry, false)) return false;
-            try {
-                std::filesystem::rename(entry.path, target_directory, error);
-            } catch (...) {
-                return false;
-            }
-            const bool saved = !error && finish();
-            if (saved && renamed_key != nullptr) *renamed_key = new_key;
-            return saved;
+            std::filesystem::create_directories(parent, error);
+            if (error) return file_error(error);
+            if (!prepare()) return fail(anomaly::MessageId::SettingsSaveFailed);
+            std::filesystem::rename(entry.path, target_directory, error);
+            if (error) return file_error(error);
+            if (renamed_key != nullptr) *renamed_key = new_key;
+            return finish() || fail(anomaly::MessageId::SettingsSaveFailed);
         }
         // Prepare every destination before renaming so another loose mod is never overwritten.
         std::vector<std::pair<std::filesystem::path, std::filesystem::path>> renames;
@@ -4317,17 +4422,73 @@ bool LauncherRenameMod(
                     (plain == old_name ? "" : ".disabled");
             } else suffix = LauncherNarrow(file.extension());
             const auto target = directory / LauncherWiden(renamed_stem + suffix);
-            if (std::filesystem::exists(target, error) && !std::filesystem::equivalent(file, target, error)) return false;
+            if (std::filesystem::exists(target, error) && !std::filesystem::equivalent(file, target, error))
+                return fail(anomaly::MessageId::LauncherModsTargetExists);
             renames.emplace_back(file, target);
         }
-        if (!prepare()) return false;
+        if (!prepare()) return fail(anomaly::MessageId::SettingsSaveFailed);
         for (const auto& [source, target] : renames) {
             std::filesystem::rename(source, target, error);
-            if (error) return false;
+            if (error) return file_error(error);
         }
-        const bool saved = finish();
-        if (saved && renamed_key != nullptr) *renamed_key = new_key;
-        return saved;
+        if (renamed_key != nullptr) *renamed_key = new_key;
+        return finish() || fail(anomaly::MessageId::SettingsSaveFailed);
+    } catch (const std::filesystem::filesystem_error& error) { return file_error(error.code()); }
+    catch (...) { return fail(anomaly::MessageId::LauncherModsFileChangeFailed); }
+}
+
+bool LauncherSaveModSettings(const LauncherSnapshot& snapshot, LauncherModEntry& entry,
+    const std::string& file_name, const std::string& display_name, const std::string& notes,
+    const anomaly::launcher::ModGroupPath& groups, std::string* failure = nullptr) {
+    if (failure != nullptr) *failure = Tr(anomaly::MessageId::LauncherModsFileChangeFailed);
+    try {
+        auto parent = entry.path.parent_path();
+        if (entry.directory && (!groups.empty() || !entry.custom_groups.empty())) {
+            parent = LauncherModsDirectory(snapshot);
+            if (groups.empty()) {
+                if (!entry.groups.empty()) parent /= LauncherWiden(g_mod_group_names.Folder(
+                    entry.groups.front().name, LauncherModGroupLanguage()));
+            } else {
+                for (const auto& group : groups) {
+                    const auto folder = LauncherSafeFolderName(group);
+                    const auto segment = LauncherNarrow(folder);
+                    if (!anomaly::ValidatePluginPackageRelativePath(segment).Ok() ||
+                        LauncherStripDisabled(segment) != segment) {
+                        if (failure != nullptr) *failure = Tr(anomaly::MessageId::LauncherModsInvalidPath);
+                        return false;
+                    }
+                    parent /= folder;
+                }
+            }
+        }
+        const auto wanted = file_name.empty() ? entry.name : file_name;
+        if (wanted != entry.name || (entry.directory && parent != entry.path.parent_path())) {
+            std::string renamed;
+            const bool moved = LauncherRenameMod(snapshot, entry, wanted, &renamed, parent, failure);
+            // A move may succeed even if cleaning up the old selection fails. Keep the
+            // dialog attached to the actual location so retrying cannot target stale files.
+            if (!renamed.empty()) {
+                if (entry.directory) {
+                    auto name = wanted;
+                    if (LauncherStripDisabled(entry.name) != entry.name && LauncherStripDisabled(name) == name)
+                        name += ".disabled";
+                    entry.path = parent / LauncherWiden(name);
+                    entry.name = name;
+                } else {
+                    entry.name = LauncherModBaseName(renamed);
+                    entry.path = LauncherModsDirectory(snapshot) / LauncherWiden(renamed);
+                }
+                entry.key = renamed;
+            }
+            if (!moved) return false;
+        }
+        if (!LauncherWriteModNotes(entry, display_name, notes, groups)) {
+            if (failure != nullptr) *failure = Tr(anomaly::MessageId::SettingsSaveFailed);
+            return false;
+        }
+        entry.custom_groups = groups;
+        if (failure != nullptr) failure->clear();
+        return true;
     } catch (...) { return false; }
 }
 
@@ -4718,7 +4879,8 @@ std::string LauncherUpdateMod(
         if (!LauncherRemoveObsoleteContainers(target_mod, containers))
             return Tr(anomaly::MessageId::LauncherModsFileChangeFailed);
         if (!entry.directory) {
-            if (!LauncherWriteModNotes(target_mod, entry.custom_name, entry.notes, entry.custom_group))
+            if (!LauncherWriteModNotes(target_mod, entry.custom_name, entry.notes,
+                    entry.custom_groups))
                 return Tr(anomaly::MessageId::SettingsSaveFailed);
             if (!entry.cover.empty()) {
                 std::filesystem::copy_file(entry.cover, target / (L"icon" + entry.cover.extension().wstring()),
@@ -5991,9 +6153,183 @@ bool DrawModsPager(std::size_t& page, const std::size_t pages, const ImVec2 area
     return changed;
 }
 
+std::optional<anomaly::launcher::ModGroupPath> DrawLauncherModBreadcrumbs(
+    const anomaly::launcher::ModGroupPath& path, const float width, const std::size_t count) {
+    std::optional<anomaly::launcher::ModGroupPath> path_request;
+    if (LauncherChip((Tr(anomaly::MessageId::LauncherModsGroupBack) + "##back").c_str()))
+        path_request = anomaly::launcher::ModGroupPath{};
+    anomaly::launcher::ModGroupPath prefix;
+    const float crumb_width = (std::max)(Scale(50.0f),
+        (width - Scale(180.0f)) / static_cast<float>(path.size()));
+    for (std::size_t level = 0; level < path.size(); ++level) {
+        prefix.push_back(path[level]);
+        ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextDisabled("/");
+        ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
+        const auto label = LauncherModGroupLabel(prefix);
+        ImGui::TextUnformatted(Ellipsize(label, crumb_width).c_str());
+        Tooltip(label.c_str());
+        if (level + 1 < path.size()) {
+            if (ImGui::IsItemClicked()) path_request = prefix;
+            if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        }
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", Tr(anomaly::MessageId::LauncherModsGroupCount,
+        {std::to_string(count)}).c_str());
+    return path_request;
+}
+
+struct LauncherModGroupEditor {
+    std::array<std::array<char, 256>, anomaly::launcher::kMaxModGroupDepth> buffers{};
+    std::size_t count{1};
+
+    void Load(const anomaly::launcher::ModGroupPath& path) {
+        buffers = {};
+        const auto normalized = anomaly::launcher::NormalizeModGroupPath(path);
+        count = (std::max)(std::size_t{1}, normalized.size());
+        for (std::size_t index = 0; index < normalized.size(); ++index)
+            std::snprintf(buffers[index].data(), buffers[index].size(), "%s", normalized[index].c_str());
+    }
+
+    anomaly::launcher::ModGroupPath Path() const {
+        anomaly::launcher::ModGroupPath path;
+        for (std::size_t index = 0; index < count && buffers[index][0] != '\0'; ++index)
+            path.emplace_back(buffers[index].data());
+        return path;
+    }
+
+    bool Valid() const {
+        const auto depth = Path().size();
+        for (std::size_t index = depth; index < count; ++index)
+            if (buffers[index][0] != '\0') return false;
+        return true;
+    }
+
+    void DrawReset() {
+        if (LauncherChip(Tr(anomaly::MessageId::LauncherModsResetGroups).c_str(),
+                ImVec2(0.0f, ButtonHeight(40.0f)))) Load({});
+    }
+
+    void Draw(const anomaly::launcher::ModGrouping& choices) {
+        anomaly::launcher::ModGroupPath prefix;
+        auto next_count = count;
+        const float button_width = ButtonHeight(42.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+            ImVec2(ImGui::GetStyle().FramePadding.x, (button_width - ImGui::GetFontSize()) * 0.5f));
+        const auto step_button = [&](const char* id, const bool add, const bool enabled) {
+            const bool clicked = LauncherChip(id, ImVec2(button_width, button_width), enabled);
+            const auto min = ImGui::GetItemRectMin();
+            const ImVec2 center(min.x + button_width * 0.5f, min.y + button_width * 0.5f);
+            const auto ink = ImGui::GetColorU32(enabled ? ImGuiCol_Text : ImGuiCol_TextDisabled);
+            const float radius = Scale(8.0f);
+            auto* draw = ImGui::GetWindowDrawList();
+            draw->AddLine(ImVec2(center.x - radius, center.y), ImVec2(center.x + radius, center.y), ink, Scale(2.0f));
+            if (add)
+                draw->AddLine(ImVec2(center.x, center.y - radius), ImVec2(center.x, center.y + radius), ink, Scale(2.0f));
+            return clicked;
+        };
+        for (std::size_t level = 0; level < count; ++level) {
+            ImGui::PushID(static_cast<int>(level));
+            ImGui::TextUnformatted(Tr(anomaly::MessageId::LauncherModsGroupLevel,
+                {std::to_string(level + 1)}).c_str());
+            auto& buffer = buffers[level];
+            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - button_width * 3.0f - ImGui::GetStyle().ItemSpacing.x * 3.0f);
+            bool changed = ImGui::InputText("##name", buffer.data(), buffer.size());
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(button_width);
+            if (ImGui::BeginCombo("##existing", "", ImGuiComboFlags_NoPreview)) {
+                const auto node = anomaly::launcher::FindModGroup(choices, prefix);
+                if (choices.nodes[node].path == prefix) {
+                    for (const auto child : choices.nodes[node].children) {
+                        const auto& path = choices.nodes[child].path;
+                        if (path.back().empty()) continue;
+                        ImGui::PushID(static_cast<int>(child));
+                        if (ImGui::Selectable(LauncherModGroupLabel(path).c_str(), path.back() == buffer.data())) {
+                            std::snprintf(buffer.data(), buffer.size(), "%s", path.back().c_str());
+                            changed = true;
+                        }
+                        ImGui::PopID();
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            if (changed && buffer[0] == '\0') next_count = level + 1;
+            if (level + 1 == count) {
+                ImGui::SameLine();
+                if (step_button("##remove-level", false, count > 1)) next_count = count - 1;
+                ImGui::SameLine();
+                if (step_button("##add-level", true, count < buffers.size())) next_count = count + 1;
+            }
+            prefix.emplace_back(buffer.data());
+            ImGui::PopID();
+            if (next_count < count) break;
+        }
+        for (std::size_t index = next_count; index < buffers.size(); ++index) buffers[index] = {};
+        count = next_count;
+        ImGui::PopStyleVar();
+    }
+};
+
+enum class LauncherModConfirmationResult { None, Confirm, Cancel };
+
+LauncherModConfirmationResult DrawLauncherModConfirmationButtons() {
+    ImGui::Dummy(ImVec2(0.0f, Scale(8.0f)));
+    const auto confirm_label = Tr(anomaly::MessageId::LauncherModsConfirm);
+    const auto cancel_label = Tr(anomaly::MessageId::LauncherModsCancel);
+    const float buttons_width = ImGui::CalcTextSize(confirm_label.c_str()).x +
+        ImGui::CalcTextSize(cancel_label.c_str()).x + Scale(60.0f) + ImGui::GetStyle().ItemSpacing.x;
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (ImGui::GetContentRegionAvail().x - buttons_width) * 0.5f);
+    auto result = LauncherModConfirmationResult::None;
+    if (LauncherChip(confirm_label.c_str(), ImVec2(0.0f, ButtonHeight(40.0f))))
+        result = LauncherModConfirmationResult::Confirm;
+    ImGui::SameLine();
+    if (LauncherChip(cancel_label.c_str(), ImVec2(0.0f, ButtonHeight(40.0f))))
+        result = LauncherModConfirmationResult::Cancel;
+    if (result != LauncherModConfirmationResult::None) ImGui::CloseCurrentPopup();
+    return result;
+}
+
+bool DrawLauncherModOrganizeConfirmation(const char* title,
+    const ImVec2 canvas_min, const ImVec2 canvas_size) {
+    ImGui::SetNextWindowPos(ImVec2(canvas_min.x + canvas_size.x * 0.5f,
+        canvas_min.y + canvas_size.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2((std::min)(Scale(400.0f), canvas_size.x - Scale(32.0f)), 0.0f));
+    bool confirmed{};
+    if (ImGui::BeginPopupModal(title, nullptr,
+            ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+        ImGui::TextWrapped("%s", Tr(anomaly::MessageId::LauncherModsConfirmOrganize).c_str());
+        confirmed = DrawLauncherModConfirmationButtons() == LauncherModConfirmationResult::Confirm;
+        ImGui::EndPopup();
+    }
+    return confirmed;
+}
+
+// The fields scroll independently so Save and Cancel remain visible as levels are added.
+bool BeginLauncherModSettingsPopup(const char* title,
+    const ImVec2 canvas_min, const ImVec2 canvas_size) {
+    const auto* viewport = ImGui::GetMainViewport();
+    const float margin = Scale(16.0f);
+    const ImVec2 min((std::max)(canvas_min.x, viewport->WorkPos.x) + margin,
+        (std::max)(canvas_min.y, viewport->WorkPos.y) + margin);
+    const ImVec2 max((std::min)(canvas_min.x + canvas_size.x, viewport->WorkPos.x + viewport->WorkSize.x) - margin,
+        (std::min)(canvas_min.y + canvas_size.y, viewport->WorkPos.y + viewport->WorkSize.y) - margin);
+    ImGui::SetNextWindowPos(ImVec2((min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f),
+        ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2((std::min)(Scale(520.0f), max.x - min.x),
+        (std::min)(Scale(620.0f), max.y - min.y)));
+    if (!ImGui::BeginPopupModal(title, nullptr, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
+            ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) return false;
+    ImGui::BeginChild("##mod-settings-fields",
+        ImVec2(0.0f, -ButtonHeight(40.0f) - ImGui::GetStyle().ItemSpacing.y));
+    return true;
+}
+
 void DrawModsMode(
     HWND window, LauncherController& controller, const LauncherSnapshot& snapshot,
-    const anomaly::Translator& translator) {
+    const anomaly::Translator& translator, const ImVec2 canvas_min, const ImVec2 canvas_size) {
     (void)window;
     static std::vector<LauncherModEntry> mods;
     static bool refreshed{};
@@ -6004,14 +6340,15 @@ void DrawModsMode(
     static char notes_file_buffer[128]{};
     static char notes_name_buffer[128]{};
     static char notes_buffer[512]{};
-    static char notes_group_buffer[64]{};
+    static LauncherModGroupEditor notes_groups;
     static char notes_id_buffer[32]{};
     static std::string notes_source;
     static bool notes_directory{};
+    static std::string notes_error;
     static std::string pending_uninstall;   // single uninstall awaiting confirmation
     static std::set<std::string> selected_names;  // batch selection by mod key: one per mod, also across categories
     static bool bulk_uninstall_pending{};
-    static std::map<std::string, bool> group_collapsed;
+    static std::map<anomaly::launcher::ModGroupPath, bool> group_collapsed;
     static std::string update_status;
     static std::mutex check_mutex;
     static std::vector<std::pair<std::string, std::string>> check_versions;
@@ -6025,13 +6362,7 @@ void DrawModsMode(
     // The view, the pager and its page size are the launcher configuration's, so the settings
     // page and this page always read the same values; nothing is cached in a static here.
     const anomaly::launcher::LauncherViewSettings& view = snapshot.view;
-    // How deep the grid is, and what is open at each level: 0 is the categories, 1 a category (its
-    // skins, or its mods when it has no skins to separate) and 2 one of those skins. The drill-in
-    // belongs to the session rather than to the configuration, because a launcher that reopened
-    // inside one category would look empty.
-    static int grid_level{};
-    static std::string grid_group;
-    static std::string grid_skin;
+    static anomaly::launcher::ModGroupPath grid_path;
     // Set by anything that changes what the page shows; the list is scrolled back to its top on
     // the next frame, because the list is the only part of this page that scrolls.
     static bool scroll_to_top{};
@@ -6047,9 +6378,7 @@ void DrawModsMode(
     const auto refresh_mods = [&] {
         if (cached_game != snapshot.game_directory || cached_client != snapshot.selected_client) {
             page = 0;
-            grid_level = 0;
-            grid_group.clear();
-            grid_skin.clear();
+            grid_path.clear();
             selected_names.clear();
             group_collapsed.clear();
             import_message.clear();
@@ -6110,8 +6439,7 @@ void DrawModsMode(
     }
     ImGui::SameLine();
     if (LauncherChip(Text(translator, anomaly::MessageId::LauncherModsOrganize))) {
-        import_message = LauncherOrganizeMessage(LauncherOrganizeModFolders(snapshot, mods));
-        refresh_mods();
+        ImGui::OpenPopup(modal_name(anomaly::MessageId::LauncherModsOrganize, "confirm-organize").c_str());
     }
     // The exclusivity of the mods page -- "load both anyway" -- is a switch of the page, not a
     // command on this list, so it is drawn on the first row next to compatibility mode; the row of
@@ -6216,68 +6544,20 @@ void DrawModsMode(
     for (const auto& entry : mods) {
         if (matches(entry)) filtered.push_back(&entry);
     }
-    // The grid opens on the categories rather than on the mods: a cover says less than the
-    // character or the pack it belongs to, and one page holding covers from every category
-    // at once is a pile. The categories are the ones the search and the filter left
-    // visible, in the order the mods appear, so the overview matches the list beside it.
-    // A character category carries a second level: the skins its mods replace. Every mod is filed
-    // under exactly one of them -- the first skin it covers -- and carries its full skin list as
-    // tags, so no mod is listed twice and the counts of the skins add up to the count of the
-    // category. The skins stay separate groups, so two outfits of one character can be on at the
-    // same time. `anomaly/launcher/mod_groups.hpp` owns that arithmetic.
+    // Both views use the same tree and placement ranges, including custom paths up to five levels.
     std::vector<anomaly::launcher::ModGroupingEntry> classified;
     classified.reserve(filtered.size());
-    for (const auto* entry : filtered) {
-        anomaly::launcher::ModGroupingEntry value;
-        value.name = entry->display_name.empty() ? entry->name : entry->display_name;
-        for (const auto& group : entry->groups) value.groups.push_back({group.name, group.skins});
-        classified.push_back(std::move(value));
-    }
+    for (const auto* entry : filtered) classified.push_back(LauncherClassifyMod(*entry));
     const auto layout = anomaly::launcher::BuildModGrouping(classified);
-    const auto& groups = layout.categories;
-    const auto& skins = layout.skins;
-    // The labels live here, not in the layout: the two categories whose key is an empty string are
-    // the ones this page has words for, and every other key is a container identifier that
-    // `assets/mod-groups/mod-groups.json` names. A token with no entry still reads as a category
-    // ("角色 051"), so a character added by a mod author never shows up as a bare id.
-    const auto category_label = [language = LauncherModGroupLanguage()](const std::string& key) {
-        return key.empty() ? Tr(anomaly::MessageId::LauncherModsUngrouped)
-                           : g_mod_group_names.Group(key, language);
-    };
-    const auto skin_label = [language = LauncherModGroupLanguage()](const std::string& key) {
-        return key.empty() ? Tr(anomaly::MessageId::LauncherModsGroupShared)
-                           : g_mod_group_names.Skin(key, language);
-    };
-    // A category or skin the search no longer matches cannot stay open, and neither change can
-    // keep the page the other view was on.
-    const auto open_group = anomaly::launcher::FindModCategory(layout, grid_group);
-    if (grid_level > 0 && open_group == nullptr) {
-        grid_level = 0;
+    const auto open_node = anomaly::launcher::FindModGroup(layout, grid_path);
+    if (grid_path != layout.nodes[open_node].path) {
+        grid_path = layout.nodes[open_node].path;
         page = 0;
         scroll_to_top = true;
     }
-    const auto open_skin = [&]() -> const anomaly::launcher::ModGroupingSkin* {
-        if (grid_level < 2 || open_group == nullptr) return nullptr;
-        if (const auto* found = anomaly::launcher::FindModSkin(layout, *open_group, grid_skin))
-            return found;
-        grid_level = 1;
-        page = 0;
-        scroll_to_top = true;
-        return nullptr;
-    };
-    const auto* const skin_view = open_skin();
-    // What the pager counts: the categories in the overview, the skins of an open category (or its
-    // mods when the category names no skins), the mods of one skin, and every row of the list.
-    // Pagination is off unless the settings page turned it on; with it off the whole set is laid
-    // out and the list is scrolled instead, which is what a launcher with a couple of dozen mods
-    // wants.
-    const std::size_t open_items = open_group == nullptr ? 0
-        : open_group->named_skins ? open_group->skins_count
-        : open_group->count;
+    const auto& open_group = layout.nodes[anomaly::launcher::ModGroupContent(layout, open_node)];
     const std::size_t page_items = !view.mods_grid ? layout.placements.size()
-        : grid_level == 0 ? groups.size()
-        : grid_level == 1 ? open_items
-        : skin_view != nullptr ? skin_view->count : 0;
+        : open_group.children.size() + open_group.direct_count;
     const std::size_t page_size = view.mods_pagination
         ? static_cast<std::size_t>(std::clamp(view.mods_page_size, 1, 200))
         : (std::max)(page_items, std::size_t{1});
@@ -6353,6 +6633,7 @@ void DrawModsMode(
     const auto open_notes = [&](const LauncherModEntry& entry) {
         notes_source = LauncherModStateKey(entry);
         notes_directory = entry.directory;
+        notes_error.clear();
         std::snprintf(notes_name_buffer, sizeof(notes_name_buffer), "%s",
             entry.custom_name.empty() ? entry.display_name.c_str() : entry.custom_name.c_str());
         // The name on disk: renaming lives in this dialog now, so the field starts on the current one.
@@ -6360,8 +6641,7 @@ void DrawModsMode(
         std::snprintf(notes_buffer, sizeof(notes_buffer), "%s", entry.notes.c_str());
         // The manual group, not the classified one: saving a note must not freeze today's
         // automatic classification into a hand-written category.
-        std::snprintf(notes_group_buffer, sizeof(notes_group_buffer), "%s",
-            entry.custom_group.c_str());
+        notes_groups.Load(entry.custom_groups);
         notes_id_buffer[0] = '\0';
         // Show the already bound GameBanana id so the field is not misleadingly empty.
         if (entry.directory) {
@@ -6376,31 +6656,7 @@ void DrawModsMode(
     const LauncherModEntry* notes_request = nullptr;
     const LauncherModEntry* uninstall_request = nullptr;
     const LauncherModEntry* update_request = nullptr;
-    // The category a clicked category card asked for, and the skin a clicked skin card asked for;
-    // both are applied after the grid has been drawn so the loops keep iterating the set they
-    // started with.
-    std::string group_request;
-    bool group_request_open{};
-    std::string skin_request;
-    bool skin_request_open{};
-    // The level the path above the cards asked for, applied after the grid so the loops keep the
-    // ranges they started with.
-    int level_request{-1};
-
-    // The skins a mod replaces. It is filed under the first of them, so every row and card has to
-    // say what else it covers: that keeps one mod to one entry while the rest stays visible.
-    const auto skin_tags = [](const LauncherModEntry& entry, const std::string& category) {
-        std::string tags;
-        for (const auto& group : entry.groups) {
-            if (group.name != category) continue;
-            for (const auto& skin : group.skins) {
-                if (skin.empty()) continue;
-                if (!tags.empty()) tags += "  ·  ";
-                tags += skin;
-            }
-        }
-        return tags;
-    };
+    std::optional<anomaly::launcher::ModGroupPath> path_request;
 
     const auto draw_notes = [](const std::string& notes, const float width) {
         // Notes are edited as multiline text; keep the preview on one line and
@@ -6437,7 +6693,7 @@ void DrawModsMode(
     const float card_inner = card_width - card_padding * 2.0f;
     const float category_caption_height = ImGui::GetTextLineHeight() * 2.0f;
     const ImVec2 card_cover(card_inner, card_inner * kLauncherModCoverAspect);
-    const auto draw_grid_card = [&](const LauncherModEntry& entry, const std::string& category) {
+    const auto draw_grid_card = [&](const LauncherModEntry& entry) {
         ImDrawList* const draw = ImGui::GetWindowDrawList();
         // Two channels: the frame is drawn after the content, into the channel that renders
         // behind it, because a surface painted first would still be under the cover but the
@@ -6462,7 +6718,7 @@ void DrawModsMode(
         } else {
             draw_notes(entry.notes, card_inner);
         }
-        std::string meta = skin_tags(entry, category);
+        std::string meta;
         if (!entry.version.empty()) {
             if (!meta.empty()) meta += "  ·  ";
             meta += "v" + entry.version;
@@ -6553,17 +6809,7 @@ void DrawModsMode(
         ImGui::PopID();
     };
 
-    std::string current_group{"\x01"};  // impossible marker: forces a header for the first entry
-    bool hide_group{};
     const std::size_t page_end = (std::min)(layout.placements.size(), (page + 1) * page_size);
-    // One skin inside an open category: a dimmed label and the number of mods filed under it, so
-    // two outfits of one character read as two groups that can be on at the same time.
-    const auto draw_skin_header = [&](const anomaly::launcher::ModGroupingSkin& section) {
-        ImGui::TextUnformatted(skin_label(section.key).c_str());
-        ImGui::SameLine();
-        ImGui::TextDisabled("%s", Tr(anomaly::MessageId::LauncherModsGroupCount,
-            {std::to_string(section.count)}).c_str());
-    };
     if (view.mods_grid) {
         // A category card is one invisible button covering the whole card, so the cover, the name
         // and the count are a single target instead of three. Its cover slot shows the category's
@@ -6610,254 +6856,178 @@ void DrawModsMode(
             ImGui::PopID();
             return clicked;
         };
-        if (grid_level == 0) {
-            int column{};
-            const std::size_t end = (std::min)(groups.size(), (page + 1) * page_size);
-            for (std::size_t index = page * page_size; index < end; ++index) {
-                const auto& group = groups[index];
+        if (!grid_path.empty()) path_request = DrawLauncherModBreadcrumbs(grid_path, grid_width, open_group.count);
+        int column{};
+        const auto end = (std::min)(page_items, (page + 1) * page_size);
+        for (std::size_t index = page * page_size; index < end; ++index) {
+            if (index < open_group.children.size()) {
+                const auto node = open_group.children[index];
+                const auto& group = layout.nodes[node];
                 if (column != 0) ImGui::SameLine(0.0f, grid_spacing);
                 column = (column + 1) % grid_columns;
-                if (draw_category_card(group.key.c_str(), category_label(group.key),
-                        group.count == 0 ? nullptr : filtered[layout.placements[group.first]],
-                        group.count)) {
-                    group_request = group.key;
-                    group_request_open = true;
-                }
-            }
-        } else {
-            const auto& group = *open_group;
-            // The path above the cards is also the way back: its levels are clickable, so one click
-            // reaches the overview instead of one click per level. The level on screen stays plain
-            // text, because it is where the page already is.
-            bool jump_overview{};
-            bool jump_category{};
-            // The way back is a chip like every other command, so the page has one material.
-            jump_overview = LauncherChip(
-                (std::string(Text(translator, anomaly::MessageId::LauncherModsGroupBack)) +
-                    "##back").c_str());
-            ImGui::SameLine();
-            ImGui::AlignTextToFramePadding();
-            const std::string category_text = category_label(group.key);
-            const std::string category_crumb = Ellipsize(category_text, grid_width * 0.4f);
-            // A crumb is ordinary text that happens to answer clicks: a selectable has its own
-            // text placement and its own full-width hit box, so it would sit off the line and
-            // highlight the whole row.
-            ImGui::TextUnformatted(category_crumb.c_str());
-            const bool category_link = grid_level > 1;
-            if (category_link) {
-                jump_category = ImGui::IsItemClicked();
-                if (ImGui::IsItemHovered()) {
-                    ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-                    const ImVec2 link_min = ImGui::GetItemRectMin();
-                    const ImVec2 link_max = ImGui::GetItemRectMax();
-                    ImGui::GetWindowDrawList()->AddLine(
-                        ImVec2(link_min.x, link_max.y - 1.0f),
-                        ImVec2(link_max.x, link_max.y - 1.0f),
-                        ImGui::GetColorU32(ImGuiCol_Text, 0.45f), 1.0f);
-                }
-            }
-            if (grid_level > 1 && skin_view != nullptr) {
-                ImGui::SameLine();
-                ImGui::TextDisabled("/");
-                ImGui::SameLine();
-                ImGui::AlignTextToFramePadding();
-                const std::string skin_text = skin_label(skin_view->key);
-                ImGui::TextUnformatted(Ellipsize(skin_text, grid_width * 0.4f).c_str());
-            }
-            ImGui::SameLine();
-            // The count of mods the level stands for: the category's own mods while its skins are
-            // on screen (they add up to it), and one skin's mods once that skin is open.
-            const std::size_t header_count = grid_level > 1 && skin_view != nullptr
-                ? skin_view->count : group.count;
-            ImGui::TextDisabled("%s", Tr(anomaly::MessageId::LauncherModsGroupCount,
-                {std::to_string(header_count)}).c_str());
-            if (jump_overview) level_request = 0;
-            else if (jump_category) level_request = 1;
-            int column{};
-            if (grid_level == 1 && group.named_skins) {
-                // The skins of the category as cards of their own: the level that keeps one page
-                // from mixing every outfit of a character into one shelf.
-                const std::size_t end = (std::min)(group.skins_first + group.skins_count,
-                    group.skins_first + (page + 1) * page_size);
-                for (std::size_t index = group.skins_first + page * page_size; index < end; ++index) {
-                    const auto& section = skins[index];
-                    if (column != 0) ImGui::SameLine(0.0f, grid_spacing);
-                    column = (column + 1) % grid_columns;
-                    if (draw_category_card(section.key.c_str(), skin_label(section.key),
-                            section.count == 0 ? nullptr : filtered[layout.placements[section.first]],
-                            section.count)) {
-                        skin_request = section.key;
-                        skin_request_open = true;
-                    }
-                }
+                if (draw_category_card(std::to_string(node).c_str(), LauncherModGroupLabel(group.path),
+                        filtered[layout.placements[group.first]], group.count)) path_request = group.path;
             } else {
-                // The mods of the open skin, or of the whole category when it names no skins.
-                const auto* const section = grid_level > 1
-                    ? skin_view : &skins[group.skins_first];
-                const std::size_t end = (std::min)(section->first + section->count,
-                    section->first + (page + 1) * page_size);
-                for (std::size_t index = section->first + page * page_size; index < end; ++index) {
-                    // The card's surface is drawn wider than its content, so a row steps by that
-                    // margin too and its first card starts one margin in: two neighbouring frames
-                    // keep the same gap the category cards have.
-                    if (column == 0) {
-                        ImGui::Dummy(ImVec2(card_padding, 0.0f));
-                        ImGui::SameLine(0.0f, 0.0f);
-                    } else {
-                        ImGui::SameLine(0.0f, grid_spacing + card_padding * 2.0f);
-                    }
-                    column = (column + 1) % grid_columns;
-                    draw_grid_card(*filtered[layout.placements[index]], group.key);
+                // Direct mods and nested groups may coexist at every level.
+                if (index == open_group.children.size()) column = 0;
+                if (column == 0) {
+                    ImGui::Dummy(ImVec2(card_padding, 0.0f));
+                    ImGui::SameLine(0.0f, 0.0f);
+                } else {
+                    ImGui::SameLine(0.0f, grid_spacing + card_padding * 2.0f);
                 }
+                column = (column + 1) % grid_columns;
+                const auto placement = open_group.first + index - open_group.children.size();
+                draw_grid_card(*filtered[layout.placements[placement]]);
             }
         }
     } else {
-        // One row per mod: the categories and their skins are already in display order, which is
-        // what makes a plain scan of the ranges enough here. A mod is filed under one skin only,
-        // so the same mod never shows up twice in the list.
-        bool done{};
-        std::string current_skin{"\x01"};
-        for (const auto& group : groups) {
-            const std::string category_text = category_label(group.key);
-            for (std::size_t index = group.first; index < group.first + group.count; ++index) {
-                if (index < page * page_size) continue;
-                if (index >= page_end) {
-                    done = true;
-                    break;
-                }
-                const auto& entry = *filtered[layout.placements[index]];
-                const auto* const section = anomaly::launcher::FindModSkinAt(layout, group, index);
-                if (category_text != current_group) {
-                    current_group = category_text;
-                    current_skin = "\x01";
-                    hide_group = group_collapsed[current_group];
-                    ImGui::Spacing();
-                    if (ImGui::Selectable(current_group.c_str())) {
-                        group_collapsed[current_group] = !hide_group;
-                    }
-                    ImGui::Separator();
-                }
-                if (hide_group) continue;
-                if (group.named_skins && section != nullptr && section->key != current_skin) {
-                    current_skin = section->key;
-                    ImGui::Indent(Scale(12.0f));
-                    draw_skin_header(*section);
-                    ImGui::Unindent(Scale(12.0f));
-                }
-                // The same mod can sit in two categories, and both sections are on screen at once,
-                // so the category has to be part of every widget's identity here.
-                ImGui::PushID(current_group.c_str());
-                ImGui::PushID(LauncherModStateKey(entry).c_str());
-                DrawLauncherModCover(entry);
-                ImGui::SameLine();
-                ImGui::BeginGroup();
-                std::string title = entry.display_name.empty() ? entry.name : entry.display_name;
-                std::string meta = skin_tags(entry, group.key);
-                if (!entry.author.empty()) {
-                    if (!meta.empty()) meta += "  ·  ";
-                    meta += entry.author;
-                }
-                if (!entry.version.empty()) {
-                    if (!meta.empty()) meta += "  ·  ";
-                    meta += "v" + entry.version;
-                }
-                if (!entry.remote_version.empty() && entry.remote_version != entry.version) {
-                    if (!meta.empty()) meta += "  ·  ";
-                    meta += Tr(anomaly::MessageId::LauncherModsNewVersionInline,
-                        {entry.remote_version});
-                }
-                if (entry.notes.empty()) {
-                    ImGui::TextWrapped("%s", title.c_str());
-                } else {
-                    const float title_row_width = ImGui::GetContentRegionAvail().x;
-                    const float title_width = title_row_width * 0.6f;
-                    ImGui::TextUnformatted(Ellipsize(title, title_width).c_str());
-                    Tooltip(title.c_str());
-                    ImGui::SameLine();
-                    draw_notes(entry.notes, ImGui::GetContentRegionAvail().x);
-                }
-                ImGui::TextDisabled("%zu  ·  %.1f MB%s", entry.files,
-                    static_cast<double>(entry.bytes) / (1024.0 * 1024.0), meta.c_str());
-                // Every action is a button inside a disabled scope: the click is evaluated first and the
-                // action runs afterwards, so a disabled scope never spans an early return.
-                const float actions_right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
-                // A row keeps its commands on one line while they fit; past that they are clipped
-                // rather than wrapped, so each one is measured before it is placed.
-                const auto next_action = [&](const char* label) {
-                    const auto& style = ImGui::GetStyle();
-                    const float width = ImGui::CalcTextSize(label).x + style.FramePadding.x * 2.0f;
-                    if (ImGui::GetItemRectMax().x + style.ItemSpacing.x + width <= actions_right)
-                        ImGui::SameLine();
-                };
-                // A command that a mod does not have leaves its column empty instead of letting the
-                // commands after it slide left, which is what keeps the trailing batch box in the
-                // same column on every row. The width is a chip's own: its label plus its padding.
-                const auto reserve_action = [&](const char* label) {
-                    const ImVec2 size(
-                        ImGui::CalcTextSize(label).x + Scale(30.0f), ImGui::GetFrameHeight());
-                    next_action(label);
-                    ImGui::Dummy(size);
-                };
-                draw_switch(entry);
-                // The row reads: state, the update shortcut, the two commands a card also has, the
-                // source, and the batch box last.
-                if (!entry.remote_version.empty() &&
-                    (entry.version.empty() || entry.remote_version != entry.version)) {
-                    next_action(Text(translator, anomaly::MessageId::LauncherModsUpdate));
-                    ImGui::BeginDisabled(game_running && entry.enabled);
-                    const bool update_clicked = LauncherChip(
-                        (std::string(Text(translator, anomaly::MessageId::LauncherModsUpdate)) + "##u" +
-                        entry.name).c_str());
-                    ImGui::EndDisabled();
-                    if (update_clicked) {
-                        import_message = LauncherUpdateMod(snapshot, entry);
-                        refresh_mods();
-                        ImGui::EndGroup();
-                        ImGui::PopID();
-                        ImGui::PopID();
-                        ImGui::EndChild();
-                        return;
-                    }
-                } else {
-                    reserve_action(Text(translator, anomaly::MessageId::LauncherModsUpdate));
-                }
-                next_action(Text(translator, anomaly::MessageId::LauncherModsSettings));
-                if (LauncherChip(
-                        (std::string(Text(translator, anomaly::MessageId::LauncherModsSettings)) +
-                            "##settings" + entry.name).c_str())) {
-                    notes_request = &entry;
-                }
-                next_action(Text(translator, anomaly::MessageId::LauncherModsUninstall));
-                const bool uninstall_clicked = DestructiveButton(
-                    (std::string(Text(translator, anomaly::MessageId::LauncherModsUninstall)) +
-                        "##" + entry.name).c_str(),
-                    ImVec2(0.0f, 0.0f), !(game_running && entry.enabled));
-                if (uninstall_clicked) uninstall_request = &entry;
-                // The source comes last, after the two commands, and keeps its column even when the
-                // mod has no link: the batch box after it must sit on the same x on every row.
-                if (!entry.link.empty()) {
-                    next_action(Text(translator, anomaly::MessageId::LauncherModsOpenSource));
-                    if (LauncherChip((std::string(Text(translator, anomaly::MessageId::LauncherModsOpenSource)) +
-                            "##" + entry.name).c_str())) {
-                        const std::wstring url(entry.link.begin(), entry.link.end());
-                        ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-                    }
-                } else {
-                    reserve_action(Text(translator, anomaly::MessageId::LauncherModsOpenSource));
-                }
-                ImGui::SameLine();
-                bool row_selected = entry.selected;
-                if (ImGui::Checkbox(("##select-" + entry.name).c_str(), &row_selected)) {
-                    const_cast<LauncherModEntry&>(entry).selected = row_selected;
-                    if (row_selected) selected_names.insert(LauncherModStateKey(entry));
-                    else selected_names.erase(LauncherModStateKey(entry));
-                }
-                ImGui::EndGroup();
-                ImGui::PopID();
-                ImGui::PopID();
-                ImGui::Spacing();
+        std::vector<std::size_t> previous_headers;
+        for (std::size_t index = page * page_size; index < page_end; ++index) {
+            const auto node = layout.placement_nodes[index];
+            const auto& entry = *filtered[layout.placements[index]];
+            std::vector<std::size_t> headers;
+            for (auto ancestor = node; ancestor != 0; ancestor = layout.nodes[ancestor].parent) {
+                const auto parent = layout.nodes[ancestor].parent;
+                if (anomaly::launcher::ModGroupContent(layout, parent) != ancestor)
+                    headers.push_back(ancestor);
             }
-            if (done) break;
+            std::reverse(headers.begin(), headers.end());
+            bool hide_group{};
+            for (std::size_t depth = 0; depth < headers.size(); ++depth) {
+                const auto header = headers[depth];
+                const auto& section = layout.nodes[header];
+                auto& collapsed = group_collapsed[section.path];
+                if (depth >= previous_headers.size() || previous_headers[depth] != header) {
+                    ImGui::PushID(static_cast<int>(header));
+                    ImGui::Spacing();
+                    const float indent = Scale(12.0f) * static_cast<float>(depth);
+                    if (depth != 0) ImGui::Indent(indent);
+                    const auto label = LauncherModGroupLabel(section.path);
+                    if (ImGui::Selectable(label.c_str(), false, 0,
+                            ImVec2(ImGui::CalcTextSize(label.c_str()).x + Scale(16.0f), 0.0f)))
+                        collapsed = !collapsed;
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("%s", Tr(anomaly::MessageId::LauncherModsGroupCount,
+                        {std::to_string(section.count)}).c_str());
+                    if (depth != 0) ImGui::Unindent(indent);
+                    if (depth == 0) ImGui::Separator();
+                    ImGui::PopID();
+                }
+                if (collapsed) { hide_group = true; break; }
+            }
+            previous_headers = std::move(headers);
+            if (hide_group) continue;
+            ImGui::PushID(static_cast<int>(node));
+            ImGui::PushID(LauncherModStateKey(entry).c_str());
+            DrawLauncherModCover(entry);
+            ImGui::SameLine();
+            ImGui::BeginGroup();
+            std::string title = entry.display_name.empty() ? entry.name : entry.display_name;
+            std::string meta;
+            if (!entry.author.empty()) {
+                if (!meta.empty()) meta += "  ·  ";
+                meta += entry.author;
+            }
+            if (!entry.version.empty()) {
+                if (!meta.empty()) meta += "  ·  ";
+                meta += "v" + entry.version;
+            }
+            if (!entry.remote_version.empty() && entry.remote_version != entry.version) {
+                if (!meta.empty()) meta += "  ·  ";
+                meta += Tr(anomaly::MessageId::LauncherModsNewVersionInline,
+                    {entry.remote_version});
+            }
+            if (entry.notes.empty()) {
+                ImGui::TextWrapped("%s", title.c_str());
+            } else {
+                const float title_row_width = ImGui::GetContentRegionAvail().x;
+                const float title_width = title_row_width * 0.6f;
+                ImGui::TextUnformatted(Ellipsize(title, title_width).c_str());
+                Tooltip(title.c_str());
+                ImGui::SameLine();
+                draw_notes(entry.notes, ImGui::GetContentRegionAvail().x);
+            }
+            ImGui::TextDisabled("%zu  ·  %.1f MB%s", entry.files,
+                static_cast<double>(entry.bytes) / (1024.0 * 1024.0), meta.c_str());
+            // Every action is a button inside a disabled scope: the click is evaluated first and the
+            // action runs afterwards, so a disabled scope never spans an early return.
+            const float actions_right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+            // A row keeps its commands on one line while they fit; past that they are clipped
+            // rather than wrapped, so each one is measured before it is placed.
+            const auto next_action = [&](const char* label) {
+                const auto& style = ImGui::GetStyle();
+                const float width = ImGui::CalcTextSize(label).x + style.FramePadding.x * 2.0f;
+                if (ImGui::GetItemRectMax().x + style.ItemSpacing.x + width <= actions_right)
+                    ImGui::SameLine();
+            };
+            // A command that a mod does not have leaves its column empty instead of letting the
+            // commands after it slide left, which is what keeps the trailing batch box in the
+            // same column on every row. The width is a chip's own: its label plus its padding.
+            const auto reserve_action = [&](const char* label) {
+                const ImVec2 size(
+                    ImGui::CalcTextSize(label).x + Scale(30.0f), ImGui::GetFrameHeight());
+                next_action(label);
+                ImGui::Dummy(size);
+            };
+            draw_switch(entry);
+            // The row reads: state, the update shortcut, the two commands a card also has, the
+            // source, and the batch box last.
+            if (!entry.remote_version.empty() &&
+                (entry.version.empty() || entry.remote_version != entry.version)) {
+                next_action(Text(translator, anomaly::MessageId::LauncherModsUpdate));
+                ImGui::BeginDisabled(game_running && entry.enabled);
+                const bool update_clicked = LauncherChip(
+                    (std::string(Text(translator, anomaly::MessageId::LauncherModsUpdate)) + "##u" +
+                    entry.name).c_str());
+                ImGui::EndDisabled();
+                if (update_clicked) {
+                    import_message = LauncherUpdateMod(snapshot, entry);
+                    refresh_mods();
+                    ImGui::EndGroup();
+                    ImGui::PopID();
+                    ImGui::PopID();
+                    ImGui::EndChild();
+                    return;
+                }
+            } else {
+                reserve_action(Text(translator, anomaly::MessageId::LauncherModsUpdate));
+            }
+            next_action(Text(translator, anomaly::MessageId::LauncherModsSettings));
+            if (LauncherChip(
+                    (std::string(Text(translator, anomaly::MessageId::LauncherModsSettings)) +
+                        "##settings" + entry.name).c_str())) {
+                notes_request = &entry;
+            }
+            next_action(Text(translator, anomaly::MessageId::LauncherModsUninstall));
+            const bool uninstall_clicked = DestructiveButton(
+                (std::string(Text(translator, anomaly::MessageId::LauncherModsUninstall)) +
+                    "##" + entry.name).c_str(),
+                ImVec2(0.0f, 0.0f), !(game_running && entry.enabled));
+            if (uninstall_clicked) uninstall_request = &entry;
+            // The source comes last, after the two commands, and keeps its column even when the
+            // mod has no link: the batch box after it must sit on the same x on every row.
+            if (!entry.link.empty()) {
+                next_action(Text(translator, anomaly::MessageId::LauncherModsOpenSource));
+                if (LauncherChip((std::string(Text(translator, anomaly::MessageId::LauncherModsOpenSource)) +
+                        "##" + entry.name).c_str())) {
+                    const std::wstring url(entry.link.begin(), entry.link.end());
+                    ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                }
+            } else {
+                reserve_action(Text(translator, anomaly::MessageId::LauncherModsOpenSource));
+            }
+            ImGui::SameLine();
+            bool row_selected = entry.selected;
+            if (ImGui::Checkbox(("##select-" + entry.name).c_str(), &row_selected)) {
+                const_cast<LauncherModEntry&>(entry).selected = row_selected;
+                if (row_selected) selected_names.insert(LauncherModStateKey(entry));
+                else selected_names.erase(LauncherModStateKey(entry));
+            }
+            ImGui::EndGroup();
+            ImGui::PopID();
+            ImGui::PopID();
+            ImGui::Spacing();
         }
     }
     if (filtered.empty()) {
@@ -6874,23 +7044,8 @@ void DrawModsMode(
     // The drill-in a card and a crumb asked for is applied here, where the loops that raised them
     // have finished; the popups and the update run here too, where the ID stack the popup is drawn
     // under and the entry the update rewrites are both still valid.
-    if (level_request >= 0) {
-        grid_level = level_request;
-        if (grid_level < 2) grid_skin.clear();
-        if (grid_level < 1) grid_group.clear();
-        page = 0;
-        scroll_to_top = true;
-    }
-    if (group_request_open) {
-        grid_group = std::move(group_request);
-        grid_skin.clear();
-        grid_level = 1;
-        page = 0;
-        scroll_to_top = true;
-    }
-    if (skin_request_open) {
-        grid_skin = std::move(skin_request);
-        grid_level = 2;
+    if (path_request) {
+        grid_path = std::move(*path_request);
         page = 0;
         scroll_to_top = true;
     }
@@ -6906,10 +7061,16 @@ void DrawModsMode(
     // A modal keeps the answer to itself -- nothing behind it can be clicked while it is open --
     // but it does not dim: the window's own style has that veil switched off (see
     // ApplyLauncherDpiScale), so a question asks itself over a readable page.
+    if (DrawLauncherModOrganizeConfirmation(
+            modal_name(anomaly::MessageId::LauncherModsOrganize, "confirm-organize").c_str(),
+            canvas_min, canvas_size)) {
+        import_message = LauncherOrganizeMessage(LauncherOrganizeModFolders(snapshot, mods));
+        refresh_mods();
+    }
     if (ImGui::BeginPopupModal(modal_name(anomaly::MessageId::LauncherModsUninstall, "confirm-uninstall").c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::Text("%s", Format(translator, anomaly::MessageId::LauncherModsConfirmUninstall,
             {pending_uninstall}).c_str());
-        if (LauncherChip(Tr(anomaly::MessageId::LauncherModsConfirmUninstallButton).c_str())) {
+        if (DrawLauncherModConfirmationButtons() == LauncherModConfirmationResult::Confirm) {
             for (const auto& entry : mods) {
                 if (LauncherModStateKey(entry) != pending_uninstall) continue;
                 if (!LauncherRemoveMod(snapshot, entry))
@@ -6918,11 +7079,7 @@ void DrawModsMode(
             }
             pending_uninstall.clear();
             refresh_mods();
-            ImGui::CloseCurrentPopup();
         }
-        ImGui::SameLine();
-        if (LauncherChip((Tr(anomaly::MessageId::LauncherModsCancel) + "##uninstall").c_str()))
-            ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
     if (ImGui::BeginPopupModal(modal_name(anomaly::MessageId::LauncherModsBulkUninstall, "bulk-uninstall").c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
@@ -6932,37 +7089,41 @@ void DrawModsMode(
         }
         ImGui::Text("%s", Format(translator, anomaly::MessageId::LauncherModsConfirmUninstallMany,
             {std::to_string(count)}).c_str());
-        if (LauncherChip(Text(translator, anomaly::MessageId::LauncherModsConfirmUninstallAll))) {
+        const auto answer = DrawLauncherModConfirmationButtons();
+        if (answer == LauncherModConfirmationResult::Confirm) {
             for (const auto& entry : mods) {
                 if (entry.selected) LauncherRemoveMod(snapshot, entry);
             }
             selected_names.clear();
             bulk_uninstall_pending = false;
             refresh_mods();
-            ImGui::CloseCurrentPopup();
         }
-        ImGui::SameLine();
-        if (LauncherChip((Tr(anomaly::MessageId::LauncherModsCancel) + "##bulk").c_str())) {
+        if (answer == LauncherModConfirmationResult::Cancel) {
             bulk_uninstall_pending = false;
-            ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
     }
-    if (ImGui::BeginPopupModal(modal_name(anomaly::MessageId::LauncherModsNotesTitle, "mod-settings").c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    if (BeginLauncherModSettingsPopup(
+            modal_name(anomaly::MessageId::LauncherModsNotesTitle, "mod-settings").c_str(),
+            canvas_min, canvas_size)) {
         ImGui::TextUnformatted(Text(translator, anomaly::MessageId::LauncherModsDisplayName));
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
         ImGui::InputText("##notes-name", notes_name_buffer, sizeof(notes_name_buffer));
         // The name on disk, which used to be a dialog of its own: it is part of what a mod's
         // settings are, so it is edited here and applied with the rest.
         ImGui::TextUnformatted(Text(translator, anomaly::MessageId::LauncherModsFileName));
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
         ImGui::InputText("##notes-file", notes_file_buffer, sizeof(notes_file_buffer));
-        ImGui::TextUnformatted(Text(translator, anomaly::MessageId::LauncherModsGroup));
-        ImGui::InputText("##notes-group", notes_group_buffer, sizeof(notes_group_buffer));
+        std::vector<anomaly::launcher::ModGroupingEntry> group_choices;
+        for (const auto& entry : mods) group_choices.push_back(LauncherClassifyMod(entry));
+        notes_groups.Draw(anomaly::launcher::BuildModGrouping(group_choices));
         ImGui::TextUnformatted(Text(translator, anomaly::MessageId::LauncherModsNotesLabel));
         ImGui::InputTextMultiline("##notes-text", notes_buffer, sizeof(notes_buffer),
-            ImVec2(Scale(360.0f), Scale(90.0f)));
+            ImVec2(ImGui::GetContentRegionAvail().x, Scale(90.0f)));
         if (notes_directory) {
-            ImGui::TextUnformatted(Text(translator, anomaly::MessageId::LauncherModsLinkHint));
-            ImGui::SetNextItemWidth(Scale(240.0f));
+            ImGui::TextWrapped("%s", Text(translator, anomaly::MessageId::LauncherModsLinkHint));
+            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x -
+                ImGui::CalcTextSize(Text(translator, anomaly::MessageId::LauncherModsAssociate)).x - Scale(30.0f));
             ImGui::InputText("##notes-id", notes_id_buffer, sizeof(notes_id_buffer));
             ImGui::SameLine();
             if (LauncherChip(Text(translator, anomaly::MessageId::LauncherModsAssociate))) {
@@ -6988,32 +7149,39 @@ void DrawModsMode(
                 }
             }
         }
-        if (LauncherChip(Text(translator, anomaly::MessageId::LauncherModsSave))) {
-            // The rename goes first: it moves the mod's files, and the notes are written next to
-            // them, so the fresh entry has to be read back before they are saved.
-            const std::string wanted = notes_file_buffer;
-            std::string renamed;
+        if (!notes_error.empty()) ImGui::TextWrapped("%s", notes_error.c_str());
+        ImGui::EndChild();
+        ImGui::BeginDisabled(!notes_groups.Valid());
+        const bool save_notes = LauncherChip(Text(translator, anomaly::MessageId::LauncherModsSave),
+            ImVec2(0.0f, ButtonHeight(40.0f)));
+        ImGui::EndDisabled();
+        if (save_notes) {
+            bool saved{};
+            notes_error.clear();
             for (const auto& entry : mods) {
                 if (LauncherModStateKey(entry) != notes_source) continue;
-                if (wanted.empty() || wanted == entry.name) break;
-                if (!LauncherRenameMod(snapshot, entry, wanted, &renamed))
-                    import_message = Tr(anomaly::MessageId::LauncherModsFileChangeFailed);
-                break;
-            }
-            if (!renamed.empty()) refresh_mods();
-            for (const auto& entry : mods) {
-                const bool target = LauncherModStateKey(entry) == (renamed.empty() ? notes_source : renamed);
-                if (!target) continue;
-                if (!LauncherWriteModNotes(entry, notes_name_buffer, notes_buffer, notes_group_buffer))
-                    import_message = Tr(anomaly::MessageId::SettingsSaveFailed);
+                auto updated = entry;
+                saved = LauncherSaveModSettings(snapshot, updated, notes_file_buffer,
+                    notes_name_buffer, notes_buffer, notes_groups.Path(), &notes_error);
+                const auto new_key = LauncherModStateKey(updated);
+                if (selected_names.erase(notes_source) != 0) selected_names.insert(new_key);
+                notes_source = new_key;
+                std::snprintf(notes_file_buffer, sizeof(notes_file_buffer), "%s", updated.name.c_str());
                 break;
             }
             refresh_mods();
-            ImGui::CloseCurrentPopup();
+            if (saved) ImGui::CloseCurrentPopup();
+            else {
+                if (notes_error.empty()) notes_error = Tr(anomaly::MessageId::LauncherModsFileChangeFailed);
+                import_message = notes_error;
+            }
         }
         ImGui::SameLine();
-        if (LauncherChip((Tr(anomaly::MessageId::LauncherModsCancel) + "##notes").c_str()))
+        if (LauncherChip((Tr(anomaly::MessageId::LauncherModsCancel) + "##notes").c_str(),
+                ImVec2(0.0f, ButtonHeight(40.0f))))
             ImGui::CloseCurrentPopup();
+        ImGui::SameLine();
+        notes_groups.DrawReset();
         ImGui::EndPopup();
     }
 }
@@ -7197,7 +7365,7 @@ void DrawLaunchMode(
 
 void DrawModMode(
     HWND window, LauncherController& controller, const LauncherSnapshot& snapshot,
-    const anomaly::Translator& translator) {
+    const anomaly::Translator& translator, const ImVec2 canvas_min, const ImVec2 canvas_size) {
     static int mod_mode = 0;
     const std::array<const char*, 2> labels{
         Text(translator, anomaly::MessageId::LauncherModeManage),
@@ -7265,7 +7433,7 @@ void DrawModMode(
     ImGui::EndDisabled();
     if (!settings_error.empty()) ImGui::TextDisabled("%s", settings_error.c_str());
     if (ImGui::BeginChild(mod_mode == 0 ? "ModManagementContent" : "ModDownloadContent", ImVec2(0.0f, 0.0f))) {
-        if (mod_mode == 0) DrawModsMode(window, controller, snapshot, translator);
+        if (mod_mode == 0) DrawModsMode(window, controller, snapshot, translator, canvas_min, canvas_size);
         else DrawBrowseMode(window, controller, snapshot, translator);
     }
     ImGui::EndChild();
@@ -8375,7 +8543,7 @@ void DrawLauncher(
     if (mode == LauncherMode::Launch) {
         DrawLaunchMode(window, controller, snapshot, translator);
     } else if (mode == LauncherMode::Mods) {
-        DrawModMode(window, controller, snapshot, translator);
+        DrawModMode(window, controller, snapshot, translator, root_origin, root_size);
     } else {
         DrawSettingsMode(window, controller, snapshot, translator);
     }

@@ -26,7 +26,7 @@ The page shows the directory in use:
 | Enable / disable | Hot mode saves a selection for runtime mount/unmount; compatibility mode adds/removes `.disabled` on container files while the game is closed |
 | Enable switch | Enabling a mod disables conflicting model/resource replacements and synchronizes with the in-game Mod Manager |
 | Uninstall | Deletes the mod's files or folder |
-| Settings | One dialog holds everything about a mod: display name, its file or folder name on disk, group, notes and the GameBanana link. Saving renames first and then writes the notes |
+| Settings | One dialog holds everything about a mod: display name, its file or folder name on disk, groups, notes and the GameBanana link. Saving renames first and then writes the notes |
 | Import archive | Extracts ZIP, 7z or RAR archives and copies `.pak/.utoc/.ucas/mod.json` into `~mods\<archive name>\` |
 | Search | Matches display name, folder name and author |
 | Filter | All / enabled / disabled tabs; changing the tab or search resets to page 1 |
@@ -208,14 +208,18 @@ The independent **Mod Manager** plugin and Launcher classify mods from `.pak` an
 The classification has two levels: one group per character, and the skins inside it. Zero's base outfit and
 swimsuit land in the `female` and `female_swimsuit` skins of `Player_051` (`Player_051/female` and
 `Player_051/female_swimsuit` as the index spells them). A mod that covers several skins is filed under the first
-of them and carries the others as tags on its cover or row, so it neither makes a category out of the combination
+of them, so it neither makes a category out of the combination
 nor shows up twice; the skins of one character can be on at the same time, and their mod counts add up to the
 count of the character. Blackbird's base and evolved forms are different skins. Skin mesh ownership takes
 priority over companion materials and variant helpers; texture-only mods use their resource directories.
 The pendant replacement uses `Pendant_07`; borrowed texture filenames do not change ownership. Other resources use their content directory,
-such as `/game/wwiseaudio` for audio. Unreadable indices remain unclassified. A category with a single skin
-does not grow an extra level; its mods are listed directly. A hand-written group replaces the automatic
-classification and takes that mod out of the two levels.
+such as `/game/wwiseaudio` for audio. Unreadable indices remain unclassified. Automatic categories with a
+single skin list their mods directly. Custom groups start with one level; use **+** to add levels up to
+five, and **−** to remove the last level. Type a name or select an existing group under the same parent.
+Both grid and list views show the full hierarchy. Saving groups for a folder mod moves it to
+`~mods/level-one/level-two/…/mod-folder`, preserving its selection and per-container overrides. Existing targets are never merged or overwritten.
+**Restore defaults** clears custom groups; saving restores automatic classification and moves the folder back to its automatic category.
+Existing one- and two-level settings remain valid, and renaming or updating a mod preserves its full path.
 Grouping alone does not make mods mutually exclusive: non-overlapping outfits can coexist. A mod that covers
 several skins conflicts with a mod covering any of them and coexists with the mods of skins it does not touch --
 exclusivity always comes from resources and chunk IDs, never from a whole character or skin.
@@ -261,8 +265,9 @@ for the category folder (`character/`) still covers every mod below it.
 (`~mods/Player_051 零/ModB/`) and moves its selection key with it: a key is a path, so a key left behind
 would quietly turn off mods back on. Mods already in place stay where they are, and a target that already
 exists is skipped instead of merged. It also runs while the game is open: a folder the engine still holds
-open is skipped and reported, and one more pass after closing the game finishes it; a mod filed by hand
-under some other folder is moved to the folder its category names.
+open is skipped and reported, and one more pass after closing the game finishes it. Mods with custom
+groups are skipped and keep their folders and groups.
+A mod moved by hand without setting a custom group still follows automatic organisation.
 
 After a manual folder move, each container with no saved selection for its current path inherits the selection
 saved for its mod's name: the folder name, or the `.pak` filename of a loose container. Multiple containers in
