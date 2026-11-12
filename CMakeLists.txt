@@ -1733,11 +1733,8 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
             SCENE_LOADER_ZH_CN_CATALOG="${CMAKE_SOURCE_DIR}/plugins/SceneLoader/locales/zh-CN.json")
     endif()
 
-    anomaly_add_plugin(anomaly_builtin_damage_dashboard
-        SOURCES plugins/DamageDashboard/plugin.cpp
-        MANIFEST plugins/DamageDashboard/manifest.json
-        PACKAGE_NAME DamageDashboard
-        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/DamageDashboard")
+    # DamageDashboard 已归档：源码保留在 plugins/DamageDashboard（含 ARCHIVED.md），
+    # 不再注册 target，因此不参与构建、打包与安装。
 
     # 战斗统计：插件只采集，呈现交给随包分发的独立 Overlay 进程（NteCombatTracker.exe）。
     # 采集引擎刻意不依赖 SDK，便于在没有插件 ABI 的情况下做单元验证。
@@ -2165,7 +2162,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         anomaly_builtin_fake_uid anomaly_builtin_camera_tools
         anomaly_builtin_camera_blur_fix anomaly_builtin_better_pose
         anomaly_builtin_wallet_collector anomaly_builtin_box_auto anomaly_builtin_combat_box
-        anomaly_builtin_clone_enter anomaly_builtin_scene_loader anomaly_builtin_damage_dashboard
+        anomaly_builtin_clone_enter anomaly_builtin_scene_loader
         anomaly_builtin_nte_quick_ultimate
         anomaly_builtin_nte_free_fly anomaly_builtin_skin_changer anomaly_builtin_ui_buttons
         anomaly_builtin_dll_loader anomaly_builtin_hifi_vehicle_music
@@ -2198,7 +2195,6 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         target_compile_options(anomaly_builtin_combat_box PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_clone_enter PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_scene_loader PRIVATE /utf-8)
-        target_compile_options(anomaly_builtin_damage_dashboard PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_nte_combat_tracker PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_nte_free_fly PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_skin_changer PRIVATE /utf-8)
