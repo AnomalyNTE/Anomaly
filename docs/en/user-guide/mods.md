@@ -426,7 +426,7 @@ The launcher's mods page does not paginate by default: both views list every mod
 
 ## Known limits
 
-- Import and download remain available while the game runs. Hot mode can switch mods; disabled mods can be updated, renamed or uninstalled once the engine releases their files. Compatibility mode cannot switch live; new imports stay disabled until enabled after exiting the game.
+- Import and download remain available while the game runs. Newly downloaded or locally imported mods default to disabled and must be enabled manually. Replacing or updating an existing mod preserves its previous selection. Hot mode can switch mods; disabled mods can be updated, renamed or uninstalled once the engine releases their files. Compatibility mode cannot switch live; new imports stay disabled until enabled after exiting the game.
 - Import and update keep the target disabled until all container files have been copied. Failed operations leave it disabled.
 - Without runtime loading, every change needs a game restart — paks are mounted at start-up only.
   With it, containers can be added, released and replaced at runtime

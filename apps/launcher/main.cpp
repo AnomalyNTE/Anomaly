@@ -4072,7 +4072,7 @@ bool LauncherPrepareModWrite(const LauncherSnapshot& snapshot, const LauncherMod
     const bool running = LauncherGameRunning();
     return LauncherWritePakSettings(snapshot, [&](auto& document) {
         const auto catalog = anomaly::ReadPakModCatalog(LauncherModsDirectory(snapshot), document);
-        enable_after = !running || !anomaly::PakModCompatibilityMode(document);
+        enable_after = false;
         for (const auto& row : catalog) {
             if (anomaly::NormalizePakModKey(row.key) != anomaly::NormalizePakModKey(LauncherModStateKey(target))) continue;
             if (running && row.enabled) throw std::runtime_error("disable mod before replacing files");
