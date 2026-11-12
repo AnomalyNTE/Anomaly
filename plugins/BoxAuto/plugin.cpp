@@ -329,6 +329,11 @@ struct Context final {
     std::atomic_bool manual_teleport_pending{};
     std::atomic_bool developer_mode{};
     std::atomic_bool stop_movement_pending{};
+    // 钱包最近距离拾取：打开后钱包点位按「离玩家由近到远」重排，只改执行顺序，
+    // 不参与分类和未拾取过滤。作用是少跨区跳，避免按行名字典序在地图上乱窜。
+    std::atomic_bool wallet_nearest_order{};
+    // Draw 处在 Render 域，读玩家坐标必须在 Game 域做，所以这里只递一个信号。
+    std::atomic_bool nearest_sort_pending{};
     double manual_teleport_x{}, manual_teleport_y{}, manual_teleport_z{};
     std::atomic<double> teleport_z_offset{kTeleportZOffset};
     bool manual_landmark_pending{};
@@ -1573,6 +1578,37 @@ void RebuildFilteredLocked(Context& context) noexcept {
     context.type_prefix = std::string(ActorPrefixForChoice(context.type_choice));
 }
 
+// 全局最近邻：从玩家当前位置出发，每次在剩余点位里取平面上最近的一个。
+// 行名是 Point 名的字典序（..._A_001、..._A_002…），和空间位置无关，按表序走等于在地图上
+// 乱窜。钱包点位是随机物品表里的子集，数量有限，O(n²) 的朴素贪心足够，不做区域分桶。
+void SortPointsByDistance(std::vector<Point>& points, const double from_x,
+                          const double from_y) {
+    if (points.size() < 2) return;
+    std::vector<Point> sorted;
+    sorted.reserve(points.size());
+    std::vector<bool> taken(points.size(), false);
+    double cursor_x = from_x;
+    double cursor_y = from_y;
+    for (std::size_t done = 0; done < points.size(); ++done) {
+        std::size_t pick = points.size();
+        double pick_distance = 0.0;
+        for (std::size_t i = 0; i < points.size(); ++i) {
+            if (taken[i]) continue;
+            const double distance = PlanarDistanceSquared(
+                points[i].x, points[i].y, cursor_x, cursor_y);
+            if (pick == points.size() || distance < pick_distance) {
+                pick = i;
+                pick_distance = distance;
+            }
+        }
+        taken[pick] = true;
+        cursor_x = points[pick].x;
+        cursor_y = points[pick].y;
+        sorted.push_back(points[pick]);
+    }
+    points = std::move(sorted);
+}
+
 void ReadRandomItemTable(Context& context, std::vector<Point>& points) {
     void* table_object{};
     if (!ObjectsReady(context.objects)) return;
@@ -2511,6 +2547,16 @@ void Begin(Context& context) {
     RebuildFilteredLocked(context);
     context.current_index = context.start_index < context.filtered_points.size()
         ? context.start_index : 0;
+    // 最近距离拾取：开始这一刻按玩家当前位置重排一次，面板上看到的顺序就是接下来实际
+    // 要走的顺序。就近排序和「跳过前 N 个」含义冲突，所以这个模式下起始索引不参与。
+    if (context.wallet_nearest_order.load(std::memory_order_relaxed) &&
+        CategoryForChoice(context.type_choice) == "wallet") {
+        double position[3]{};
+        if (SnapshotPlayerPosition(context, position)) {
+            SortPointsByDistance(context.filtered_points, position[0], position[1]);
+        }
+        context.current_index = 0;
+    }
     context.picked = 0;
     context.food_empty_groups.clear();
     context.food_empty_group.clear();
@@ -4951,6 +4997,38 @@ void ANOMALY_CALL Update(void* plugin_context, const double delta_seconds) {
         RefreshFoodRegionState(context);
         ReadTable(context);
         BuildClassMap(context);
+        // 读表会把 filtered_points 重建成表序，最近距离模式下要再排一次。
+        if (context.wallet_nearest_order.load(std::memory_order_relaxed)) {
+            context.nearest_sort_pending.store(true, std::memory_order_release);
+        }
+    }
+    if (context.nearest_sort_pending.exchange(false, std::memory_order_acq_rel)) {
+        // 面板上勾选开关或切换类型后重排一次，列表顺序随之改变。运行中不动列表：半路换序
+        // 会让 current_index 指向别的点，下次开始时 Begin 会重新排。
+        const bool enabled =
+            context.wallet_nearest_order.load(std::memory_order_relaxed);
+        double position[3]{};
+        const bool have_position =
+            enabled && SnapshotPlayerPosition(context, position);
+        std::lock_guard<std::mutex> lock(context.mutex);
+        if (CategoryForChoice(context.type_choice) == "wallet" && !context.running) {
+            if (!enabled) {
+                RebuildFilteredLocked(context);
+            } else if (have_position) {
+                SortPointsByDistance(context.filtered_points, position[0],
+                                     position[1]);
+                const std::string count =
+                    std::to_string(context.filtered_points.size());
+                const std::array args{std::string_view(count)};
+                context.status = context.localizer.Format(
+                    "status.nearest_sorted", "Sorted by distance: {0} points",
+                    args);
+            } else {
+                context.status = context.localizer.Text(
+                    "status.nearest_no_player",
+                    "Player position unavailable; kept table order");
+            }
+        }
     }
     if (context.begin_pending.exchange(false, std::memory_order_acq_rel)) {
         if (!GetPlayerController(context)) {
@@ -5194,9 +5272,16 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_
     };
     for (std::size_t i = 0; i < type_names.size(); ++i) {
         if (ui->button(ui->user, anomaly::sdk::StringView(type_names[i]), 0.0F, 0.0F) != 0) {
-            std::lock_guard<std::mutex> lock(context.mutex);
-            context.type_choice = static_cast<std::uint32_t>(i);
-            RebuildFilteredLocked(context);
+            {
+                std::lock_guard<std::mutex> lock(context.mutex);
+                context.type_choice = static_cast<std::uint32_t>(i);
+                RebuildFilteredLocked(context);
+            }
+            // 切回钱包时列表刚被重建成表序，开关还开着就再排一次。
+            if (CategoryForChoice(static_cast<std::uint32_t>(i)) == "wallet" &&
+                context.wallet_nearest_order.load(std::memory_order_relaxed)) {
+                context.nearest_sort_pending.store(true, std::memory_order_release);
+            }
         }
         if (i + 1 < type_names.size() && (i + 1) % 6 != 0 && ui->same_line != nullptr) {
             ui->same_line(ui->user, 0.0F, 4.0F);
@@ -5218,6 +5303,20 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_
             "status.shop_requires_zankou",
             "Shop stealing requires the Zankou skill.");
         ui->text(ui->user, anomaly::sdk::StringView(requirement));
+    }
+    // 最近距离拾取：只对钱包提供。打开后点位按「离玩家由近到远」重排，下面列表的顺序
+    // 就是接下来实际要走的顺序；关掉就回到表序。
+    if (type_choice == 9 && ui->checkbox != nullptr) {
+        int nearest =
+            context.wallet_nearest_order.load(std::memory_order_relaxed) ? 1 : 0;
+        const std::string nearest_label =
+            context.localizer.Text("label.nearest_order", "Nearest First");
+        if (ui->checkbox(ui->user, anomaly::sdk::StringView(nearest_label),
+                         &nearest) != 0) {
+            context.wallet_nearest_order.store(nearest != 0,
+                                               std::memory_order_relaxed);
+            context.nearest_sort_pending.store(true, std::memory_order_release);
+        }
     }
     const bool developer_mode = context.developer_mode.load(std::memory_order_acquire);
     const std::string mode_label = context.localizer.Text(
@@ -5254,11 +5353,16 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* supplied_
     // The auto teleport code and the state fields are kept for when a
     // read-only state source is found.
     const bool oracle_type = type_choice == 10 && context.oracle != nullptr;
+    // 最近距离模式永远从最近的点开始，「跳过前 N 个」和就近排序的含义冲突，所以不显示。
+    const bool nearest_order = type_choice == 9 &&
+        context.wallet_nearest_order.load(std::memory_order_relaxed);
     if (!oracle_type) {
-        const std::string start_index_label =
-            context.localizer.Text("label.start_index", "Start Index");
-        ui->input_uint32(ui->user, anomaly::sdk::StringView(start_index_label),
-                         &context.start_index, 1, 1);
+        if (!nearest_order) {
+            const std::string start_index_label =
+                context.localizer.Text("label.start_index", "Start Index");
+            ui->input_uint32(ui->user, anomaly::sdk::StringView(start_index_label),
+                             &context.start_index, 1, 1);
+        }
         const std::string start_label =
             context.localizer.Text("action.start", "Start Auto Pickup");
         if (ui->button(ui->user, anomaly::sdk::StringView(start_label), 0.0F, 0.0F) != 0) {
