@@ -56,7 +56,7 @@
 
 This project is distributed under the [**GNU Affero General Public License v3.0 (AGPL-3.0-only)**](LICENSE). Third-party components and their respective licenses are listed in [`NOTICE`](NOTICE) and `third_party/licenses/`.
 
-## ❤️ Support us
+## ☕ Support us
 
 If Anomaly is useful to you, you can support the project's continued maintenance:
 
