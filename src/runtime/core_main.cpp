@@ -34,6 +34,7 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -46,6 +47,8 @@
 #include <system_error>
 #include <utility>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
 
@@ -101,6 +104,10 @@ struct RuntimeControl {
 
 HMODULE g_core_module{};
 std::unique_ptr<RuntimeControl> g_runtime_control = std::make_unique<RuntimeControl>();
+// Foreign host payloads (upscaler/frame-gen hosts) loaded before the game's own
+// graphics initialization. They are never unloaded: their hooks must outlive the
+// runtime's teardown, and process exit releases the modules.
+std::vector<HMODULE> g_host_payloads;
 
 DWORD CurrentExceptionError() noexcept {
     try {
@@ -143,6 +150,183 @@ void RuntimeLog(
     details.event_id = std::move(event_id);
     static_cast<void>(context->logger->Log(
         level, "runtime", std::move(message), std::move(details)));
+}
+
+std::wstring Utf8ToWidePath(std::string_view value) {
+    if (value.empty()) return {};
+    const int size = MultiByteToWideChar(
+        CP_UTF8, 0, value.data(), static_cast<int>(value.size()), nullptr, 0);
+    if (size <= 0) return {};
+    std::wstring wide(static_cast<std::size_t>(size), L'\0');
+    const int written = MultiByteToWideChar(
+        CP_UTF8, 0, value.data(), static_cast<int>(value.size()), wide.data(), size);
+    if (written <= 0) return {};
+    wide.resize(static_cast<std::size_t>(written));
+    return wide;
+}
+
+std::filesystem::path ResolveHostPath(
+    const std::filesystem::path& runtime_root, std::wstring_view raw) {
+    std::wstring expanded(32768, L'\0');
+    const DWORD length = ExpandEnvironmentStringsW(
+        std::wstring(raw).c_str(), expanded.data(), static_cast<DWORD>(expanded.size()));
+    if (length == 0 || length > expanded.size()) {
+        expanded.assign(raw);
+    } else {
+        expanded.resize(length - 1);
+    }
+    if (expanded.empty()) return {};
+    const std::filesystem::path candidate(expanded);
+    return candidate.is_absolute() ? candidate : runtime_root / candidate;
+}
+
+std::vector<std::filesystem::path> HostPayloadCandidates(
+    const std::shared_ptr<CoreContext>& context) {
+    std::vector<std::filesystem::path> candidates;
+    const auto config_path = context->runtime_root / L"config" / L"hosts.json";
+    std::error_code error;
+
+    if (!std::filesystem::is_regular_file(config_path, error)) {
+        const auto legacy = context->runtime_root / L"config" / L"hosts.txt";
+        if (std::filesystem::is_regular_file(legacy, error)) {
+            RuntimeLog(
+                context, anomaly::LogLevel::Warning, "hosts.config.legacy_ignored",
+                "hosts=legacy-list-ignored path=" + legacy.string() +
+                    " expected=" + config_path.string());
+        }
+        return candidates;
+    }
+
+    std::ifstream input(config_path, std::ios::binary);
+    if (!input) {
+        RuntimeLog(
+            context, anomaly::LogLevel::Warning, "hosts.config.unreadable",
+            "hosts=unreadable path=" + config_path.string());
+        return candidates;
+    }
+    std::string text(
+        (std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+
+    try {
+        const auto document = nlohmann::json::parse(text);
+        if (!document.is_object()) {
+            RuntimeLog(
+                context, anomaly::LogLevel::Warning, "hosts.config.invalid",
+                "hosts=invalid path=" + config_path.string() + " reason=root-not-object");
+            return candidates;
+        }
+        const auto version = document.find("schemaVersion");
+        if (version != document.end() &&
+            (!version->is_number_integer() || version->get<int>() != 1)) {
+            RuntimeLog(
+                context, anomaly::LogLevel::Warning, "hosts.config.invalid",
+                "hosts=invalid path=" + config_path.string() + " reason=unsupported-schema");
+            return candidates;
+        }
+        const auto entries = document.find("hosts");
+        if (entries == document.end() || !entries->is_array()) {
+            RuntimeLog(
+                context, anomaly::LogLevel::Warning, "hosts.config.invalid",
+                "hosts=invalid path=" + config_path.string() + " reason=hosts-not-array");
+            return candidates;
+        }
+        for (const auto& entry : *entries) {
+            std::string value;
+            bool enabled = true;
+            if (entry.is_string()) {
+                value = entry.get<std::string>();
+            } else if (entry.is_object()) {
+                const auto path = entry.find("path");
+                if (path != entry.end() && path->is_string()) value = path->get<std::string>();
+                const auto flag = entry.find("enabled");
+                if (flag != entry.end() && flag->is_boolean()) enabled = flag->get<bool>();
+            }
+            if (value.empty() || !enabled) continue;
+            const auto resolved = ResolveHostPath(context->runtime_root, Utf8ToWidePath(value));
+            if (!resolved.empty()) candidates.push_back(resolved);
+        }
+    } catch (const std::exception& exception) {
+        RuntimeLog(
+            context, anomaly::LogLevel::Warning, "hosts.config.invalid",
+            "hosts=invalid path=" + config_path.string() + " reason=" + exception.what());
+    }
+    return candidates;
+}
+
+// Loads upscaler/frame-generation hosts listed in config/hosts.json. Runs on the
+// bootstrap thread, before the game creates any device, so a host still wins the
+// hook race and nothing has to be written into the game directory.
+void LoadHostPayloads(const std::shared_ptr<CoreContext>& context) {
+    // Missing or empty configuration: one attribute query and return, no parse and
+    // no log traffic, so the proxy path costs nothing when nothing is configured.
+    const auto candidates = HostPayloadCandidates(context);
+    if (candidates.empty()) return;
+
+    // Hot injection happens after the game already created its device and
+    // swapchain; a graphics host cannot hook retroactively, so it is only loaded
+    // for the process-start bootstrap (the dwmapi proxy).
+    AnomalyBootstrapType bootstrap_type = ANOMALY_BOOTSTRAP_TYPE_UNKNOWN;
+    if (const auto session = context->session.lock()) {
+        bootstrap_type = session->StartContext().bootstrap_type;
+    }
+    if (bootstrap_type != ANOMALY_BOOTSTRAP_TYPE_DWMAPI_PROXY) {
+        RuntimeLog(
+            context, anomaly::LogLevel::Info, "hosts.payload.skipped",
+            "hosts=skipped reason=bootstrap-type type=" +
+                std::to_string(static_cast<unsigned>(bootstrap_type)));
+        return;
+    }
+
+    std::vector<std::wstring> seen;
+    for (const auto& candidate : candidates) {
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(candidate, error)) {
+            RuntimeLog(
+                context, anomaly::LogLevel::Warning, "hosts.payload.missing",
+                "hosts=missing path=" + candidate.string());
+            continue;
+        }
+        const auto absolute = std::filesystem::absolute(candidate, error);
+        auto key = (error ? candidate : absolute).lexically_normal().wstring();
+        std::transform(key.begin(), key.end(), key.begin(), [](wchar_t value) {
+            return static_cast<wchar_t>(std::towlower(value));
+        });
+        if (std::find(seen.begin(), seen.end(), key) != seen.end()) continue;
+        seen.push_back(key);
+
+        const HMODULE module = LoadLibraryExW(
+            (error ? candidate : absolute).c_str(), nullptr,
+            LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+        if (module == nullptr) {
+            RuntimeLog(
+                context, anomaly::LogLevel::Warning, "hosts.payload.failed",
+                "hosts=failed path=" + candidate.string() +
+                    " error=" + std::to_string(GetLastError()));
+            continue;
+        }
+
+        // Pin the host for the process lifetime. A host installs hooks that other
+        // modules keep calling into; any FreeLibrary/LdrUnloadDll on it would leave
+        // those trampolines pointing at unmapped pages and the game dies with an
+        // access violation inside "<host>.dll_unloaded".
+        HMODULE pinned = module;
+        const BOOL pin_result = GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+            reinterpret_cast<LPCWSTR>(module), &pinned);
+        if (pin_result == FALSE) {
+            RuntimeLog(
+                context, anomaly::LogLevel::Warning, "hosts.payload.unpinned",
+                "hosts=unpinned path=" + candidate.string() +
+                    " error=" + std::to_string(GetLastError()));
+        }
+
+        g_host_payloads.push_back(module);
+        RuntimeLog(
+            context, anomaly::LogLevel::Info, "hosts.payload.loaded",
+            "hosts=loaded path=" + candidate.string() +
+                " base=" + std::to_string(reinterpret_cast<std::uintptr_t>(module)) +
+                " pinned=" + (pin_result != FALSE ? "true" : "false"));
+    }
 }
 
 std::shared_ptr<ue5mem::PluginManager> PluginHostSnapshot(
@@ -288,6 +472,10 @@ DWORD InitializeCore(const std::shared_ptr<CoreContext>& context, std::stop_toke
             << "pid=" << GetCurrentProcessId() << " structured_logger=disabled error="
             << logger_failure << '\n';
     }
+
+    // Hosts go first: an upscaler host must install its swapchain/device hooks
+    // before Unreal initializes graphics, and it must see an unpatched process.
+    LoadHostPayloads(context);
 
     auto crash_reporter = std::make_unique<anomaly::CrashReporter>(
         anomaly::CrashReporterOptions{
