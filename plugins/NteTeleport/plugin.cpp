@@ -1,5 +1,6 @@
 #include "anomaly/sdk/cpp.hpp"
 #include "native_layout.hpp"
+#include "vehicle_teleport.hpp"
 #include "anomaly/sdk/services/core.h"
 #include "anomaly/sdk/services/interop.h"
 #include "anomaly/sdk/localization.hpp"
@@ -209,6 +210,7 @@ struct Context {
     const AnomalyCoreServiceV1* core{};
     const AnomalySignatureServiceV1* signature{};
     const AnomalyNtePlayerTeleportServiceV1* teleport_service{};
+    nteteleport_vehicle::Services vehicle_services{};
     AnomalyGenerationHandleV1 settings_schema{};
     double target[3]{};
     std::uintptr_t g_world_address{};
@@ -1791,16 +1793,25 @@ void ProcessLandingMonitor(const AnomalyHostApiV1* host) {
 void QueueRequest(
     const AnomalyNteSessionSnapshotV1& session, const AnomalyNtePlayerSnapshotV1& player,
     const double position[3], const bool apply_landing_lift = true) noexcept {
-    std::scoped_lock lock(g_context.mutex);
-    g_context.pending.queued = true;
-    g_context.pending.apply_landing_lift = apply_landing_lift;
-    g_context.pending.world = session.world;
-    g_context.pending.player = player.handle;
-    for (std::size_t axis = 0; axis != 3; ++axis) {
-        g_context.pending.position[axis] = position[axis];
+    {
+        std::scoped_lock lock(g_context.mutex);
+        g_context.pending.queued = true;
+        g_context.pending.apply_landing_lift = apply_landing_lift;
+        g_context.pending.world = session.world;
+        g_context.pending.player = player.handle;
+        for (std::size_t axis = 0; axis != 3; ++axis) {
+            g_context.pending.position[axis] = position[axis];
+        }
+        g_context.has_result = false;
+        g_context.result_message[0] = '\0';
     }
-    g_context.has_result = false;
-    g_context.result_message[0] = '\0';
+    // A queued request is consumed on the next update tick by the vehicle path or by
+    // the host bridge; logging it here keeps a click that never reached the plugin
+    // apart from one that was lost to a reload.
+    char detail[160]{};
+    std::snprintf(detail, sizeof(detail), "teleport queued target=(%.0f, %.0f, %.0f)",
+        position[0], position[1], position[2]);
+    Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO, detail);
 }
 
 void DrawResult(const AnomalyUiServiceV1* ui) {
@@ -2004,6 +2015,10 @@ std::string FormatPosition(const std::array<double, 3>& position) {
 
 AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) {
     if (!LoadCompatibility(host)) return {ANOMALY_STATUS_V1_UNAVAILABLE,0,{}};
+    // The vehicle profile shares the compatibility document: object, reflection and
+    // registry strides plus the global object array the runtime keeps for the game.
+    static_cast<void>(nteteleport_vehicle::Instance().LoadLayout(compatibility.Document()));
+    nteteleport_vehicle::Instance().SetObjectSymbol(compatibility.Address("Objects"));
     if (context == nullptr) return StatusCode(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
     const auto ui = QueryService<AnomalyUiServiceV1>(
         host, ANOMALY_UI_SERVICE_V1_ID, ANOMALY_UI_SERVICE_V1_VERSION);
@@ -2022,6 +2037,19 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
     const auto teleport = QueryService<AnomalyNtePlayerTeleportServiceV1>(
         host, ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_ID,
         ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_VERSION);
+    // Moving a ridden vehicle needs the reflection and process-event surface, plus the
+    // player handles that identify the pawn and its controller.
+    const auto ue5_names = QueryService<AnomalyUe5NamesServiceV1>(
+        host, ANOMALY_UE5_NAMES_SERVICE_V1_ID, ANOMALY_UE5_NAMES_SERVICE_V1_VERSION);
+    const auto ue5_objects = QueryService<AnomalyUe5ObjectsServiceV1>(
+        host, ANOMALY_UE5_OBJECTS_SERVICE_V1_ID, ANOMALY_UE5_OBJECTS_SERVICE_V1_VERSION);
+    const auto ue5_events = QueryService<AnomalyUe5ProcessEventServiceV1>(
+        host, ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_ID,
+        ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_VERSION);
+    const auto ue5_framework = QueryService<AnomalyUe5FrameworkServiceV1>(
+        host, ANOMALY_UE5_FRAMEWORK_SERVICE_V1_ID, ANOMALY_UE5_FRAMEWORK_SERVICE_V1_VERSION);
+    const auto player = QueryService<AnomalyNtePlayerServiceV1>(
+        host, ANOMALY_NTE_PLAYER_SERVICE_V1_ID, ANOMALY_NTE_PLAYER_SERVICE_V1_VERSION);
     if (!ui) return ui.status;
     if (!config) return config.status;
     if (!HasUiFunctions(ui.service) || !ConfigMethodsAvailable(config.service)) {
@@ -2043,6 +2071,8 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
             : nullptr;
         g_context.teleport_service =
             TeleportServiceMethodsAvailable(teleport.service) ? teleport.service : nullptr;
+        g_context.vehicle_services = {core.service, ue5_names.service, ue5_objects.service,
+                                     ue5_events.service, ue5_framework.service, player.service};
         g_context.g_world_address = 0;
         g_context.tracked_target_valid = false;
         g_context.tracked_target_read_requested = false;
@@ -2083,6 +2113,10 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
         g_context.settings_dirty = false;
         g_context.result_code = ANOMALY_STATUS_V1_UNAVAILABLE;
         g_context.result_message[0] = '\0';
+    }
+    if (!nteteleport_vehicle::Instance().LayoutLoaded()) {
+        Log(ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
+            "vehicle teleport is disabled: " + nteteleport_vehicle::Instance().Error());
     }
     const AnomalyStatusV1 schema_status = g_context.config->register_schema(
         g_context.config->user, anomaly::sdk::StringView(kSettingsSchemaId),
@@ -2151,6 +2185,7 @@ void ANOMALY_CALL Unload(void* context) {
     g_context.core = nullptr;
     g_context.signature = nullptr;
     g_context.teleport_service = nullptr;
+    g_context.vehicle_services = {};
     g_context.g_world_address = 0;
     g_context.tracked_target_valid = false;
     g_context.tracked_target_read_requested = false;
@@ -2266,6 +2301,48 @@ void ANOMALY_CALL Update(void* context, double) {
     // loaded terrain instead of falling through it.
     if (!pending.queued) return;
     ArmTeleportPreload(pending);
+
+    // A rider is attached to the vehicle, so only a vehicle move carries the player.
+    {
+        nteteleport_vehicle::Services vehicle_services{};
+        {
+            std::scoped_lock lock(g_context.mutex);
+            vehicle_services = g_context.vehicle_services;
+        }
+        auto& vehicle_access = nteteleport_vehicle::Instance();
+        AnomalyStatusV1 vehicle_status{};
+        if (!vehicle_access.Prepare(vehicle_services)) {
+            Log(ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
+                "vehicle teleport is unavailable: " + vehicle_access.Error());
+        } else {
+            const nteteleport_vehicle::Outcome outcome =
+                vehicle_access.MoveRiddenVehicle(pending.position, vehicle_status);
+            if (outcome == nteteleport_vehicle::Outcome::not_riding) {
+                Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO,
+                    "teleport on foot: " + vehicle_access.Note());
+            }
+            if (outcome != nteteleport_vehicle::Outcome::not_riding) {
+                RecordResult(vehicle_status);
+                char detail[192]{};
+                std::snprintf(
+                    detail, sizeof(detail),
+                    "teleport vehicle target=(%.0f, %.0f, %.0f) code=%u%s%s",
+                    pending.position[0], pending.position[1], pending.position[2],
+                    static_cast<unsigned>(vehicle_status.code),
+                    vehicle_status.message.size == 0 ? "" : " note=",
+                    vehicle_status.message.size == 0 ? "" : vehicle_status.message.data);
+                Log(outcome == nteteleport_vehicle::Outcome::moved
+                        ? ANOMALY_CORE_LOG_LEVEL_V1_INFO
+                        : ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
+                    detail);
+                if (outcome == nteteleport_vehicle::Outcome::failed) {
+                    Log(ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
+                        "vehicle teleport failed: " + vehicle_access.Error());
+                }
+                return;
+            }
+        }
+    }
 
     // The host teleport bridge places the actor exactly at the requested
     // position (bSweep=false). Coordinates from map markers, imported points
@@ -2804,6 +2881,6 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         anomaly::sdk::StringView("anomaly.nte-teleport"),
         anomaly::sdk::StringView("Teleport"), anomaly::sdk::StringView("Anomaly"),
-        anomaly::sdk::StringView("1.5.0"), Load, Start, Stop, Unload, Update, Draw};
+        anomaly::sdk::StringView("1.6.0"), Load, Start, Stop, Unload, Update, Draw};
     return anomaly::sdk::Ok();
 }
