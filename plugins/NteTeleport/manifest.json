@@ -6,7 +6,7 @@
   "author": "Anomaly",
   "license": "AGPL-3.0-only",
   "audience": "developer",
-  "version": "1.5.0",
+  "version": "1.8.0",
   "entry": "plugin.dll",
   "api": {
     "major": 1,
@@ -81,6 +81,26 @@
     {
       "id": "anomaly.profile",
       "minVersion": 1
+    },
+    {
+      "id": "anomaly.ue5.names",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.ue5.objects",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.ue5.process-event",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.ue5.framework",
+      "minVersion": 1,
+      "optional": true
     }
   ],
   "capabilities": [
@@ -93,6 +113,9 @@
     "interop-signature",
     "nte-session-snapshot",
     "nte-player-snapshot",
-    "nte-player-teleport"
+    "nte-player-teleport",
+    "ue5-names",
+    "ue5-objects",
+    "game-events"
   ]
 }
