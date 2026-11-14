@@ -4077,13 +4077,14 @@ bool LauncherPrepareModWrite(const LauncherSnapshot& snapshot, const LauncherMod
     bool& enable_after) {
     if (!LauncherModTreeSafe(snapshot, target)) return false;
     const bool running = LauncherGameRunning();
+    const auto key = anomaly::NormalizePakModKey(LauncherModStateKey(target));
     return LauncherWritePakSettings(snapshot, [&](auto& document) {
         const auto catalog = anomaly::ReadPakModCatalog(LauncherModsDirectory(snapshot), document);
         enable_after = false;
         for (const auto& row : catalog) {
-            if (anomaly::NormalizePakModKey(row.key) != anomaly::NormalizePakModKey(LauncherModStateKey(target))) continue;
-            if (running && row.enabled) throw std::runtime_error("disable mod before replacing files");
-            enable_after = row.enabled;
+            if (row.key == key) enable_after = row.enabled;
+            if (running && row.enabled && (row.key == key || (target.directory && row.key.starts_with(key))))
+                throw std::runtime_error("disable mod before replacing files");
         }
         if (std::filesystem::exists(target.path) && !LauncherModFilesAvailable(target))
             throw std::runtime_error("mod files are still in use");
@@ -4097,10 +4098,22 @@ bool LauncherFinishModWrite(const LauncherSnapshot& snapshot, const LauncherModE
         const bool compatibility = LauncherCompatibilityMode(snapshot);
         const auto settings = LauncherPakSettings(snapshot);
         const auto catalog = anomaly::ReadPakModCatalog(LauncherModsDirectory(snapshot), settings);
+        const auto key = anomaly::NormalizePakModKey(LauncherModStateKey(target));
         const auto selected = std::find_if(catalog.begin(), catalog.end(), [&](const auto& row) {
-            return anomaly::NormalizePakModKey(row.key) == anomaly::NormalizePakModKey(LauncherModStateKey(target));
+            return row.key == key;
         });
-        if (selected == catalog.end()) return false;
+        if (selected == catalog.end()) {
+            // An archive can unpack to a category containing several independent mod variants.
+            // Prepare already saved OFF for the whole subtree. Publish their normal filenames
+            // only in hot mode so variants can be selected individually in Mod Manager.
+            bool found_variant{};
+            for (const auto& row : catalog) {
+                if (!target.directory || !row.key.starts_with(key)) continue;
+                if (row.restricted) return false;
+                found_variant = true;
+            }
+            return found_variant && (compatibility || LauncherSetModFilesEnabled(snapshot, target, true));
+        }
         if (selected->restricted) {
             static_cast<void>(LauncherSetModFilesEnabled(snapshot, target, false));
             return false;
