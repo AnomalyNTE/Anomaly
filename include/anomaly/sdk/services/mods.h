@@ -41,6 +41,8 @@ typedef struct AnomalyModsServiceV1 {
     // Worker only. Applies and verifies the effective selection. Conflicting mods keep their
     // current mounts and are reported in pak-mods.json; a forced selection mounts them instead and
     // reports them under `forcedConflicts`. Unrelated mods still synchronize.
+    // A failed preflight or mount leaves other candidates eligible after safe cleanup.
+    // A failure's status.message is valid until the next synchronize call on this thread.
     // Does not clear resident UObjects. Compatibility mode returns CONFLICT.
     AnomalyStatusV1 (ANOMALY_CALL *synchronize)(void* user);
 } AnomalyModsServiceV1;

@@ -223,7 +223,13 @@ struct Container {
                 header = i;
             }
         }
-        if (header == count) { if (!packages.empty()) throw Invalid("container package store absent"); return; }
+        if (header == count) {
+            if (!packages.empty()) {
+                const auto filename = path.filename().u8string();
+                throw Invalid(std::string(filename.begin(), filename.end()) + ": container package store absent");
+            }
+            return;
+        }
         const auto data = Read(header, codecs); Reader s{data};
         if (s.Get<std::uint32_t>() != 0x496f436e) throw Invalid("invalid package store signature");
         const auto sv = s.Get<std::uint32_t>();

@@ -2,6 +2,7 @@
 #include "anomaly/pak_mod_settings.hpp"
 #include "anomaly/pak_mod_catalog.hpp"
 #include "anomaly/pak_mod_layout.hpp"
+#include "anomaly/thread_local_value.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -32,6 +33,7 @@ namespace {
 constexpr std::string_view kPakExtension = ".pak";
 constexpr std::string_view kDisabledSuffix = ".disabled";
 constexpr std::size_t kMaximumScanFiles = 4096;
+ThreadLocalObject<std::string> g_sync_message;
 
 struct DesiredPak {
     std::string id;
@@ -200,24 +202,42 @@ struct PakModRuntime::Impl final {
         auto& self = *static_cast<Impl*>(user);
         if (self.options.compatibility_mode) return Error(ANOMALY_STATUS_V1_CONFLICT);
         try {
-            self.Apply();
             std::scoped_lock operation(self.operation_mutex);
-            if (self.stopped) return Error(ANOMALY_STATUS_V1_UNAVAILABLE);
-            {
-                std::scoped_lock lock(self.mutex);
-                if (!self.last_error.empty()) return Error(ANOMALY_STATUS_V1_UNAVAILABLE);
-            }
-            const auto desired = self.Desired();
+            if (self.stopped) return SyncError("mod runtime is stopped");
+            const auto desired = self.ApplyLocked(true);
             std::scoped_lock lock(self.mutex);
+            if (!self.last_error.empty()) return SyncError(self.last_error);
+            if (!self.conflicting_mods.empty())
+                return SyncError("overlapping resources: " + *self.conflicting_mods.begin());
             std::size_t mounted{};
             for (const auto& entry : self.entries) if (entry.state == PakModState::Mounted) {
                 ++mounted;
                 if (std::none_of(desired.begin(), desired.end(), [&](const auto& want) {
                     return want.id == entry.id && want.file == entry.file && want.order == entry.order && want.fingerprint == entry.fingerprint;
-                })) return Error(ANOMALY_STATUS_V1_UNAVAILABLE);
+                })) return SyncError("could not replace or unmount " + entry.id + ": " + entry.message);
             }
-            return Error(mounted == desired.size() ? 0 : ANOMALY_STATUS_V1_UNAVAILABLE);
-        } catch (...) { return Error(ANOMALY_STATUS_V1_FAILED); }
+            if (mounted == desired.size()) return Error(ANOMALY_STATUS_V1_OK);
+            const auto missing = std::find_if(desired.begin(), desired.end(), [&](const auto& want) {
+                return !self.containers.contains(want.id);
+            });
+            if (missing == desired.end()) return SyncError("mounted container set does not match selection");
+            const auto failure = std::find_if(self.entries.begin(), self.entries.end(), [&](const auto& entry) {
+                return entry.id == missing->id && !entry.message.empty();
+            });
+            return SyncError(missing->id + " [" + Narrow(missing->file.filename()) + "]: " +
+                (failure == self.entries.end() ? "container is not mounted" : failure->message));
+        } catch (const std::exception& error) { return SyncError(error.what()); }
+        catch (...) { return Error(ANOMALY_STATUS_V1_FAILED); }
+    }
+
+    static AnomalyStatusV1 SyncError(std::string_view message) noexcept {
+        auto status = Error(ANOMALY_STATUS_V1_UNAVAILABLE);
+        try {
+            auto& buffer = g_sync_message.Get();
+            buffer.assign(message);
+            status.message = {buffer.data(), buffer.size()};
+        } catch (...) {}
+        return status;
     }
 
     static std::string Copy(AnomalyStringViewV1 value) {
@@ -720,7 +740,8 @@ struct PakModRuntime::Impl final {
         return key;
     }
 
-    void ReleaseUnownedMounts(const std::vector<DesiredPak>& desired) {
+    void ReleaseUnownedMounts(const std::vector<DesiredPak>& desired,
+        const std::set<std::wstring>& preserved = {}) {
         const auto engine = Engine();
         if (!engine || !options.mounted_files || !options.unmount_pak)
             throw std::runtime_error("mounted pak list unavailable");
@@ -739,6 +760,7 @@ struct PakModRuntime::Impl final {
                 })) continue;
             const auto path = EnginePathKey(file.filename);
             if (!path.starts_with(root) && !requested.contains(path)) continue;
+            if (preserved.contains(path)) continue;
             // Startup mounts of a conflicting mod are frozen too. Do not tear them down
             // merely to process an unrelated mod's replacement.
             if (conflicting_mods.contains(ModKey(std::filesystem::path(path)))) continue;
@@ -822,7 +844,11 @@ struct PakModRuntime::Impl final {
 
     void Apply(bool force = true) {
         std::scoped_lock operation_lock(operation_mutex);
-        if (stopped) return;
+        static_cast<void>(ApplyLocked(force));
+    }
+
+    std::vector<DesiredPak> ApplyLocked(bool force) {
+        if (stopped) return {};
         // Consume each source independently, even on a forced pass. Nothing in the mounted set can
         // change on an ordinary idle poll, so avoid discovery, conflict checks and the engine pak lock.
         bool changed = mod_changes.Changed(options.mod_directory);
@@ -832,17 +858,17 @@ struct PakModRuntime::Impl final {
             changed = fallback_settings_changes.Changed(fallback) || changed;
         for (auto& [directory, monitor] : external_changes)
             changed = monitor->Changed(directory) || changed;
-        if (!force && !changed && !reconcile_pending) return;
+        if (!force && !changed && !reconcile_pending) return {};
         reconcile_pending = true;
         ++reconcile_passes;
         if (!ReleaseOrphanedCompatibility()) {
             { std::scoped_lock lock(mutex); last_error = "compatibility overlay unmount is still pending"; }
             PublishStatus();
-            return;
+            return {};
         }
         if (options.compatibility_mode) {
             PublishStatus();
-            return;
+            return {};
         }
         // Before the first mount of the session, exactly like the signature requirement: the detour has
         // to be in place before the engine can schedule a verification for a container we mounted.
@@ -855,7 +881,7 @@ struct PakModRuntime::Impl final {
                 last_error = error.what();
             }
             PublishStatus();
-            return;
+            return {};
         }
         try {
             // Prepare before adopting a working startup mount, so unavailable signature/cache
@@ -867,7 +893,7 @@ struct PakModRuntime::Impl final {
         } catch (const std::exception& error) {
             { std::scoped_lock lock(mutex); last_error = error.what(); }
             PublishStatus();
-            return;
+            return {};
         }
         std::vector<PakModEntrySnapshot> releases;
         std::vector<DesiredPak> to_mount;
@@ -903,33 +929,47 @@ struct PakModRuntime::Impl final {
             }
         }
         std::map<std::string, Ue5ModCompatibilityPlan> compatibility_plans;
-        try {
-            if (options.prepare_compatibility) for (const auto& candidate : to_mount)
+        std::set<std::string> refused;
+        std::set<std::wstring> preserved;
+        if (options.prepare_compatibility) for (const auto& candidate : to_mount) {
+            try {
                 compatibility_plans.emplace(candidate.id, options.prepare_compatibility(candidate.file));
-            // A failed preflight keeps the currently mounted set intact.
-            ReleaseUnownedMounts(desired);
+            } catch (const std::exception& error) {
+                refused.insert(candidate.id);
+                preserved.insert(EnginePathKey(candidate.file));
+                RecordMountResult(candidate, {}, "compatibility preflight failed: " + std::string(error.what()),
+                    "pak_mods.compatibility_refused");
+            }
+        }
+        try {
+            ReleaseUnownedMounts(desired, preserved);
         } catch (const std::exception& error) {
             { std::scoped_lock lock(mutex); last_error = error.what(); }
-            Log(LogLevel::Warning, "pak_mods.compatibility_refused reason=" + std::string(error.what()));
-            PublishStatus(); return;
+            Log(LogLevel::Warning, "pak_mods.startup_release_failed reason=" + std::string(error.what()));
+            PublishStatus(); return desired;
         }
         bool release_failed{};
         for (const auto& entry : releases) {
+            if (refused.contains(entry.id)) continue;
             if (!ReleaseEntry(entry)) {
                 release_failed = true;
+                std::scoped_lock lock(mutex);
+                if (last_error.empty()) last_error = entry.id + " [" + Narrow(entry.file.filename()) +
+                    "]: engine refused to unmount the container or its compatibility overlay";
             }
         }
         for (const auto& candidate : to_mount) {
             // A selection may replace A with B even when their ids and filenames differ. If A
             // cannot be removed, mounting B would leave both conflicting variants active.
-            if (!release_failed) {
+            if (!release_failed && !refused.contains(candidate.id)) {
                 MountEntry(candidate, compatibility_plans[candidate.id]);
                 if (compatibility_containers.contains(candidate.id) && !containers.contains(candidate.id)) break;
             }
         }
         PruneRemoved(desired);
         // Ordinary failures retry; native faults require a changed file or an explicit operation.
-        reconcile_pending = release_failed || std::any_of(compatibility_containers.begin(), compatibility_containers.end(),
+        reconcile_pending = release_failed || !refused.empty() ||
+            std::any_of(compatibility_containers.begin(), compatibility_containers.end(),
             [&](const auto& entry) { return !containers.contains(entry.first); });
         {
             std::scoped_lock lock(mutex);
@@ -937,6 +977,7 @@ struct PakModRuntime::Impl final {
                 [](const auto& entry) { return entry.state == PakModState::Failed && !entry.native_fault; });
         }
         PublishStatus();
+        return desired;
     }
 
     void SetEntryState(std::string_view id, const PakModState state, std::string message) {
@@ -1011,10 +1052,13 @@ struct PakModRuntime::Impl final {
                 outcome.native_fault = overlay.native_fault;
             }
         } else outcome = Mount(desired);
+        if (!outcome.mounted && outcome.detail.empty()) outcome.detail = "engine rejected the container";
+        RecordMountResult(desired, outcome, outcome.detail, "pak_mods.mount_failed");
+    }
+
+    void RecordMountResult(const DesiredPak& desired, const PakModMountOutcome& outcome,
+        const std::string& detail, std::string_view failure_event) {
         const bool mounted = outcome.mounted;
-        std::string detail = outcome.detail.empty()
-            ? std::string{"engine rejected the container"}
-            : "engine rejected the container: " + outcome.detail;
         PakModState previous_state{PakModState::Pending};
         std::string previous_message;
         {
@@ -1029,21 +1073,23 @@ struct PakModRuntime::Impl final {
             }
             previous_state = existing->state;
             previous_message = existing->message;
-            existing->id = desired.id;
-            existing->file = desired.file;
-            existing->order = desired.order;
-            existing->bytes = desired.bytes;
-            existing->stamp = desired.stamp;
-            existing->fingerprint = desired.fingerprint;
-            existing->state = mounted ? PakModState::Mounted : PakModState::Failed;
-            existing->native_fault = outcome.native_fault;
-            existing->message = mounted ? outcome.detail : detail;
-            if (mounted) {
-                ++mounts;
-                containers.insert_or_assign(desired.id, outcome.container);
-            } else {
-                containers.erase(desired.id);
-                last_error = "mount failed: " + Narrow(desired.file) + " (" + detail + ')';
+            if (mounted || previous_state != PakModState::Mounted) {
+                existing->id = desired.id;
+                existing->file = desired.file;
+                existing->order = desired.order;
+                existing->bytes = desired.bytes;
+                existing->stamp = desired.stamp;
+                existing->fingerprint = desired.fingerprint;
+                existing->state = mounted ? PakModState::Mounted : PakModState::Failed;
+                existing->native_fault = outcome.native_fault;
+                if (mounted) {
+                    ++mounts;
+                    containers.insert_or_assign(desired.id, outcome.container);
+                }
+            }
+            existing->message = detail;
+            if (!mounted && last_error.empty()) {
+                last_error = desired.id + " [" + Narrow(desired.file.filename()) + "]: " + detail;
             }
             if (previous_state == existing->state && previous_message == existing->message) {
                 return;  // A retried attempt that ends in the same place is not news.
@@ -1053,7 +1099,8 @@ struct PakModRuntime::Impl final {
             Log(LogLevel::Info, "pak_mods.mounted id=" + desired.id + " order=" +
                     std::to_string(desired.order));
         } else {
-            Log(LogLevel::Warning, "pak_mods.mount_failed id=" + desired.id + " reason=" + detail);
+            Log(LogLevel::Warning, std::string(failure_event) + " id=" + desired.id +
+                " file=" + Narrow(desired.file) + " reason=" + detail);
         }
     }
 

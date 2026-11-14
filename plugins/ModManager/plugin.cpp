@@ -153,6 +153,14 @@ void LocalizedStatus(std::string_view key, std::string_view fallback, std::strin
     auto text = detail.empty() ? g.localizer.Text(key, fallback) : g.localizer.Format(key, fallback, args);
     std::scoped_lock lock(g.mutex); g.status = std::move(text);
 }
+void ReportMountFailure(AnomalyStatusV1 status) {
+    if (status.message.size) {
+        LocalizedStatus("status.mount_pending", "Could not apply all selected mods: {0}", Copy(status.message));
+    } else {
+        LocalizedStatus("status.mount_no_detail",
+            "Could not apply all selected mods. Check the runtime log for details.");
+    }
+}
 int ANOMALY_CALL Collect(void* user, const AnomalyModEntryV1* entry) noexcept {
     auto& result = *static_cast<RowCollection*>(user);
     try {
@@ -267,7 +275,7 @@ void ANOMALY_CALL Worker(void*, AnomalyGenerationHandleV1) noexcept {
                 const auto mounted = g.mods->synchronize(g.mods->user);
                 synchronized = mounted.code == 0; ok = synchronized;
                 if (ok) LocalizedStatus("status.saved", "Applied");
-                else LocalizedStatus("status.mount_pending", "Container switch failed: {0}", ErrorText(mounted));
+                else ReportMountFailure(mounted);
             } else LocalizedStatus("status.save_failed", "Save failed: {0}", ErrorText(saved));
         }
 
@@ -321,7 +329,7 @@ void ANOMALY_CALL Worker(void*, AnomalyGenerationHandleV1) noexcept {
                 if (!mounted.code) {
                     prepared = Prepared{true, {}};
                     g.pending_visual.clear();
-                } else LocalizedStatus("status.mount_pending", "Container switch failed: {0}", ErrorText(mounted));
+                } else ReportMountFailure(mounted);
             } else LocalizedStatus("status.reload_unavailable", "World reload unavailable");
         }
 
@@ -336,7 +344,7 @@ void ANOMALY_CALL Worker(void*, AnomalyGenerationHandleV1) noexcept {
                 Prepared value;
                 value.packages.assign(g.pending_visual.begin(), g.pending_visual.end());
                 prepared = std::move(value);
-            } else if (mounted.code) LocalizedStatus("status.mount_pending", "Container switch failed: {0}", ErrorText(mounted));
+            } else if (mounted.code) ReportMountFailure(mounted);
             else LocalizedStatus("status.visual_unavailable", "Local refresh unavailable; reload world");
             g.pending_visual.clear();
         }
@@ -510,7 +518,11 @@ void ANOMALY_CALL Draw(void*, const AnomalyUiServiceV1* ui) noexcept {
             TextLocalized("status.profile_unavailable", "Profile mismatch; refresh unavailable");
         else if (!g.compatibility && !services_ready)
             TextLocalized("status.services_pending", "Waiting for game services.");
-        if (!status.empty()) ui->text(ui->user, StringView(status));
+        if (!status.empty()) {
+            if (UiFieldAvailable(ui, offsetof(AnomalyUiServiceV1, text_wrapped), sizeof(ui->text_wrapped)) &&
+                ui->text_wrapped) ui->text_wrapped(ui->user, StringView(status));
+            else ui->text(ui->user, StringView(status));
+        }
         if (ui->button_enabled(ui->user, StringView(g.localizer.Text("action.reload_world", "Reload world")), 0, 0, !busy && !g.compatibility && services_ready))
             Request({Kind::ReloadWorld, {}});
 

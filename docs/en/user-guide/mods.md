@@ -167,8 +167,9 @@ definitions with the currently mounted game containers, including parents, field
 and nested types. An incompatible definition and its affected dependencies within the candidate container
 are retained from the game in a separate compatibility container. Other mod resources can still load.
 Retained package names are reported in mount status and logs; this policy has no mod-name or vehicle exceptions.
-Unreadable formats, inseparable new dependencies and unsupported optional packages are refused before mounting,
-preserving the existing mounted set for that pass. This inspection covers supported Zen package formats;
+Unreadable formats, inseparable new dependencies and unsupported optional packages are refused before mounting.
+A refused replacement keeps its previous mount, and other containers continue. Synchronization errors identify
+the failed container and the reason. This inspection covers supported Zen package formats;
 legacy standalone pak files keep their existing path, and schema compatibility does not guarantee script behavior.
 
 Unmount drains async package loading on the Game thread, then removes the source before its compatibility
@@ -354,7 +355,7 @@ cannot add this interface to an older Core.
 
 | Symptom | Check first |
 | --- | --- |
-| Mod has no effect | `available`, `state`, `lastError` in `pak status`, and the engine reason in `pak_mods.mount_failed` |
+| Mod has no effect | Check `lastError` and each container's `state` and `message` in `pak status`, and the `pak_mods.compatibility_refused` and `pak_mods.mount_failed` log entries. |
 | Empty list | Directory path, `.disabled` markers, and the manifest's `mods` array |
 | Cannot overwrite/disable files | Release status and outstanding reads; exit the game if files remain busy |
 | Mounted but resources unchanged | Whether resources were already resident; mounts do not refresh them |
