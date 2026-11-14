@@ -20,13 +20,16 @@
 
 #include "anomaly/sdk/cpp.hpp"
 #include "anomaly/sdk/services/core.h"
+#include "anomaly/sdk/services/json.h"
 #include "anomaly/sdk/services/nte.h"
 #include "anomaly/sdk/services/platform.h"
 #include "anomaly/sdk/services/ui.h"
 #include "anomaly/sdk/services/ui_resources.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -62,6 +65,9 @@ constexpr double kDefaultHorizontalSpeed = 1200.0;  // UE 单位（厘米）/秒
 constexpr double kDefaultVerticalSpeed = 800.0;
 constexpr float kMinimumSpeed = 100.0F;
 constexpr float kMaximumSpeed = 12000.0F;
+// 松手判定：拖动期间滑杆每帧都会回报「改动过」，所以时间戳会一直刷新；等它停住这么久
+// 才真正写盘。保证拖动过程中不产生任何磁盘写入，松手后写一次。
+constexpr std::int64_t kSettingsSaveDelayMilliseconds = 400;
 
 constexpr double kDegreesToRadians = 3.14159265358979323846 / 180.0;
 
@@ -95,6 +101,7 @@ struct Services final {
     const AnomalyUiServiceV1* ui{};
     const AnomalyInputServiceV1* input{};
     const AnomalyConfigServiceV1* config{};
+    const AnomalyJsonServiceV1* json{};
     const AnomalyNteSessionServiceV1* session{};
     const AnomalyNtePlayerServiceV1* player{};
     const AnomalyNtePlayerTeleportServiceV1* teleport{};
@@ -155,6 +162,9 @@ struct Context final {
     std::atomic<double> horizontal_speed{kDefaultHorizontalSpeed};
     std::atomic<double> vertical_speed{kDefaultVerticalSpeed};
     std::atomic_bool toggle_requested{false};
+    // 最近一次改动设置的时刻（Render 域写）。Game 域据此判断「拖动停住没有」，
+    // 然后才写盘 —— Render 回调里不做文件 I/O。
+    std::atomic<std::int64_t> settings_touched{0};
     // 快捷键：Render 域（UI 按钮）请求捕获，Game 域完成捕获并落盘。
     std::atomic<std::uint32_t> toggle_key{kDefaultToggleKey};
     std::atomic_bool capture_requested{false};
@@ -162,7 +172,6 @@ struct Context final {
 
     // 设置持久化（anomaly.config 不可用时整段降级为「仅本次会话生效」）。
     AnomalyGenerationHandleV1 settings_schema{};
-    bool settings_dirty{};
     bool settings_schema_ready{};
 
     // 以下成员只属于 Game 域。
@@ -189,6 +198,8 @@ struct Context final {
     std::uint64_t teleport_count{};
     AnomalyGenerationHandleV1 flight_world{};
     AnomalyGenerationHandleV1 flight_player{};
+    // 已经落盘的那次改动时刻；与 settings_touched 相等表示没有待写的改动。
+    std::int64_t settings_saved_touched{};
 
     // Game 域写、Render 域读。
     mutable std::mutex display_mutex;
@@ -204,22 +215,47 @@ void Log(const Context& context, const std::uint32_t level, const char* message)
 }
 
 // ---------------------------------------------------------------------------
-// 设置持久化（anomaly.config）
+// 设置持久化（框架服务 anomaly.config + anomaly.json）
 //
-// 只存一个开关快捷键。config 服务不可用时整段降级：快捷键仍然可以在面板里改，
-// 只是本次会话结束后回到默认值，插件其余功能不受影响。
+// 持久化本身全部交给宿主：文件位置、schema 校验、原子替换、版本迁移都在 anomaly.config
+// 里，插件只做三件事 —— 注册 schema、读一次、改动时 write_atomic。解析交给 anomaly.json
+// 的 DOM，插件不引 JSON 库、也不自己扫字符串。
+//
+// 文档形状：{"toggleKey":117,"horizontalSpeed":1200,"verticalSpeed":800}，整个面板的设置
+// 都在里面。v1 只存了 toggleKey，存量文档由宿主的 migrate 通道升到 v2。
+// config 服务不可用时整段降级：设置仍然可以在面板里改，只是本次会话结束后回到默认值，
+// 插件其余功能不受影响。
 // ---------------------------------------------------------------------------
 
 // 定义在下面的「输入」小节，这里先用，故前置声明。
 bool IsReservedKey(std::uint32_t key) noexcept;
 void KeyNameForLog(std::uint32_t key, char* out, std::size_t size) noexcept;
+AnomalyStatusV1 ANOMALY_CALL MigrateSettings(void* user, std::uint32_t source_schema_version,
+                                             AnomalyByteSpanV1 source,
+                                             AnomalyMutableByteSpanV1 destination,
+                                             std::size_t* inout_size);
 
 constexpr std::string_view kSettingsSchemaId = "settings";
-constexpr std::uint32_t kSettingsSchemaVersion = 1;
+constexpr std::uint32_t kSettingsSchemaVersion = 2;
 constexpr std::size_t kMaximumSettingsBytes = 256;
+// 数值上下界必须与 kMinimumSpeed / kMaximumSpeed 一致：本插件写出去的文档要能通过这份
+// schema，否则 write_atomic 会拒绝落盘。
 constexpr std::string_view kSettingsSchema = R"json(
-{"type":"object","additionalProperties":false,"required":["toggleKey"],"properties":{"toggleKey":{"type":"integer","minimum":1,"maximum":255}}}
+{"type":"object","additionalProperties":false,"required":["toggleKey","horizontalSpeed","verticalSpeed"],"properties":{"toggleKey":{"type":"integer","minimum":1,"maximum":255},"horizontalSpeed":{"type":"number","minimum":100,"maximum":12000},"verticalSpeed":{"type":"number","minimum":100,"maximum":12000}}}
 )json";
+
+struct Settings final {
+    std::uint32_t toggle_key{};
+    double horizontal_speed{kDefaultHorizontalSpeed};
+    double vertical_speed{kDefaultVerticalSpeed};
+};
+
+// 单调毫秒时间戳，只用来判断「最后一次改动过去多久了」，不参与任何持久化数据。
+std::int64_t NowTicks() noexcept {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
 
 bool ConfigMethodsAvailable(const AnomalyConfigServiceV1* service) noexcept {
     return HAS_FIELD(service, AnomalyConfigServiceV1, write_atomic) &&
@@ -231,25 +267,62 @@ bool SettingsAvailable(const Context& context) noexcept {
     return context.settings_schema_ready && ConfigMethodsAvailable(context.services.config);
 }
 
-// 文档是本插件自己写出去的固定形状，所以这里只做受约束的扫描，不引入 JSON 解析依赖。
-bool ParseToggleKey(const std::string_view document, std::uint32_t& key) noexcept {
-    const std::size_t at = document.find("\"toggleKey\"");
-    if (at == std::string_view::npos) return false;
-    std::size_t index = at + 11U;
-    while (index < document.size() &&
-           (document[index] == ':' || document[index] == ' ' || document[index] == '\t')) {
-        ++index;
+bool JsonAvailable(const AnomalyJsonServiceV1* service) noexcept {
+    return service != nullptr && service->parse != nullptr && service->release != nullptr &&
+           service->kind != nullptr && service->number_value != nullptr &&
+           service->object_find != nullptr;
+}
+
+// anomaly.json 的句柄归插件 generation 所有：用完立刻释放，不攒到停止。
+bool JsonNumberField(const AnomalyJsonServiceV1* json, const AnomalyGenerationHandleV1 object,
+                     const std::string_view key, double& value) noexcept {
+    AnomalyGenerationHandleV1 child{};
+    if (json->object_find(json->user, object, StringView(key), &child).code !=
+            ANOMALY_STATUS_V1_OK ||
+        child.id == 0) {
+        return false;
     }
-    if (index >= document.size() || document[index] < '0' || document[index] > '9') return false;
-    std::uint32_t value = 0;
-    while (index < document.size() && document[index] >= '0' && document[index] <= '9') {
-        value = value * 10U + static_cast<std::uint32_t>(document[index] - '0');
-        if (value > 255U) return false;
-        ++index;
+    const bool found =
+        json->number_value(json->user, child, &value).code == ANOMALY_STATUS_V1_OK &&
+        std::isfinite(value);
+    static_cast<void>(json->release(json->user, child));
+    return found;
+}
+
+// 取文档里的设置。toggleKey 是唯一必需项：缺它说明这份文档不是本插件写的。两个速度是
+// v2 才有的字段，旧文档缺项时保持默认值。
+bool ParseSettings(const Context& context, const std::string_view document,
+                   Settings& settings) noexcept {
+    const auto* json = context.services.json;
+    if (!JsonAvailable(json)) return false;
+
+    AnomalyGenerationHandleV1 root{};
+    if (json->parse(json->user, StringView(document), &root).code != ANOMALY_STATUS_V1_OK ||
+        root.id == 0) {
+        return false;
     }
-    if (value == 0U) return false;
-    key = value;
-    return true;
+
+    std::uint32_t kind{};
+    double toggle_key = 0.0;
+    const bool usable = json->kind(json->user, root, &kind).code == ANOMALY_STATUS_V1_OK &&
+                        kind == ANOMALY_JSON_V1_OBJECT &&
+                        JsonNumberField(json, root, "toggleKey", toggle_key) &&
+                        toggle_key >= 1.0 && toggle_key <= 255.0 &&
+                        toggle_key == std::floor(toggle_key);
+    if (usable) {
+        settings.toggle_key = static_cast<std::uint32_t>(toggle_key);
+        constexpr double kMinimum = static_cast<double>(kMinimumSpeed);
+        constexpr double kMaximum = static_cast<double>(kMaximumSpeed);
+        double speed = 0.0;
+        if (JsonNumberField(json, root, "horizontalSpeed", speed)) {
+            settings.horizontal_speed = std::clamp(speed, kMinimum, kMaximum);
+        }
+        if (JsonNumberField(json, root, "verticalSpeed", speed)) {
+            settings.vertical_speed = std::clamp(speed, kMinimum, kMaximum);
+        }
+    }
+    static_cast<void>(json->release(json->user, root));
+    return usable;
 }
 
 void RegisterSettingsSchema(Context& context) noexcept {
@@ -271,6 +344,12 @@ void LoadSettings(Context& context) noexcept {
     if (!SettingsAvailable(context)) return;
     const auto* config = context.services.config;
 
+    // 存量文档的版本升级交给框架的 migrate 通道：插件不自己判断版本、也不自己重写文件。
+    if (HAS_FIELD(config, AnomalyConfigServiceV1, migrate) && config->migrate != nullptr) {
+        static_cast<void>(config->migrate(
+            config->user, StringView(kSettingsSchemaId), MigrateSettings, &context));
+    }
+
     std::uint32_t schema_version = 0;
     std::size_t size = 0;
     const AnomalyStatusV1 size_status = config->read(
@@ -289,35 +368,107 @@ void LoadSettings(Context& context) noexcept {
         return;
     }
 
-    std::uint32_t key = 0;
-    if (!ParseToggleKey(std::string_view(document, copied), key) || IsReservedKey(key)) return;
-    context.toggle_key.store(key, std::memory_order_relaxed);
-    context.settings_dirty = false;
+    Settings settings;
+    if (!ParseSettings(context, std::string_view(document, copied), settings) ||
+        IsReservedKey(settings.toggle_key)) {
+        return;
+    }
+    context.toggle_key.store(settings.toggle_key, std::memory_order_relaxed);
+    context.horizontal_speed.store(settings.horizontal_speed, std::memory_order_relaxed);
+    context.vertical_speed.store(settings.vertical_speed, std::memory_order_relaxed);
 
     char name[24];
-    char message[128];
-    KeyNameForLog(key, name, sizeof(name));
-    std::snprintf(message, sizeof(message), "free fly: toggle key restored from settings (%s)", name);
+    char message[160];
+    KeyNameForLog(settings.toggle_key, name, sizeof(name));
+    std::snprintf(message, sizeof(message),
+                  "free fly: settings restored (toggle %s, speed %.0f / %.0f cm/s)", name,
+                  settings.horizontal_speed, settings.vertical_speed);
     Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO, message);
 }
 
-void SaveSettings(Context& context) noexcept {
-    if (!context.settings_dirty || !SettingsAvailable(context)) return;
+// 面板设置的唯一形状：写盘和版本迁移都从这里取文档。
+std::size_t FormatSettings(const Settings& settings, char* buffer,
+                           const std::size_t size) noexcept {
+    const int written = std::snprintf(
+        buffer, size, "{\"toggleKey\":%u,\"horizontalSpeed\":%.6g,\"verticalSpeed\":%.6g}",
+        settings.toggle_key, settings.horizontal_speed, settings.vertical_speed);
+    return written > 0 && static_cast<std::size_t>(written) < size
+               ? static_cast<std::size_t>(written)
+               : 0;
+}
+
+// anomaly.config 的迁移回调：把存量的 v1 文档（只有 toggleKey）补成 v2 形状。宿主负责
+// 调用时机、校验与原子替换，这里只产出目标版本的文档。
+AnomalyStatusV1 ANOMALY_CALL MigrateSettings(void* user, const std::uint32_t source_schema_version,
+                                             const AnomalyByteSpanV1 source,
+                                             const AnomalyMutableByteSpanV1 destination,
+                                             std::size_t* inout_size) {
+    auto* context = static_cast<Context*>(user);
+    if (context == nullptr || inout_size == nullptr || source.data == nullptr ||
+        source.size == 0 || source_schema_version >= kSettingsSchemaVersion) {
+        return Fail(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+    }
+
+    Settings settings;
+    if (!ParseSettings(*context,
+                       std::string_view(reinterpret_cast<const char*>(source.data), source.size),
+                       settings)) {
+        return Fail(ANOMALY_STATUS_V1_FAILED);
+    }
+
+    char document[128];
+    const std::size_t required = FormatSettings(settings, document, sizeof(document));
+    if (required == 0) return Fail(ANOMALY_STATUS_V1_FAILED);
+    *inout_size = required;
+    if (destination.data == nullptr) return anomaly::sdk::Ok();  // 第一段只问尺寸
+    if (destination.size < required) return Fail(ANOMALY_STATUS_V1_BUFFER_TOO_SMALL);
+    std::memcpy(destination.data, document, required);
+    return anomaly::sdk::Ok();
+}
+
+// 写盘：校验与原子替换都由宿主的 anomaly.config 完成，插件不碰文件。
+bool SaveSettings(Context& context) noexcept {
+    if (!SettingsAvailable(context)) return false;  // 服务不可用：保持待写状态，on_stop 再试
     const auto* config = context.services.config;
+    const std::int64_t touched = context.settings_touched.load(std::memory_order_relaxed);
 
-    char document[64];
-    const int written = std::snprintf(document, sizeof(document), "{\"toggleKey\":%u}",
-                                      context.toggle_key.load(std::memory_order_relaxed));
-    if (written <= 0) return;
+    Settings settings;
+    settings.toggle_key = context.toggle_key.load(std::memory_order_relaxed);
+    settings.horizontal_speed = context.horizontal_speed.load(std::memory_order_relaxed);
+    settings.vertical_speed = context.vertical_speed.load(std::memory_order_relaxed);
+    if (!std::isfinite(settings.horizontal_speed) || !std::isfinite(settings.vertical_speed)) {
+        context.settings_saved_touched = touched;
+        return false;
+    }
 
-    const AnomalyByteSpanV1 bytes{reinterpret_cast<const std::uint8_t*>(document),
-                                  static_cast<std::size_t>(written)};
+    char document[128];
+    const std::size_t required = FormatSettings(settings, document, sizeof(document));
+    if (required == 0) {
+        context.settings_saved_touched = touched;
+        return false;
+    }
+
+    const AnomalyByteSpanV1 bytes{reinterpret_cast<const std::uint8_t*>(document), required};
     if (config->write_atomic(config->user, StringView(kSettingsSchemaId), kSettingsSchemaVersion,
                              bytes).code != ANOMALY_STATUS_V1_OK) {
-        return;
+        // 写入被拒绝（文档不合 schema / 存储故障）：不在这里忙等重试，记下已处理，
+        // 下一次改动或 on_stop 会再写一次。
+        context.settings_saved_touched = touched;
+        return false;
     }
-    context.settings_dirty = false;
-    Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO, "free fly: toggle key saved");
+    context.settings_saved_touched = touched;
+    Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO, "free fly: settings saved");
+    return true;
+}
+
+// 设置落盘（Game 域）。Render 域只刷新 settings_touched，写盘时机由这里判断：
+// 拖动滑杆期间每帧都会刷新时间戳，所以这段时间一次也不写；松手后时间戳停住，等满
+// kSettingsSaveDelayMilliseconds 才写一次。
+void FlushSettings(Context& context) noexcept {
+    const std::int64_t touched = context.settings_touched.load(std::memory_order_relaxed);
+    if (touched == 0 || touched == context.settings_saved_touched) return;
+    if (NowTicks() - touched < kSettingsSaveDelayMilliseconds) return;
+    static_cast<void>(SaveSettings(context));
 }
 
 // ---------------------------------------------------------------------------
@@ -565,10 +716,9 @@ void CaptureToggleKey(Context& context) noexcept {
         context.toggle_key.store(key, std::memory_order_relaxed);
         // 这个键此刻是被按住的：把边缘状态对齐到按下，免得松手后立刻触发一次开关。
         context.previous_toggle_key = true;
-        context.settings_dirty = true;
         context.capturing = false;
-        // 立即落盘：改键是低频操作，没理由等停止再写 —— 否则游戏崩溃就白改了。
-        SaveSettings(context);
+        // 改键立刻落盘：低频操作，没有攒批写的理由。
+        static_cast<void>(SaveSettings(context));
         return;
     }
 }
@@ -854,9 +1004,11 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
         ANOMALY_UI_SERVICE_V1_ID, ANOMALY_UI_SERVICE_V1_VERSION);
     const auto input = view.Query<AnomalyInputServiceV1>(
         ANOMALY_INPUT_SERVICE_V1_ID, ANOMALY_INPUT_SERVICE_V1_VERSION);
-    // 设置持久化是可选的：拿不到 config 时插件照常工作，只是快捷键不跨会话保留。
+    // 设置持久化是可选的：拿不到 config 时插件照常工作，只是设置不跨会话保留。
     const auto config = view.Query<AnomalyConfigServiceV1>(
         ANOMALY_CONFIG_SERVICE_V1_ID, ANOMALY_CONFIG_SERVICE_V1_VERSION);
+    const auto json = view.Query<AnomalyJsonServiceV1>(
+        ANOMALY_JSON_SERVICE_V1_ID, ANOMALY_JSON_SERVICE_V1_VERSION);
 
     if (!HAS_FIELD(ui.get(), AnomalyUiServiceV1, begin_window) ||
         !HAS_FIELD(ui.get(), AnomalyUiServiceV1, end_window)) {
@@ -872,6 +1024,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
     context->services.ui = ui.get();
     context->services.input = input.get();
     context->services.config = ConfigMethodsAvailable(config.get()) ? config.get() : nullptr;
+    context->services.json = JsonAvailable(json.get()) ? json.get() : nullptr;
     // localization 也是可选的：拿不到服务时面板回退英文原文，功能不受影响。
     context->localizer = anomaly::sdk::Localizer(host);
 
@@ -905,7 +1058,8 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void* plugin_context, std::uint32_t /*deadline
     if (context == nullptr) return Fail(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
     context->want_enabled = false;
     StopFlying(*context, "free fly: stopped");
-    SaveSettings(*context);
+    // on_stop 是宿主给的最后一个可靠写盘时机（config 在 on_stop 之后才回收）。
+    static_cast<void>(SaveSettings(*context));
     return anomaly::sdk::Ok();
 }
 
@@ -913,7 +1067,6 @@ void ANOMALY_CALL Unload(void* plugin_context) {
     auto* context = static_cast<Context*>(plugin_context);
     if (context == nullptr) return;
     StopFlying(*context, "free fly: unloaded");
-    SaveSettings(*context);
     delete context;
 }
 
@@ -946,6 +1099,9 @@ void ANOMALY_CALL Update(void* plugin_context, double delta_seconds) noexcept {
         // 留给下一帧做按下边缘检测。
         std::memcpy(context->previous_keys, context->current_keys,
                     sizeof(context->previous_keys));
+
+        // 面板上的设置改动在这里落地（Render 域只置位，不做文件 I/O）。
+        FlushSettings(*context);
 
         if (context->want_enabled && !context->enabled) {
             if (!StartFlying(*context)) context->want_enabled = false;
@@ -1148,18 +1304,26 @@ void ANOMALY_CALL Draw(void* plugin_context, const AnomalyUiServiceV1* ui_v1) no
                 const std::string horizontal_label = localizer.Label(
                     "setting.horizontal_speed", "Horizontal speed (cm/s)",
                     "free-fly-horizontal-speed");
-                static_cast<void>(ui->slider_float(ui->user, StringView(horizontal_label), &value,
-                                                   kMinimumSpeed, kMaximumSpeed));
+                const bool horizontal_changed =
+                    ui->slider_float(ui->user, StringView(horizontal_label), &value, kMinimumSpeed,
+                                     kMaximumSpeed) != 0;
                 context->horizontal_speed.store(static_cast<double>(value),
                                                 std::memory_order_relaxed);
 
                 value = static_cast<float>(context->vertical_speed.load(std::memory_order_relaxed));
                 const std::string vertical_label = localizer.Label(
                     "setting.vertical_speed", "Vertical speed (cm/s)", "free-fly-vertical-speed");
-                static_cast<void>(ui->slider_float(ui->user, StringView(vertical_label), &value,
-                                                   kMinimumSpeed, kMaximumSpeed));
+                const bool vertical_changed =
+                    ui->slider_float(ui->user, StringView(vertical_label), &value, kMinimumSpeed,
+                                     kMaximumSpeed) != 0;
                 context->vertical_speed.store(static_cast<double>(value),
                                               std::memory_order_relaxed);
+
+                // 滑杆只是把值写回插件自己的 atomic，并刷新「最后改动时刻」。写盘由 Game
+                // 域在拖动停住之后做 —— Render 回调里不做文件 I/O。
+                if (horizontal_changed || vertical_changed) {
+                    context->settings_touched.store(NowTicks(), std::memory_order_relaxed);
+                }
             }
         }
 

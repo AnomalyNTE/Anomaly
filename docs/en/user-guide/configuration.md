@@ -159,6 +159,51 @@ Plugins installed from a plugin source can be uninstalled in the action menu. Un
 
 To enable it you must configure both `sources` and `trustKeys`. Regular users do not need to edit this file.
 
+## External host DLLs (`config\hosts.json`)
+
+Some hosts must install their hooks before the game creates its graphics device, so the runtime has a load
+point at the very front of core initialisation, independent of the plugin system. There is one config file:
+
+`Anomaly\config\hosts.json`
+
+```json
+{
+  "schemaVersion": 1,
+  "hosts": [
+    "D:\\Hosts\\example-host.dll",
+    "%LOCALAPPDATA%\\ExampleHost\\host.dll",
+    { "path": "..\\Example\\plugin-host.dll", "enabled": false }
+  ]
+}
+```
+
+- `schemaVersion`: only `1` is accepted; absent counts as 1.
+- `hosts`: loaded in array order. An item is a path string, or `{ "path": ..., "enabled": false }` to park it.
+- Paths: `%ENV%` expands; relative paths resolve against `Anomaly\`; the same path (case-insensitive) loads once.
+- Missing file, empty `hosts`, or all items disabled: one attribute query and return — no parse, no log output.
+
+**Scope**: process-start bootstrap only (started through the `dwmapi.dll` proxy). Live injection
+(`anomaly-inject --pid`) always skips it — the device and swapchain already exist by then, so a host could
+not hook anything.
+
+**Loading**: `LoadLibraryExW(..., LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)`
+lets the host's own directory serve its dependencies; a successful load is pinned immediately
+(`GET_MODULE_HANDLE_EX_FLAG_PIN`) and is never unloaded. One failing host affects neither the other items
+nor runtime startup.
+
+**Logging** (`Anomaly\logs\anomaly-runtime.log`, or the `event_id` field in `anomaly-runtime.jsonl`):
+
+| Event | Meaning |
+|---|---|
+| `hosts.payload.loaded` | loaded successfully (`pinned=true`) |
+| `hosts.payload.skipped` | not a process-start bootstrap, skipped |
+| `hosts.payload.missing` / `hosts.payload.failed` | file absent / `LoadLibrary` failed |
+| `hosts.config.invalid` | bad JSON or wrong shape |
+| `hosts.config.legacy_ignored` | an old `hosts.txt` exists but is no longer read |
+
+Hosts keep their own filename; do not use a proxy name (`dxgi.dll`, `dwmapi.dll`, ...) — those belong to
+other tools and would conflict.
+
 ## Related
 
 - [NTE Build Profile](nte-profiles.md) — signatures and structure offsets

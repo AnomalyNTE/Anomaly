@@ -95,6 +95,7 @@ constexpr char kUsageText[] =
     "  runtime pak mods (mutates the mounted container set)\n"
     "    pak                         same as \"pak status\": every container the runtime knows about\n"
     "    pak status                  id, path, read order, size and state of each container\n"
+    "    pak performance             read-only reconciliation, mount-list and catalog scan counters\n"
     "    pak reload                  rescan ~mods and the optional config/pak-mods.json now\n"
     "    pak mount <path> [order]    mount one container; order defaults to the runtime base order\n"
     "    pak release <id>            unmount one container; pending engine reads may retain handles\n"

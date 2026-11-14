@@ -5,22 +5,26 @@
 #include "anomaly/liquid_glass.hpp"
 #include "anomaly/platform_ui_theme.hpp"
 #include "anomaly/structured_logger.hpp"
-
 #include "embedded_ui_resource_render_backend.hpp"
 
-#include <imgui.h>
+#include <Windows.h>
+#include <algorithm>
+#include <array>
 #include <backends/imgui_impl_dx11.h>
 #include <backends/imgui_impl_dx12.h>
 #include <backends/imgui_impl_win32.h>
-
-#include <array>
+#include <chrono>
+#include <cmath>
 #include <cstring>
+#include <d3dcompiler.h>
 #include <fstream>
 #include <functional>
+#include <imgui.h>
 #include <limits>
 #include <mutex>
 #include <set>
 #include <sstream>
+#include <string_view>
 #include <utility>
 
 namespace ue5mem::embedded {
@@ -122,6 +126,98 @@ private:
     std::chrono::steady_clock::time_point started_{};
 };
 
+}  // namespace
+}  // namespace ue5mem::embedded
+
+namespace anomaly::frame_aux {
+namespace {
+constexpr GUID kTraceTag{
+    0x6cc5c02b, 0x6e47, 0x4a08, {0xae, 0xa0, 0x35, 0xe2, 0x73, 0x18, 0x44, 0xc1}};
+struct TraceState {
+    UINT64 epoch{};
+    UINT mask{}, touched{};
+};
+constexpr UINT kCells = static_cast<UINT>(kBlockCells * kBlockCells);
+// Quantize a block's lowest horizontal AC projection to the even/odd lattice.
+// Its longer spatial wavelength survives more resampling. Distribute the
+// correction as at most two eight-bit code steps; each block can be decoded from one
+// image. Ten-bit SDR preserves its original precision outside changed pixels.
+constexpr char kShader[] = R"(
+Texture2D<float4> source : register(t0);
+StructuredBuffer<float> aux : register(t1);
+RWByteAddressBuffer output : register(u0);
+cbuffer Layout : register(b0) { uint width; uint height; uint pitch; uint pixelFormat; };
+groupshared float luminances[64];
+groupshared float3 sums[64];
+groupshared float correction;
+static const float strength = 2;
+float axis(uint p) {
+    uint i = p < 4 ? p : 7-p;
+    float magnitude = i == 0 ? 1 : i == 1 ? .8477590650 : i == 2 ? .5664544974 : .1989123674;
+    return p >= 4 ? -magnitude : magnitude;
+}
+[numthreads(8,8,1)]
+void CS(uint3 pixel : SV_DispatchThreadID, uint3 group : SV_GroupID,
+        uint3 local : SV_GroupThreadID, uint index : SV_GroupIndex) {
+    uint2 p = min(pixel.xy, uint2(width-1,height-1));
+    float4 original = source.Load(int3(p,0));
+    // Quantize the analysis to the eight-bit capture domain. The write below
+    // retains the original ten-bit values, including every untouched low bit.
+    float3 codes = floor(original.rgb * 255 + .5);
+    float gray = dot(codes,float3(.2126,.7152,.0722));
+    float basis = axis(local.x);
+    luminances[index] = gray;
+    GroupMemoryBarrierWithGroupSync();
+    float neighbor = (luminances[local.y*8 + max(int(local.x)-1,0)]
+        + luminances[local.y*8 + min(local.x+1,7)]
+        + luminances[max(int(local.y)-1,0)*8 + local.x]
+        + luminances[min(local.y+1,7)*8 + local.x]) * .25;
+    bool invalid = pixel.x >= width || pixel.y >= height ||
+        min(codes.r,min(codes.g,codes.b)) < 2 || max(codes.r,max(codes.g,codes.b)) > 253;
+    // Eight-bit rounding can map a ten-bit value of 7 to code 2. Require
+    // enough native headroom for both steps so clipping never loses low bits.
+    if (pixelFormat == 2) invalid = invalid ||
+        min(original.r,min(original.g,original.b))*1023 < 8 ||
+        max(original.r,max(original.g,original.b))*1023 > 1015;
+    sums[index] = float3(gray*basis,abs(gray-neighbor),invalid ? 1 : 0);
+    GroupMemoryBarrierWithGroupSync();
+    for (uint stride=32; stride>0; stride>>=1) {
+        if (index < stride) sums[index] += sums[index+stride];
+        GroupMemoryBarrierWithGroupSync();
+    }
+    if (index == 0) {
+        float bit = aux[(group.y%46)*46 + group.x%46] > 0 ? 1 : 0;
+        float projection = sums[0].x / 41.8100148760;
+        float target = (floor((projection/strength-bit)*.5+.5)*2+bit)*strength;
+        correction = sums[0].y >= 64 && sums[0].z == 0 ? target-projection : 0;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (pixel.x < width && pixel.y < height) {
+        float threshold = aux[2116+index];
+        float magnitude = (abs(correction) > threshold ? 1 : 0)
+            + (abs(correction) > 1+threshold ? 1 : 0);
+        float change = magnitude*sign(correction)*sign(basis);
+        uint packed;
+        if (pixelFormat == 2) {
+            uint3 rgb = uint3(clamp(floor(original.rgb*1023+.5) + change*4,0,1023));
+            uint alpha = uint(floor(original.a*3+.5));
+            packed = rgb.r | (rgb.g<<10) | (rgb.b<<20) | (alpha<<30);
+        } else {
+            uint3 rgb = uint3(clamp(codes+change,0,255));
+            uint alpha = uint(floor(original.a*255+.5));
+            packed = pixelFormat == 1 ? (rgb.b | (rgb.g<<8) | (rgb.r<<16)) : (rgb.r | (rgb.g<<8) | (rgb.b<<16));
+            packed |= alpha<<24;
+        }
+        output.Store(pixel.y*pitch+pixel.x*4, packed);
+    }
+}
+)";
+}  // namespace
+}  // namespace anomaly::frame_aux
+
+namespace ue5mem::embedded {
+namespace {
+
 void AllocateSrv(
     ImGui_ImplDX12_InitInfo* info,
     D3D12_CPU_DESCRIPTOR_HANDLE* cpu,
@@ -212,6 +308,53 @@ void NotifyPixelProbe(
     } catch (...) {
     }
 }
+
+}  // namespace
+}  // namespace ue5mem::embedded
+
+namespace anomaly::frame_aux {
+namespace {
+struct GpuFailure {
+    const char* operation;
+    HRESULT result;
+};
+void Check(HRESULT result, const char* operation) {
+    if (FAILED(result)) throw GpuFailure{operation, result};
+}
+D3D12_RESOURCE_BARRIER Transition(ID3D12Resource* resource, D3D12_RESOURCE_STATES before,
+                                  D3D12_RESOURCE_STATES after) {
+    D3D12_RESOURCE_BARRIER b{};
+    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b.Transition = {resource, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, before, after};
+    return b;
+}
+}  // namespace
+
+void Channel::Fail(const char* operation, HRESULT result) noexcept {
+    // Called under mutex_, or during Prepare before the hooks/worker start.
+    diagnostic_.operation = operation;
+    diagnostic_.result = result;
+    failed.fetch_add(1, std::memory_order_release);
+}
+
+void Channel::Prepare() noexcept {
+    try {
+        Com<ID3DBlob> code, errors;
+        Check(D3DCompile(kShader, sizeof(kShader) - 1, "frame-aux", nullptr, nullptr, "CS",
+                         "cs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &errors), "D3DCompile");
+        auto* begin = static_cast<std::uint8_t*>(code->GetBufferPointer());
+        compute_.assign(begin, begin + code->GetBufferSize());
+        diagnostic_.operation = "awaiting-account";
+    } catch (const GpuFailure& error) {
+        Fail(error.operation, error.result);
+    } catch (...) {
+        Fail("prepare-exception", E_FAIL);
+    }
+}
+}  // namespace anomaly::frame_aux
+
+namespace ue5mem::embedded {
+namespace {
 
 void ReleasePixelProbeResources(PixelProbeState& probe) noexcept {
     Release(probe.before_overlay);
@@ -758,6 +901,76 @@ std::string DescribeSwapChainApi(IDXGISwapChain* swap_chain) {
     return description;
 }
 
+}  // namespace
+}  // namespace ue5mem::embedded
+
+namespace anomaly::frame_aux {
+void Channel::UpdateKey(const std::optional<std::string>& key,
+                        const std::int64_t unix_seconds) noexcept {
+    // The sealed timestamp is part of the payload, so an unchanged account still
+    // needs a fresh seal once the wall clock leaves the previous bucket.
+    const auto bucket = unix_seconds < 0 ? INT64_MIN : unix_seconds / kResealSeconds;
+    if (key.value_or("") == current_key_ && bucket == current_bucket_) return;
+    current_bucket_ = bucket;
+    // Disable the old account before doing any encryption. All CPU-heavy work
+    // happens on Worker; only the finished cell table is published under the lock.
+    {
+        std::scoped_lock lock(mutex_);
+        block_data_.reset();
+    }
+    current_key_.clear();
+    if (!key) return;
+    try {
+        constexpr std::array<std::uint8_t, 97> public_key{
+        0x04, 0x09, 0xc6, 0x68, 0xcf, 0xd8, 0x78, 0xd1, 0x21, 0x83, 0x2b, 0xe6, 0xfb, 0x59, 0xec, 0x48,
+        0x6f, 0xeb, 0xd5, 0x9b, 0x09, 0xc2, 0x6f, 0xe8, 0x15, 0xc2, 0x87, 0x10, 0xee, 0x04, 0x0f, 0x9a,
+        0x84, 0xa6, 0x13, 0x19, 0x5d, 0xb3, 0x12, 0xe8, 0xca, 0x54, 0x5d, 0x8f, 0xff, 0x92, 0xe8, 0x4d,
+        0x79, 0x87, 0x2b, 0x95, 0x75, 0xb0, 0x7d, 0x44, 0xad, 0x4f, 0xe0, 0xfd, 0xe5, 0x65, 0xf1, 0x47,
+        0x0a, 0xb4, 0x74, 0xdf, 0xa8, 0xb4, 0x0d, 0x58, 0x97, 0x77, 0x9b, 0x08, 0x08, 0xc7, 0x69, 0x48,
+        0x41, 0xcf, 0xdf, 0x4d, 0x68, 0x03, 0x02, 0xc5, 0xf6, 0x36, 0x11, 0x7f, 0x9b, 0xfe, 0x1c, 0x08,
+        0xf9
+        };
+        if (unix_seconds < 0 ||
+            unix_seconds > std::numeric_limits<std::uint32_t>::max()) return;
+        const auto payload = Wrap(*key, static_cast<std::uint32_t>(unix_seconds), public_key);
+        if (!payload) {
+            std::scoped_lock lock(mutex_);
+            Fail("wrap-account-payload", E_FAIL);
+            return;
+        }
+        const auto block = BuildBlock(*payload);
+        auto data = std::make_unique<std::array<float, kCells + 64>>();
+        for (UINT y = 0; y < kBlockCells; ++y)
+            for (UINT x = 0; x < kBlockCells; ++x)
+                (*data)[y * kBlockCells + x] = block[y * 8 * kBlockSide + x * 8];
+        std::array<float, 64> weights{};
+        float total{};
+        for (UINT i = 0; i < 64; ++i) {
+            weights[i] = std::abs(block[(i / 8) * kBlockSide + i % 8]);
+            total += weights[i];
+        }
+        float accumulated{};
+        for (UINT rank = 0; rank < 64; ++rank)
+            for (UINT i = 0; i < 64; ++i) {
+                if ((i * 37 + 19) % 64 == rank) {
+                    (*data)[kCells + i] = (accumulated + weights[i] * .5f) / total;
+                    accumulated += weights[i];
+                }
+            }
+        std::scoped_lock lock(mutex_);
+        block_data_ = std::move(data);
+        ++payload_generation_;
+        current_key_ = *key;
+    } catch (...) {
+        std::scoped_lock lock(mutex_);
+        Fail("account-payload-exception", E_FAIL);
+    }
+}
+}  // namespace anomaly::frame_aux
+
+namespace ue5mem::embedded {
+namespace {
+
 bool CompleteGraphicsInitialization(EmbeddedState& state);
 
 bool InitializeGraphicsD3D12(EmbeddedState& state, IDXGISwapChain* swap_chain) {
@@ -1210,9 +1423,146 @@ bool InitializeGraphics(EmbeddedState& state, IDXGISwapChain* swap_chain) {
 
 }  // namespace
 
+}  // namespace ue5mem::embedded
+
+namespace anomaly::frame_aux {
+bool Channel::Initialize(ID3D12Device* device, ID3D12CommandQueue* queue,
+                      std::span<ID3D12Resource* const> buffers, DXGI_FORMAT format) noexcept {
+    if (!Prepared()) return false;
+    std::scoped_lock lock(mutex_);
+    if (active_) return true;
+    if (initialization_attempted_) return false;
+    initialization_attempted_ = true;
+    diagnostic_.format = format;
+    diagnostic_.buffer_count = static_cast<UINT>(buffers.size());
+    diagnostic_.buffer = buffers.empty() ? D3D12_RESOURCE_DESC{} : buffers[0]->GetDesc();
+    if (!device || !queue || buffers.empty() || buffers.size() > 8) {
+        Fail("initialize-arguments", E_INVALIDARG);
+        return false;
+    }
+    if (format != DXGI_FORMAT_R8G8B8A8_UNORM && format != DXGI_FORMAT_B8G8R8A8_UNORM &&
+        format != DXGI_FORMAT_R10G10B10A2_UNORM) {
+        Fail("back-buffer-format", DXGI_ERROR_UNSUPPORTED);
+        return false;
+    }
+    try {
+        device_ = device;
+        queue_ = queue;
+        const auto& description = diagnostic_.buffer;
+        if (description.SampleDesc.Count != 1 || description.MipLevels != 1 ||
+            description.DepthOrArraySize != 1 ||
+            (description.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE)) {
+            Fail("back-buffer-layout", DXGI_ERROR_UNSUPPORTED);
+            return false;
+        }
+        width_ = static_cast<UINT>(description.Width);
+        height_ = description.Height;
+        pixel_format_ = format == DXGI_FORMAT_R10G10B10A2_UNORM ? 2u :
+                        format == DXGI_FORMAT_B8G8R8A8_UNORM ? 1u : 0u;
+        UINT64 output_bytes{};
+        device->GetCopyableFootprints(&description, 0, 1, 0, &footprint_, nullptr, nullptr,
+                                      &output_bytes);
+        Check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence_)), "CreateFence");
+        D3D12_DESCRIPTOR_HEAP_DESC hd{};
+        hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+        hd.NumDescriptors = static_cast<UINT>(buffers.size());
+        hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+        Check(device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&srv_)), "CreateDescriptorHeap");
+        srv_increment_ = device->GetDescriptorHandleIncrementSize(hd.Type);
+        D3D12_DESCRIPTOR_RANGE range{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0, 0};
+        D3D12_ROOT_PARAMETER parameters[4]{};
+        parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        parameters[0].DescriptorTable = {1, &range};
+        parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+        parameters[1].Descriptor = {1, 0};
+        parameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+        parameters[2].Descriptor = {0, 0};
+        parameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        parameters[3].Constants = {0, 0, 4};
+        D3D12_ROOT_SIGNATURE_DESC rd{4, parameters, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE};
+        Com<ID3DBlob> serialized, error;
+        Check(D3D12SerializeRootSignature(&rd, D3D_ROOT_SIGNATURE_VERSION_1, &serialized, &error),
+              "D3D12SerializeRootSignature");
+        Check(device->CreateRootSignature(0, serialized->GetBufferPointer(),
+                                          serialized->GetBufferSize(), IID_PPV_ARGS(&root_)),
+              "CreateRootSignature");
+        D3D12_COMPUTE_PIPELINE_STATE_DESC ps{};
+        ps.pRootSignature = root_.Get();
+        ps.CS = {compute_.data(), compute_.size()};
+        Check(device->CreateComputePipelineState(&ps, IID_PPV_ARGS(&pipeline_)), "CreateComputePipelineState");
+        const auto buffer = [&](D3D12_HEAP_TYPE type, UINT64 bytes, D3D12_RESOURCE_STATES state,
+                                D3D12_RESOURCE_FLAGS flags, const char* operation) {
+            D3D12_HEAP_PROPERTIES heap{};
+            heap.Type = type;
+            D3D12_RESOURCE_DESC desc{};
+            desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+            desc.Width = bytes;
+            desc.Height = 1;
+            desc.DepthOrArraySize = 1;
+            desc.MipLevels = 1;
+            desc.SampleDesc.Count = 1;
+            desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+            desc.Flags = flags;
+            Com<ID3D12Resource> result;
+            Check(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, state,
+                                                  nullptr, IID_PPV_ARGS(&result)), operation);
+            return result;
+        };
+        frames_.resize(buffers.size());
+        auto srv = srv_->GetCPUDescriptorHandleForHeapStart();
+        for (std::size_t i = 0; i < buffers.size(); ++i) {
+            auto& frame = frames_[i];
+            frame.buffer = buffers[i];
+            frame.aux_upload = buffer(D3D12_HEAP_TYPE_UPLOAD, (kCells + 64) * sizeof(float),
+                D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_FLAG_NONE, "Create/aux-upload");
+            frame.aux = buffer(D3D12_HEAP_TYPE_DEFAULT, (kCells + 64) * sizeof(float),
+                D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_FLAG_NONE, "Create/aux");
+            frame.output =
+                buffer(D3D12_HEAP_TYPE_DEFAULT, output_bytes, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                       D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, "CreateCommittedResource/output");
+            D3D12_SHADER_RESOURCE_VIEW_DESC view{};
+            view.Format = format;
+            view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            view.Texture2D.MipLevels = 1;
+            device->CreateShaderResourceView(frame.buffer.Get(), &view, srv);
+            srv.ptr += srv_increment_;
+            Check(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                                 IID_PPV_ARGS(&frame.allocator)), "CreateCommandAllocator");
+            Check(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                            frame.allocator.Get(), pipeline_.Get(),
+                                            IID_PPV_ARGS(&frame.list)), "CreateCommandList");
+            Check(frame.list->Close(), "Close/initialize");
+        }
+        ++epoch_;
+        next_fence_ = 1;
+        active_ = true;
+        active_queue_ = queue;
+        diagnostic_.operation = "ready";
+        diagnostic_.result = S_OK;
+        return true;
+    } catch (const GpuFailure& error) {
+        Fail(error.operation, error.result);
+    } catch (...) {
+        Fail("initialize-exception", E_FAIL);
+    }
+    frames_.clear();
+    pipeline_.Reset();
+    root_.Reset();
+    srv_.Reset();
+    fence_.Reset();
+    queue_.Reset();
+    device_.Reset();
+    return false;
+}
+}  // namespace anomaly::frame_aux
+
+namespace ue5mem::embedded {
+
 bool ReleaseGraphics(
     EmbeddedState& state, RendererLifecycle final_state, bool force_release) {
     state.renderer = final_state;
+    if (!state.frame_aux.Release()) return false;
     if (state.imgui_context != nullptr &&
         ImGui::GetCurrentContext() != state.imgui_context) {
         // The renderer must never shut down a context owned by another
@@ -1366,6 +1716,15 @@ void RenderEmbedded(IDXGISwapChain* swap_chain, UINT flags) {
     if (state->renderer.load() != RendererLifecycle::Ready &&
         !InitializeGraphics(*state, swap_chain)) return;
     if (state->source_swap_chain != swap_chain) return;
+
+    if (state->render_api == EmbeddedRenderApi::D3D12 && state->frame_aux.Prepared()) {
+        std::array<ID3D12Resource*, 8> buffers{};
+        if (state->frames.size() <= buffers.size()) {
+            for (std::size_t i = 0; i < state->frames.size(); ++i) buffers[i] = state->frames[i].back_buffer;
+            static_cast<void>(state->frame_aux.Initialize(state->device, state->render_queue,
+                std::span<ID3D12Resource* const>(buffers.data(), state->frames.size()), state->render_target_format));
+        }
+    }
 
     unsigned toggle_key = state->config.platform_toggle_key;
     if (state->diagnostics.settings_snapshot) {
@@ -1658,6 +2017,7 @@ bool BeforeResize(
     std::scoped_lock lock(state->render_mutex);
     if (state->source_swap_chain != swap_chain ||
         state->renderer.load() != RendererLifecycle::Ready) return false;
+    if (!state->frame_aux.Release(100)) return false;
     SelectPendingResizeQueue(
         *state, present_queue_count, present_queues, validate_present_queues);
     state->renderer = RendererLifecycle::ResizePending;
@@ -1724,6 +2084,174 @@ void FinishResizeEvidenceHandoff(bool successful) noexcept {
     }
 }
 
+}  // namespace ue5mem::embedded
+
+namespace anomaly::frame_aux {
+void Channel::ResetList(ID3D12GraphicsCommandList* list) noexcept {
+    if (active_.load(std::memory_order_relaxed)) list->SetPrivateData(kTraceTag, 0, nullptr);
+}
+void Channel::Observe(ID3D12GraphicsCommandList* list, UINT count,
+                   const D3D12_RESOURCE_BARRIER* barriers) noexcept {
+    if (!active_.load(std::memory_order_relaxed)) return;
+    std::scoped_lock lock(mutex_);
+    if (!active_) return;
+    for (const auto& frame : frames_)
+        if (list == frame.list.Get()) return;
+    UINT touched{}, ready{};
+    for (UINT n = 0; n < count; ++n) {
+        const auto& b = barriers[n];
+        if (b.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION) continue;
+        for (std::size_t i = 0; i < frames_.size(); ++i) {
+            if (b.Transition.pResource != frames_[i].buffer.Get()) continue;
+            touched |= 1u << i;
+            ready &= ~(1u << i);
+            if (b.Flags == D3D12_RESOURCE_BARRIER_FLAG_NONE &&
+                (b.Transition.Subresource == D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES ||
+                 b.Transition.Subresource == 0) &&
+                (b.Transition.StateBefore == D3D12_RESOURCE_STATE_RENDER_TARGET ||
+                 b.Transition.StateBefore == D3D12_RESOURCE_STATE_COPY_DEST ||
+                 b.Transition.StateBefore == D3D12_RESOURCE_STATE_RESOLVE_DEST ||
+                 b.Transition.StateBefore == D3D12_RESOURCE_STATE_UNORDERED_ACCESS) &&
+                b.Transition.StateAfter == D3D12_RESOURCE_STATE_PRESENT)
+                ready |= 1u << i;
+        }
+    }
+    // Most game barriers concern unrelated resources. Avoid driver private-data
+    // lookups on that hot path, including command lists that never touch a frame.
+    if (!touched) return;
+    TraceState trace{};
+    UINT size = sizeof(trace);
+    list->GetPrivateData(kTraceTag, &size, &trace);
+    if (trace.epoch != epoch_) trace = {epoch_, 0, 0};
+    trace.touched |= touched;
+    trace.mask = (trace.mask & ~touched) | ready;
+    const auto result = list->SetPrivateData(kTraceTag, sizeof(trace), &trace);
+    if (FAILED(result)) {
+        active_ = false;
+        Fail("SetPrivateData/trace", result);
+    }
+}
+
+void Channel::Execute(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists,
+                   void(STDMETHODCALLTYPE* execute)(ID3D12CommandQueue*, UINT,
+                                                    ID3D12CommandList* const*),
+                   bool embed) noexcept {
+    if (queue != active_queue_.load(std::memory_order_acquire)) {
+        execute(queue, count, lists);
+        return;
+    }
+    std::scoped_lock lock(mutex_);
+    execute(queue, count, lists);
+    if (!active_ || !embed || !block_data_ || queue != queue_.Get() || unfenced_) return;
+    UINT mask{};
+    for (UINT n = 0; n < count; ++n) {
+        TraceState trace{};
+        UINT size = sizeof(trace);
+        if (SUCCEEDED(lists[n]->GetPrivateData(kTraceTag, &size, &trace)) &&
+            trace.epoch == epoch_) {
+            mask = (mask & ~trace.touched) | trace.mask;
+        }
+    }
+    for (std::size_t i = 0; i < frames_.size(); ++i) {
+        if (!(mask & (1u << i))) continue;
+        auto& frame = frames_[i];
+        if (frame.fence > fence_->GetCompletedValue()) {
+            ++skipped_busy;
+            continue;
+        }
+        auto result = frame.allocator->Reset();
+        if (FAILED(result)) {
+            active_ = false;
+            Fail("Reset/allocator", result);
+            return;
+        }
+        result = frame.list->Reset(frame.allocator.Get(), pipeline_.Get());
+        if (FAILED(result)) {
+            active_ = false;
+            Fail("Reset/command-list", result);
+            return;
+        }
+        auto* list = frame.list.Get();
+        if (frame.aux_generation != payload_generation_) {
+            void* mapped{};
+            D3D12_RANGE empty{0, 0};
+            result = frame.aux_upload->Map(0, &empty, &mapped);
+            if (FAILED(result)) {
+                active_ = false;
+                Fail("Map/aux-update", result);
+                return;
+            }
+            std::memcpy(mapped, block_data_->data(), sizeof(*block_data_));
+            frame.aux_upload->Unmap(0, nullptr);
+            if (frame.aux_generation != 0) {
+                auto writable = Transition(frame.aux.Get(),
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
+                list->ResourceBarrier(1, &writable);
+            }
+            list->CopyBufferRegion(frame.aux.Get(), 0, frame.aux_upload.Get(), 0,
+                                   (kCells + 64) * sizeof(float));
+            auto ready = Transition(frame.aux.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            list->ResourceBarrier(1, &ready);
+        }
+        auto before = Transition(frame.buffer.Get(), D3D12_RESOURCE_STATE_PRESENT,
+                                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        list->ResourceBarrier(1, &before);
+        auto srv = srv_->GetGPUDescriptorHandleForHeapStart();
+        srv.ptr += i * srv_increment_;
+        ID3D12DescriptorHeap* heaps[]{srv_.Get()};
+        list->SetDescriptorHeaps(1, heaps);
+        list->SetComputeRootSignature(root_.Get());
+        list->SetComputeRootDescriptorTable(0, srv);
+        list->SetComputeRootShaderResourceView(1, frame.aux->GetGPUVirtualAddress());
+        list->SetComputeRootUnorderedAccessView(2, frame.output->GetGPUVirtualAddress());
+        const UINT constants[]{width_, height_, footprint_.Footprint.RowPitch, pixel_format_};
+        list->SetComputeRoot32BitConstants(3, 4, constants, 0);
+        list->Dispatch((width_ + 7) / 8, (height_ + 7) / 8, 1);
+        D3D12_RESOURCE_BARRIER copying[]{
+            Transition(frame.output.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                       D3D12_RESOURCE_STATE_COPY_SOURCE),
+            Transition(frame.buffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                       D3D12_RESOURCE_STATE_COPY_DEST)};
+        list->ResourceBarrier(2, copying);
+        D3D12_TEXTURE_COPY_LOCATION from{};
+        from.pResource = frame.output.Get();
+        from.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        from.PlacedFootprint = footprint_;
+        D3D12_TEXTURE_COPY_LOCATION to{};
+        to.pResource = frame.buffer.Get();
+        to.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        list->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
+        D3D12_RESOURCE_BARRIER after[]{
+            Transition(frame.output.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
+                       D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+            Transition(frame.buffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                       D3D12_RESOURCE_STATE_PRESENT)};
+        list->ResourceBarrier(2, after);
+        result = list->Close();
+        if (FAILED(result)) {
+            active_ = false;
+            Fail("Close/submit", result);
+            return;
+        }
+        ID3D12CommandList* commands[]{list};
+        execute(queue, 1, commands);
+        frame.aux_generation = payload_generation_;
+        frame.fence = next_fence_++;
+        result = queue->Signal(fence_.Get(), frame.fence);
+        if (FAILED(result)) {
+            unfenced_ = true;
+            active_ = false;
+            Fail("Signal/submit", result);
+            return;
+        }
+        ++submitted;
+    }
+}
+}  // namespace anomaly::frame_aux
+
+namespace ue5mem::embedded {
+
 void CaptureCommandQueue(ID3D12CommandQueue* queue) {
     auto* state = g_state.load(std::memory_order_acquire);
     if (state == nullptr) return;
@@ -1751,3 +2279,36 @@ void HandlePresentResult(IDXGISwapChain* swap_chain, HRESULT result) {
 }
 
 }  // namespace ue5mem::embedded
+
+namespace anomaly::frame_aux {
+bool Channel::Release(DWORD timeout_ms) noexcept {
+    active_ = false;
+    std::scoped_lock lock(mutex_);
+    const bool removed = device_ && FAILED(device_->GetDeviceRemovedReason());
+    if (!removed && fence_) {
+        UINT64 last{};
+        for (const auto& frame : frames_) last = (std::max)(last, frame.fence);
+        if (unfenced_ && FAILED(queue_->Signal(fence_.Get(), last))) return false;
+        if (fence_->GetCompletedValue() < last) {
+            if (!timeout_ms) return false;
+            HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+            if (!event) return false;
+            const bool ready = SUCCEEDED(fence_->SetEventOnCompletion(last, event)) &&
+                               WaitForSingleObject(event, timeout_ms) == WAIT_OBJECT_0;
+            CloseHandle(event);
+            if (!ready) return false;
+        }
+    }
+    active_queue_ = nullptr;
+    frames_.clear();
+    pipeline_.Reset();
+    root_.Reset();
+    srv_.Reset();
+    fence_.Reset();
+    queue_.Reset();
+    device_.Reset();
+    unfenced_ = false;
+    initialization_attempted_ = false;
+    return true;
+}
+}  // namespace anomaly::frame_aux

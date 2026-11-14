@@ -17,6 +17,8 @@
     "status.signature_unavailable": "签名服务不可用",
     "status.gobjects_signature_missing": "未命中对象表签名（游戏版本可能变了）",
     "status.gobjects_address_invalid": "对象表符号地址非法",
-    "status.registry_unavailable": "对象表/名字服务不可用"
+    "status.registry_unavailable": "对象表/名字服务不可用",
+    "status.layout_unverified": "无法在本版本验证人群密度布局（已停用）",
+    "status.targets": "已定位：{0} 个人群生成器 / {1} 辆车"
   }
 }

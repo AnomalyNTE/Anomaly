@@ -1,0 +1,217 @@
+{
+  "schemaVersion": 1,
+  "groups": {
+    "Player_003": {
+      "zh-CN": "早雾"
+    },
+    "Player_004": {
+      "zh-CN": "安魂曲（004）"
+    },
+    "Player_008": {
+      "zh-CN": "翳"
+    },
+    "Player_010": {
+      "zh-CN": "娜娜莉"
+    },
+    "Player_019": {
+      "zh-CN": "薄荷"
+    },
+    "Player_020": {
+      "zh-CN": "哈尼娅"
+    },
+    "Player_021": {
+      "zh-CN": "埃德嘉"
+    },
+    "Player_023": {
+      "zh-CN": "白藏"
+    },
+    "Player_025": {
+      "zh-CN": "哈索尔"
+    },
+    "Player_033": {
+      "zh-CN": "阿德勒"
+    },
+    "Player_036": {
+      "zh-CN": "残虹"
+    },
+    "Player_039": {
+      "zh-CN": "法帝娅"
+    },
+    "Player_042": {
+      "zh-CN": "黑羽"
+    },
+    "Player_046": {
+      "zh-CN": "零（男）"
+    },
+    "Player_051": {
+      "zh-CN": "零（女）"
+    },
+    "Player_052": {
+      "zh-CN": "浔"
+    },
+    "Player_054": {
+      "zh-CN": "达芙蒂尔"
+    },
+    "Player_055": {
+      "zh-CN": "九原"
+    },
+    "Player_056": {
+      "zh-CN": "安魂曲（056）"
+    },
+    "Player_057": {
+      "zh-CN": "明音凛"
+    },
+    "Player_070": {
+      "zh-CN": "海月"
+    },
+    "Player_071": {
+      "zh-CN": "卡厄斯"
+    },
+    "Player_072": {
+      "zh-CN": "灵可"
+    },
+    "Player_073": {
+      "zh-CN": "小吱"
+    },
+    "Player_074": {
+      "zh-CN": "Exe"
+    },
+    "Player_075": {
+      "zh-CN": "伊洛伊"
+    },
+    "Player_076": {
+      "zh-CN": "真红"
+    },
+    "Player_090": {
+      "zh-CN": "曳尔沐"
+    },
+    "Player_091": {
+      "zh-CN": "安魂曲（091）"
+    },
+    "Vehicle_002": {
+      "en-US": "Griffin",
+      "zh-CN": "Griffin"
+    },
+    "Vehicle_003": {
+      "en-US": "G3",
+      "zh-CN": "G3"
+    },
+    "Vehicle_004": {
+      "en-US": "Griffin Volante",
+      "zh-CN": "Griffin Volante"
+    },
+    "Vehicle_006": {
+      "en-US": "B100",
+      "zh-CN": "B100"
+    },
+    "Vehicle_007": {
+      "en-US": "C2000",
+      "zh-CN": "C2000"
+    },
+    "Vehicle_008": {
+      "en-US": "M1000",
+      "zh-CN": "M1000"
+    },
+    "Vehicle_010": {
+      "en-US": "Novis ST-X 950",
+      "zh-CN": "Novis ST-X 950"
+    },
+    "Vehicle_013": {
+      "zh-CN": "旧时光"
+    },
+    "Vehicle_014": {
+      "en-US": "Draco（014）",
+      "zh-CN": "Draco（014）"
+    },
+    "Vehicle_015": {
+      "en-US": "Rover A1（015）",
+      "zh-CN": "Rover A1（015）"
+    },
+    "Vehicle_016": {
+      "en-US": "LaVelox",
+      "zh-CN": "LaVelox"
+    },
+    "Vehicle_017": {
+      "en-US": "Pursuit V8",
+      "zh-CN": "Pursuit V8"
+    },
+    "Vehicle_018": {
+      "en-US": "ST79",
+      "zh-CN": "ST79"
+    },
+    "Vehicle_020": {
+      "en-US": "Enforcer",
+      "zh-CN": "Enforcer"
+    },
+    "Vehicle_021": {
+      "en-US": "Pendragon",
+      "zh-CN": "Pendragon"
+    },
+    "Vehicle_023": {
+      "en-US": "K01",
+      "zh-CN": "K01"
+    },
+    "Vehicle_024": {
+      "en-US": "Blizzard-V4",
+      "zh-CN": "Blizzard-V4"
+    },
+    "Vehicle_026": {
+      "en-US": "Porsche 918 Spyder",
+      "zh-CN": "Porsche 918 Spyder"
+    },
+    "Vehicle_030": {
+      "zh-CN": "冲向明天！"
+    },
+    "Vehicle_031": {
+      "en-US": "Rover A1（031）",
+      "zh-CN": "Rover A1（031）"
+    },
+    "Vehicle_032": {
+      "en-US": "Rover A1（032）",
+      "zh-CN": "Rover A1（032）"
+    },
+    "Vehicle_037": {
+      "en-US": "Porsche 911 Turbo (930)",
+      "zh-CN": "Porsche 911 Turbo (930)"
+    },
+    "Vehicle_038": {
+      "en-US": "Porsche Taycan Turbo GT with Weissach Package",
+      "zh-CN": "Porsche Taycan Turbo GT with Weissach Package"
+    },
+    "Vehicle_039": {
+      "en-US": "Draco（039）",
+      "zh-CN": "Draco（039）"
+    },
+    "Vehicle_043": {
+      "zh-CN": "热风"
+    },
+    "Vehicle_044": {
+      "en-US": "Tide",
+      "zh-CN": "Tide"
+    },
+    "Vehicle_047": {
+      "zh-CN": "试作型陆地霸者001"
+    },
+    "Vehicle_055": {
+      "zh-CN": "划向明天！"
+    }
+  },
+  "skins": {
+    "female": {
+      "zh-CN": "女",
+      "en-US": "Female"
+    },
+    "male": {
+      "zh-CN": "男",
+      "en-US": "Male"
+    },
+    "female_swimsuit": {
+      "zh-CN": "泳装",
+      "en-US": "Swimsuit"
+    },
+    "male_swimsuit": {
+      "zh-CN": "泳装",
+      "en-US": "Swimsuit"
+    }
+  }
+}

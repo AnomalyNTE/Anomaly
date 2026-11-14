@@ -1,18 +1,22 @@
 #include "anomaly/pak_mod_runtime.hpp"
 #include "anomaly/pak_mod_settings.hpp"
 #include "anomaly/pak_mod_catalog.hpp"
+#include "anomaly/pak_mod_layout.hpp"
 
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <charconv>
+#include <condition_variable>
 #include <cstdio>
 #include <cwctype>
 #include <fstream>
 #include <iterator>
 #include <limits>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -140,6 +144,7 @@ struct PakModRuntime::Impl final {
 
     explicit Impl(PakModRuntimeOptions value) : options(std::move(value)) {
         enabled = options.startup_enabled;
+        reconcile_pending = !options.compatibility_mode;
         if (options.compatibility_mode) configuration_source = "engine-startup";
         if (options.settings_paths.empty()) options.settings_paths.push_back(ConfigPath());
     }
@@ -156,14 +161,26 @@ struct PakModRuntime::Impl final {
     bool shutdown_complete{};
     std::vector<PakModEntrySnapshot> entries;
     PakModCatalogCache catalog_cache;
+    DirectoryChangeMonitor mod_changes, settings_changes, fallback_settings_changes;
+    std::map<std::filesystem::path, std::unique_ptr<DirectoryChangeMonitor>> external_changes;
+    bool reconcile_pending{true};
+    std::uint64_t reconcile_passes{}, mounted_list_reads{};
+    // Where one mod begins and ends, as the catalogue keys it. Rebuilt with every desired set and
+    // published atomically: the mount paths ask for a key outside the planning pass as well, and a
+    // key that named the first folder above a mod would not match a category's own keys.
+    std::atomic<std::shared_ptr<const PakModLayout>> layout_;
     // Strong references transferred by Mount, retained for explicit diagnostic reads and released
     // after unmount or shutdown. Engine-owned references have their own lifetime.
     std::map<std::string, std::uintptr_t, std::less<>> containers;
+    struct CompatibilityAttachment { std::filesystem::path file; std::uintptr_t container{}; };
+    std::map<std::string, CompatibilityAttachment, std::less<>> compatibility_containers;
     std::uintptr_t platform_file{};
     std::uint64_t mounts{};
     std::uint64_t unmounts{};
     std::string last_error;
     std::set<std::string> conflicting_mods;
+    // Conflicts the player chose to load anyway, reported for diagnostics and never frozen.
+    std::set<std::string> forced_conflicts;
     std::string configuration_source{"scan"};
     bool enabled{true};
     SignatureState signature_state{SignatureState::Unknown};
@@ -221,6 +238,7 @@ struct PakModRuntime::Impl final {
         try {
             const auto catalog = static_cast<Impl*>(user)->Catalog();
             for (const auto& row : *catalog) {
+                if (row.restricted) continue;
                 std::string vehicles, groups;
                 for (const auto& vehicle : row.vehicles) { if (!vehicles.empty()) vehicles += ", "; vehicles += vehicle; }
                 for (const auto& group : row.resource_groups) { if (!groups.empty()) groups += ", "; groups += group; }
@@ -256,7 +274,7 @@ struct PakModRuntime::Impl final {
         if (!visitor) return Error(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
         try {
             const auto catalog = static_cast<Impl*>(user)->Catalog(); const auto id = Copy(key);
-            for (const auto& row : *catalog) if (row.key == id) {
+            for (const auto& row : *catalog) if (row.key == id && !row.restricted) {
                 if (!row.index_complete) return Error(ANOMALY_STATUS_V1_UNAVAILABLE);
                 for (const auto& asset : row.assets) if (asset.starts_with("/game/") && (asset.ends_with(".uasset") || asset.ends_with(".umap"))) {
                     const auto path = asset.substr(0, asset.find_last_of('.'));
@@ -360,8 +378,88 @@ struct PakModRuntime::Impl final {
         const auto path = EnginePathKey(file);
         if (!path.starts_with(root)) return {};
         const auto relative = NarrowText(path.substr(root.size()));
-        const auto slash = relative.find('/');
-        return slash == std::string::npos ? relative : relative.substr(0, slash + 1);
+        std::string logical;
+        for (std::size_t begin = 0; begin <= relative.size();) {
+            auto end = relative.find('/', begin);
+            if (end == std::string::npos) end = relative.size();
+            auto name = relative.substr(begin, end - begin);
+            if (!logical.empty()) logical += '/';
+            if (IsDisabledName(LowerAscii(name))) name.resize(name.size() - 9);
+            logical += name;
+            begin = end + 1;
+        }
+        // A container in the mods directory is a mod of its own and keys by its own file name, which
+        // is how the catalogue spells it.
+        const auto loose = [&] {
+            const auto dot = logical.rfind('.');
+            return dot == std::string::npos ? logical : logical.substr(0, dot) + ".pak";
+        };
+        const auto layout = layout_.load();
+        if (!layout) {
+            const auto slash = logical.find('/');
+            return slash == std::string::npos ? loose() : logical.substr(0, slash + 1);
+        }
+        const auto folder = layout->Root(logical);
+        return folder.empty() ? loose() : folder + "/";
+    }
+
+    bool Restricted(const std::filesystem::path& file, const std::vector<PakModCatalogEntry>& catalog) const {
+        // Match physical paths with Windows casing; ASCII selection keys cannot represent every
+        // case-equivalent Unicode spelling accepted by an explicit manifest or CLI path.
+        for (const auto& row : catalog)
+            for (const auto& container : row.containers)
+                if (CompareStringOrdinal(container.c_str(), -1, file.c_str(), -1, TRUE) == CSTR_EQUAL)
+                    return row.restricted;
+        if (ModKey(file).empty()) return PakModFileRestricted(file);
+        throw std::runtime_error("container is absent from the mod catalog");
+    }
+
+    // One walk of the mods tree per planned set, keyed the way the catalogue keys it. A folder that
+    // only groups mods is a category on both sides, so a mod filed in one keeps its own key instead
+    // of the folder's, and a selection stored for either still reaches every container under it.
+    std::set<std::string> BuildLayout() {
+        auto layout = std::make_shared<PakModLayout>();
+        std::vector<std::string> logical_containers;
+        const auto root = std::filesystem::absolute(options.mod_directory).lexically_normal();
+        std::error_code error;
+        if (std::filesystem::is_directory(root, error)) {
+            std::size_t scanned{};
+            for (auto it = std::filesystem::recursive_directory_iterator(root, error);
+                 it != std::filesystem::recursive_directory_iterator{}; ++it) {
+                if (++scanned > 20000) throw std::runtime_error("mod directory exceeds scan limit");
+                const auto attributes = GetFileAttributesW(it->path().c_str());
+                if (attributes == INVALID_FILE_ATTRIBUTES) continue;
+                if (attributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+                    it.disable_recursion_pending();
+                    continue;
+                }
+                if (!it->is_regular_file()) continue;
+                std::string logical;
+                for (const auto& part : it->path().lexically_relative(root)) {
+                    if (!logical.empty()) logical += '/';
+                    auto wide = part.wstring();
+                    std::transform(wide.begin(), wide.end(), wide.begin(),
+                        [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
+                    auto name = NarrowText(wide);
+                    if (IsDisabledName(LowerAscii(name))) name.resize(name.size() - 9);
+                    logical += name;
+                }
+                const auto extension = std::filesystem::u8path(logical).extension();
+                if (extension == L".pak" || extension == L".utoc" || extension == L".ucas" ||
+                    extension == L".sig" || PakModShippedFile(logical))
+                    layout->AddOwnerFile(logical);
+                if (extension == L".pak" || extension == L".utoc") logical_containers.push_back(std::move(logical));
+            }
+        }
+        // Count distinct logical mods across the complete tree, including disabled files and
+        // mods omitted by a manifest. Container count must not turn one multi-pak mod into namesakes.
+        std::set<std::string> mod_keys;
+        for (const auto& logical : logical_containers) {
+            const auto folder = layout->Root(logical);
+            mod_keys.insert(folder.empty() ? logical.substr(0, logical.rfind('.')) + ".pak" : folder + "/");
+        }
+        layout_.store(std::move(layout));
+        return mod_keys;
     }
 
     // `config/pak-mods.json` is optional. When it lists containers it is authoritative, which
@@ -372,15 +470,18 @@ struct PakModRuntime::Impl final {
             std::scoped_lock lock(mutex);
             enabled = configured_enabled;
         }
-        if (!configured_enabled) return true;
+        if (!configured_enabled) { external_changes.clear(); return true; }
         const auto mods = parsed.find("mods");
-        if (mods == parsed.end()) return false;
+        if (mods == parsed.end()) { external_changes.clear(); return false; }
         if (!mods->is_array()) throw std::runtime_error("mods must be an array");
         if (mods->size() > kMaximumScanFiles) throw std::runtime_error("too many manifest entries");
         {
             std::scoped_lock lock(mutex);
             configuration_source = "manifest";
         }
+        auto mod_root = EnginePathKey(std::filesystem::absolute(options.mod_directory));
+        if (!mod_root.ends_with(L'/')) mod_root += L'/';
+        std::set<std::filesystem::path> external_directories;
         std::uint32_t index{};
         for (const auto& item : *mods) {
             std::string relative;
@@ -407,6 +508,17 @@ struct PakModRuntime::Impl final {
                 throw std::runtime_error("manifest entry is missing: " + Narrow(file));
             }
             if (!IsContainerFile(file)) throw std::runtime_error("manifest entry is not a pak file");
+            const auto path = EnginePathKey(std::filesystem::absolute(file));
+            if (!path.starts_with(mod_root)) {
+                const auto directory = std::filesystem::path(path).parent_path();
+                external_directories.insert(directory);
+                if (!external_changes.contains(directory)) {
+                    auto monitor = std::make_unique<DirectoryChangeMonitor>();
+                    // Arm before reading the fingerprint so a concurrent replacement is not lost.
+                    static_cast<void>(monitor->Changed(directory));
+                    external_changes.emplace(directory, std::move(monitor));
+                }
+            }
             DesiredPak entry{};
             entry.stamp = FileStamp(file, &entry.bytes);
             if (entry.stamp == 0) throw std::runtime_error("cannot read manifest entry: " + Narrow(file));
@@ -417,6 +529,8 @@ struct PakModRuntime::Impl final {
             desired.push_back(std::move(entry));
             ++index;
         }
+        // Keep watching excluded manifest entries too: an external replacement can make one eligible.
+        std::erase_if(external_changes, [&](const auto& entry) { return !external_directories.contains(entry.first); });
         return true;
     }
 
@@ -427,30 +541,50 @@ struct PakModRuntime::Impl final {
         const auto states = settings.value("modStates", nlohmann::json::object());
         // Validate even when no containers exist; a corrupt selection must never unload the set.
         ValidatePakModStates(states);
+        // A patch mod ships the same body as the mod it patches, so the player can ask for the
+        // overlapping mounts to be kept: the engine's effective read priority selects shared paths.
+        const bool force_load = PakModForceLoad(settings);
         {
             std::scoped_lock lock(mutex);
             enabled = true;
             configuration_source = "scan";
             last_error.clear();
             conflicting_mods.clear();
+            forced_conflicts.clear();
         }
         std::vector<DesiredPak> desired;
+        // Keyed before the set is planned: the conflict pass compares these keys with the catalogue's
+        // and the mount paths need them when a mod is frozen or replaced.
+        const auto mod_keys = BuildLayout();
         if (!CollectManifest(desired, settings)) {
             desired.clear();
             CollectDirectory(desired);
         }
+        // A selection is stored under the mod's path, so a folder moved by hand leaves it behind.
+        // Resolving the leftover entry by mod name is what keeps a switched-off variant off: reading
+        // it as enabled would mount it again, and the conflict it was switched off for would return.
+        std::map<std::string, std::size_t> mod_names;
+        for (const auto& key : mod_keys) ++mod_names[PakModSelectionName(key)];
         std::erase_if(desired, [&](const DesiredPak& entry) {
             auto relative = Narrow(entry.file.lexically_relative(
                 std::filesystem::absolute(options.mod_directory).lexically_normal()));
             std::replace(relative.begin(), relative.end(), '\\', '/');
-            return !PakModEnabled(states, relative);
+            if (PakModSelectionApplied(states, relative)) return !PakModEnabled(states, relative);
+            const auto name = PakModSelectionName(ModKey(entry.file));
+            if (const auto inherited = PakModInheritedSelection(states, name, mod_names[name] == 1))
+                return !*inherited;
+            // No saved entry names this mod at all: a mod is mounted unless it was switched off.
+            return false;
         });
         // Validate only the effective mount set, after master switch and explicit manifest filtering.
         // An unselected variant on disk must never prevent disabling all mods.
         if (!enabled) desired.clear();
         std::set<std::string> conflicts;
-        if (desired.size() > 1) {
+        if (!desired.empty()) {
             const auto catalog = catalog_cache.Read(options.mod_directory, settings);
+            std::erase_if(desired, [&](const auto& pak) {
+                return PakModNameRestricted(pak.id) || Restricted(pak.file, *catalog);
+            });
             std::set<std::string> selected_keys;
             for (const auto& pak : desired) selected_keys.insert(ModKey(pak.file));
             std::vector<const PakModCatalogEntry*> active;
@@ -475,7 +609,13 @@ struct PakModRuntime::Impl final {
             }
         }
         std::scoped_lock lock(mutex);
-        conflicting_mods = std::move(conflicts);
+        if (force_load) {
+            // Keep both containers; the engine's effective read priority selects their shared paths.
+            // The set is still reported so the state file says what is being overridden.
+            forced_conflicts = std::move(conflicts);
+        } else {
+            conflicting_mods = std::move(conflicts);
+        }
         if (!conflicting_mods.empty()) {
             // Freeze only the conflicting mods at their currently mounted versions. Other
             // selections and file replacements must still reach the engine in this pass.
@@ -543,6 +683,29 @@ struct PakModRuntime::Impl final {
         return options.unmount_pak(engine, file.wstring());
     }
 
+    bool ReleaseCompatibilityAttachment(std::string_view id) {
+        const auto attached = compatibility_containers.find(id);
+        if (attached == compatibility_containers.end()) return true;
+        if (!Unmount(attached->second.file)) return false;
+        if (options.release_container) options.release_container(attached->second.container);
+        compatibility_containers.erase(attached);
+        return true;
+    }
+
+    bool ReleaseOrphanedCompatibility() {
+        std::vector<std::string> orphaned;
+        for (const auto& [id, attachment] : compatibility_containers) {
+            static_cast<void>(attachment);
+            if (!containers.contains(id)) orphaned.push_back(id);
+        }
+        bool complete = true;
+        for (const auto& id : orphaned) {
+            if (!ReleaseCompatibilityAttachment(id)) complete = false;
+            else SetEntryState(id, PakModState::Failed, "compatibility cleanup completed; source container is not mounted");
+        }
+        return complete;
+    }
+
     // ------------------------------------------------------------------ reconcile
 
     std::wstring EnginePathKey(const std::filesystem::path& file) const {
@@ -560,6 +723,7 @@ struct PakModRuntime::Impl final {
         const auto engine = Engine();
         if (!engine || !options.mounted_files || !options.unmount_pak)
             throw std::runtime_error("mounted pak list unavailable");
+        ++mounted_list_reads;
         const auto mounted = options.mounted_files(engine);
         if (!mounted) throw std::runtime_error("cannot read mounted pak list");
         auto root = EnginePathKey(std::filesystem::absolute(options.mod_directory));
@@ -655,9 +819,26 @@ struct PakModRuntime::Impl final {
         Log(detoured ? LogLevel::Info : LogLevel::Warning, line);
     }
 
-    void Apply() {
+    void Apply(bool force = true) {
         std::scoped_lock operation_lock(operation_mutex);
         if (stopped) return;
+        // Consume each source independently, even on a forced pass. Nothing in the mounted set can
+        // change on an ordinary idle poll, so avoid discovery, conflict checks and the engine pak lock.
+        bool changed = mod_changes.Changed(options.mod_directory);
+        changed = settings_changes.Changed(ConfigPath().parent_path()) || changed;
+        const auto fallback = options.runtime_root / L"config";
+        if (fallback != ConfigPath().parent_path())
+            changed = fallback_settings_changes.Changed(fallback) || changed;
+        for (auto& [directory, monitor] : external_changes)
+            changed = monitor->Changed(directory) || changed;
+        if (!force && !changed && !reconcile_pending) return;
+        reconcile_pending = true;
+        ++reconcile_passes;
+        if (!ReleaseOrphanedCompatibility()) {
+            { std::scoped_lock lock(mutex); last_error = "compatibility overlay unmount is still pending"; }
+            PublishStatus();
+            return;
+        }
         if (options.compatibility_mode) {
             PublishStatus();
             return;
@@ -682,7 +863,6 @@ struct PakModRuntime::Impl final {
                 const auto error = PrepareMount();
                 if (!error.empty()) throw std::runtime_error(error);
             }
-            ReleaseUnownedMounts(desired);
         } catch (const std::exception& error) {
             { std::scoped_lock lock(mutex); last_error = error.what(); }
             PublishStatus();
@@ -705,7 +885,8 @@ struct PakModRuntime::Impl final {
                     existing->bytes == candidate.bytes && existing->order == candidate.order &&
                     existing->fingerprint == candidate.fingerprint;
                 if (same_file && (existing->state == PakModState::Mounted ||
-                                     existing->state == PakModState::Released)) {
+                                     existing->state == PakModState::Released ||
+                                     (existing->native_fault && !force))) {
                     continue;
                 }
                 if (existing != nullptr && existing->state == PakModState::Mounted) {
@@ -720,6 +901,17 @@ struct PakModRuntime::Impl final {
                 if (!wanted) releases.push_back(entry);
             }
         }
+        std::map<std::string, Ue5ModCompatibilityPlan> compatibility_plans;
+        try {
+            if (options.prepare_compatibility) for (const auto& candidate : to_mount)
+                compatibility_plans.emplace(candidate.id, options.prepare_compatibility(candidate.file));
+            // A failed preflight keeps the currently mounted set intact.
+            ReleaseUnownedMounts(desired);
+        } catch (const std::exception& error) {
+            { std::scoped_lock lock(mutex); last_error = error.what(); }
+            Log(LogLevel::Warning, "pak_mods.compatibility_refused reason=" + std::string(error.what()));
+            PublishStatus(); return;
+        }
         bool release_failed{};
         for (const auto& entry : releases) {
             if (!ReleaseEntry(entry)) {
@@ -729,9 +921,20 @@ struct PakModRuntime::Impl final {
         for (const auto& candidate : to_mount) {
             // A selection may replace A with B even when their ids and filenames differ. If A
             // cannot be removed, mounting B would leave both conflicting variants active.
-            if (!release_failed) MountEntry(candidate);
+            if (!release_failed) {
+                MountEntry(candidate, compatibility_plans[candidate.id]);
+                if (compatibility_containers.contains(candidate.id) && !containers.contains(candidate.id)) break;
+            }
         }
         PruneRemoved(desired);
+        // Ordinary failures retry; native faults require a changed file or an explicit operation.
+        reconcile_pending = release_failed || std::any_of(compatibility_containers.begin(), compatibility_containers.end(),
+            [&](const auto& entry) { return !containers.contains(entry.first); });
+        {
+            std::scoped_lock lock(mutex);
+            reconcile_pending = reconcile_pending || std::any_of(entries.begin(), entries.end(),
+                [](const auto& entry) { return entry.state == PakModState::Failed && !entry.native_fault; });
+        }
         PublishStatus();
     }
 
@@ -746,9 +949,10 @@ struct PakModRuntime::Impl final {
     }
 
     bool ReleaseEntry(const PakModEntrySnapshot& entry) {
-        const bool unmounted = Unmount(entry.file);
-        if (unmounted) {
-            const auto found = containers.find(entry.id);
+        const auto found = containers.find(entry.id);
+        const bool source_present = found != containers.end();
+        const bool unmounted = !source_present || Unmount(entry.file);
+        if (unmounted && source_present) {
             if (found != containers.end() && options.release_container) {
                 options.release_container(found->second);
             }
@@ -758,23 +962,54 @@ struct PakModRuntime::Impl final {
             // pointing at it.
             containers.erase(entry.id);
         }
-        // An engine refusal means the container was not mounted under that exact path; reporting
-        // it as released would silently keep a file locked.
+        // Keep the compatibility overlay visible until the unsafe source has left
+        // the dispatcher. The same async-load barrier applies to both containers.
+        const bool compatibility_released = unmounted && ReleaseCompatibilityAttachment(entry.id);
+        // Keep ownership if the engine refuses or the unload safety barrier is unavailable;
+        // reporting the entry as released would silently leave a mounted container behind.
         SetEntryState(entry.id,
-            unmounted ? PakModState::Released : PakModState::Mounted,
-            unmounted ? std::string{} : std::string{"engine reported no mounted container"});
+            unmounted && compatibility_released ? PakModState::Released : PakModState::Mounted,
+            unmounted && compatibility_released ? std::string{} : std::string{"engine refused unmount or async-load barrier unavailable"});
         // Failures are retried on every scan, so only a state transition is worth a log line.
         if (entry.state == PakModState::Mounted &&
-            (unmounted || entry.message != "engine reported no mounted container")) {
+            (unmounted || entry.message != "engine refused unmount or async-load barrier unavailable")) {
             Log(unmounted ? LogLevel::Info : LogLevel::Warning,
                 unmounted ? "pak_mods.unmounted id=" + entry.id
                           : "pak_mods.unmount_failed id=" + entry.id);
         }
-        return unmounted;
+        return unmounted && compatibility_released;
     }
 
-    void MountEntry(const DesiredPak& desired) {
-        PakModMountOutcome outcome = Mount(desired);
+    void MountEntry(const DesiredPak& desired, const Ue5ModCompatibilityPlan& compatibility = {}) {
+        PakModMountOutcome outcome;
+        if (!ReleaseCompatibilityAttachment(desired.id)) {
+            SetEntryState(desired.id, PakModState::Failed, "previous compatibility overlay is still mounted");
+            { std::scoped_lock lock(mutex); last_error = "previous compatibility overlay is still mounted"; }
+            return;
+        }
+        if (!compatibility.overlay.empty()) {
+            Ue5PakMountRequest request;
+            request.pak_file = compatibility.overlay.wstring();
+            // FPakPlatformFile and the package store use uint32, but the IoStore backend
+            // sorts int32. UINT32_MAX becomes -1 there and exposes the unsafe source bytes.
+            request.order = static_cast<std::uint32_t>((std::numeric_limits<std::int32_t>::max)());
+            const auto overlay = options.mount_pak(platform_file, request);
+            if (overlay.mounted) {
+                compatibility_containers.insert_or_assign(desired.id, CompatibilityAttachment{compatibility.overlay, overlay.container});
+                outcome = Mount(desired);
+                if (outcome.mounted) {
+                    outcome.detail = "retained current game serialization definitions and dependencies";
+                    for (const auto& path : compatibility.retained_packages) {
+                        outcome.detail += " " + path;
+                        Log(LogLevel::Warning, "pak_mods.schema_retained id=" + desired.id + " package=" + path);
+                    }
+                } else if (!ReleaseCompatibilityAttachment(desired.id))
+                    outcome.detail += "; compatibility overlay cleanup is pending";
+            } else {
+                outcome.detail = "compatibility overlay mount failed: " + overlay.detail;
+                outcome.native_fault = overlay.native_fault;
+            }
+        } else outcome = Mount(desired);
         const bool mounted = outcome.mounted;
         std::string detail = outcome.detail.empty()
             ? std::string{"engine rejected the container"}
@@ -800,7 +1035,8 @@ struct PakModRuntime::Impl final {
             existing->stamp = desired.stamp;
             existing->fingerprint = desired.fingerprint;
             existing->state = mounted ? PakModState::Mounted : PakModState::Failed;
-            existing->message = mounted ? std::string{} : detail;
+            existing->native_fault = outcome.native_fault;
+            existing->message = mounted ? outcome.detail : detail;
             if (mounted) {
                 ++mounts;
                 containers.insert_or_assign(desired.id, outcome.container);
@@ -854,11 +1090,13 @@ struct PakModRuntime::Impl final {
             item["bytes"] = entry.bytes;
             item["state"] = std::string(StateName(entry.state));
             if (!entry.message.empty()) item["message"] = entry.message;
+            if (entry.native_fault) item["nativeFault"] = true;
             result["mods"].push_back(std::move(item));
         }
         result["mounts"] = mounts;
         result["unmounts"] = unmounts;
         if (!last_error.empty()) result["lastError"] = last_error;
+        if (!forced_conflicts.empty()) result["forcedConflicts"] = forced_conflicts;
         if (!conflicting_mods.empty()) {
             result["conflicts"] = conflicting_mods;
             if (last_error.empty()) {
@@ -939,9 +1177,14 @@ struct PakModRuntime::Impl final {
         if (!IsContainerFile(file)) return Failure("container must be a pak file").dump();
         desired.id = DefaultId(file);
         desired.file = std::filesystem::absolute(file).lexically_normal();
+        static_cast<void>(BuildLayout());
+        const auto catalog = catalog_cache.Read(options.mod_directory, ReadSettings());
+        if (Restricted(desired.file, *catalog)) return Failure("mod is restricted").dump();
+        if (!ReleaseOrphanedCompatibility()) return Failure("compatibility overlay cleanup is still pending").dump();
         desired.fingerprint = ContainerFingerprint(desired.file);
         desired.order = order == 0 ? options.base_order : order;
         if (const auto failure = PrepareMount(); !failure.empty()) return Failure(failure).dump();
+        const auto compatibility = options.prepare_compatibility ? options.prepare_compatibility(desired.file) : Ue5ModCompatibilityPlan{};
         ReleaseUnownedMounts({desired});
         // Replacing a mounted container needs the release first; the engine would otherwise hold
         // two containers under one path.
@@ -950,7 +1193,7 @@ struct PakModRuntime::Impl final {
                 return Failure("engine refused to unmount the previous container").dump();
             }
         }
-        MountEntry(desired);
+        MountEntry(desired, compatibility);
         PublishStatus();
         return SnapshotJson().dump();
     }
@@ -988,18 +1231,18 @@ struct PakModRuntime::Impl final {
     }
 
     void Run(std::stop_token stop) noexcept {
+        std::mutex wait_mutex;
+        std::condition_variable_any wake;
         while (!stop.stop_requested()) {
             try {
-                Apply();
+                Apply(false);
             } catch (...) {
                 Log(LogLevel::Warning, "pak_mods.scan_failed");
             }
             try {
                 const auto interval = (std::max)(options.poll_interval, std::chrono::milliseconds(50));
-                const auto deadline = std::chrono::steady_clock::now() + interval;
-                while (!stop.stop_requested() && std::chrono::steady_clock::now() < deadline) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-                }
+                std::unique_lock lock(wait_mutex);
+                wake.wait_for(lock, stop, interval, [] { return false; });
                 if (stop.stop_requested()) break;
             } catch (...) {
                 Log(LogLevel::Warning, "pak_mods.watcher_failed");
@@ -1018,6 +1261,7 @@ struct PakModRuntime::Impl final {
         for (const auto& entry : Mounted()) {
             static_cast<void>(ReleaseEntry(entry));
         }
+        static_cast<void>(ReleaseOrphanedCompatibility());
         PublishStatus();
     }
 };
@@ -1065,6 +1309,10 @@ void PakModRuntime::Stop() noexcept {
         for (const auto& [id, container] : impl_->containers) {
             if (impl_->options.release_container) impl_->options.release_container(container);
         }
+        for (const auto& [id, attachment] : impl_->compatibility_containers) {
+            if (impl_->options.release_container) impl_->options.release_container(attachment.container);
+        }
+        impl_->compatibility_containers.clear();
         std::scoped_lock lock(impl_->mutex);
         impl_->containers.clear();
     } catch (...) {
@@ -1103,6 +1351,13 @@ std::string PakModRuntime::Execute(std::string_view arguments) noexcept {
         };
         const std::string command = shift(text);
         if (command.empty() || command == "status") return impl_->SnapshotJson().dump();
+        if (command == "performance") {
+            std::scoped_lock lock(impl_->operation_mutex);
+            return nlohmann::json{{"ok", true}, {"reconcilePasses", impl_->reconcile_passes},
+                {"mountedListReads", impl_->mounted_list_reads},
+                {"catalogMetadataScans", impl_->catalog_cache.MetadataScans()},
+                {"retryPending", impl_->reconcile_pending}}.dump();
+        }
         if (impl_->options.compatibility_mode)
             return Impl::Failure("compatibility mode uses engine startup loading; restart required").dump();
         if (command == "reload" || command == "rescan") {
@@ -1111,6 +1366,9 @@ std::string PakModRuntime::Execute(std::string_view arguments) noexcept {
         }
         std::scoped_lock operation_lock(impl_->operation_mutex);
         if (impl_->stopped) return Impl::Failure("pak runtime is stopped").dump();
+        // Explicit diagnostic mutations are reconciled on the next watcher pass as before.
+        if (command == "unmountall" || command == "unload" || command == "release" ||
+            command == "unmount" || command == "mount") impl_->reconcile_pending = true;
         if (command == "unmountall" || command == "unload") {
             impl_->UnmountAll();
             return impl_->SnapshotJson().dump();

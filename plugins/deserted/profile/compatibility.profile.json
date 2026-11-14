@@ -47,7 +47,7 @@
       "name": "objects",
       "candidates": [
         {
-          "pattern": "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3",
+          "pattern": "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3 33 C0 48 8B 00 C3",
           "entry": "48 8B 05",
           "values": {}
         }

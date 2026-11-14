@@ -27,6 +27,14 @@ using ManagerGetFn = std::uintptr_t(__fastcall*)();
 using MountWithStatusFn = bool(__fastcall*)(std::uintptr_t, const void*, void*, void*);
 // FPakPlatformFile::Unmount(const TCHAR*)
 using UnmountFn = bool(__fastcall*)(std::uintptr_t, const wchar_t*);
+// FlushAsyncLoading(TConstArrayView<int32>) — an empty view drains all async package requests.
+struct FlushAsyncLoadingRequestIds final {
+    const std::int32_t* data;
+    std::int32_t size;
+};
+static_assert(offsetof(FlushAsyncLoadingRequestIds, size) == 0x08);
+static_assert(sizeof(FlushAsyncLoadingRequestIds) == 0x10);
+using FlushAsyncLoadingFn = void(__fastcall*)(FlushAsyncLoadingRequestIds);
 // The two IPlatformFile virtuals the chain walk needs.
 using GetLowerLevelFn = std::uintptr_t(__fastcall*)(std::uintptr_t);
 using GetNameFn = const wchar_t*(__fastcall*)(std::uintptr_t);
@@ -115,6 +123,7 @@ FeatureValidationResult ValidatePakMount(const BuildProfile& profile, std::strin
         {kUe5PakPlatformFileManagerSymbol, binding.platform_file_manager},
         {kUe5PakMountSymbol, binding.mount},
         {kUe5PakUnmountSymbol, binding.unmount},
+        {kUe5PakFlushAsyncLoadingSymbol, binding.flush_async_loading},
         {kUe5PakReleaseSymbol, binding.release}};
     for (const auto& [id, address] : entries) {
         if (!ExecutableAddress(address, memory)) {
@@ -177,12 +186,41 @@ struct PakListEntryScratch final {
 // pak.listEntryPakFileOffset is checked against this member instead of trusting a literal.
 static_assert(offsetof(PakListEntryScratch, pak_file) == 0x08);
 
-// Returns the raw engine verdict; the caller copies code/message out before this frame ends.
+// Separate from FIoStatus: its 128-character engine ABI cannot hold a fatal assertion.
+struct PakMountException final {
+    DWORD code{};
+    void* address{};
+    void* program_counter{};
+    wchar_t message[2048]{};
+};
+
+int CaptureMountException(EXCEPTION_POINTERS* exception, PakMountException& fault) noexcept {
+    fault.code = exception->ExceptionRecord->ExceptionCode;
+    fault.address = exception->ExceptionRecord->ExceptionAddress;
+    // UE's ReportAssert passes one FAssertInfo pointer to RaiseException. Keep the assertion
+    // itself: ExceptionAddress otherwise points only to KERNELBASE!RaiseException.
+    if (exception->ExceptionRecord->ExceptionCode == 0x4000 &&
+        exception->ExceptionRecord->NumberParameters == 1) {
+        struct AssertInfo { const wchar_t* message; void* program_counter; };
+        __try {
+            const auto* info = reinterpret_cast<const AssertInfo*>(exception->ExceptionRecord->ExceptionInformation[0]);
+            if (info->message) {
+                wcsncpy_s(fault.message, info->message, _TRUNCATE);
+                fault.program_counter = info->program_counter;
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
+// Returns the raw engine verdict; a guarded fault must not look like EIoErrorCode::Ok.
 bool CallMountWithStatus(std::uintptr_t pak_platform_file, MountWithStatusFn function,
-    const PakMountArgs& args, PakIoStatus& status, PakListEntryScratch& entry) noexcept {
+    const PakMountArgs& args, PakIoStatus& status, PakListEntryScratch& entry,
+    PakMountException& fault) noexcept {
     __try {
         return function(pak_platform_file, &args, &status, &entry);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    } __except (CaptureMountException(GetExceptionInformation(), fault)) {
+        status.code = -1;
         return false;
     }
 }
@@ -191,6 +229,16 @@ bool CallUnmount(std::uintptr_t pak_platform_file, UnmountFn function,
     const wchar_t* pak_file) noexcept {
     __try {
         return function(pak_platform_file, pak_file);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool CallFlushAsyncLoading(FlushAsyncLoadingFn function) noexcept {
+    const FlushAsyncLoadingRequestIds request_ids{nullptr, 0};
+    __try {
+        function(request_ids);
+        return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
@@ -663,6 +711,7 @@ std::size_t ReadBoundedText(const wchar_t* text, wchar_t* buffer, std::size_t ca
 
 // The verifier's own signature: (cache object, request byte, request object, slice index).
 using CacheVerifyFn = std::int64_t(__fastcall*)(void*, std::uint8_t, void*, std::uint32_t);
+constexpr std::uint32_t kCacheVerifyDiagnosticSamples = 8;
 
 // Deliberately leaked for the same reason as the signature bypass: the detour has to stay valid while
 // the engine may still call through it.
@@ -678,6 +727,7 @@ struct CacheVerifyDetour final {
     void* context{};
     bool installed{};
     std::mutex sink_mutex;
+    std::atomic<std::uint32_t> diagnostic_samples_remaining{};
 };
 
 CacheVerifyDetour* g_cache_verify{};
@@ -783,10 +833,15 @@ std::int64_t __fastcall CacheVerifyDetourFn(void* cache, std::uint8_t request_by
     if (!lease) return original(cache, request_byte, request, slice);
     Ue5PakCacheVerifySample sample{};
     ReadLockedCacheVerifySample(detour->layout, reinterpret_cast<std::uintptr_t>(cache), slice, sample);
-    {
+    if (sample.element != 1 && detour->diagnostic_samples_remaining.load(std::memory_order_relaxed) != 0) {
         // Removal detaches the sink under this lock even if a trampoline cannot be removed.
         std::scoped_lock lock(detour->sink_mutex);
-        if (detour->sink != nullptr) detour->sink(detour->context, sample);
+        const auto remaining = detour->diagnostic_samples_remaining.load(std::memory_order_relaxed);
+        if (detour->sink != nullptr && remaining != 0) {
+            // Bound attempts, not unique containers: even one unsigned mod can stream indefinitely.
+            detour->diagnostic_samples_remaining.store(remaining - 1, std::memory_order_relaxed);
+            detour->sink(detour->context, sample);
+        }
     }
     // Only a successfully read null signature table is eligible. An unreadable record must
     // never be treated as an unsigned container. Completion owns GetReadResults and its lock;
@@ -825,6 +880,7 @@ Ue5PakCacheVerifyStatus InstallUe5PakBlockCacheVerifyDetour(
         std::scoped_lock sink_lock(g_cache_verify->sink_mutex);
         g_cache_verify->sink = sink;
         g_cache_verify->context = context;
+        g_cache_verify->diagnostic_samples_remaining.store(kCacheVerifyDiagnosticSamples, std::memory_order_relaxed);
         return Ue5PakCacheVerifyStatus::AlreadyInstalled;
     }
     if (g_cache_verify->original != nullptr) return Ue5PakCacheVerifyStatus::Unavailable;
@@ -832,6 +888,7 @@ Ue5PakCacheVerifyStatus InstallUe5PakBlockCacheVerifyDetour(
     g_cache_verify->complete = complete;
     g_cache_verify->sink = sink;
     g_cache_verify->context = context;
+    g_cache_verify->diagnostic_samples_remaining.store(kCacheVerifyDiagnosticSamples, std::memory_order_relaxed);
     if (!g_cache_verify->hooks.Create(std::string(kCacheVerifyOwner), kCacheVerifyGeneration,
             std::string(kCacheVerifyLabel), reinterpret_cast<void*>(verify),
             reinterpret_cast<void*>(&CacheVerifyDetourFn), &g_cache_verify->original)) {
@@ -860,6 +917,7 @@ void RemoveUe5PakBlockCacheVerifyDetour() noexcept {
         std::scoped_lock sink_lock(detour->sink_mutex);
         detour->sink = nullptr;
         detour->context = nullptr;
+        detour->diagnostic_samples_remaining.store(0, std::memory_order_relaxed);
     }
     if (!detour->installed || !detour->hooks.DisableOwner(kCacheVerifyOwner, kCacheVerifyGeneration)) return;
     {
@@ -884,6 +942,7 @@ void DetachUe5PakBlockCacheVerifySink() noexcept {
     std::scoped_lock sink_lock(detour->sink_mutex);
     detour->sink = nullptr;
     detour->context = nullptr;
+    detour->diagnostic_samples_remaining.store(0, std::memory_order_relaxed);
 }
 
 namespace {
@@ -909,10 +968,26 @@ bool BindUe5Pak(const BuildProfile& profile, const ProfileResolutionSnapshot& re
     if (mount == nullptr) return false;
     const auto* unmount = RequireSymbol(resolution, kUe5PakUnmountSymbol, error);
     if (unmount == nullptr) return false;
+    const auto* flush_async_loading =
+        RequireSymbol(resolution, kUe5PakFlushAsyncLoadingSymbol, error);
+    if (flush_async_loading == nullptr) return false;
     Ue5PakBinding candidate{};
     candidate.platform_file_manager = manager->address;
     candidate.mount = mount->address;
     candidate.unmount = unmount->address;
+    candidate.flush_async_loading = flush_async_loading->address;
+    const auto codec_symbol = [&](std::string_view name) -> std::uintptr_t {
+        const auto* symbol = resolution.FindSymbol(name);
+        return symbol && symbol->Available() && (!memory || ExecutableAddress(symbol->address, *memory)) ? symbol->address : 0;
+    };
+    candidate.encryption_key_manager = codec_symbol("ue5.FEncryptionKeyManager.Get");
+    candidate.try_encryption_key = codec_symbol("ue5.FEncryptionKeyManager.TryGetKey");
+    candidate.uncompress_memory = codec_symbol("ue5.FCompression.UncompressMemory");
+    candidate.name_from_enum = codec_symbol("ue5.FName.FromEName");
+    ReadLayoutField(profile, "pak.compressionZlibName", candidate.compression_zlib);
+    ReadLayoutField(profile, "pak.compressionGzipName", candidate.compression_gzip);
+    ReadLayoutField(profile, "pak.compressionLz4Name", candidate.compression_lz4);
+    ReadLayoutField(profile, "pak.compressionOodleName", candidate.compression_oodle);
     const auto* status_mount = RequireSymbol(resolution, kUe5PakMountWithStatusSymbol, error);
     const auto* release = RequireSymbol(resolution, kUe5PakReleaseSymbol, error);
     if (status_mount == nullptr || release == nullptr) return false;
@@ -1031,6 +1106,38 @@ bool BindUe5Pak(const BuildProfile& profile, const ProfileResolutionSnapshot& re
     return true;
 }
 
+namespace {
+bool ContainerKeyCall(const Ue5PakBinding& binding, const std::uint8_t* guid, std::uint8_t* key) noexcept {
+    if (!binding.encryption_key_manager || !binding.try_encryption_key) return false;
+    __try {
+        const auto manager = reinterpret_cast<std::uintptr_t(__fastcall*)()>(binding.encryption_key_manager)();
+        return manager && reinterpret_cast<bool(__fastcall*)(std::uintptr_t, const void*, void*)>(
+            binding.try_encryption_key)(manager, guid, key);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+bool ContainerDecompressCall(const Ue5PakBinding& binding, std::uint32_t format,
+    const void* input, std::size_t input_size, void* output, std::size_t output_size) noexcept {
+    if (!format || !binding.uncompress_memory || !binding.name_from_enum) return false;
+    __try {
+        std::uint64_t name{};
+        reinterpret_cast<void*(__fastcall*)(void*, std::uint32_t)>(binding.name_from_enum)(&name, format);
+        return reinterpret_cast<bool(__fastcall*)(std::uint64_t, void*, std::int64_t,
+            const void*, std::int64_t, std::uint32_t, std::uintptr_t)>(binding.uncompress_memory)(
+                name, output, static_cast<std::int64_t>(output_size), input, static_cast<std::int64_t>(input_size), 0, 0);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+} // namespace
+Ue5ContainerCodecs Ue5PakContainerCodecs(const Ue5PakBinding& binding) {
+    return {
+        [binding](const auto& guid, auto& key) { return ContainerKeyCall(binding, guid.data(), key.data()); },
+        [binding](std::string_view method, std::span<const std::uint8_t> input, std::span<std::uint8_t> output) {
+            const auto format = method == "Zlib" ? binding.compression_zlib : method == "Gzip" ? binding.compression_gzip :
+                method == "LZ4" ? binding.compression_lz4 : method == "Oodle" ? binding.compression_oodle : 0;
+            return ContainerDecompressCall(binding, format, input.data(), input.size(), output.data(), output.size());
+        }
+    };
+}
+
 std::uintptr_t FindUe5PakPlatformFile(
     const Ue5PakBinding& binding, const SymbolMemory& memory) noexcept {
     if (!binding.Complete()) return 0;
@@ -1100,11 +1207,19 @@ Ue5PakMountResult MountUe5Pak(const Ue5PakBinding& binding, std::uintptr_t pak_p
     // UE 5.6 FPakMountOptions::SkipContainerFile; pure paks have no IoStore sidecar.
     args.mount_flags = request.pak_only ? 4U : 0U;
     args.load_index = 1;
-    PakIoStatus status{};
+    PakIoStatus status{-1, {}};
+    PakMountException fault;
     result.mounted = CallMountWithStatus(pak_platform_file,
-        reinterpret_cast<MountWithStatusFn>(binding.mount_with_status), args, status, entry);
+        reinterpret_cast<MountWithStatusFn>(binding.mount_with_status), args, status, entry, fault);
     result.error_code = status.code;
-    if (status.code != 0) {
+    result.native_fault = fault.code != 0;
+    if (result.native_fault) {
+        wchar_t text[128]{};
+        swprintf_s(text, L"mount exception 0x%08lX at %p (assert pc %p): ",
+            fault.code, fault.address, fault.program_counter);
+        result.error_message = text;
+        result.error_message += fault.message;
+    } else if (status.code != 0) {
         std::size_t length{};
         while (length < ARRAYSIZE(status.message) && status.message[length] != L'\0') ++length;
         result.error_message.assign(status.message, length);
@@ -1167,6 +1282,12 @@ bool UnmountUe5Pak(const Ue5PakBinding& binding, std::uintptr_t pak_platform_fil
         pak_file.c_str());
 }
 
+bool FlushUe5AsyncLoading(const Ue5PakBinding& binding) noexcept {
+    if (!binding.Complete()) return false;
+    return CallFlushAsyncLoading(
+        reinterpret_cast<FlushAsyncLoadingFn>(binding.flush_async_loading));
+}
+
 void ReleaseUe5PakContainer(const Ue5PakBinding& binding, std::uintptr_t container) noexcept {
     if (container == 0 || binding.release == 0) return;
     __try {
@@ -1206,7 +1327,11 @@ Ue5PakGateStatus DisableUe5PakSignatureGate(
     }
     if (observed != nullptr) *observed = byte;
     if (byte == 0xEB) return Ue5PakGateStatus::AlreadyPatched;
-    if (byte != 0x75) return Ue5PakGateStatus::UnexpectedByte;
+    // Force the IsSigningEnabled()==false path. Its destination still tests the container's
+    // Signed flag before consuming a signature section. Forcing the later JNZ instead reads
+    // directory/hash bytes as HashSize in unsigned containers and can fatal in TArray::Reserve.
+    // Requiring JZ also rejects Profiles that still resolve that old JNZ patch site.
+    if (byte != 0x74) return Ue5PakGateStatus::UnexpectedByte;
     const std::uint8_t jump{0xEB};
     DWORD previous{};
     if (VirtualProtect(reinterpret_cast<void*>(binding.signature_gate), sizeof(jump),

@@ -6,7 +6,7 @@ This is how you use Anomaly day to day: how to install it, where to find plugins
 
 ## Reading order
 
-1. [Installation and updates](installation.md) — download the right runtime package and use the launcher for the first install, an update, or Live attach.
+1. [Installation and updates](installation.md) — download the right runtime package and use the launcher for the first attach (inject or proxy mode), an update, or disabling the proxy.
 2. [Quick start](quickstart.md) — launch for the first time, open the interface, and enable plugins.
 3. [Built-in plugins](built-in-plugins.md) — what each plugin installed with the runtime package does.
 4. [Third-party plugins](third-party-plugins.md) — download, update, and uninstall plugins in game, and manage plugin sources.

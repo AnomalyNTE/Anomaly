@@ -232,6 +232,7 @@ struct RuntimeState {
   std::uintptr_t bound_mesh{};
   std::uintptr_t character{};
   std::uintptr_t mesh{};
+  std::uintptr_t mesh_asset{};   // USkeletalMesh this entry was resolved against
   bool external_target{};
   std::uintptr_t anim_instance{};
   std::uint32_t animation_mode{};
@@ -965,6 +966,7 @@ struct Context final {
   // It is applied only when non-empty and is keyed by name for portability.
   std::map<std::string, std::array<double, 12>> library_pose_locals;
   std::uintptr_t pose_base_mesh{};
+  std::uintptr_t pose_base_asset{};  // cache key: a skin swap keeps the mesh but replaces the asset
   bool pose_base_ready{};
   struct TPoseCalibrationSession {
     bool pose_override_was_enabled{};
@@ -5388,6 +5390,40 @@ bool ReadPoseArrays(Context &context) noexcept {
   const auto mesh = context.runtime.mesh;
   if (mesh == 0)
     return false;
+  // A skin swap replaces the SkeletalMesh asset while the component stays put, so neither the
+  // component check nor the buffer check notices: the accessory mapping and the bone-name table
+  // still describe the previous mesh. That is why modular hair stopped following the pose until a
+  // character switch forced a full rescan. Treat an asset change as "rescan this character".
+  std::uintptr_t asset{};
+  const bool asset_readable =
+      Read(context, mesh + native_layout.kMeshSkeletalMeshOffset, asset) && asset != 0;
+  if (asset_readable) {
+    if (context.runtime.mesh_asset != 0 && asset != context.runtime.mesh_asset) {
+      context.extra_build_pending = true;
+      context.pose_base_ready = false;   // the base pose belonged to the previous mesh asset
+      {
+        std::lock_guard<std::mutex> guard(context.pose_angles_mutex);
+        context.pose_base_locals.clear();
+      }
+      // The reference pose is read from the mesh too: keeping the previous skin's copy leaves the
+      // undriven bones (and the head chain's baseline) sitting at the old bind.
+      context.ref_locals.clear();
+      context.ref_pose_attempted = false;
+      context.mesh_scan_owner = 0;
+      context.bone_names_mesh = 0;
+      context.bone_names.clear();
+      context.mesh_scan_requested.store(true, std::memory_order_release);
+      {
+        // Bone-name mappings belong to the current asset's bone table.
+        // Re-resolve them when a skin replaces that asset.
+        std::lock_guard<std::mutex> guard(context.motion_mutex);
+        context.motion.indices_ready = false;
+      }
+      LogDiagnostic(context, "betterpose mesh asset changed -> rescan accessories and remap motion"
+                             " asset=" + Hex(asset));
+    }
+    context.runtime.mesh_asset = asset;
+  }
   std::uintptr_t bone_space_data{};
   std::uint32_t bone_space_count{};
   std::uintptr_t component_space_data{};
@@ -6298,11 +6334,6 @@ void ProcessSkeletalMeshTick(Context *context, const std::size_t slot,
         // post-tick callback so both component classes remain driven.
         if (!context->blender_active.load(std::memory_order_acquire) ||
             context->blender_frame.valid) {
-          bool selected_keyframes{};
-          {
-            std::lock_guard<std::mutex> lock(context->keyframe_mutex);
-            selected_keyframes = !context->keyframe_track.Empty();
-          }
           static_cast<void>(ReadPoseArrays(*context));
           if (context->blender_active.load(std::memory_order_acquire)) {
             static_cast<void>(
@@ -6310,9 +6341,9 @@ void ProcessSkeletalMeshTick(Context *context, const std::size_t slot,
           } else if (context->motion_loaded.load(
                          std::memory_order_acquire)) {
             ApplyMotionPoseDirect(*context);
-          } else if (selected_keyframes &&
-                     context->pose_override_enabled.load(
+          } else if (context->pose_override_enabled.load(
                          std::memory_order_acquire)) {
+            // Keep manual edits on the same post-tick path as recorded poses.
             ApplyPoseOverridesDirect(*context);
           }
         }
@@ -8413,7 +8444,9 @@ bool CapturePoseBase(Context &context) noexcept {
   if (mesh == 0 || data == 0 || count == 0)
     return false;
   std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+  // The component can survive a skin change; the cached base must also match its asset.
   if (context.pose_base_ready && context.pose_base_mesh == mesh &&
+      context.pose_base_asset == context.runtime.mesh_asset &&
       context.pose_base_locals.size() == count)
     return true;
   std::vector<std::array<double, 12>> base(count);
@@ -8426,6 +8459,7 @@ bool CapturePoseBase(Context &context) noexcept {
   }
   context.pose_base_locals = std::move(base);
   context.pose_base_mesh = mesh;
+  context.pose_base_asset = context.runtime.mesh_asset;
   context.pose_base_ready = true;
   return true;
 }
@@ -12184,6 +12218,18 @@ bool ConfigureKawaiiPhysics(Context &context,
   if (!ReadKawaiiPhysicsSnapshot(context, extra.object, snapshot,
                                  snapshot_error, true)) {
     extra.kawaii_attempted = true;
+    // An unsupported node layout cannot become supported by reinitializing animation.
+    // In particular, refreshing the character here replaces the body's AnimInstance
+    // and can trigger another accessory rebuild, restarting this initialization loop.
+    if (snapshot_error == "batched KawaiiPhysics layout is unsupported") {
+      extra.kawaii_retry_pending = false;
+      extra.kawaii_retry_after_ms = 0;
+      extra.kawaii_retry_exhausted = true;
+      RestoreKawaiiInitialization(context, extra);
+      LogDiagnostic(context, "betterpose kawaii node " + Hex(extra.object) +
+                                 " initialization skipped: " + snapshot_error);
+      return false;
+    }
     if (!extra.kawaii_init_attempted) {
       BeginKawaiiInitialization(context, extra);
       extra.kawaii_retry_pending = true;
@@ -13282,8 +13328,40 @@ void WriteExtraMeshes(Context &context,
   }
   const auto secondary_tuning = context.secondary_tuning.Load();
   for (auto &extra : context.extra_meshes) {
-    if (extra.component_space_data == 0 || extra.bone_count == 0)
+    if (extra.bone_count == 0)
       continue;
+    {
+      // Switching a skin replaces the SkeletalMesh asset on the *same* component, so the transform
+      // buffers cached when this entry was built are freed and reallocated. Writing through the old
+      // pointers is what crashed the game when an animation was loaded right after a skin change.
+      // A skin swap keeps the component but replaces its SkeletalMesh asset. The bone mapping built
+      // for the previous mesh is then wrong (modular hair stops following), so treat a different
+      // asset as a rebuild trigger too.
+      std::uintptr_t live_asset{};
+      if (!Read(context, extra.object + native_layout.kMeshSkeletalMeshOffset, live_asset) ||
+          live_asset == 0 || (extra.asset != 0 && live_asset != extra.asset)) {
+        context.extra_build_pending = true;
+        continue;
+      }
+      std::uintptr_t component_data{};
+      std::uint32_t component_count{};
+      std::uintptr_t bone_data{};
+      std::uint32_t bone_data_count{};
+      const bool live =
+          ReadArrayHeader(context, extra.object + native_layout.kMeshComponentSpaceBuffer1Offset,
+                          component_data, component_count) &&
+          ReadArrayHeader(context, extra.object + native_layout.kMeshComponentSpaceBuffer0Offset,
+                          bone_data, bone_data_count) &&
+          component_data != 0 && bone_data != 0 &&
+          component_count >= extra.bone_count && bone_data_count >= extra.bone_count;
+      if (!live) {
+        // The mesh no longer has the shape this entry was built for: rebuild instead of writing.
+        context.extra_build_pending = true;
+        continue;
+      }
+      extra.component_space_data = component_data;
+      extra.bone_space_data = bone_data;
+    }
     const std::uint64_t kawaii_now = GetTickCount64();
     if (extra.used_hierarchy && !extra.kawaii_configured &&
         !extra.kawaii_retry_exhausted &&
@@ -14883,6 +14961,7 @@ std::string ReferenceBoneTablePath(const int mode) noexcept {
                                 : "\\data\\reference-pmx.json");
 }
 
+
 void ANOMALY_CALL PoseFileTask(void *value, AnomalyGenerationHandleV1) {
   auto *data = static_cast<PoseFileTaskData *>(value);
   if (data == nullptr)
@@ -15409,12 +15488,37 @@ std::string BuildSkeletonDocument(Context &context) noexcept {
                   context.ref_pose_status.c_str());
     LogDiagnostic(context, status);
   }
-  auto bones = nlohmann::json::array();
+  // Export component-space reference transforms derived from the asset's bind pose.
+  std::vector<Transformd> bind_components;
+  if (has_ref && context.bone_parents.size() == count)
+    bind_components = BindPoseTransforms(context.ref_locals, context.bone_parents);
+  // Omit socket/attachment marker names from the conversion skeleton.
+  // Compact the exported indices and remap parent references to that compact table.
+  std::vector<std::uint32_t> kept;
   for (std::uint32_t index{}; index != count; ++index) {
+    std::string lower = context.bone_names[index];
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](const unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    const bool socket = lower.find("socket") != std::string::npos ||
+                        lower.rfind("footstep_", 0) == 0 ||
+                        lower.rfind("lhand_weapon", 0) == 0 ||
+                        lower.rfind("rhand_weapon", 0) == 0;
+    if (!socket)
+      kept.push_back(index);
+  }
+  std::vector<std::int32_t> remap(count, -1);
+  for (std::size_t slot{}; slot != kept.size(); ++slot)
+    remap[kept[slot]] = static_cast<std::int32_t>(slot);
+  auto bones = nlohmann::json::array();
+  for (std::size_t slot{}; slot != kept.size(); ++slot) {
+    const std::uint32_t index = kept[slot];
     nlohmann::json bone = nlohmann::json::object();
-    bone["index"] = index;
+    bone["index"] = slot;
     bone["name"] = context.bone_names[index];
-    bone["parent"] = context.bone_parents[index];
+    const std::int32_t parent = context.bone_parents[index];
+    bone["parent"] = parent >= 0 && static_cast<std::size_t>(parent) < remap.size()
+                         ? remap[static_cast<std::size_t>(parent)]
+                         : -1;
     std::array<double, 12> local{};
     {
       std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
@@ -15426,7 +15530,28 @@ std::string BuildSkeletonDocument(Context &context) noexcept {
       bone["refLocal"] = TransformToJson(calibrated->second.data());
     else if (has_ref)
       bone["refLocal"] = TransformToJson(context.ref_locals[index].data());
-    if (component_data != 0 && index < component_count) {
+    // Prefer the confirmed manual reference, then the asset bind pose, for baseLocal.
+    // The captured pose remains the fallback when neither reference is available.
+    if (calibrated != manual_reference.end())
+      bone["baseLocal"] = TransformToJson(calibrated->second.data());
+    else if (has_ref)
+      bone["baseLocal"] = TransformToJson(context.ref_locals[index].data());
+    if (index < bind_components.size()) {
+      // Bind-pose component transform: the live one carries whatever pose the skin left behind.
+      const auto &transform = bind_components[index];
+      std::array<double, 12> component{};
+      component[0] = transform.rotation.x;
+      component[1] = transform.rotation.y;
+      component[2] = transform.rotation.z;
+      component[3] = transform.rotation.w;
+      component[4] = transform.translation.x;
+      component[5] = transform.translation.y;
+      component[6] = transform.translation.z;
+      component[8] = transform.scale.x;
+      component[9] = transform.scale.y;
+      component[10] = transform.scale.z;
+      bone["liveComponent"] = TransformToJson(component.data());
+    } else if (component_data != 0 && index < component_count) {
       std::uintptr_t address{};
       std::array<double, 12> component{};
       if (AddAddress(component_data,
@@ -15442,12 +15567,11 @@ std::string BuildSkeletonDocument(Context &context) noexcept {
   root["kind"] = "better-pose-skeleton";
   root["basis"] =
       !manual_reference.empty()
-          ? "captured-live-pose plus the confirmed manual A/T-pose reference"
-          : has_ref ? "captured-live-pose plus refLocal from the mesh asset's "
-                      "FReferenceSkeleton (the bind pose)"
+          ? "bind pose from the confirmed manual A/T-pose reference"
+          : has_ref ? "bind pose from the mesh asset's FReferenceSkeleton"
                     : "captured-live-pose (engine reference pose unavailable)";
   root["mesh"] = Hex(context.runtime.mesh);
-  root["boneCount"] = count;
+  root["boneCount"] = kept.size();
   root["boneSpaceCount"] = context.runtime.bone_space_count;
   root["componentSpaceCount"] = component_count;
   root["bones"] = std::move(bones);
@@ -22458,22 +22582,19 @@ void ANOMALY_CALL DrawCollisionDebugOverlay(
 // independently driven body from this one common point so Player and summoned
 // SkeletalMeshActor subclasses do not require separate native Tick hooks.
 void FinalizeEntityPoses(Context &context) noexcept {
+  const bool manual_pose =
+      context.pose_override_enabled.load(std::memory_order_acquire);
   if (context.blender_active.load(std::memory_order_acquire) ||
-      (!HasAnyEntityMotion(context) && !HasAnyEntityKeyframes(context)))
+      (!manual_pose && !HasAnyEntityMotion(context) && !HasAnyEntityKeyframes(context)))
     return;
   try {
     static_cast<void>(ReadPoseArrays(context));
     if (context.motion_loaded.load(std::memory_order_acquire)) {
       ApplyMotionPoseDirect(context);
-    } else {
-      bool active_keyframes{};
-      {
-        std::lock_guard<std::mutex> lock(context.keyframe_mutex);
-        active_keyframes = !context.keyframe_track.Empty();
-      }
-      if (active_keyframes &&
-          context.pose_override_enabled.load(std::memory_order_acquire))
-        ApplyPoseOverridesDirect(context);
+    } else if (manual_pose) {
+      // Manual edits need the same final body write as a recorded keyframe.
+      // Accessories have already been updated by the normal pose path.
+      ApplyPoseOverridesDirect(context, false);
     }
     StepInactiveEntityMotions(context);
     StepInactiveEntityKeyframes(context);

@@ -6,7 +6,7 @@ The launcher's **Mods** page manages pak mods inside the game folder: list, enab
 
 ## Where it is
 
-Top mode bar of the launcher: **Proxy install / Live attach / Mods**. No game process is required.
+Top mode bar of the launcher: **Launch / Mods / Settings**. Open **Mods** and switch between **Manage / Download**. No game process is required.
 
 The page shows the directory in use:
 
@@ -20,15 +20,18 @@ The page shows the directory in use:
 
 | Action | Notes |
 | --- | --- |
-| List | Ten mods per page, with paging controls above the list; rows show switches, covers, names, file counts, sizes, authors and versions, reserving the cover space when no image is available |
+| Grid (default) | The view switch beside the list, with the grid first and selected: categories first, each card showing the cover of the category's first mod and its mod count; a click opens that category, which lists its skins as cards of their own (each showing that skin's first cover and mod count) when it has more than one, and a further click opens one skin's mods. Above the cards is the path: **All** returns to the outermost level and every named level in the path is clickable too, so no level needs to be left one step at a time. Every mod appears once, and the skins it also covers are part of its card metadata. Every level uses cards of the same size, covers are shown whole, several fit a row, and each card has a surface of its own; a mod card puts the enable switch, the batch box and, when the mod has them, **Source** and **Update** on its first row, and only **Settings** and **Uninstall** under them |
+| List | The same data as rows: switch, cover, name, file count, size, author and version, then the same commands on the right: Update (with a new version), Settings, Uninstall and Source (with a link), and the batch box last. A command a mod does not have leaves its column empty, so the box lines up down the list |
+| Pagination | **Off by default**: both views list every mod at once and only the list area scrolls. Turn it on under **Settings > Mods page** and set the page size; the pager is a floating glass capsule centred at the bottom of the list |
 | Enable / disable | Hot mode saves a selection for runtime mount/unmount; compatibility mode adds/removes `.disabled` on container files while the game is closed |
 | Enable switch | Enabling a mod disables conflicting model/resource replacements and synchronizes with the in-game Mod Manager |
 | Uninstall | Deletes the mod's files or folder |
-| Rename | Inline dialog, renames on disk |
+| Settings | One dialog holds everything about a mod: display name, its file or folder name on disk, groups, notes and the GameBanana link. Saving renames first and then writes the notes |
 | Import archive | Extracts ZIP, 7z or RAR archives and copies `.pak/.utoc/.ucas/mod.json` into `~mods\<archive name>\` |
 | Search | Matches display name, folder name and author |
 | Filter | All / enabled / disabled tabs; changing the tab or search resets to page 1 |
-| Source | Opens the link from `mod.json` in the browser |
+| Source | Sits on the switch row when `mod.json` carries a link, and opens it in the browser |
+| Page / Install | On the download page a row reads name, then the two commands under it -- **Page** and **Install** side by side, with an empty page column for a mod without a link so the install button lines up down the list -- and the row facts after them on the same line, centred vertically against the buttons |
 
 **Whether a change needs a restart depends on runtime loading**: without it, paks are mounted at
 start-up only and every change needs a restart. With it, containers can be added, removed and
@@ -97,7 +100,7 @@ predicate directly. Other raw patch sequences are rejected. `verifiedFor` is des
 
 ## Runtime loading and hot replacement
 
-The Runtime scans `Paks\~mods` every 750 ms by default, skipping `.disabled` files/directories and reparse
+The Runtime checks change notifications for `Paks\~mods` every 750 ms by default and scans initially or after changes, skipping `.disabled` files/directories and reparse
 entries. Each `.pak` is one container. Default read orders start at **100000** and increase; the engine's
 read-order rules determine which duplicate resource wins. Default ids are relative paths without the
 extension, such as `Outfit/Shared`, so equal basenames in different folders remain distinct.
@@ -113,12 +116,18 @@ Relative paths resolve against `Paks\~mods`. A `mods` array is authoritative; wi
 scanned. `enabled: false` stops automatic mounting and attempts to unmount containers owned by this Runtime.
 Invalid configuration, missing manifest files or duplicate ids/paths preserve the current set. Failed unmounts remain tracked and
 block all new mounts in that pass, preventing two conflicting variants with different ids from becoming active together.
-Each pass also copies actual mounted filenames under the engine's mount-list lock and removes startup
+Initial loading, file/configuration changes and explicit synchronization copy mounted filenames under the engine's mount-list lock and remove startup
 mounts under `~mods` that this Runtime does not own before applying the selection. Unmount uses the
 engine's original filename spelling so relative paths cannot leave an old or disabled container mounted.
+Stable polls check directory change notifications without rescanning, replanning mounts or taking the engine's
+mount-list lock. Catalog snapshots also use notification invalidation. Directory moves, deletion, recreation and
+external manifest directories remain watched. Unavailable notifications fall back to scanning, and ordinary mount
+or unmount failures still retry automatically. A native mount exception sets `nativeFault: true` and stops background
+retries for that file until the file changes or an explicit reload requests another attempt.
 
 ```text
 anomaly-cli --pid <game PID> pak status
+anomaly-cli --pid <game PID> pak performance
 anomaly-cli --pid <game PID> pak release "My Mod/MyMod"
 anomaly-cli --pid <game PID> pak reload
 anomaly-cli --pid <game PID> pak mount "My Mod/MyMod.pak" 100100
@@ -140,6 +149,9 @@ anomaly-cli --pid <game PID> pak unmountall
 State is published to `Anomaly\state\pak-mods.json` and to the `pakMods` node in `diagnostics-summary.json`.
 `mode` identifies the process's loading strategy and `pid` identifies its owner. The explicit
 `residentAssetsReloaded: false` field means container switching did not refresh resident assets.
+`pak performance` reads counters without triggering scans. While stable and idle, `reconcilePasses`,
+`mountedListReads` (list reads during reconciliation) and `catalogMetadataScans` should stay unchanged,
+with `retryPending` set to `false`.
 
 ### Native calls and diagnostics
 
@@ -148,6 +160,20 @@ configures signature support before calling native `Mount(FPakMountArgs, FIoStat
 Pure pak files use `SkipContainerFile`; the presence of `.utoc` selects native IoStore mounting. File
 sizes do not determine the container type. The output entry transfers a strong reference that the
 Runtime releases after unmount or during shutdown. Every required signature step must succeed.
+
+Before mounting an IoStore mod, the Runtime compares its Blueprint, struct and enum serialization
+definitions with the currently mounted game containers, including parents, field order, array dimensions
+and nested types. An incompatible definition and its affected dependencies within the candidate container
+are retained from the game in a separate compatibility container. Other mod resources can still load.
+Retained package names are reported in mount status and logs; this policy has no mod-name or vehicle exceptions.
+Unreadable formats, inseparable new dependencies and unsupported optional packages are refused before mounting,
+preserving the existing mounted set for that pass. This inspection covers supported Zen package formats;
+legacy standalone pak files keep their existing path, and schema compatibility does not guarantee script behavior.
+
+Unmount drains async package loading on the Game thread, then removes the source before its compatibility
+container. Partial failures retain ownership for cleanup on a later pass and block new replacement mounts.
+Compatibility cache files are addressed by content and verified on reuse; existing files are never overwritten
+while the engine may still hold them.
 
 The cache hook samples ownership while holding the engine's cache lock. Existing signature tables use
 the original verifier. A confirmed null table goes through native completion, which obtains the read
@@ -173,13 +199,30 @@ rebuild the Asset Registry, refresh materials/audio, or replace resident assets.
 not mean existing resources have been reloaded. Resident assets, outstanding asynchronous loads and full
 replacement behavior still need in-game validation. Restart when a clean resource replacement is needed.
 
+When ModManager refreshes a mesh, it preserves a dynamic material instance only when the slot mapping
+and material identity remain continuous. A different material uses the new mesh's defaults, preventing
+an old skin's textures from being carried to another model. Detached instances with no other compatible consumers keep their parent
+and textures so a failed transaction can restore the previous component bindings.
+
 The independent **Mod Manager** plugin and Launcher classify mods from `.pak` and `.utoc` directory indices.
-Full player skin directories identify groups: Zero's base outfit uses `Player_051_female` and the swimsuit uses
-`Player_051_female_swimsuit`. Blackbird's base and evolved forms are separate groups. Skin mesh ownership takes
+The classification has two levels: one group per character, and the skins inside it. Zero's base outfit and
+swimsuit land in the `female` and `female_swimsuit` skins of `Player_051` (`Player_051/female` and
+`Player_051/female_swimsuit` as the index spells them). A mod that covers several skins is filed under the first
+of them, so it neither makes a category out of the combination
+nor shows up twice; the skins of one character can be on at the same time, and their mod counts add up to the
+count of the character. Blackbird's base and evolved forms are different skins. Skin mesh ownership takes
 priority over companion materials and variant helpers; texture-only mods use their resource directories.
 The pendant replacement uses `Pendant_07`; borrowed texture filenames do not change ownership. Other resources use their content directory,
-such as `/game/wwiseaudio` for audio. Unreadable indices remain unclassified.
-Grouping alone does not make mods mutually exclusive: non-overlapping outfits can coexist.
+such as `/game/wwiseaudio` for audio. Unreadable indices remain unclassified. Automatic categories with a
+single skin list their mods directly. Custom groups start with one level; use **+** to add levels up to
+five, and **−** to remove the last level. Type a name or select an existing group under the same parent.
+Both grid and list views show the full hierarchy. Saving groups for a folder mod moves it to
+`~mods/level-one/level-two/…/mod-folder`, preserving its selection and per-container overrides. Existing targets are never merged or overwritten.
+**Restore defaults** clears custom groups; saving restores automatic classification and moves the folder back to its automatic category.
+Existing one- and two-level settings remain valid, and renaming or updating a mod preserves its full path.
+Grouping alone does not make mods mutually exclusive: non-overlapping outfits can coexist. A mod that covers
+several skins conflicts with a mod covering any of them and coexists with the mods of skins it does not touch --
+exclusivity always comes from resources and chunk IDs, never from a whole character or skin.
 Resource cleanup remains limited to vehicles.
 GT3 RS and P1 cover `Vehicle_037`; Tourbillon covers `Vehicle_026`. Mods conflict when they override the same resource
 or replace the body/blueprint of the same vehicle. Enabling one disables conflicting variants in the same saved selection.
@@ -191,10 +234,100 @@ Known conflicts introduced by manual configuration edits freeze only the conflic
 unrelated mods continue synchronizing and hot replacing. The status file lists affected mods in `conflicts`.
 Selecting a single variant resolves the conflict.
 
+**Load conflicting mods anyway** (switch on the top switch row of the mods page, right of Compatibility mode; it writes `forceLoad` in
+`config/pak-mods.json`): exclusivity no longer stops two mods from being enabled together, and Runtime no longer
+freezes their mount changes because of resource conflicts. The engine's effective read priority selects overlapping
+resources. The switch does not change that priority or guarantee that the last selection or mount wins. For example,
+a vehicle replacement and a patch for its body textures can load together, but still need the correct resource priority.
+The switch does not merge their contents; textures and skeletons from different packages may still be incompatible.
+Turning it off restores exclusivity for subsequent enable operations. In hot mode, existing conflicting mounts stay
+in place and their changes freeze until a single variant is selected. In compatibility mode, turning it off does not
+rename already enabled files; select a variant again before starting the game.
+While it is on, hot-mode status lists affected mods under `forcedConflicts` and leaves `conflicts` empty.
+
+#### Mod folders: a mod or a category
+
+Folders under `~mods` are read by what they contain, never by their name:
+
+- a folder that directly holds a `.pak` / `.utoc` is one mod;
+- a folder that ships `mod.json`, `anomaly-source.json` or a cover (`icon` / `cover` / `preview` /
+  `thumbnail`) is one mod as well, even when its containers sit in `Paks/` below it;
+- a folder that only holds folders is a category folder, and every mod inside it is listed on its own.
+  `Paks/`, `Content/`, `HT/`, `WindowsNoEditor/`, `LogicMods/`, `Binaries/`, `Data/` and `Config/` are
+  container layout folders: they belong to the mod above them and never become a category.
+
+So `~mods/character/ModB/xxx.pak` is the mod `ModB` inside the category `character`,
+`~mods/ModB/Paks/xxx.pak` is still the single mod `ModB`, and `~mods/xxx.pak` is a loose mod. Category
+folders nest, and a mod's selection key is its own relative path (`character/ModB/`); a selection written
+for the category folder (`character/`) still covers every mod below it.
+
+"Organise folders" files each mod under a folder named after its category
+(`~mods/Player_051 零/ModB/`) and moves its selection key with it: a key is a path, so a key left behind
+would quietly turn off mods back on. Mods already in place stay where they are, and a target that already
+exists is skipped instead of merged. It also runs while the game is open: a folder the engine still holds
+open is skipped and reported, and one more pass after closing the game finishes it. Mods with custom
+groups are skipped and keep their folders and groups.
+A mod moved by hand without setting a custom group still follows automatic organisation.
+
+After a manual folder move, each container with no saved selection for its current path inherits the selection
+saved for its mod's name: the folder name, or the `.pak` filename of a loose container. Multiple containers in
+one mod count as one mod. Current file or directory selections take precedence, and physically disabled files
+stay disabled. Inheritance requires a unique mod name across the complete directory tree; namesakes are not
+resolved by name. If historical locations disagree, OFF takes precedence so an old ON entry cannot reactivate
+the mod. An explicit selection, or an automatic disable due to a conflict, removes uniquely attributable old
+keys that no longer reach an existing mod and saves the selection at the current path.
+
+#### Category names
+
+The name a category is shown under comes from a shipped data table,
+`Anomaly/assets/mod-groups/mod-groups.json`:
+
+```json
+{
+  "schemaVersion": 1,
+  "groups": { "Player_051": { "zh-CN": "零", "en-US": "Zero" } },
+  "skins": { "female": { "zh-CN": "女装", "en-US": "Female" } }
+}
+```
+
+- A category the table does not mention still gets a readable name: `Player_007` → Character 007 /
+  角色 007, `Vehicle_037` → Vehicle 037 / 车辆 037, `Pendant_07` → Pendant 07 / 挂件 07. A content
+  directory such as `/game/wwiseaudio` keeps its own spelling.
+- A name is shown in the language it is written in: an entry with no name for the current UI language
+  falls back to the generated category name instead of showing the other language's name, so an
+  English page never reads a Chinese character name or organises mods into a Chinese folder. A Chinese
+  page still reads a Latin vehicle name such as `Old Times`.
+- `Anomaly/config/mod-groups.json` is read after it and overrides or adds an entry; entries it does not
+  mention are kept, so a new character or car needs one line there and no package update.
+- Vehicles use the same mechanism as characters: the `Vehicle_*` mapping names both the display value and
+  the category folder (`~mods/Vehicle_037 车辆 037/`).
+- The identifier itself is not localized: renaming a category changes neither classification nor
+  exclusivity.
+- The shipped table comes from the game's own data: a row of `DT_Character` named `1NNN` is the
+  container folder `Player_0NN`, its `ItemName` is the character's name and `MeltPackID` says which body
+  the row is -- 零 exists as both the male and the female character, so they read as 「零（男）」 and
+  「零（女）」. A row of `DT_VehicleItemData` named `vehicleNNN` is `Vehicle_0NN` and carries the car's name.
+  A name this client carries in Chinese is recorded as `zh-CN` only; a vehicle whose name is Latin
+  letters gets an `en-US` entry as well.
+- A game update is one export away: the developer test plugin `ModNameExport` (not built or installed by
+  default; `build.cmd testplugins` builds it and the `TestPlugins` component installs it) reads both tables
+  on launch and writes nothing but
+  `Anomaly/state/plugins/anomaly.mod-name-export/mod-group-names.json`, which is read after the shipped
+  table -- no package edit, and the next mods-page refresh shows the new names.
+- The in-game Mod Manager uses the same names: its package ships
+  `Anomaly/plugins/ModManager/assets/mod-groups.json` (Chinese names only, generated from the same data;
+  a plugin can only read the files the host copied into its package). It shows the character and vehicle
+  names while the UI is Chinese and the generated `Character 051` / `Vehicle 037` while it is English;
+  a name never changes classification or exclusivity.
+
 The alternative wheel finishes in the example P1 archive should be imported individually. All containers inside one mod
 folder form one unit; the manager does not choose between variants packed into the same folder.
 
-1. Open Mod Manager, confirm hot mode, and use the mutually exclusive switches shared with Launcher.
+1. Open Mod Manager, confirm hot mode, and use the mutually exclusive switches shared with Launcher. The
+   window no longer pages: it lists every mod under its category at once, and only the list scrolls -- the
+   mode, the status, **Reload world** and the search box stay at the top. The search matches the mod name,
+   the category identifier, the Chinese category name and the skins, so a Chinese and an English input find
+   the same row.
 2. After container changes, the plugin automatically attempts to release resources from all variants of the vehicle.
    Each vehicle group keeps one **Release resources** button for manual retries.
 3. If instances remain, exit the vehicle and use the group's single **Force cleanup** button. The plugin validates object serials,
@@ -266,13 +399,18 @@ The installer checks for pak/utoc/ucas asset files and reports missing assets wh
 - Rows with an update show `↑ new version vX` plus an Update button that replaces the files and keeps `icon.png`.
 ## Launcher preferences
 
-Stored in `<launcher>\Anomaly\config\launcher-prefs.json`:
+Every launcher interface choice is stored in its own configuration, `<launcher>\AnomalyLauncher.json` (the old `launcher-prefs.json` is gone). Changes are written as they happen, so closing and reopening the window keeps them:
 
 | Key | Meaning |
 | --- | --- |
-| `browseSort` | Download-page ordering (`default` / `new` / `downloads` / `views` / `likes`) |
-| `browseCategory` | Selected category id (empty = all) |
-| `hideMature` | "Hide NSFW" switch state, enabled by default |
+| `theme` | Palette the launcher wears (default `naiwa`) |
+| `language` | Launcher language: `auto` (follow Windows), `zh-CN`, `en-US` |
+| `view.modsGrid` | Mods page layout (`true` = grid, the default; `false` = list) |
+| `view.modsPagination` | Whether the mods page paginates (default `false`) |
+| `view.modsPageSize` | Mods per page when it does (default `10`) |
+| `view.browseSort` | Download-page ordering (`default` / `new` / `downloads` / `views` / `likes`) |
+| `view.browseCategory` | Selected category id (empty = all) |
+| `view.browseHideMature` | "Hide NSFW" switch state, `true` by default |
 
 ## What the GameBanana API allows
 
@@ -284,11 +422,11 @@ Stored in `<launcher>\Anomaly\config\launcher-prefs.json`:
 | Category filtering | `_aFilters[Generic_Category]` takes a numeric id | Take the id from the record's category URL (`…/cats/43029`) |
 | NSFW filtering | NTE records only populate `_bHasContentRatings` | Local filter; also honours `_bHasNsfwContent`, `_bIsNsfw` and an "nsfw" category name |
 
-The in-game Mod Manager and Launcher show 10 mods per page, with paging controls above the list. Launcher uses a list with covers and switches; Group / notes also supports ungrouped mods and loose files.
+The launcher's mods page does not paginate by default: both views list every mod at once, the path, switches, search box and filters stay pinned at the top, and only the list area scrolls. The download page scrolls the same way, and reaching the bottom loads the next page -- it keeps loading while the list is still shorter than its viewport. Turning pagination on under **Settings > Mods page** splits the set by the configured page size, with the pager floating at the bottom of the list. Launcher uses a grid of covers or a list of rows, both carrying the same commands; Group / notes also supports ungrouped mods and loose files.
 
 ## Known limits
 
-- Import and download remain available while the game runs. Hot mode can switch mods; disabled mods can be updated, renamed or uninstalled once the engine releases their files. Compatibility mode cannot switch live; new imports stay disabled until enabled after exiting the game.
+- Import and download remain available while the game runs. Newly downloaded or locally imported mods default to disabled and must be enabled manually. Replacing or updating an existing mod preserves its previous selection. Hot mode can switch mods; disabled mods can be updated, renamed or uninstalled once the engine releases their files. Compatibility mode cannot switch live; new imports stay disabled until enabled after exiting the game.
 - Import and update keep the target disabled until all container files have been copied. Failed operations leave it disabled.
 - Without runtime loading, every change needs a game restart — paks are mounted at start-up only.
   With it, containers can be added, released and replaced at runtime

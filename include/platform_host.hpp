@@ -11,6 +11,7 @@
 #include "config.hpp"
 
 #include <filesystem>
+#include <array>
 #include <functional>
 #include <cstdint>
 #include <chrono>
@@ -114,6 +115,17 @@ struct PlatformDiagnostics {
     std::shared_ptr<anomaly::StructuredLogger> logger;
 };
 
+struct PlatformWindowAppearance {
+    // Standalone hosts stay transparent unless their caller supplies an opaque backdrop.
+    std::array<float, 4> clear_color{};
+    bool show_in_taskbar{};
+    bool close_exits{};
+    // Native handles are HWND values. These hooks run on the window's UI thread.
+    std::function<void(void*)> setup_window;
+    std::function<void(void*, std::uint32_t)> menu_command;
+    std::function<std::array<float, 4>()> background_color;
+};
+
 void RunPlatform(
     const std::filesystem::path& root,
     const AnalyzerConfig& config,
@@ -121,7 +133,8 @@ void RunPlatform(
     anomaly::CoreMemoryServices memory_services = {},
     std::shared_ptr<anomaly::Ue5NteAdapter> adapter = {},
     PlatformDiagnostics diagnostics = {},
-    std::shared_ptr<PluginManager> plugins = {});
+    std::shared_ptr<PluginManager> plugins = {},
+    PlatformWindowAppearance appearance = {});
 void RunEmbeddedPlatform(
     const std::filesystem::path& root,
     const AnalyzerConfig& config,

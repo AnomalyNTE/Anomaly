@@ -16,6 +16,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -74,6 +75,17 @@ struct NteCombatExecFunctionTargetsSnapshot {
     std::array<NteCombatExecFunctionTarget, kNteCombatExecFunctionCapacity> entries{};
     std::size_t count{};
     bool discovery_complete{};
+};
+
+// Internal owned account observation; never contains live engine pointers.
+// Canonical text, accepted width and the source priority are profile-driven and
+// belong to the adapter, so this only carries the sampled values.
+struct NteAccountSample {
+    std::uint64_t hud_value{};
+    std::uint64_t replicated_value{};
+    [[nodiscard]] bool SourcesDisagree() const noexcept {
+        return hud_value != 0 && replicated_value != 0 && hud_value != replicated_value;
+    }
 };
 
 class Ue5NteAdapter final {
@@ -165,6 +177,8 @@ public:
     [[nodiscard]] NteCombatDiagnosticsSnapshot CombatDiagnostics() const noexcept;
     // Read-only diagnostic view used by anomaly-cli's ue combat/buffs commands.
     [[nodiscard]] std::string CombatEventsJson(bool buffs_only = false) const;
+    // Worker reads a fresh owned snapshot; absent/stopped sessions return nullopt.
+    [[nodiscard]] std::optional<std::string> AccountKey(bool* sources_disagree = nullptr) const;
     [[nodiscard]] ProfileResolutionSnapshot Resolution() const;
 
 private:

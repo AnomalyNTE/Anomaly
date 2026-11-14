@@ -1,4 +1,5 @@
 #pragma once
+#if 0 // Retired vehicle cleanup path; kept as source reference only.
 #include "native_access.hpp"
 #include "vehicle_templates.hpp"
 #include <chrono>
@@ -162,3 +163,5 @@ private:
     std::string retained_;
 };
 } // namespace mod_manager
+
+#endif

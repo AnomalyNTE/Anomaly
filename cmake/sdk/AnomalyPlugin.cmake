@@ -4,6 +4,8 @@ include(CMakeParseArguments)
 #     SOURCES <source>...
 #     MANIFEST <manifest.json>
 #     [PACKAGE_NAME <name>] [OUTPUT_DIRECTORY <directory>]
+#     [RESOURCE_DIRECTORIES <directory>...]
+#     [BUNDLED_TARGETS <target>...]
 #     [C_ONLY] [NO_RELEASE] [TEST_PLUGIN])
 #
 # Builds one plugin package and owns its packaging rules, so a package can never be
@@ -17,10 +19,12 @@ include(CMakeParseArguments)
 #     ANOMALY_BUILD_TEST_PLUGINS is ON, and it then installs into the TestPlugins component
 #     instead of GameRuntime;
 #   - NO_RELEASE builds the package without installing it at all.
+#   - RESOURCE_DIRECTORIES adds package data beside the standard resource folders;
+#     BUNDLED_TARGETS adds companion executables/libraries to the same package.
 function(anomaly_add_plugin target)
     set(options C_ONLY NO_RELEASE TEST_PLUGIN)
     set(oneValueArgs MANIFEST PACKAGE_NAME OUTPUT_DIRECTORY)
-    set(multiValueArgs SOURCES)
+    set(multiValueArgs SOURCES RESOURCE_DIRECTORIES BUNDLED_TARGETS)
     cmake_parse_arguments(ANOMALY "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
     # A test package is opt-in: without the switch it is not built at all, so nothing has to
     # depend on, install or validate a target that does not exist. ANOMALY_BUILD_TEST_PLUGINS
@@ -69,13 +73,16 @@ function(anomaly_add_plugin target)
     # Package data stays beside the manifest in both the build tree and installation.
     # Profiles hold plugin-owned signatures and layouts, separate from other assets.
     get_filename_component(anomaly_package_source_directory "${ANOMALY_MANIFEST}" DIRECTORY)
-    set(anomaly_package_resource_directories locales assets profile)
+    set(anomaly_package_resource_directories locales assets profile ${ANOMALY_RESOURCE_DIRECTORIES})
+    list(REMOVE_DUPLICATES anomaly_package_resource_directories)
+    set(anomaly_existing_resource_directories)
     add_custom_command(TARGET ${target} POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
                 "${ANOMALY_MANIFEST}" "$<TARGET_FILE_DIR:${target}>/manifest.json"
         VERBATIM)
     foreach(anomaly_resource_directory IN LISTS anomaly_package_resource_directories)
         if(EXISTS "${anomaly_package_source_directory}/${anomaly_resource_directory}")
+            list(APPEND anomaly_existing_resource_directories "${anomaly_resource_directory}")
             if(anomaly_resource_directory STREQUAL "profile")
                 add_custom_command(TARGET ${target} POST_BUILD
                     COMMAND "${CMAKE_COMMAND}" -E rm -rf "$<TARGET_FILE_DIR:${target}>/profile"
@@ -89,6 +96,19 @@ function(anomaly_add_plugin target)
         endif()
     endforeach()
     set_property(TARGET ${target} PROPERTY ANOMALY_PACKAGE_DIRECTORY "${ANOMALY_OUTPUT_DIRECTORY}")
+    set_target_properties(${target} PROPERTIES
+        ANOMALY_PACKAGE_NAME "${ANOMALY_PACKAGE_NAME}"
+        ANOMALY_PACKAGE_MANIFEST "${ANOMALY_MANIFEST}"
+        ANOMALY_PACKAGE_RESOURCE_DIRECTORIES "${anomaly_existing_resource_directories}"
+        ANOMALY_PACKAGE_BUNDLED_TARGETS "${ANOMALY_BUNDLED_TARGETS}")
+    foreach(anomaly_bundled_target IN LISTS ANOMALY_BUNDLED_TARGETS)
+        add_dependencies(${target} ${anomaly_bundled_target})
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                    "$<TARGET_FILE:${anomaly_bundled_target}>"
+                    "$<TARGET_FILE_DIR:${target}>/$<TARGET_FILE_NAME:${anomaly_bundled_target}>"
+            VERBATIM)
+    endforeach()
     if(ANOMALY_NO_RELEASE)
         return()
     endif()
@@ -98,10 +118,16 @@ function(anomaly_add_plugin target)
     else()
         set(anomaly_package_component GameRuntime)
     endif()
+    set_property(TARGET ${target} PROPERTY ANOMALY_PACKAGE_INSTALL_COMPONENT "${anomaly_package_component}")
     set(anomaly_package_directory "Anomaly/plugins/${ANOMALY_PACKAGE_NAME}")
     install(TARGETS ${target}
         RUNTIME DESTINATION "${anomaly_package_directory}" COMPONENT ${anomaly_package_component}
         LIBRARY DESTINATION "${anomaly_package_directory}" COMPONENT ${anomaly_package_component})
+    if(ANOMALY_BUNDLED_TARGETS)
+        install(TARGETS ${ANOMALY_BUNDLED_TARGETS}
+            RUNTIME DESTINATION "${anomaly_package_directory}" COMPONENT ${anomaly_package_component}
+            LIBRARY DESTINATION "${anomaly_package_directory}" COMPONENT ${anomaly_package_component})
+    endif()
     install(FILES "${ANOMALY_MANIFEST}"
         DESTINATION "${anomaly_package_directory}" COMPONENT ${anomaly_package_component})
     foreach(anomaly_resource_directory IN LISTS anomaly_package_resource_directories)

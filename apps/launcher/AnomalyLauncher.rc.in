@@ -1,3 +1,5 @@
 101 RCDATA "@ANOMALY_PLATFORM_LOGO_PATH@"
 102 RCDATA "@CMAKE_SOURCE_DIR@/apps/launcher/assets/mod-placeholder.png"
+103 RCDATA "@CMAKE_SOURCE_DIR@/apps/launcher/assets/afdian-sponsor.png"
+104 RCDATA "@CMAKE_SOURCE_DIR@/apps/launcher/assets/kofi.png"
 201 ICON "@ANOMALY_LAUNCHER_ICON_PATH@"

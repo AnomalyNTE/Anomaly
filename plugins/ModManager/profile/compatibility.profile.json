@@ -28,6 +28,8 @@
     "FieldClassName": 0,
     "PropertyDim": 48,
     "ObjectPropertyClass": 112,
+    "ClassPropertyMetaClass": 120,
+    "StructPropertyType": 112,
     "FunctionReturn": 184,
     "PoolOffset": 112,
     "PoolElementStride": 32,
@@ -113,9 +115,51 @@
     "VisualSharedKey": 180,
     "VisualSharedReferences": 188,
     "VisualSharedInnerMap": 200,
-    "VisualDesc": 0
+    "VisualDesc": 0,
+    "ResourceArrayInner": 120,
+    "ResourceArrayFlags": 112
   },
   "symbols": [
+    {
+      "name": "ResourcePackageExists",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 08 48 89 74 24 10 55 57 41 56 48 8D 6C 24 B9 48 81 EC 90 00 00 00 41 0F B6 F8 48 8B DA 45 33 F6 4C 8D 45 7F 48 8D 55 F7 4C 89 75 F7 44 88 75 FF 48 8B F1 E8 ?? ?? ?? ?? 84 C0",
+          "entry": "48 89 5C 24 08 48 89 74 24 10 55 57 41 56 48 8D 6C 24 B9 48 81 EC 90 00 00 00",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "CleanupWorld",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 10 48 89 6C 24 18 56 57 41 56 48 83 EC 30 FF 05 ?? ?? ?? ?? 48 8D 3D ?? ?? ?? ?? F6 81 93 01 00 00 40 49 8B F1 41 0F B6 E8 44 0F B6 F2",
+          "entry": "48 89 5C 24 10 48 89 6C 24 18 56 57 41 56 48 83 EC 30",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "ForEachObjectOfClass",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 10 48 89 74 24 18 48 89 7C 24 20 55 41 54 41 55 41 56 41 57 48 8D AC 24 30 FF FF FF 48 81 EC D0 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 C8 00 00 00 33 DB 44 89 4C 24 40 48",
+          "entry": "48 89 5C 24 10 48 89 74 24 18 48 89 7C 24 20 55 41 54 41 55 41 56 41 57 48 8D AC 24 30 FF FF FF 48 81 EC D0 01 00 00",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "ForEachObjectWithPackage",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 08 48 89 74 24 18 48 89 7C 24 20 55 41 54 41 55 41 56 41 57 48 8D 6C 24 B0 48 81 EC 50 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 48 44 89 4C 24 50 45 0F B6 E8 4C 8B FA 4C 8B",
+          "entry": "48 89 5C 24 08 48 89 74 24 18 48 89 7C 24 20 55 41 54 41 55 41 56 41 57 48 8D 6C 24 B0 48 81 EC 50 01 00 00",
+          "values": {}
+        }
+      ]
+    },
     {
       "name": "PhysicsTemplateLookup",
       "candidates": [
@@ -233,6 +277,76 @@
         {
           "pattern": "48 89 6C 24 18 48 89 74 24 20 57 41 54 41 56 48 83 EC 30 41 8B 30 4D 8B F0 0F B7 C1 4C 8B E2 8B E8 C1 ED 08 8D 7E 01 3B FE 0F 8C ?? ?? ?? ?? 48 89 5C 24 50 4C 89 7C 24 58 44 0F B6 F8 B8 04 00",
           "entry": "48 89 6C 24 18 48 89 74 24 20 57 41 54 41 56 48 83 EC 30 41 8B 30 4D 8B",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "RenameResourcePackage",
+      "candidates": [
+        {
+          "pattern": "40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 E1 48 81 EC B8 00 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 07 4C 8D 3D ?? ?? ?? ?? 45 8B F1 49 8B F0 4C 8B E2 48 8B F9 4D 85 C0 0F 84 ?? ?? ?? ?? 4C 3B 41 20 0F 84 ?? ?? ?? ??",
+          "entry": "40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 E1 48 81 EC B8 00 00",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "LoadResourceObject",
+      "candidates": [
+        {
+          "pattern": "40 55 56 57 41 54 41 55 41 57 48 8D AC 24 A8 F9 FF FF 48 81 EC 58 07 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 30 06 00 00 0F B6 85 C0 06 00 00 49 8B F8 4C 8B 85 B8 06 00 00 33 F6 44 8B AD B0 06 00 00",
+          "entry": "40 55 56 57 41 54 41 55 41 57 48 8D AC 24 A8 F9 FF FF 48 81 EC 58 07 00",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "AcquireResourceReference",
+      "candidates": [
+        {
+          "pattern": "8B 41 0C 3B 05 ?? ?? ?? ?? 7D ?? 8B C8 0F B7 C0 48 C1 E9 10 48 8D 14 40 48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8D 0C D1 EB ?? 33 C9 F0 FF 41 14 8B 41 08 0F BA E0 1D 72 ?? BA 00 00 00 20 E9 ?? ?? ?? ??",
+          "entry": "8B 41 0C 3B 05",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "ReleaseResourceReference",
+      "candidates": [
+        {
+          "pattern": "8B 41 0C 3B 05 ?? ?? ?? ?? 7D ?? 8B C8 0F B7 C0 48 C1 E9 10 48 8D 14 40 48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8D 0C D1 EB ?? 33 C9 B8 FF FF FF FF F0 0F C1 41 14 83 F8 01 75 ?? BA 00 00 00 20 E9 ?? ?? ?? ??",
+          "entry": "8B 41 0C 3B 05",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "FlushResourceLoading",
+      "candidates": [
+        {
+          "pattern": "40 55 53 48 8D AC 24 68 F8 FF FF 48 81 EC 98 08 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 70 07 00 00 48 83 3D ?? ?? ?? ?? 00 48 8B D9 48 89 4C 24 40 0F 84 ?? ?? ?? ?? FF 15 ?? ?? ?? ?? 84 C0",
+          "entry": "40 55 53 48 8D AC 24 68 F8 FF FF 48 81 EC 98 08 00 00 48 8B 05",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "ResetResourcePackageLoaders",
+      "candidates": [
+        {
+          "pattern": "48 83 EC 38 E8 ?? ?? ?? ?? 48 85 C0 74 ?? 48 8B 40 48 48 85 C0 74 ?? 48 89 5C 24 30 48 8B 58 20 48 85 DB 74 ??",
+          "entry": "48 83 EC 38 E8",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "SetMaterialParent",
+      "candidates": [
+        {
+          "pattern": "40 55 56 41 54 41 55 41 57 48 8B EC 48 83 EC 70 48 8B 81 28 01 00 00 45 32 ED 45 0F B6 E0 48 8B F2 4C 8B F9 48 85 C0 74 ?? 48 3B C2 0F 94 C0 84 C0 0F 85 ?? ?? ?? ?? 48 89 9C 24 A8 00 00 00 48 89 BC 24 B0 00 00 00",
+          "entry": "40 55 56 41 54 41 55 41 57 48 8B EC 48 83 EC 70 48 8B 81 28 01 00 00 45",
           "values": {}
         }
       ]

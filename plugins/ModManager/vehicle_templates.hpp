@@ -1,4 +1,5 @@
 #pragma once
+#if 0 // Retired vehicle cleanup path; kept as source reference only.
 #include "native_access.hpp"
 #include <cstring>
 #include <map>
@@ -533,3 +534,5 @@ public:
     }
 };
 } // namespace mod_manager
+
+#endif

@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
+#include <cstdio>
 #include <cwctype>
 #include <fstream>
 #include <optional>
@@ -12,6 +14,15 @@
 #include <utility>
 
 namespace anomaly::launcher {
+
+bool IsCustomLauncherBackground(PlatformUiPalette palette,
+    std::string_view background_path, bool enabled) {
+    if (!enabled || background_path.empty()) return false;
+    auto normalized = std::filesystem::path(std::u8string(background_path.begin(), background_path.end()))
+        .lexically_normal().generic_u8string();
+    for (auto& c : normalized) if (c >= u8'A' && c <= u8'Z') c = static_cast<char8_t>(c - u8'A' + u8'a');
+    return palette != PlatformUiPalette::Naiwa || normalized != u8"assets/images/naiwa-background.png";
+}
 namespace {
 
 constexpr std::uint64_t kMaximumConfigurationBytes = 64U * 1024U;
@@ -20,6 +31,29 @@ constexpr std::wstring_view kMainlandLauncherExecutableName = L"NTELauncher.exe"
 constexpr std::wstring_view kGlobalLauncherExecutableName = L"NTEGlobalLauncher.exe";
 constexpr std::wstring_view kLauncherUpdateConfigFile = L"Config\\Config.ini";
 constexpr std::wstring_view kLauncherUpdateSection = L"UPDATE_CONFIG";
+
+// "#rrggbb" is how the theme files spell a colour, so the launcher stores its own colours the same
+// way: a value copied from the settings file drops straight into a theme layout.
+std::string HexColorText(const anomaly::PlatformUiColor color) {
+    const auto channel = [](const float value) {
+        return static_cast<unsigned>(std::lround(std::clamp(value, 0.0f, 1.0f) * 255.0f));
+    };
+    char text[8]{};
+    std::snprintf(text, sizeof(text), "#%02x%02x%02x",
+        channel(color.red), channel(color.green), channel(color.blue));
+    return text;
+}
+
+anomaly::PlatformUiColor ReadHexColor(const nlohmann::json& object, const char* key,
+    const anomaly::PlatformUiColor fallback) {
+    if (!object.contains(key) || !object.at(key).is_string()) return fallback;
+    std::string value = object.at(key).get<std::string>();
+    if (value.size() == 7 && value.front() == '#') value.erase(value.begin());
+    if (value.size() != 6) return fallback;
+    unsigned red{}, green{}, blue{};
+    if (std::sscanf(value.c_str(), "%2x%2x%2x", &red, &green, &blue) != 3) return fallback;
+    return {red / 255.0f, green / 255.0f, blue / 255.0f, 1.0f};
+}
 
 std::wstring_view LauncherExecutableName(const NteClient client) noexcept {
     return client == NteClient::Global
@@ -168,6 +202,7 @@ std::filesystem::path ExecutableFromCommand(std::wstring value) {
 bool LooksLikeNte(const std::wstring_view value) {
     const std::wstring folded = Fold(std::wstring(value));
     return folded.find(L"neverness") != std::wstring::npos ||
+        folded == L"\u7570\u74b0" || folded == L"\u5f02\u73af" ||
         folded.find(L"ntegloballauncher") != std::wstring::npos ||
         folded.find(L"nte global launcher") != std::wstring::npos ||
         folded.find(L"ntelauncher") != std::wstring::npos ||
@@ -221,8 +256,19 @@ void CollectUninstallLocations(
             (!display_icon || !LooksLikeNte(*display_icon))) {
             continue;
         }
+        const bool steam_install = std::wstring_view(name.data(), length).starts_with(L"Steam App ");
+        if (steam_install && client != NteClient::Global) continue;
+        if (display_icon && NameEquals(ExecutableFromCommand(*display_icon),
+                LauncherExecutableName(client == NteClient::Global
+                    ? NteClient::MainlandChina : NteClient::Global))) continue;
         if (const auto location = ReadRegistryString(entry.Get(), L"InstallLocation")) {
             result.roots.emplace_back(*location);
+            // Some Steam uninstall entries have a garbled installation basename.
+            // The registered title is another candidate, validated by HTGame.exe below.
+            if (steam_install && display_name &&
+                std::filesystem::path(*display_name).filename() == std::filesystem::path(*display_name)) {
+                result.roots.push_back(std::filesystem::path(*location).parent_path() / *display_name);
+            }
         }
         if (display_icon) {
             const auto executable = ExecutableFromCommand(*display_icon);
@@ -310,7 +356,8 @@ void AddAncestors(
 }
 
 std::optional<std::filesystem::path> FindGameDirectory(
-    const std::vector<std::filesystem::path>& roots) {
+    const std::vector<std::filesystem::path>& roots,
+    const std::filesystem::path& excluded_directory) {
     constexpr std::array<std::wstring_view, 9> candidates{
         L"", L"HTGame\\Binaries\\Win64", L"Game\\HTGame\\Binaries\\Win64",
         L"Games\\HTGame\\Binaries\\Win64", L"HT\\Binaries\\Win64",
@@ -322,7 +369,8 @@ std::optional<std::filesystem::path> FindGameDirectory(
     for (const auto& root : roots) {
         for (const auto relative : candidates) {
             const auto directory = relative.empty() ? root : root / relative;
-            if (IsNteGameDirectory(directory)) return directory.lexically_normal();
+            if (PathKey(directory) != PathKey(excluded_directory) && IsNteGameDirectory(directory))
+                return directory.lexically_normal();
         }
     }
     return std::nullopt;
@@ -405,6 +453,59 @@ LauncherConfigurationLoadResult LoadLauncherConfiguration(
             result.configuration.selected_client =
                 document.value("selectedClient", std::string{}) == "global"
                     ? NteClient::Global : NteClient::MainlandChina;
+            // A configuration written before the launcher had a theme carries no name
+            // and keeps the default the struct declares.
+            if (document.contains("theme") && document.at("theme").is_string()) {
+                const std::string theme = document.at("theme").get<std::string>();
+                if (!theme.empty()) result.configuration.theme = theme;
+            }
+            if (document.contains("language") && document.at("language").is_string()) {
+                const std::string language = document.at("language").get<std::string>();
+                if (!language.empty()) result.configuration.language = language;
+            }
+            if (document.contains("view") && document.at("view").is_object()) {
+                const auto& view = document.at("view");
+                LauncherViewSettings& settings = result.configuration.view;
+                settings.mods_grid = view.value("modsGrid", settings.mods_grid);
+                settings.mods_pagination =
+                    view.value("modsPagination", settings.mods_pagination);
+                settings.mods_page_size = LauncherNearestPageSize(
+                    view.value("modsPageSize", settings.mods_page_size));
+                settings.browse_sort = view.value("browseSort", settings.browse_sort);
+                settings.browse_category =
+                    view.value("browseCategory", settings.browse_category);
+                settings.browse_hide_mature =
+                    view.value("browseHideMature", settings.browse_hide_mature);
+            }
+            if (document.contains("artwork") && document.at("artwork").is_object()) {
+                const auto& artwork = document.at("artwork");
+                LauncherThemeArtwork& target = result.configuration.artwork;
+                target.background = artwork.value("background", std::string{});
+                target.background_mode = std::clamp(
+                    artwork.value("backgroundMode", target.background_mode), -1, 3);
+                target.surface_opacity = std::clamp(
+                    artwork.value("surfaceOpacity", target.surface_opacity), -1.0f, 1.0f);
+            }
+            if (document.contains("update") && document.at("update").is_object()) {
+                const auto& update = document.at("update");
+                result.configuration.update.auto_check =
+                    update.value("autoCheck", result.configuration.update.auto_check);
+                result.configuration.update.endpoint =
+                    update.value("endpoint", std::string{});
+                result.configuration.update.skipped_version =
+                    update.value("skippedVersion", std::string{});
+            }
+            if (document.contains("customColors") && document.at("customColors").is_object()) {
+                const auto& colors = document.at("customColors");
+                anomaly::PlatformUiCustomColors& target = result.configuration.custom_colors;
+                target.accent = ReadHexColor(colors, "accent", target.accent);
+                target.text = ReadHexColor(colors, "text", target.text);
+                target.window_background =
+                    ReadHexColor(colors, "windowBackground", target.window_background);
+                target.child_background =
+                    ReadHexColor(colors, "childBackground", target.child_background);
+                target.border = ReadHexColor(colors, "border", target.border);
+            }
         } else {
             throw std::invalid_argument("unsupported launcher configuration shape");
         }
@@ -450,9 +551,36 @@ LauncherConfigurationSaveResult SaveLauncherConfiguration(
             {"schemaVersion", 2},
             {"selectedClient", configuration.selected_client == NteClient::Global
                 ? "global" : "mainlandChina"},
+            {"theme", configuration.theme},
+            {"language", configuration.language},
+            {"artwork", {
+                {"background", configuration.artwork.background},
+                {"backgroundMode", configuration.artwork.background_mode},
+                {"surfaceOpacity", configuration.artwork.surface_opacity},
+            }},
+            {"customColors", {
+                {"accent", HexColorText(configuration.custom_colors.accent)},
+                {"text", HexColorText(configuration.custom_colors.text)},
+                {"windowBackground", HexColorText(configuration.custom_colors.window_background)},
+                {"childBackground", HexColorText(configuration.custom_colors.child_background)},
+                {"border", HexColorText(configuration.custom_colors.border)},
+            }},
+            {"view", {
+                {"modsGrid", configuration.view.mods_grid},
+                {"modsPagination", configuration.view.mods_pagination},
+                {"modsPageSize", configuration.view.mods_page_size},
+                {"browseSort", configuration.view.browse_sort},
+                {"browseCategory", configuration.view.browse_category},
+                {"browseHideMature", configuration.view.browse_hide_mature},
+            }},
             {"clients", {
                 {"mainlandChina", client_document(configuration.mainland_china)},
                 {"global", client_document(configuration.global)},
+            }},
+            {"update", {
+                {"autoCheck", configuration.update.auto_check},
+                {"endpoint", configuration.update.endpoint},
+                {"skippedVersion", configuration.update.skipped_version},
             }},
         };
         const std::string text = document.dump(2) + '\n';
@@ -519,7 +647,8 @@ LauncherClientConfiguration DiscoverLauncherConfiguration(
     const LauncherClientConfiguration& preferred,
     const LauncherDiscoveryOptions& options) {
     LauncherClientConfiguration result;
-    if (IsNteGameDirectory(preferred.game_directory)) {
+    if (PathKey(preferred.game_directory) != PathKey(options.other_game_directory) &&
+        IsNteGameDirectory(preferred.game_directory)) {
         result.game_directory = preferred.game_directory.lexically_normal();
     }
     if (IsNteLauncherExecutable(preferred.launcher_executable, options.client)) {
@@ -542,6 +671,7 @@ LauncherClientConfiguration DiscoverLauncherConfiguration(
     }
 
     for (const auto& executable : game_executables) {
+        if (PathKey(executable.parent_path()) == PathKey(options.other_game_directory)) continue;
         if (NameEquals(executable, kGameExecutableName) && IsRegularFile(executable)) {
             if (result.game_directory.empty()) {
                 result.game_directory = executable.parent_path().lexically_normal();
@@ -563,11 +693,11 @@ LauncherClientConfiguration DiscoverLauncherConfiguration(
     if (result.game_directory.empty()) {
         std::vector<std::filesystem::path> launcher_roots;
         AddAncestors(launcher_roots, result.launcher_executable.parent_path());
-        if (const auto discovered = FindGameDirectory(launcher_roots)) {
+        if (const auto discovered = FindGameDirectory(launcher_roots, options.other_game_directory)) {
             result.game_directory = *discovered;
             AddAncestors(roots, result.game_directory);
         } else if (options.allow_unpaired_game_discovery) {
-            if (const auto searched = FindGameDirectory(roots)) {
+            if (const auto searched = FindGameDirectory(roots, options.other_game_directory)) {
                 result.game_directory = *searched;
                 AddAncestors(roots, result.game_directory);
             }

@@ -1,3 +1,8 @@
+// Source only: nothing builds or ships this library. The launcher only loads it from the
+// kAutoStartOfficialClient path in apps/launcher/main.cpp and that switch is off, so the CMake target,
+// the GameRuntime install rule and the release PE list no longer carry it. The file is kept because that
+// path depends on it if it is ever turned back on.
+//
 // Injected into the official launcher so a session can start without the user touching it.
 //
 // The launcher is NTEGame.exe. It owns the OneSDK pipe server that the login and support buttons come

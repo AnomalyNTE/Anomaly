@@ -8,6 +8,7 @@
 #include "anomaly/nte_profile_runtime.hpp"
 #include "anomaly/nte_pak_signature_bypass.hpp"
 #include "anomaly/pak_mod_runtime.hpp"
+#include "anomaly/pak_mod_catalog.hpp"
 #include "anomaly/pak_mod_settings.hpp"
 #include "anomaly/platform_settings.hpp"
 #include "anomaly/repository_coordinator.hpp"
@@ -16,6 +17,7 @@
 #include "anomaly/service_graph.hpp"
 #include "anomaly/service_graph_diagnostics.hpp"
 #include "anomaly/structured_logger.hpp"
+#include "anomaly/telemetry.hpp"
 #include "anomaly/websocket_server.hpp"
 #include "config.hpp"
 #include "pipe_server.hpp"
@@ -28,9 +30,11 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cwctype>
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -43,6 +47,8 @@
 #include <system_error>
 #include <utility>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
 
@@ -62,6 +68,7 @@ struct CoreContext {
     std::unique_ptr<anomaly::CrashReporter> crash_reporter;
     std::shared_ptr<anomaly::DiagnosticPipeService> diagnostic_pipe;
     std::shared_ptr<anomaly::StructuredLogger> logger;
+    std::shared_ptr<anomaly::TelemetryClient> telemetry;
     std::shared_ptr<anomaly::PlatformSettingsStore> settings;
     std::shared_ptr<anomaly::WebSocketServer> websocket;
     HMODULE game_module{};
@@ -97,6 +104,10 @@ struct RuntimeControl {
 
 HMODULE g_core_module{};
 std::unique_ptr<RuntimeControl> g_runtime_control = std::make_unique<RuntimeControl>();
+// Foreign host payloads (upscaler/frame-gen hosts) loaded before the game's own
+// graphics initialization. They are never unloaded: their hooks must outlive the
+// runtime's teardown, and process exit releases the modules.
+std::vector<HMODULE> g_host_payloads;
 
 DWORD CurrentExceptionError() noexcept {
     try {
@@ -139,6 +150,183 @@ void RuntimeLog(
     details.event_id = std::move(event_id);
     static_cast<void>(context->logger->Log(
         level, "runtime", std::move(message), std::move(details)));
+}
+
+std::wstring Utf8ToWidePath(std::string_view value) {
+    if (value.empty()) return {};
+    const int size = MultiByteToWideChar(
+        CP_UTF8, 0, value.data(), static_cast<int>(value.size()), nullptr, 0);
+    if (size <= 0) return {};
+    std::wstring wide(static_cast<std::size_t>(size), L'\0');
+    const int written = MultiByteToWideChar(
+        CP_UTF8, 0, value.data(), static_cast<int>(value.size()), wide.data(), size);
+    if (written <= 0) return {};
+    wide.resize(static_cast<std::size_t>(written));
+    return wide;
+}
+
+std::filesystem::path ResolveHostPath(
+    const std::filesystem::path& runtime_root, std::wstring_view raw) {
+    std::wstring expanded(32768, L'\0');
+    const DWORD length = ExpandEnvironmentStringsW(
+        std::wstring(raw).c_str(), expanded.data(), static_cast<DWORD>(expanded.size()));
+    if (length == 0 || length > expanded.size()) {
+        expanded.assign(raw);
+    } else {
+        expanded.resize(length - 1);
+    }
+    if (expanded.empty()) return {};
+    const std::filesystem::path candidate(expanded);
+    return candidate.is_absolute() ? candidate : runtime_root / candidate;
+}
+
+std::vector<std::filesystem::path> HostPayloadCandidates(
+    const std::shared_ptr<CoreContext>& context) {
+    std::vector<std::filesystem::path> candidates;
+    const auto config_path = context->runtime_root / L"config" / L"hosts.json";
+    std::error_code error;
+
+    if (!std::filesystem::is_regular_file(config_path, error)) {
+        const auto legacy = context->runtime_root / L"config" / L"hosts.txt";
+        if (std::filesystem::is_regular_file(legacy, error)) {
+            RuntimeLog(
+                context, anomaly::LogLevel::Warning, "hosts.config.legacy_ignored",
+                "hosts=legacy-list-ignored path=" + legacy.string() +
+                    " expected=" + config_path.string());
+        }
+        return candidates;
+    }
+
+    std::ifstream input(config_path, std::ios::binary);
+    if (!input) {
+        RuntimeLog(
+            context, anomaly::LogLevel::Warning, "hosts.config.unreadable",
+            "hosts=unreadable path=" + config_path.string());
+        return candidates;
+    }
+    std::string text(
+        (std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+
+    try {
+        const auto document = nlohmann::json::parse(text);
+        if (!document.is_object()) {
+            RuntimeLog(
+                context, anomaly::LogLevel::Warning, "hosts.config.invalid",
+                "hosts=invalid path=" + config_path.string() + " reason=root-not-object");
+            return candidates;
+        }
+        const auto version = document.find("schemaVersion");
+        if (version != document.end() &&
+            (!version->is_number_integer() || version->get<int>() != 1)) {
+            RuntimeLog(
+                context, anomaly::LogLevel::Warning, "hosts.config.invalid",
+                "hosts=invalid path=" + config_path.string() + " reason=unsupported-schema");
+            return candidates;
+        }
+        const auto entries = document.find("hosts");
+        if (entries == document.end() || !entries->is_array()) {
+            RuntimeLog(
+                context, anomaly::LogLevel::Warning, "hosts.config.invalid",
+                "hosts=invalid path=" + config_path.string() + " reason=hosts-not-array");
+            return candidates;
+        }
+        for (const auto& entry : *entries) {
+            std::string value;
+            bool enabled = true;
+            if (entry.is_string()) {
+                value = entry.get<std::string>();
+            } else if (entry.is_object()) {
+                const auto path = entry.find("path");
+                if (path != entry.end() && path->is_string()) value = path->get<std::string>();
+                const auto flag = entry.find("enabled");
+                if (flag != entry.end() && flag->is_boolean()) enabled = flag->get<bool>();
+            }
+            if (value.empty() || !enabled) continue;
+            const auto resolved = ResolveHostPath(context->runtime_root, Utf8ToWidePath(value));
+            if (!resolved.empty()) candidates.push_back(resolved);
+        }
+    } catch (const std::exception& exception) {
+        RuntimeLog(
+            context, anomaly::LogLevel::Warning, "hosts.config.invalid",
+            "hosts=invalid path=" + config_path.string() + " reason=" + exception.what());
+    }
+    return candidates;
+}
+
+// Loads upscaler/frame-generation hosts listed in config/hosts.json. Runs on the
+// bootstrap thread, before the game creates any device, so a host still wins the
+// hook race and nothing has to be written into the game directory.
+void LoadHostPayloads(const std::shared_ptr<CoreContext>& context) {
+    // Missing or empty configuration: one attribute query and return, no parse and
+    // no log traffic, so the proxy path costs nothing when nothing is configured.
+    const auto candidates = HostPayloadCandidates(context);
+    if (candidates.empty()) return;
+
+    // Hot injection happens after the game already created its device and
+    // swapchain; a graphics host cannot hook retroactively, so it is only loaded
+    // for the process-start bootstrap (the dwmapi proxy).
+    AnomalyBootstrapType bootstrap_type = ANOMALY_BOOTSTRAP_TYPE_UNKNOWN;
+    if (const auto session = context->session.lock()) {
+        bootstrap_type = session->StartContext().bootstrap_type;
+    }
+    if (bootstrap_type != ANOMALY_BOOTSTRAP_TYPE_DWMAPI_PROXY) {
+        RuntimeLog(
+            context, anomaly::LogLevel::Info, "hosts.payload.skipped",
+            "hosts=skipped reason=bootstrap-type type=" +
+                std::to_string(static_cast<unsigned>(bootstrap_type)));
+        return;
+    }
+
+    std::vector<std::wstring> seen;
+    for (const auto& candidate : candidates) {
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(candidate, error)) {
+            RuntimeLog(
+                context, anomaly::LogLevel::Warning, "hosts.payload.missing",
+                "hosts=missing path=" + candidate.string());
+            continue;
+        }
+        const auto absolute = std::filesystem::absolute(candidate, error);
+        auto key = (error ? candidate : absolute).lexically_normal().wstring();
+        std::transform(key.begin(), key.end(), key.begin(), [](wchar_t value) {
+            return static_cast<wchar_t>(std::towlower(value));
+        });
+        if (std::find(seen.begin(), seen.end(), key) != seen.end()) continue;
+        seen.push_back(key);
+
+        const HMODULE module = LoadLibraryExW(
+            (error ? candidate : absolute).c_str(), nullptr,
+            LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+        if (module == nullptr) {
+            RuntimeLog(
+                context, anomaly::LogLevel::Warning, "hosts.payload.failed",
+                "hosts=failed path=" + candidate.string() +
+                    " error=" + std::to_string(GetLastError()));
+            continue;
+        }
+
+        // Pin the host for the process lifetime. A host installs hooks that other
+        // modules keep calling into; any FreeLibrary/LdrUnloadDll on it would leave
+        // those trampolines pointing at unmapped pages and the game dies with an
+        // access violation inside "<host>.dll_unloaded".
+        HMODULE pinned = module;
+        const BOOL pin_result = GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+            reinterpret_cast<LPCWSTR>(module), &pinned);
+        if (pin_result == FALSE) {
+            RuntimeLog(
+                context, anomaly::LogLevel::Warning, "hosts.payload.unpinned",
+                "hosts=unpinned path=" + candidate.string() +
+                    " error=" + std::to_string(GetLastError()));
+        }
+
+        g_host_payloads.push_back(module);
+        RuntimeLog(
+            context, anomaly::LogLevel::Info, "hosts.payload.loaded",
+            "hosts=loaded path=" + candidate.string() +
+                " base=" + std::to_string(reinterpret_cast<std::uintptr_t>(module)) +
+                " pinned=" + (pin_result != FALSE ? "true" : "false"));
+    }
 }
 
 std::shared_ptr<ue5mem::PluginManager> PluginHostSnapshot(
@@ -285,6 +473,10 @@ DWORD InitializeCore(const std::shared_ptr<CoreContext>& context, std::stop_toke
             << logger_failure << '\n';
     }
 
+    // Hosts go first: an upscaler host must install its swapchain/device hooks
+    // before Unreal initializes graphics, and it must see an unpatched process.
+    LoadHostPayloads(context);
+
     auto crash_reporter = std::make_unique<anomaly::CrashReporter>(
         anomaly::CrashReporterOptions{
             context->runtime_root / L"crashes", ANOMALY_SDK_VERSION_STRING});
@@ -317,6 +509,18 @@ DWORD InitializeCore(const std::shared_ptr<CoreContext>& context, std::stop_toke
             "catalog_path=" + diagnostic.path + " reason=" + diagnostic.message);
     }
     context->translator = std::move(translator.translator);
+    if (context->config.telemetry_enabled) {
+        try {
+            anomaly::TelemetryOptions options;
+            options.language = anomaly::LocaleName(context->translator->locale());
+            if (const auto session = context->session.lock()) {
+                const auto type = session->StartContext().bootstrap_type;
+                if (type == ANOMALY_BOOTSTRAP_TYPE_DWMAPI_PROXY) options.mode = "proxy";
+                else if (type == ANOMALY_BOOTSTRAP_TYPE_EXTERNAL) options.mode = "inject";
+            }
+            context->telemetry = std::make_shared<anomaly::TelemetryClient>(std::move(options));
+        } catch (...) {} // Optional telemetry must never fail runtime startup.
+    }
     context->profile_diagnostics = "null";
     if (!WriteDiagnosticsSummary(context, "starting")) {
         LogDiagnosticsSummaryFailure(context);
@@ -636,6 +840,42 @@ DWORD PreparePakMods(
             const anomaly::LiveSymbolMemory memory(memory_services);
             return anomaly::FindUe5PakPlatformFile(binding, memory);
         };
+        const auto compatibility = std::make_shared<anomaly::Ue5ModCompatibility>();
+        const auto compatibility_directory = context->runtime_root / L"cache" / L"mod-compatibility";
+        const auto path_key = [](const std::filesystem::path& path) {
+            auto key = std::filesystem::absolute(path).lexically_normal().generic_wstring();
+            std::transform(key.begin(), key.end(), key.begin(),
+                [](wchar_t value) { return static_cast<wchar_t>(std::towlower(value)); });
+            return key;
+        };
+        auto compatibility_mod_root = path_key(options.mod_directory);
+        if (!compatibility_mod_root.ends_with(L'/')) compatibility_mod_root += L'/';
+        auto compatibility_cache_root = path_key(compatibility_directory);
+        if (!compatibility_cache_root.ends_with(L'/')) compatibility_cache_root += L'/';
+        const auto compatibility_base = options.engine_base_directory;
+        options.prepare_compatibility = [bind, memory_services, compatibility, compatibility_directory,
+            compatibility_mod_root, compatibility_cache_root, compatibility_base, path_key](const std::filesystem::path& candidate) {
+            anomaly::Ue5PakBinding binding{};
+            if (!bind(binding)) throw std::runtime_error("pak compatibility binding unavailable");
+            const anomaly::LiveSymbolMemory memory(memory_services);
+            const auto engine = anomaly::FindUe5PakPlatformFile(binding, memory);
+            const auto mounted = anomaly::MountedUe5PakFiles(binding, engine, memory);
+            if (!mounted) throw std::runtime_error("mounted game package baseline unavailable");
+            const auto candidate_key = path_key(candidate);
+            std::vector<std::filesystem::path> official;
+            for (const auto& item : *mounted) {
+                auto path = std::filesystem::path(item.filename);
+                if (path.is_relative()) path = compatibility_base / path;
+                path = std::filesystem::absolute(path).lexically_normal();
+                // Windows spelling differences must not let a mounted mod become its own baseline.
+                const auto key = path_key(path);
+                if (key.starts_with(compatibility_mod_root) || key.starts_with(compatibility_cache_root) ||
+                    key == candidate_key) continue;
+                official.push_back(std::move(path));
+            }
+            return compatibility->Prepare(candidate, official, compatibility_directory,
+                anomaly::Ue5PakContainerCodecs(binding));
+        };
         options.mount_pak = [bind](
             const std::uintptr_t engine,
             const anomaly::Ue5PakMountRequest& request) -> anomaly::PakModMountOutcome {
@@ -647,6 +887,7 @@ DWORD PreparePakMods(
             }
             auto result = anomaly::MountUe5Pak(binding, engine, request);
             outcome.mounted = result.mounted;
+            outcome.native_fault = result.native_fault;
             if (result.mounted) {
                 outcome.container = result.container;
                 return outcome;
@@ -659,11 +900,28 @@ DWORD PreparePakMods(
             }
             return outcome;
         };
-        options.unmount_pak = [bind](
+        const auto runtime_session = context->session;
+        options.unmount_pak = [bind, runtime_session](
             const std::uintptr_t engine, const std::wstring& pak_file) {
             anomaly::Ue5PakBinding binding{};
             if (!bind(binding)) return false;
-            return anomaly::UnmountUe5Pak(binding, engine, pak_file);
+            const auto session = runtime_session.lock();
+            if (session == nullptr) return false;
+            auto& dispatchers = session->Dispatchers();
+            if (dispatchers.BoundThread(anomaly::ExecutionDomain::Game) == std::thread::id{})
+                return false;
+
+            bool unmounted{};
+            // FlushAsyncLoading is a Game-thread barrier. Wait without a timeout so an invocation
+            // that has started cannot unmount after the watcher has recorded a failed release.
+            const DWORD invoke_result = dispatchers.Invoke(
+                anomaly::ExecutionDomain::Game,
+                [binding, engine, path = pak_file, &unmounted] {
+                    if (!anomaly::FlushUe5AsyncLoading(binding)) return;
+                    unmounted = anomaly::UnmountUe5Pak(binding, engine, path);
+                },
+                std::chrono::milliseconds::max());
+            return invoke_result == ERROR_SUCCESS && unmounted;
         };
         options.mounted_files = [bind, memory_services](const std::uintptr_t engine)
             -> std::optional<std::vector<anomaly::Ue5MountedPakFile>> {
@@ -710,9 +968,8 @@ DWORD PreparePakMods(
                 anomaly::DisableUe5PakSignatureGate(binding, &gate_byte);
             const bool gate_ok = gate == anomaly::Ue5PakGateStatus::Patched ||
                 gate == anomaly::Ue5PakGateStatus::AlreadyPatched;
-            // The gate only covers "is a signature present". The verifier that decrypts and compares
-            // it still runs, and an unsigned container fails there; its only product is the status
-            // it writes, so reporting success cannot change how a container is read.
+            // Containers that declare a signature section still parse it and invoke the verifier.
+            // Only that verifier's status is replaced; unsigned containers skip the section entirely.
             const bool verify =
                 anomaly::InstallUe5PakSignatureVerificationBypass(binding.signature_verify);
             RuntimeLog(context, flag ? anomaly::LogLevel::Info : anomaly::LogLevel::Warning,
@@ -857,6 +1114,19 @@ DWORD PreparePluginHost(
                     domain, std::move(owner), generation, std::move(callback)));
             });
         plugins->SetTranslator(context->translator);
+        if (context->telemetry) {
+            plugins->SetUsageObserver([session = context->session, telemetry = context->telemetry](
+                std::vector<ue5mem::PluginUsageObservation> observations) {
+                if (const auto runtime = session.lock()) {
+                    static_cast<void>(runtime->Dispatchers().Post(
+                        anomaly::ExecutionDomain::Worker, "anomaly.telemetry", 1,
+                        [telemetry, observations = std::move(observations)] {
+                            for (const auto& observation : observations)
+                                telemetry->ObservePlugins({observation.id}, observation.observed_at);
+                        }));
+                }
+            });
+        }
         const auto session = context->session;
         plugins->SetQueuedCallbackCanceller(
             [session](std::string_view owner, std::uint64_t generation) {
@@ -1462,6 +1732,10 @@ anomaly::RuntimeSessionOptions BuildSessionOptions(
     options.workers.push_back({"runtime-health", [context](std::stop_token stop_token) {
         return ConfirmRuntimeHealth(context, stop_token);
     }});
+    options.workers.push_back({"telemetry", [context](std::stop_token stop_token) {
+        if (context->telemetry) context->telemetry->Run(stop_token);
+        return ERROR_SUCCESS;
+    }});
     return options;
 }
 
@@ -1512,6 +1786,10 @@ extern "C" __declspec(dllexport) DWORD WINAPI AnomalyStart(
                 *control.pak_compatibility_mode != core_context->pak_compatibility_mode)
                 throw std::runtime_error("pak loading mode requires a new game process");
             control.pak_compatibility_mode = core_context->pak_compatibility_mode;
+            // Native startup mounting does not pass through PakModRuntime's desired set.
+            // Disable restricted containers before enabling the legacy signature bypass.
+            if (core_context->pak_compatibility_mode && core_context->pak_startup_enabled)
+                anomaly::DisableRestrictedPakMods(ResolvePaksDirectory(core_context->game_module) / L"~mods");
             core_context->pak_settings_valid = true;
             // Start before service/profile initialization: the engine scans startup paks early.
             if (core_context->pak_compatibility_mode && core_context->pak_startup_enabled &&

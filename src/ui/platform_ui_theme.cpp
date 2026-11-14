@@ -424,6 +424,9 @@ const PlatformUiThemeColors& PlatformUiTheme() noexcept {
 }
 
 PlatformUiPalette ParsePlatformUiPalette(const std::string_view value) noexcept {
+    // Every name ToString writes has a branch here: a name that round-trips to the
+    // fallback would silently wear Naiwa instead of the palette that was stored.
+    if (value == "moss") return PlatformUiPalette::Moss;
     if (value == "aurora") return PlatformUiPalette::Aurora;
     if (value == "ember") return PlatformUiPalette::Ember;
     if (value == "paper") return PlatformUiPalette::Paper;

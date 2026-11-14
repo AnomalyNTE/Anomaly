@@ -159,6 +159,48 @@ Runtime 的选择顺序是：本地覆盖 > 更新源下发 > 运行包自带。
 
 要启用它，必须同时配置 `sources` 和 `trustKeys`。普通用户不需要修改这个文件。
 
+## 外部宿主 DLL（`config\hosts.json`）
+
+有些宿主必须在游戏创建图形设备之前装好 hook，因此 Runtime 在 Core 初始化最前面留了一个加载点，
+与插件系统无关。只有一个配置文件：
+
+`Anomaly\config\hosts.json`
+
+```json
+{
+  "schemaVersion": 1,
+  "hosts": [
+    "D:\\Hosts\\example-host.dll",
+    "%LOCALAPPDATA%\\ExampleHost\\host.dll",
+    { "path": "..\\Example\\plugin-host.dll", "enabled": false }
+  ]
+}
+```
+
+- `schemaVersion`：只接受 `1`，缺省按 1 处理。
+- `hosts`：按数组顺序加载。每项是路径字符串，或 `{ "path": ..., "enabled": false }`（停用但保留路径）。
+- 路径：`%ENV%` 展开；相对路径按 `Anomaly\` 解析；同一路径（大小写不敏感）只加载一次。
+- 文件不存在、`hosts` 为空、或全部停用：一次属性查询后返回，不解析 JSON、不写日志。
+
+**生效范围**：只对进程启动引导生效（经 `dwmapi.dll` 代理启动）。运行中注入（`anomaly-inject --pid`）
+一律跳过——那时设备与交换链已建好，装 hook 已经没有意义。
+
+**加载方式**：`LoadLibraryExW(..., LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)`，
+宿主自己的目录优先参与依赖解析；加载成功后立即 PIN（`GET_MODULE_HANDLE_EX_FLAG_PIN`），进程内不再卸载。
+单个宿主失败不影响其它条目，也不影响 Runtime 启动。
+
+**日志**（`Anomaly\logs\anomaly-runtime.log`，或 `anomaly-runtime.jsonl` 的 `event_id`）：
+
+| 事件 | 含义 |
+|---|---|
+| `hosts.payload.loaded` | 加载成功（`pinned=true`） |
+| `hosts.payload.skipped` | 非进程启动引导，跳过加载 |
+| `hosts.payload.missing` / `hosts.payload.failed` | 文件不存在 / `LoadLibrary` 失败 |
+| `hosts.config.invalid` | JSON 不合法或结构不符 |
+| `hosts.config.legacy_ignored` | 旧的 `hosts.txt` 存在但已不再读取 |
+
+宿主保留自己的文件名，不要填代理名（`dxgi.dll`、`dwmapi.dll` 之类）——那是别的工具的入口，会互相冲突。
+
 ## 相关
 
 - [NTE Build Profile](nte-profiles.md) — 签名与结构偏移

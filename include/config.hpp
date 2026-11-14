@@ -36,6 +36,7 @@ struct AnalyzerConfig {
     unsigned platform_toggle_key{0x2d};
     anomaly::LanguagePreference platform_language{anomaly::LanguagePreference::Auto};
     std::filesystem::path plugin_directory{L"plugins"};
+    bool telemetry_enabled{true};
     double update_slow_milliseconds{2.0};
     double draw_slow_milliseconds{4.0};
     std::size_t player_snapshot_tick_interval{1};

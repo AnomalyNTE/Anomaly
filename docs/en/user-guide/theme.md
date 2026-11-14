@@ -1,6 +1,6 @@
 # Themes and backgrounds
 
-The look of the Anomaly interface comes from two parts, and both apply to the **in-game main window** (`Anomaly.Core.dll`) and to **Anomaly Launcher** at the same time:
+The look of the Anomaly interface comes from two parts, and both apply to the **in-game main window** (`Anomaly.Core.dll`) and to **Anomaly Launcher**, but **each surface picks its own palette**: the game under **Settings > Interface**, the launcher on its own **Settings** page. The layout files are shared:
 
 | Part | What it decides | Where it lives |
 | --- | --- | --- |
@@ -26,7 +26,21 @@ Available under **Settings > Interface > Color palette**:
 | Other built-in palettes | — | — | See the live preview in the interface |
 | Custom | Any | Any | Pick each color individually |
 
-A selection takes effect immediately and is written to `platform-settings.json`; the launcher reads the same settings on its next start, so the two interfaces always agree.
+A selection takes effect immediately and is written to `platform-settings.json`. The launcher does not read that file: it carries its own palette choice (below), so the two surfaces can wear different palettes.
+
+### The launcher's palette
+
+The launcher's **Settings** page lists the same palettes (Naiwa / Moss / Aurora / Ember / Paper / AnomalyHub), with **Naiwa** as the default. A selection applies to the launcher window at once and is written to the `theme` field of `<launcher>\AnomalyLauncher.json`; an unknown or missing value falls back to Naiwa.
+
+The launcher resolves its layout for the palette it wears: `config/themes/<palette>.launcher.json` first (the launcher's own file), then `config/themes/<palette>.json`, then the shared `config/themes/layout.json`. The light presets (Naiwa / Paper) get dark ink and the dark ones (Moss / Aurora / Ember / AnomalyHub) switch to light ink.
+
+**The mod placeholder follows the palette too**: a card on the mods page with no cover (`icon.png`) draws a placeholder — the Naiwa palette keeps its own character, while every other palette (custom included) draws just the interface's own picture icon in the middle of the cover slot: muted ink at about 1.25× the body type size, so it hints at the missing picture instead of competing with the page, and no theme ever shows another theme's character.
+
+**The two surfaces have different shapes, so they keep separate layouts**: the launcher window is 1100 × 860 and the in-game main window is 1180 × 700, and the same normalized sticker lands on different controls in each. The launcher therefore reads `<palette>.launcher.json` while the in-game shell keeps reading `<palette>.json` — with both `naiwa.json` and `naiwa.launcher.json` in place, each surface gets stickers placed for its own proportions. If only one file exists, the other surface falls back to it and the artwork drifts.
+
+## Launcher language
+
+The launcher's interface language is chosen on its own **Settings** page (Automatic / Simplified Chinese / English) and written to the `language` field of `<launcher>\AnomalyLauncher.json`; it takes effect at once, without a restart. The in-game interface follows its own language setting, so the two are independent.
 
 ## Three ways to fill a background image
 
@@ -81,16 +95,16 @@ Up to 64 stickers, and the whole file stays under 256 KB. An image with the same
 
 `tools/theme_layout_editor/index.html` is a **fully offline** single-file editor: double-click it to open it in a browser, with nothing to install and no network access.
 
-1. Open the editor and drag your PNG assets onto the canvas. **A background image is not required**: you can edit without importing one, because the canvas draws a reference skeleton laid out at real proportions — title bar / side navigation / content area / status bar — so you can judge whether a sticker will cover a control.
-2. Drag to place, pull a corner to scale, use the rotation handle to turn; the property panel on the right lets you type exact `x`/`y`/size/rotation/opacity/tint and switch `anchor`, `layer` and mirroring. A ring of "outside the window" area surrounds the canvas, so dragging a sticker out there shows the overflow effect directly instead of clipping it.
+1. Open the editor and pick the surface you are dressing with **Design target** in the top bar (launcher / in-game main window). Each target owns its own document, so switching swaps the canvas, the background and the stickers as a set. **A background image is not required**: you can edit without importing one, because the canvas draws a reference skeleton at real proportions — a title band / mode band / body card for the launcher, and title bar / side navigation / content area / status bar for the in-game window — so you can judge whether a sticker will cover a control.
+2. Drag to place, pull a corner to scale, use the rotation handle to turn; the property panel on the right lets you type exact `x`/`y`/size/rotation/opacity/tint and switch `anchor`, `layer` and mirroring. A ring of "outside the window" area surrounds the canvas, so dragging a sticker out there shows the overflow effect directly instead of clipping it; for the launcher the editor also marks the real visible width of the two transparent side bands (108 / 76 px) with orange dashed lines.
 3. Switch the background fill mode at the top (center / crop / stretch) and adjust `surfaceOpacity`; what you see is what you get.
-4. Click **Export JSON** to get the layout file (drop it into `Anomaly\config\themes\`; a file named after a palette is a theme-specific layout, and `layout.json` is the shared layout), or click **Export ImGui** to get equivalent ImGui drawing code (`AddImage` / `AddImageQuad`) you can embed directly in your own interface code.
+4. Click **Export JSON** to get the current target's layout file — the launcher exports `anomaly-theme-layout.launcher.json` and the in-game window exports `anomaly-theme-layout.json`; rename it to the file name the export panel names (`<palette>.launcher.json` / `<palette>.json`) when you drop it into `Anomaly\config\themes\`. Or click **Export ImGui** to get equivalent ImGui drawing code (`AddImage` / `AddImageQuad`) you can embed directly in your own interface code.
 
-Keep the canvas size equal to `canvas` (default `1180×700`, the default size of the in-game main window); stickers use normalized coordinates, so positions stay correct after the interface is moved or scaled.
+The canvas size follows the design target (launcher `1100×860`, in-game main window `1180×700`) and stays editable; stickers use normalized coordinates, so positions stay correct after the interface is moved or scaled.
 
 Put the exported file into `Anomaly\config\themes\`; once saved, the in-game interface reloads automatically without a restart. The Settings page also shows the current layout status: background mode, sticker count and panel opacity; when a file has a problem it shows the reason it was rejected.
 
-The launcher reads the same layout on its next start.
+The launcher resolves the layout for the palette it selected: `config/themes/<palette>.launcher.json` first, then `<palette>.json`, then the shared `layout.json`.
 
 ## Troubleshooting
 

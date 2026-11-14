@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "canvas": {
+    "width": 1280,
+    "height": 860
+  },
+  "surfaceOpacity": 0.72,
+  "background": {
+    "path": "assets/images/naiwa-background.png",
+    "mode": "crop",
+    "opacity": 0,
+    "tint": "#ffffff"
+  },
+  "stickers": [
+    {
+      "path": "assets/images/naiwa-01.png",
+      "x": 0.806394,
+      "y": 0.421821,
+      "width": 0.614291,
+      "height": 1.272262,
+      "rotation": 0,
+      "opacity": 1,
+      "anchor": "center",
+      "layer": "behind",
+      "tint": "#ffffff",
+      "flipX": false,
+      "flipY": false
+    }
+  ]
+}

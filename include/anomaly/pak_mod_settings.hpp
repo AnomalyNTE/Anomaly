@@ -4,8 +4,10 @@
 
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 namespace anomaly {
 
@@ -54,6 +56,50 @@ inline void ValidatePakModStates(const nlohmann::json& states) {
     for (const auto& [key, value] : states.items()) {
         if (!value.is_boolean() || key.empty()) throw std::runtime_error("invalid modStates entry");
     }
+}
+
+// Explicit opt-in to overlapping mods. The engine's effective read priority selects each shared
+// resource; enabling this option does not change that priority or merge the conflicting contents.
+inline bool PakModForceLoad(const nlohmann::json& document) {
+    return document.value("forceLoad", false);
+}
+
+// The name a mod keeps when its folder moves: the folder a directory mod lives in, or the file
+// name of a loose container. A key is a path, so everything above the mod is what a move rewrites.
+inline std::string PakModSelectionName(std::string_view key) {
+    auto text = NormalizePakModKey(std::string(key));
+    if (text.ends_with('/')) text.pop_back();
+    const auto slash = text.rfind('/');
+    return slash == std::string::npos ? text : text.substr(slash + 1);
+}
+
+// Whether a saved selection reaches this path at all. A mod whose folder moved has no entry of its
+// own, which is what tells the caller to look the mod up by name instead of reading "enabled".
+inline bool PakModSelectionApplied(const nlohmann::json& states, const std::string& relative_path) {
+    const auto path = NormalizePakModKey(relative_path);
+    for (const auto& item : states.items()) {
+        const auto key = NormalizePakModKey(item.key());
+        if (key.empty()) continue;
+        if (key == path || (key.back() == '/' && path.starts_with(key))) return true;
+    }
+    return false;
+}
+
+// The choice a previous layout saved for this mod name. A folder move rewrites the path a selection
+// is stored under, and reading "no entry" as enabled would switch the mod back on behind the
+// player's back -- including the variants they switched off to break a resource conflict. A name two
+// mods share is not resolved: then the entry names neither of them.
+inline std::optional<bool> PakModInheritedSelection(const nlohmann::json& states,
+    const std::string_view name, const bool unique) {
+    if (!unique || name.empty()) return std::nullopt;
+    std::optional<bool> result;
+    for (const auto& item : states.items()) {
+        if (!item.value().is_boolean() || PakModSelectionName(item.key()) != name) continue;
+        // JSON key order is not edit history. Preserve an explicit OFF when stale locations
+        // disagree; a new explicit selection replaces these stale keys at the write boundary.
+        result = result.value_or(true) && item.value().get<bool>();
+    }
+    return result;
 }
 
 // The configuration boundary validates once before matching any discovered files.

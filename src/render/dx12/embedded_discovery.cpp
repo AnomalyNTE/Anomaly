@@ -22,6 +22,8 @@ HookTargets DiscoverD3D12HookTargets() {
         0, 0, 100, 100, nullptr, nullptr, instance, nullptr);
     ID3D12Device* device{};
     ID3D12CommandQueue* queue{};
+    ID3D12CommandAllocator* allocator{};
+    ID3D12GraphicsCommandList* commands{};
     IDXGIFactory4* factory{};
     IDXGISwapChain1* swap_chain{};
     IDXGISwapChain3* swap_chain3{};
@@ -61,7 +63,18 @@ HookTargets DiscoverD3D12HookTargets() {
         targets.create_swap_chain = factory_table[10];
         targets.create_swap_chain_for_hwnd = factory_table[15];
         targets.create_swap_chain_for_core_window = factory_table[16];
+        if (SUCCEEDED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                IID_PPV_ARGS(&allocator))) &&
+            SUCCEEDED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+                allocator, nullptr, IID_PPV_ARGS(&commands)))) {
+            auto** command_table = *reinterpret_cast<void***>(commands);
+            targets.reset_command_list = command_table[10];
+            targets.resource_barrier = command_table[26];
+            commands->Close();
+        }
     }
+    Release(commands);
+    Release(allocator);
     Release(swap_chain3);
     Release(swap_chain);
     Release(factory);

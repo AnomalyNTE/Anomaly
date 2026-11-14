@@ -32,7 +32,7 @@ The plugin only reads data and does not modify game state. Use it to quickly con
 | **Required services** | `anomaly.ui`, `anomaly.config`; `anomaly.input`, `anomaly.json`, `anomaly.scheduler`, `anomaly.plugin-state`, `anomaly.nte.session/player/player-teleport` (all V1, optional) |
 | **Requires Profile** | Yes (player, session and the teleport bridge depend on validated symbols) |
 
-Crosshair teleport advances a preset distance along the current camera direction and clamps the target Z axis above the camera height plus a safety lift, so you do not land underground; forward teleport moves a preset distance along the horizontal facing. You can re-capture both hotkeys in the plugin window. Clicking **Import points** reads a point array from a JSON file path (relative paths resolve against the plugin's private state directory) and supports `color`, `name`, `x/y/z` and an optional `category`; when `category` is missing, the plugin derives the category from prefixes such as `1. Name`. The import result persists with the settings when the plugin is disabled.
+Crosshair teleport advances a preset distance along the current camera direction and clamps the target Z axis above the camera height plus a safety lift, so you do not land underground; forward teleport moves a preset distance along the horizontal facing. You can re-capture both hotkeys in the plugin window; a capture or an option edit is written to `anomaly.config` on the next tick (the host owns validation and the atomic replace) instead of waiting for the plugin to be disabled, and `on_stop` writes once more as a backstop. Clicking **Import points** reads a point array from a JSON file path (relative paths resolve against the plugin's private state directory) and supports `color`, `name`, `x/y/z` and an optional `category`; when `category` is missing, the plugin derives the category from prefixes such as `1. Name`. The import result persists with the settings when the plugin is disabled.
 
 ## 999 Nights Script
 
@@ -60,6 +60,10 @@ The auto combat end conditions (hitting any one of them ends it and moves on to 
 The check does not use damage readings: when the damage stream is unreadable (stale offsets or mismatched participant handles), "how long since the last damage" becomes true while the monsters are still alive, and the script teleports away from a point that is not finished. Damage is only used inside the module to switch targets; it does not take part in deciding whether this point is complete.
 
 ## NTE Damage Dashboard
+
+> [!WARNING]
+> Archived: it is no longer built or shipped, and it does not appear in the plugin list. The source stays in
+> `plugins/DamageDashboard/` (see `ARCHIVED.md`); what follows documents it as it was, for reference only.
 
 | | |
 | --- | --- |
@@ -167,11 +171,13 @@ The extra draw distance defaults to `0`, which means the game default draw dista
 | | |
 | --- | --- |
 | **ID** | `mou-mou-sama.nte-free-fly` |
-| **Purpose** | Let the character move freely through the air and through walls: hold WASD to fly horizontally, Space to rise and Ctrl to descend; the toggle hotkey can be captured and saved in the panel. |
-| **Required services** | `anomaly.ui`, `anomaly.localization`, `anomaly.input`; `anomaly.config`, `anomaly.nte.session`, `anomaly.nte.player`, `anomaly.nte.player-teleport`, `anomaly.nte.player-hold` (all V1, optional) |
+| **Purpose** | Let the character move freely through the air and through walls: hold WASD to fly horizontally, Space to rise and Ctrl to descend; the toggle hotkey and both speeds are edited in the panel and kept across sessions by `anomaly.config`. |
+| **Required services** | `anomaly.ui`, `anomaly.localization`, `anomaly.input`; `anomaly.config`, `anomaly.json`, `anomaly.nte.session`, `anomaly.nte.player`, `anomaly.nte.player-teleport`, `anomaly.nte.player-hold` (all V1, optional) |
 | **Requires Profile** | Yes (player, session and the teleport bridge depend on validated symbols) |
 
 While flying, the plugin has exclusive control of the character: regular movement that is suppressed by the freeze is instead driven by the plugin with the same key set. Movement is placed through `anomaly.nte.player-teleport`, which the host executes with `bSweep=false` and without collision checks, so you can pass straight through walls; gravity freeze prefers the hold entry at the end of the `player` service table, with the standalone service as a fallback. When the camera direction is unavailable, `WASD` degrades to movement along the world axes. The toggle hotkey defaults to F6 and can be re-captured and persisted in the plugin window.
+
+The three panel settings (toggle hotkey, horizontal speed, vertical speed) share one `anomaly.config` document: the host owns the storage location, JSON Schema validation, the atomic replace and version migration, and the plugin only registers the schema and reads or writes the document. A slider drag produces no disk write while it lasts and writes once after it settles (about 0.4 s); a hotkey capture is a single action and writes immediately. The older schema v1 stored the hotkey alone; upgrading fills in both speeds through the host's migration channel and keeps the existing hotkey. When `anomaly.config` is unavailable the panel degrades to session-only settings and says so in place.
 
 Placement is triggered on demand (when there is input, or when the character deviates from the target by more than 15 centimeters), not every frame: host teleports go through ProcessEvent, and calling it every frame visibly drops frames. Disabling, `on_stop` and `on_unload` all `release` the hold, hand gravity back and turn control off, so no persistent change is left behind.
 
@@ -244,6 +250,29 @@ The plugin adjusts two existing sets of knobs directly and does not add or repla
 - Vehicles: the `MassSpawner` spawn count multiplier and spawn cap, plus the guaranteed online vehicle count of `HTMassVehicleSpawner`.
 
 When checked, it first reads the **current values** of these fields as the initial values and writes them to disk, then pushes them to the minimum; it only writes once when checking and once when unchecking, with no periodic polling or write-back. Disabling or reloading the plugin also restores the initial values, so the world is not left with empty streets. The window hotkey is fixed at F8, the toggle hotkey is changeable and unbound by default; the checked state and the initial values persist in the plugin storage directory.
+
+## Summon Lab
+
+| | |
+| --- | --- |
+| **ID** | `anomaly.summon-lab` |
+| **Purpose** | Summon and manage blueprints and playable character clones, including attributes, model scale and battle relationships. |
+| **Required services** | `anomaly.ui`, `anomaly.localization`, `anomaly.config`, `anomaly.profile`, `anomaly.json`, `anomaly.core`, `anomaly.ue5.objects`, `anomaly.ue5.names`, `anomaly.ue5.process-event`, `anomaly.nte.session`, `anomaly.nte.player`, `anomaly.interop.signature`, `anomaly.interop.hook`, `anomaly.scheduler`, `anomaly.storage` |
+| **Requires Profile** | Yes; the host loads and validates the package profile before the plugin uses its compatible layouts and symbols. |
+
+The window pages are **Blueprints / Characters / Presets / Attributes / Editor / Summon / Manage**. The **Editor** tab remains visible in character mode, but is greyed out and cannot be clicked because its blueprint-only field, ability and effect rules do not apply to playable character clones. It becomes available again when blueprint mode is selected.
+
+**Characters** lists public playable character entries and excludes NPC and non-public entries. Select a character, configure the next batch's health, attack, defense and other supported attributes on **Attributes**, then set the name, quantity and spacing on **Summon**. Character clones use the game's native mirrored-character construction, combat effects and automatic skill flow, with the player's level. Failed initialization or attribute verification removes the affected clone and stops the remaining batch.
+
+The **Manage** page contains clones and ordinary summoned entities together. It provides opponent selection, battle groups, target priorities, chase distance and stop controls. Clones can fight other clones and ordinary summons, subject to the game's native camp relationships. The **Do not target the player** option can be selected before summoning; without an assigned opponent, the clone stays idle.
+
+Blueprint mode provides the asset catalog, optional source combat configuration, per-blueprint editor rules and batch summon controls. The blueprint catalog is refreshed from the game's Asset Registry and cached through the host storage service. The editor can override supported boolean, 32-bit integer and floating-point blueprint fields, remove selected GameplayAbility classes, and continuously clear selected GameplayEffect classes for future summons. These rules apply only to plugin-managed instances and may not undo logic that already ran during construction.
+
+Blueprints and character clones share **Model Scale**. Set the next batch's scale on **Summon**, or adjust an individual entity or group on **Manage**; **Restore Original Size** returns the first recorded scale. Attached effects that inherit model scale follow the model, while independently spawned or absolute/world-space effects are not guaranteed to scale with it. Scale settings and presets are persisted through `anomaly.config`.
+
+Summon batches use the selected blueprint or character, name, level and attributes captured when the summon button is clicked. The grid starts from the player's position and facing, avoids managed entities and blocked cells, and can be cancelled while pending. Boss music, boss dialogue and cutscene suppression are independent per-batch options.
+
+The plugin stores the current selection, filters, summon settings and presets through the host configuration service, so they survive plugin reloads and game restarts. Profile compatibility data stays in the package profile and is never written back by user settings.
 
 ## NTE Vehicle
 

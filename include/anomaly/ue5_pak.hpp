@@ -1,5 +1,7 @@
 #pragma once
 
+#include "anomaly/ue5_mod_compatibility.hpp"
+
 #include "anomaly/symbol_resolver.hpp"
 
 #include <cstddef>
@@ -31,6 +33,7 @@ inline constexpr std::string_view kUe5PakPlatformFileManagerSymbol =
 inline constexpr std::string_view kUe5PakMountSymbol = "ue5.FPakPlatformFile.Mount";
 inline constexpr std::string_view kUe5PakMountWithStatusSymbol = "ue5.FPakPlatformFile.MountWithStatus";
 inline constexpr std::string_view kUe5PakUnmountSymbol = "ue5.FPakPlatformFile.Unmount";
+inline constexpr std::string_view kUe5PakFlushAsyncLoadingSymbol = "ue5.FlushAsyncLoading";
 inline constexpr std::string_view kUe5PakReleaseSymbol = "ue5.FPakFile.Release";
 inline constexpr std::string_view kUe5PakCacheLockKey = "pak.cacheLockOffset";
 // The game adds its own container gate that rejects an unsigned pak with
@@ -162,7 +165,8 @@ struct Ue5PakCacheVerifySample final {
     std::uintptr_t handle{};
 };
 
-// Called from the verifier's own thread for every request, before the original body runs.
+// Called from the verifier's own thread for up to eight unsigned or unreadable requests per
+// attachment, before the original body runs. Later reads bypass the diagnostic sink lock.
 using Ue5PakCacheVerifySink =
     void(__fastcall*)(void* context, const Ue5PakCacheVerifySample& sample) noexcept;
 
@@ -174,7 +178,7 @@ enum class Ue5PakCacheVerifyStatus : std::uint8_t {
     Unreadable,
 };
 
-// Installs the diagnostic detour on the verifier entry. It reports each request's attribution to
+// Installs the diagnostic detour on the verifier entry. It reports bounded exceptional attribution to
 // `sink` and routes the call: a container whose element has a table keeps the engine's whole body,
 // one whose element has none gets only the completion half (`complete`), which is what keeps the read
 // alive without hanging the caller. Removal requires disabling and draining the hook.
@@ -252,6 +256,7 @@ struct Ue5PakBinding {
     // explainable instead of just "rejected".
     std::uintptr_t mount_with_status{};
     std::uintptr_t unmount{};
+    std::uintptr_t flush_async_loading{};
     std::uintptr_t release{};
     // Optional: the byte that turns the game's "Missing signature" rejection into an accept.
     std::uintptr_t signature_gate{};
@@ -276,10 +281,12 @@ struct Ue5PakBinding {
     Ue5PakPrimeLayout prime;
     // Optional: the layout the block-cache verifier detour reads its attribution from.
     Ue5PakCacheVerifyLayout cache_verify_layout;
+    std::uintptr_t encryption_key_manager{}, try_encryption_key{}, uncompress_memory{}, name_from_enum{};
+    std::uint32_t compression_zlib{}, compression_gzip{}, compression_lz4{}, compression_oodle{};
 
     [[nodiscard]] bool Complete() const noexcept {
         return platform_file_manager != 0 && mount != 0 && mount_with_status != 0 &&
-            unmount != 0 && release != 0 &&
+            unmount != 0 && flush_async_loading != 0 && release != 0 &&
             manager_topmost_offset % sizeof(void*) == 0 &&
             lower_level_vtable_offset % sizeof(void*) == 0 &&
             name_vtable_offset % sizeof(void*) == 0 && signed_flag_offset != 0 &&
@@ -308,6 +315,9 @@ void RegisterUe5PakValidator(FeatureLayoutValidatorRegistry& validators);
 bool BindUe5Pak(const BuildProfile& profile, const ProfileResolutionSnapshot& resolution,
     Ue5PakBinding& binding, std::string& error, const SymbolMemory* memory = nullptr);
 
+// Worker-safe native codec calls, validated with the same active Profile as mounts.
+Ue5ContainerCodecs Ue5PakContainerCodecs(const Ue5PakBinding& binding);
+
 // Walks the platform file chain and returns the engine's FPakPlatformFile instance. Returns 0
 // while the engine has not built the chain yet, when no layer reports the name "PakFile", or when
 // an entry does not look like a readable platform file. Callers retry instead of caching a zero.
@@ -319,6 +329,8 @@ std::uintptr_t FindUe5PakPlatformFile(
 // container can be explained instead of just reported as failed.
 struct Ue5PakMountResult {
     bool mounted{};
+    // SEH is not an ordinary I/O refusal and must not be retried by the idle watcher.
+    bool native_fault{};
     std::int32_t error_code{-1};
     std::wstring error_message;
     // Strong reference transferred by the native output entry; caller must release it.
@@ -337,6 +349,8 @@ std::optional<std::vector<Ue5MountedPakFile>> MountedUe5PakFiles(
 // Native calls have an SEH boundary; a fault can still leave engine-side partial changes.
 Ue5PakMountResult MountUe5Pak(const Ue5PakBinding& binding, std::uintptr_t pak_platform_file,
     const Ue5PakMountRequest& request) noexcept;
+// Flushes all pending async package requests. Call on the UE Game thread before unmounting.
+bool FlushUe5AsyncLoading(const Ue5PakBinding& binding) noexcept;
 bool UnmountUe5Pak(const Ue5PakBinding& binding, std::uintptr_t pak_platform_file,
     const std::wstring& pak_file) noexcept;
 // Drops the strong reference transferred through Mount's FPakListEntry output.
@@ -356,10 +370,6 @@ Ue5PakPrimeReport PrimeUe5PakContainer(const Ue5PakBinding& binding,
 bool ClearUe5PakSignatureRequirement(const Ue5PakBinding& binding,
     std::uintptr_t pak_platform_file, const SymbolMemory& memory) noexcept;
 
-// Turns the game's own container gate into an unconditional accept: the instruction there is
-// `test bl, 4 / jnz accept`, and flipping the JNZ to a JMP keeps unsigned containers mountable. The
-// byte is only patched when it is exactly that conditional jump, so a wrong Profile cannot corrupt
-// unrelated code. Returns false when the gate is unavailable or already patched.
 enum class Ue5PakGateStatus : std::uint8_t {
     NoSymbol,
     Unreadable,
@@ -368,11 +378,9 @@ enum class Ue5PakGateStatus : std::uint8_t {
     AlreadyPatched,
 };
 
-// Turns the game's own container gate into an unconditional accept: the instruction there is
-// `test bl, 4 / jnz accept`, and flipping the JNZ to a JMP keeps unsigned containers mountable. The
-// byte is only patched when it is exactly that conditional jump, so a wrong Profile cannot corrupt
-// unrelated code. `observed` receives what was actually read, which is what makes a refusal
-// diagnosable.
+// Selects the IsSigningEnabled()==false path, which still reads signatures when the container
+// declares them. Never force entry into signature parsing for an unsigned container. The Profile
+// resolves the JZ into that path; a different opcode is rejected. `observed` reports the read byte.
 Ue5PakGateStatus DisableUe5PakSignatureGate(
     const Ue5PakBinding& binding, std::uint8_t* observed = nullptr) noexcept;
 

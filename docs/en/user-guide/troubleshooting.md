@@ -4,7 +4,6 @@ Find the section that matches the symptom. The logs are the most important entry
 
 - `Anomaly\logs\anomaly-runtime.log` — Runtime and pipe service log (PID, state, pipe name).
 - `Anomaly\logs\anomaly-runtime.jsonl` — structured log, rotated by size, where `anomaly-runtime.jsonl.1`…`.3` are the historical files.
-- `Anomaly\logs\nte_game_hook.log` — startup injection and hook installation record.
 - `Anomaly\anomaly-platform.log` — platform and plugin log.
 
 Logs do not need manual cleanup: logs whose last write is older than 3 days, and the oldest logs that push their directory beyond 48 MiB, are deleted automatically (once when the Runtime starts, then once per hour while it runs). When you hit a problem and need to keep the evidence, copy the logs out early; do not count on them staying in place.
@@ -23,7 +22,7 @@ The game directory may already contain another tool's `dwmapi.dll`, or `dwmapi.d
 
 ### "Start and attach" is grayed out
 
-The **Start and attach** option under Live attach only handles the game process that the launcher creates this time: it stays disabled while the page already lists a running `HTGame.exe`. In that case use **Inject into running process** instead; if you want to go through the startup flow again, exit the game first.
+The **Start and attach** option under **Launch → Injection mode** only handles the game process that the launcher creates this time: it stays disabled while the page already lists a running `HTGame.exe`. In that case use **Inject into running process** instead; if you want to go through the startup flow again, exit the game first.
 
 ### "Inject into running process" is grayed out
 

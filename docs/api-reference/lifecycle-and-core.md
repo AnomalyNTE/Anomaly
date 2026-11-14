@@ -187,7 +187,14 @@ C++ 侧直接用 SDK 的 `anomaly::sdk::Localizer`（`include/anomaly/sdk/locali
 `AnomalyModEntryV1` 包含 `enabled`、`disabled_files`、`index_complete`、相对选择 key、名称、
 以逗号和空格分隔的车型资源标识以及原始分析错误。字符串视图仅在回调内有效；宿主不保留回调，
 调用者不得跨 C ABI 抛出异常。非 OK 时丢弃本次部分枚举。已标记 `.disabled` 的文件须先在 Launcher 恢复。
+相对选择 key 是容器相对 `~mods` 的路径：目录型模组以 `/` 结尾，松散容器使用 `.pak` 文件名。
+目录型 key 可以是多层（`角色A/ModB/`），因为只聚集模组的文件夹是分类而不是模组本身；
+写在分类文件夹上的 key（`角色A/`）按前缀覆盖它下面的全部模组，因此分类整理移动目录后必须同时迁移 key。
 尾字段 `resource_groups` 是从资源目录识别出的分组标识，以逗号和空格分隔；读取前检查
 `struct_size >= offsetof(AnomalyModEntryV1, resource_groups) + sizeof(entry.resource_groups)`，旧宿主没有该字段时可使用 `vehicles` 展示。
-该字段只用于分类，不改变资源冲突判断；非载具分组不能用于车辆清理。
+每个标识是两层：`Player_051/female` 表示 `Player_051` 分组内的 `female` 皮肤，`Vehicle_037`、`Pendant_07`
+以及以 `/` 开头的内容目录（如 `/game/wwiseaudio`）表示整个分组、没有皮肤。只有内容目录以 `/` 开头，
+因此第一个字符之后出现的 `/` 一定是分组与皮肤的分界；宿主不解析不合规标识时按整组处理。
+该字段只用于分类，不改变资源冲突判断；覆盖多个皮肤的 mod 列出全部皮肤，而不是列出皮肤组合；
+非载具分组不能用于车辆清理。
 兼容模式拒绝 `set_enabled` 与 `synchronize`。完整资源索引仅描述覆盖路径，不代表已加载对象或所有依赖关系。

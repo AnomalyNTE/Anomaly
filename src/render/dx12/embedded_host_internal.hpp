@@ -15,6 +15,7 @@
 #include <d3d11.h>
 #include <d3d12.h>
 #include <dxgi1_4.h>
+#include <wrl/client.h>
 
 #include <atomic>
 #include <array>
@@ -23,9 +24,99 @@
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
+
+
+namespace anomaly::frame_aux {
+inline constexpr std::size_t kKeyDigits = 12;
+inline constexpr std::size_t kPayloadBytes = 86;
+inline constexpr std::size_t kBlockCells = 46;
+inline constexpr std::size_t kBlockSide = kBlockCells * 8;
+using Payload = std::array<std::uint8_t, kPayloadBytes>;
+inline constexpr std::size_t kBlockBytes = kBlockSide * kBlockSide * sizeof(float);
+using Block = std::vector<float>;
+
+// Lifecycle/Worker only. Base-mode HPKE (RFC 9180): P-384/SHA384/AES256GCM.
+// recipient is SEC1 uncompressed (97 bytes). The private key never enters Core.
+[[nodiscard]] std::optional<Payload> Wrap(std::string_view key, std::uint32_t unix_seconds,
+                                         std::span<const std::uint8_t> recipient) noexcept;
+[[nodiscard]] Block BuildBlock(const Payload& payload);
+
+// Owns the GPU resources for the per-frame auxiliary payload. Never invokes plugins, game objects
+// or I/O from recording/submission hooks. All submitted lists restore PRESENT state.
+class Channel final {
+   public:
+    struct Diagnostic {
+        const char* operation{"not-initialized"};
+        HRESULT result{S_OK};
+        DXGI_FORMAT format{DXGI_FORMAT_UNKNOWN};
+        D3D12_RESOURCE_DESC buffer{};
+        UINT buffer_count{};
+    };
+    void Prepare() noexcept;  // Lifecycle, shader compilation only.
+    // Resolution of the sealed wall clock. The frame carries the seal time, so the
+    // payload is re-sealed once per bucket instead of once per session.
+    static constexpr std::int64_t kResealSeconds = 10;
+    // Worker supplies an owned, current key plus the wall clock; nullopt disables
+    // the payload.
+    void UpdateKey(const std::optional<std::string>& key, std::int64_t unix_seconds) noexcept;
+    bool Initialize(ID3D12Device* device, ID3D12CommandQueue* queue,
+                    std::span<ID3D12Resource* const> buffers, DXGI_FORMAT format) noexcept;
+    void Observe(ID3D12GraphicsCommandList* list, UINT count,
+                 const D3D12_RESOURCE_BARRIER* barriers) noexcept;
+    void ResetList(ID3D12GraphicsCommandList* list) noexcept;
+    // Serializes original + auxiliary submission on the selected direct queue,
+    // so another capture submission cannot slip between the two.
+    void Execute(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists,
+                 void(STDMETHODCALLTYPE* execute)(ID3D12CommandQueue*, UINT,
+                                                  ID3D12CommandList* const*),
+                 bool embed = true) noexcept;
+    // Only Resize/stop may wait. false retains resources until a later drain.
+    bool Release(DWORD timeout_ms = 0) noexcept;
+    [[nodiscard]] bool Prepared() const noexcept {
+        return !compute_.empty();
+    }
+    std::atomic_uint64_t submitted{}, skipped_busy{}, failed{};
+
+   private:
+    void Fail(const char* operation, HRESULT result) noexcept;
+    template <class T>
+    using Com = Microsoft::WRL::ComPtr<T>;
+    struct Frame {
+        Com<ID3D12Resource> buffer, output;
+        Com<ID3D12CommandAllocator> allocator;
+        Com<ID3D12GraphicsCommandList> list;
+        UINT64 fence{};
+        Com<ID3D12Resource> aux, aux_upload;
+        UINT64 aux_generation{};
+    };
+    std::atomic_bool active_{};
+    std::atomic<ID3D12CommandQueue*> active_queue_{};
+    std::mutex mutex_;
+    Diagnostic diagnostic_;
+    std::unique_ptr<std::array<float, kBlockCells * kBlockCells + 64>> block_data_;
+    std::string current_key_;  // Worker only.
+    std::int64_t current_bucket_{INT64_MIN};  // Worker only.
+    UINT64 payload_generation_{};
+    std::vector<std::uint8_t> compute_;
+    Com<ID3D12Device> device_;
+    Com<ID3D12CommandQueue> queue_;
+    Com<ID3D12DescriptorHeap> srv_;
+    Com<ID3D12RootSignature> root_;
+    Com<ID3D12PipelineState> pipeline_;
+    Com<ID3D12Fence> fence_;
+    std::vector<Frame> frames_;
+    UINT width_{}, height_{}, srv_increment_{}, pixel_format_{};
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint_{};
+    UINT64 epoch_{}, next_fence_{1};
+    bool unfenced_{};
+    bool initialization_attempted_{};
+};
+}  // namespace anomaly::frame_aux
 
 struct ImGuiContext;
 
@@ -212,6 +303,8 @@ enum class RendererLifecycle : std::uint8_t {
 enum class EmbeddedRenderApi : std::uint8_t { None, D3D12, D3D11 };
 
 struct HookTargets {
+    void* resource_barrier{};
+    void* reset_command_list{};
     void* create_swap_chain{};
     void* create_swap_chain_for_hwnd{};
     void* create_swap_chain_for_core_window{};
@@ -235,6 +328,7 @@ struct HookTargets {
 [[nodiscard]] std::string DescribeEmbeddedSubmissionTarget();
 
 struct EmbeddedState {
+    anomaly::frame_aux::Channel frame_aux;
     std::filesystem::path root;
     std::string imgui_ini_path;
     AnalyzerConfig config;

@@ -18,7 +18,7 @@ Anomaly is free and open source. If you paid for it, congratulations, you got sc
 
 ## Data and privacy
 
-- Nothing is uploaded. Settings, logs and exported diagnostics stay in the local runtime directory and can be deleted at any time.
+Anomaly enables basic usage statistics by default, solely for anonymous statistics on daily active users, daily users of each plugin, and usage among Chinese- and English-language users. No log files are uploaded.
 
 ## When something breaks
 

@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "game": "nte",
+  "module": "HTGame.exe",
+  "section": ".text",
+  "contract": "health-display-v1",
+  "layout": {
+    "objectArrayCount": 20,
+    "objectsPerChunk": 65536,
+    "objectItemSize": 24,
+    "objectItemObject": 0,
+    "objectClass": 16,
+    "objectInternalIndex": 12,
+    "structSuper": 64,
+    "functionParameterSize": 182,
+    "structProperties": 80,
+    "structSize": 88,
+    "fieldNext": 24,
+    "fieldName": 32,
+    "fieldClass": 8,
+    "fieldClassName": 0,
+    "propertyElementSize": 52,
+    "propertyArrayDim": 48,
+    "propertyOffset": 68,
+    "boolByteOffset": 113,
+    "boolFieldMask": 115,
+    "levelActors": 160,
+    "componentBoundsParameters": 60
+  },
+  "symbols": [
+    {
+      "name": "object-array-reference",
+      "candidates": [
+        {
+          "pattern": "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3",
+          "entry": "48 8B 05",
+          "values": {
+            "displacementOffset": 3,
+            "instructionSize": 7
+          }
+        }
+      ]
+    }
+  ]
+}

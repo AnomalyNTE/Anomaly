@@ -400,7 +400,7 @@
       "pattern": "74 6B F6 C3 04 75 6F 48 8D 05 ?? ?? ?? ?? 8B CF",
       "resolve": {
         "kind": "direct",
-        "addend": 5
+        "addend": 0
       },
       "validators": [
         "address-in-module",
@@ -432,6 +432,22 @@
       "module": "HTGame.exe",
       "section": ".text",
       "pattern": "40 53 48 83 EC 20 48 8D 41 08 BB FF FF FF FF F0 0F C1 18 83 FB 01 75 15 33 D2 48 85 C0 48 0F 44 CA 48 85 C9 74 07 48 8B 01 8B D3 FF 10 8D 43 FF 48 83 C4 20 5B C3",
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable",
+        "function-prologue-v1"
+      ],
+      "requiredBy": [
+        "anomaly.ue5.pak"
+      ]
+    },
+    "ue5.FlushAsyncLoading": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "40 55 53 48 8D AC 24 68 F8 FF FF 48 81 EC 98 08 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 70 07 00 00 48 83 3D ?? ?? ?? ?? 00 48 8B D9 48 89 4C 24 40 0F 84",
       "resolve": {
         "kind": "direct"
       },
@@ -496,6 +512,72 @@
       "module": "HTGame.exe",
       "section": ".text",
       "pattern": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 54 41 56 41 57 48 83 EC 30 80 B9 F2 02 00 00 00 4D 8B F8 48 8B FA 48 8B D9 0F 84 ?? ?? ?? ?? 8B 81 D0 00 00 00 48 8D 35 ?? ?? ?? ?? 8B 69 7C 45 33 E4 4C 8B B1 D0 02 00 00",
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable",
+        "function-prologue-v1"
+      ],
+      "requiredBy": [
+        "anomaly.ue5.pak"
+      ]
+    },
+    "ue5.FEncryptionKeyManager.Get": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "E8 ?? ?? ?? ?? 4C 8D 44 24 30 48 8B D3 48 8B C8 E8 ?? ?? ?? ?? 84 C0 0F 85 ?? ?? ?? ?? 8B 43 0C 0B 43 08 0B 43 04 0B 03",
+      "resolve": {
+        "kind": "rip-rel32",
+        "offset": 1,
+        "instructionSize": 5
+      },
+      "validators": [
+        "address-in-module",
+        "executable",
+        "function-prologue-v1"
+      ],
+      "requiredBy": [
+        "anomaly.ue5.pak"
+      ]
+    },
+    "ue5.FEncryptionKeyManager.TryGetKey": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "48 89 5C 24 10 48 89 6C 24 18 48 89 74 24 20 57 48 83 EC 20 48 8B D9 49 8B F8 B9 01 00 00 00 48 8B F2 33 C0 F0 0F B0 0B 74 ?? 48 8B CB E8 ?? ?? ?? ?? BA 10 00 00 00 48 8B CE E8 ?? ?? ?? ?? 4C 8B C6 48 8D 4B 08 8B D0 E8 ?? ?? ?? ?? 83 F8 FF",
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable",
+        "function-prologue-v1"
+      ],
+      "requiredBy": [
+        "anomaly.ue5.pak"
+      ]
+    },
+    "ue5.FCompression.UncompressMemory": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "48 89 5C 24 10 48 89 74 24 18 48 89 7C 24 20 48 89 4C 24 08 55 41 54 41 55 41 56 41 57 48 8D 6C 24 E1 48 81 EC D0 00 00 00 4C 8B E2 48 8B D9 BA 01 01 00 00 48 8D 4D A7 4D 8B E9 4D 8B F0 40 32 FF E8 ?? ?? ?? ??",
+      "resolve": {
+        "kind": "direct"
+      },
+      "validators": [
+        "address-in-module",
+        "executable",
+        "function-prologue-v1"
+      ],
+      "requiredBy": [
+        "anomaly.ue5.pak"
+      ]
+    },
+    "ue5.FName.FromEName": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "48 89 5C 24 08 57 48 83 EC 20 80 3D ?? ?? ?? ?? 00 48 8B D9 48 8D 0D ?? ?? ?? ?? 8B FA 75 ?? E8 ?? ?? ?? ?? 48 8B C8 C6 05 ?? ?? ?? ?? 01 8B 8C B9 40 40 01 00 48 8B C3 89 0B 48 8B 5C 24 30 48 83 C4 20 5F",
       "resolve": {
         "kind": "direct"
       },
@@ -644,12 +726,17 @@
       "ue5.FPakPlatformFile.Mount",
       "ue5.FPakPlatformFile.MountWithStatus",
       "ue5.FPakFile.Release",
+      "ue5.FlushAsyncLoading",
       "ue5.PakSignatureGate",
       "ue5.FPakPlatformFile.Unmount",
       "ue5.PakContainerSignatureVerify",
       "ue5.FPakFile.Find",
       "ue5.PakBlockCacheVerify",
-      "ue5.PakBlockCacheComplete"
+      "ue5.PakBlockCacheComplete",
+      "ue5.FEncryptionKeyManager.Get",
+      "ue5.FEncryptionKeyManager.TryGetKey",
+      "ue5.FCompression.UncompressMemory",
+      "ue5.FName.FromEName"
     ]
   },
   "optionalFeatures": [
@@ -1120,7 +1207,16 @@
     "assets.setHeapHash": 64,
     "assets.setHashSize": 72,
     "assets.setInlineFlagBits": 128,
-    "assets.derivedClassesVtableSlot": 368
+    "assets.derivedClassesVtableSlot": 368,
+    "pak.compressionZlibName": 257,
+    "pak.compressionGzipName": 258,
+    "pak.compressionLz4Name": 259,
+    "pak.compressionOodleName": 261,
+    "account.digits": 12,
+    "account.scanBatch": 2048,
+    "account.source0.size": 8,
+    "account.source1.size": 8,
+    "account.source2.size": 16
   },
   "layoutCandidates": [
     {

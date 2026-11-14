@@ -921,12 +921,18 @@ void ANOMALY_CALL CloseCurrentPopup(void*) { ImGui::CloseCurrentPopup(); }
 
 int ANOMALY_CALL FilterMatch(
     void*, AnomalyStringViewV1 filter, AnomalyStringViewV1 value) {
-    const std::string needle = Copy(filter);
-    const std::string haystack = Copy(value);
+    std::string needle = Copy(filter);
+    const std::string_view haystack = value.data == nullptr
+        ? std::string_view{} : std::string_view(value.data, value.size);
     if (needle.empty()) return 1;
+    // Fold the query once; a catalog search compares it against every byte of
+    // each path. Keep the same locale-aware byte matching without copying paths.
+    for (char& byte : needle) {
+        byte = static_cast<char>(std::tolower(static_cast<unsigned char>(byte)));
+    }
     const auto equal_folded = [](const char left, const char right) {
         return std::tolower(static_cast<unsigned char>(left)) ==
-            std::tolower(static_cast<unsigned char>(right));
+            static_cast<unsigned char>(right);
     };
     const auto found = std::search(
         haystack.begin(), haystack.end(), needle.begin(), needle.end(), equal_folded);

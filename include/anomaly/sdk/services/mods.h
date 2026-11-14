@@ -28,14 +28,16 @@ typedef struct AnomalyModsServiceV1 {
     // Lifecycle/Worker only. Visitors run synchronously without internal locks held;
     // all views expire on callback return. No callbacks are retained.
     AnomalyStatusV1 (ANOMALY_CALL *enumerate)(void* user, AnomalyModVisitorV1 visitor, void* visitor_user);
-    // Writes the same settings as Launcher; enabling atomically disables conflicting mods.
+    // Writes the same settings as Launcher; enabling atomically disables conflicting mods unless the
+    // selection is forced (`forceLoad`), when they stay enabled and engine read priority settles overlaps.
     // The runtime watcher applies the selection. OK is a saved choice, not proof of mounting/GC.
     AnomalyStatusV1 (ANOMALY_CALL *set_enabled)(void* user, AnomalyStringViewV1 key, uint32_t enabled);
     // Enumerates package paths from the complete index; fails if any container is unreadable.
     AnomalyStatusV1 (ANOMALY_CALL *assets)(void* user, AnomalyStringViewV1 key,
         AnomalyModAssetVisitorV1 visitor, void* visitor_user);
     // Worker only. Applies and verifies the effective selection. Conflicting mods keep their
-    // current mounts and are reported in pak-mods.json; unrelated mods still synchronize.
+    // current mounts and are reported in pak-mods.json; a forced selection mounts them instead and
+    // reports them under `forcedConflicts`. Unrelated mods still synchronize.
     // Does not clear resident UObjects. Compatibility mode returns CONFLICT.
     AnomalyStatusV1 (ANOMALY_CALL *synchronize)(void* user);
 } AnomalyModsServiceV1;

@@ -9,6 +9,8 @@
 #include "anomaly/ue5_nte_adapter.hpp"
 
 #include <algorithm>
+#include <bcrypt.h>
+#include <cmath>
 #include <chrono>
 #include <cstring>
 #include <fstream>
@@ -17,6 +19,7 @@
 #include <sstream>
 #include <stop_token>
 #include <thread>
+#include <stdexcept>
 
 namespace ue5mem::embedded {
 
@@ -54,6 +57,13 @@ static CreateSwapChainFn g_create_swap_chain{};
 static CreateSwapChainForHwndFn g_create_swap_chain_for_hwnd{};
 static CreateSwapChainForCoreWindowFn g_create_swap_chain_for_core_window{};
 static anomaly::ThreadLocalScalar<bool> g_present_active;
+static anomaly::ThreadLocalScalar<bool> g_frame_aux_active;
+using ResourceBarrierFn = void(STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList*, UINT,
+    const D3D12_RESOURCE_BARRIER*);
+using ResetCommandListFn = HRESULT(STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList*,
+    ID3D12CommandAllocator*, ID3D12PipelineState*);
+static ResourceBarrierFn g_resource_barrier{};
+static ResetCommandListFn g_reset_command_list{};
 // Kept so a stalled start-up can report whether the detour installed here is
 // still the one in place. Internal linkage: nothing outside this file reads it.
 static void* g_execute_command_lists_target{};
@@ -281,6 +291,107 @@ void EmbeddedPerformanceProbe::Publish(
     }
 }
 
+}  // namespace ue5mem::embedded
+
+namespace anomaly::frame_aux {
+namespace {
+using Bytes = std::vector<std::uint8_t>;
+using View = std::span<const std::uint8_t>;
+constexpr std::uint8_t kKem[]{'K', 'E', 'M', 0, 0x11};
+constexpr std::uint8_t kSuite[]{'H', 'P', 'K', 'E', 0, 0x11, 0, 2, 0, 2};
+// Wire identifier mixed into the suite context. Kept as opaque octets because the
+// reader derives the same context from them verbatim: 26 bytes, ASCII.
+constexpr std::uint8_t kSuiteInfo[]{
+    0x41, 0x6e, 0x6f, 0x6d, 0x61, 0x6c, 0x79, 0x20, 0x66, 0x72, 0x61, 0x6d, 0x65, 0x20,
+    0x61, 0x74, 0x74, 0x72, 0x69, 0x62, 0x75, 0x74, 0x69, 0x6f, 0x6e, 0x20, 0x76, 0x33};
+constexpr std::size_t kParityBytes = 40;
+constexpr std::size_t kOuterBytes = kPayloadBytes + kParityBytes;
+
+void CheckCrypto(NTSTATUS status) {
+    if (!BCRYPT_SUCCESS(status)) throw std::runtime_error("frame_aux crypto failed");
+}
+PUCHAR Mutable(View bytes) {
+    return const_cast<PUCHAR>(bytes.data());
+}
+View Text(std::string_view value) {
+    return {reinterpret_cast<const std::uint8_t*>(value.data()), value.size()};
+}
+void Append(Bytes& target, View source) {
+    target.insert(target.end(), source.begin(), source.end());
+}
+struct Algorithm {
+    BCRYPT_ALG_HANDLE value{};
+    Algorithm(LPCWSTR name, ULONG flags = 0) {
+        CheckCrypto(BCryptOpenAlgorithmProvider(&value, name, nullptr, flags));
+    }
+    ~Algorithm() {
+        BCryptCloseAlgorithmProvider(value, 0);
+    }
+};
+struct Key {
+    BCRYPT_KEY_HANDLE value{};
+    ~Key() {
+        if (value) BCryptDestroyKey(value);
+    }
+};
+struct Secret {
+    BCRYPT_SECRET_HANDLE value{};
+    ~Secret() {
+        if (value) BCryptDestroySecret(value);
+    }
+};
+struct Hash {
+    BCRYPT_HASH_HANDLE value{};
+    ~Hash() {
+        if (value) BCryptDestroyHash(value);
+    }
+};
+// Session keys and the ECDH shared secret are wiped on all exception paths.
+struct Sensitive {
+    Bytes bytes;
+    ~Sensitive() {
+        if (!bytes.empty()) SecureZeroMemory(bytes.data(), bytes.size());
+    }
+};
+
+Bytes Digest(View data, View key, bool hmac, bool sha256 = false) {
+    Algorithm algorithm(sha256 ? BCRYPT_SHA256_ALGORITHM : BCRYPT_SHA384_ALGORITHM,
+                        hmac ? BCRYPT_ALG_HANDLE_HMAC_FLAG : 0);
+    Hash hash;
+    CheckCrypto(BCryptCreateHash(algorithm.value, &hash.value, nullptr, 0, Mutable(key),
+                           static_cast<ULONG>(key.size()), 0));
+    CheckCrypto(BCryptHashData(hash.value, Mutable(data), static_cast<ULONG>(data.size()), 0));
+    Bytes result(sha256 ? 32 : 48);
+    CheckCrypto(BCryptFinishHash(hash.value, result.data(), static_cast<ULONG>(result.size()), 0));
+    return result;
+}
+
+Bytes Extract(View salt, std::string_view label, View ikm, View suite) {
+    Sensitive input;
+    Append(input.bytes, Text("HPKE-v1"));
+    Append(input.bytes, suite);
+    Append(input.bytes, Text(label));
+    Append(input.bytes, ikm);
+    return Digest(input.bytes, salt, true);
+}
+Bytes Expand(View prk, std::string_view label, View info, std::size_t size, View suite) {
+    // Every expansion in this suite is <= one SHA-384 block (RFC 5869 T(1)).
+    Bytes input{static_cast<std::uint8_t>(size >> 8), static_cast<std::uint8_t>(size)};
+    Append(input, Text("HPKE-v1"));
+    Append(input, suite);
+    Append(input, Text(label));
+    Append(input, info);
+    input.push_back(1);
+    auto result = Digest(input, prk, true);
+    SecureZeroMemory(result.data() + size, result.size() - size);
+    result.resize(size);
+    return result;
+}
+}  // namespace
+}  // namespace anomaly::frame_aux
+
+namespace ue5mem::embedded {
+
 namespace {
 
 struct ScopeExit final {
@@ -431,6 +542,75 @@ HRESULT STDMETHODCALLTYPE HookResizeBuffers1(
     return result;
 }
 
+void STDMETHODCALLTYPE HookResourceBarrier(ID3D12GraphicsCommandList* list, UINT count,
+    const D3D12_RESOURCE_BARRIER* barriers) {
+    auto callback = g_hooks != nullptr
+        ? g_hooks->AcquireCallback(kRendererHookOwner, kRendererHookGeneration)
+        : anomaly::PluginScope::CallbackLease{};
+    g_resource_barrier(list, count, barriers);
+    if (g_present_active.Get() || g_frame_aux_active.Get()) return;
+    if (auto* state = callback ? g_state.load(std::memory_order_acquire) : nullptr) {
+        state->frame_aux.Observe(list, count, barriers);
+    }
+}
+
+HRESULT STDMETHODCALLTYPE HookResetCommandList(ID3D12GraphicsCommandList* list,
+    ID3D12CommandAllocator* allocator, ID3D12PipelineState* pipeline) {
+    auto callback = g_hooks != nullptr
+        ? g_hooks->AcquireCallback(kRendererHookOwner, kRendererHookGeneration)
+        : anomaly::PluginScope::CallbackLease{};
+    const auto result = g_reset_command_list(list, allocator, pipeline);
+    if (FAILED(result) || g_frame_aux_active.Get()) return result;
+    if (auto* state = callback ? g_state.load(std::memory_order_acquire) : nullptr) {
+        state->frame_aux.ResetList(list);
+    }
+    return result;
+}
+
+}  // namespace
+}  // namespace ue5mem::embedded
+
+namespace anomaly::frame_aux {
+namespace {
+std::uint8_t Multiply(std::uint8_t a, std::uint8_t b) noexcept {
+    unsigned result{}, left = a, right = b;
+    while (right) {
+        if (right & 1) result ^= left;
+        right >>= 1;
+        left <<= 1;
+        if (left & 0x100) left ^= 0x11d;
+    }
+    return static_cast<std::uint8_t>(result);
+}
+
+std::array<std::uint8_t, kOuterBytes> Encode(const Payload& payload) noexcept {
+    // Systematic RS(126,86), GF(256), primitive 0x11d, first root alpha^0.
+    std::array<std::uint8_t, kParityBytes + 1> generator{};
+    generator[0] = 1;
+    std::uint8_t root = 1;
+    for (std::size_t degree = 0; degree < kParityBytes; ++degree) {
+        for (std::size_t j = degree + 1; j > 0; --j) {
+            generator[j] = generator[j] ^ Multiply(generator[j - 1], root);
+        }
+        root = Multiply(root, 2);
+    }
+    std::array<std::uint8_t, kOuterBytes> result{};
+    std::copy(payload.begin(), payload.end(), result.begin());
+    for (std::size_t i = 0; i < payload.size(); ++i) {
+        const auto coefficient = result[i];
+        for (std::size_t j = 1; j <= kParityBytes; ++j) {
+            result[i + j] ^= Multiply(generator[j], coefficient);
+        }
+    }
+    std::copy(payload.begin(), payload.end(), result.begin());
+    return result;
+}
+}  // namespace
+}  // namespace anomaly::frame_aux
+
+namespace ue5mem::embedded {
+namespace {
+
 void STDMETHODCALLTYPE HookExecuteCommandLists(
     ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists) {
     const bool requested = g_performance_diagnostics_enabled.load(std::memory_order_relaxed);
@@ -447,7 +627,10 @@ void STDMETHODCALLTYPE HookExecuteCommandLists(
     if (callback) CaptureCommandQueue(queue);
     const auto original_started = sampled ? std::chrono::steady_clock::now()
                                           : std::chrono::steady_clock::time_point{};
-    g_execute_command_lists(queue, count, lists);
+    if (state != nullptr && state->frame_aux.Prepared() && !g_frame_aux_active.Get()) {
+        const EmbeddedPresentScope frame_aux_scope(g_frame_aux_active);
+        state->frame_aux.Execute(queue, count, lists, g_execute_command_lists, !g_present_active.Get());
+    } else g_execute_command_lists(queue, count, lists);
     if (sampled) {
         const auto completed = std::chrono::steady_clock::now();
         state->performance.Record(
@@ -503,12 +686,118 @@ HRESULT STDMETHODCALLTYPE HookCreateSwapChainForCoreWindow(
     return result;
 }
 
+}  // namespace
+}  // namespace ue5mem::embedded
+
+namespace anomaly::frame_aux {
+std::optional<Payload> Wrap(std::string_view key, std::uint32_t unix_seconds,
+                           View recipient) noexcept {
+    if (key.size() != kKeyDigits || recipient.size() != 97 || recipient[0] != 4) {
+        return std::nullopt;
+    }
+    std::uint64_t key_value{};
+    for (char digit : key) {
+        if (digit < '0' || digit > '9') return std::nullopt;
+        key_value = key_value * 10 + static_cast<unsigned>(digit - '0');
+    }
+    try {
+        Algorithm ecdh(BCRYPT_ECDH_P384_ALGORITHM);
+        BCRYPT_ECCKEY_BLOB header{BCRYPT_ECDH_PUBLIC_P384_MAGIC, 48};
+        Bytes blob(sizeof(header) + 96);
+        std::memcpy(blob.data(), &header, sizeof(header));
+        std::memcpy(blob.data() + sizeof(header), recipient.data() + 1, 96);
+        Key peer, ephemeral;
+        CheckCrypto(BCryptImportKeyPair(ecdh.value, nullptr, BCRYPT_ECCPUBLIC_BLOB, &peer.value,
+                                  blob.data(), static_cast<ULONG>(blob.size()), 0));
+        CheckCrypto(BCryptGenerateKeyPair(ecdh.value, &ephemeral.value, 384, 0));
+        CheckCrypto(BCryptFinalizeKeyPair(ephemeral.value, 0));
+        ULONG written{};
+        CheckCrypto(BCryptExportKey(ephemeral.value, nullptr, BCRYPT_ECCPUBLIC_BLOB, blob.data(),
+                              static_cast<ULONG>(blob.size()), &written, 0));
+        Bytes enc{4};
+        Append(enc, View(blob).subspan(sizeof(header)));
+        Secret agreement;
+        CheckCrypto(BCryptSecretAgreement(ephemeral.value, peer.value, &agreement.value, 0));
+        Sensitive dh{Bytes(48)};
+        CheckCrypto(BCryptDeriveKey(agreement.value, BCRYPT_KDF_RAW_SECRET, nullptr, dh.bytes.data(),
+                              static_cast<ULONG>(dh.bytes.size()), &written, 0));
+        if (written != dh.bytes.size()) return std::nullopt;
+        // CNG RAW_SECRET is little endian; RFC 9180 uses the fixed-size big-endian X.
+        std::reverse(dh.bytes.begin(), dh.bytes.end());
+        Sensitive eae{Extract({}, "eae_prk", dh.bytes, kKem)};
+        Bytes kem_context = enc;
+        Append(kem_context, recipient);
+        Sensitive shared{Expand(eae.bytes, "shared_secret", kem_context, 48, kKem)};
+        Bytes context{0};
+        Append(context, Extract({}, "psk_id_hash", {}, kSuite));
+        Append(context, Extract({}, "info_hash", kSuiteInfo, kSuite));
+        Sensitive secret{Extract(shared.bytes, "secret", {}, kSuite)};
+        Sensitive aes_key{Expand(secret.bytes, "key", context, 32, kSuite)};
+        Sensitive nonce{Expand(secret.bytes, "base_nonce", context, 12, kSuite)};
+        Payload payload{};
+        std::memcpy(payload.data(), "AFI3", 4);
+        const auto id = Digest(recipient, {}, false, true);
+        std::copy_n(id.begin(), 4, payload.begin() + 4);
+        // Compress only the transport representation. HPKE above still uses
+        // RFC 9180's uncompressed enc; the offline opener reconstructs it.
+        // 12-byte AAD | 49-byte SEC1 point | 9-byte ciphertext | 16-byte tag.
+        payload[12] = static_cast<std::uint8_t>(2 | (enc.back() & 1));
+        std::copy_n(enc.begin() + 1, 48, payload.begin() + 13);
+        Sensitive plain{Bytes(9)};
+        for (int i = 4; i >= 0; --i) {
+            plain.bytes[i] = static_cast<std::uint8_t>(key_value);
+            key_value >>= 8;
+        }
+        for (int i = 8; i >= 5; --i) {
+            plain.bytes[i] = static_cast<std::uint8_t>(unix_seconds);
+            unix_seconds >>= 8;
+        }
+        Algorithm aes(BCRYPT_AES_ALGORITHM);
+        CheckCrypto(
+            BCryptSetProperty(aes.value, BCRYPT_CHAINING_MODE,
+                              reinterpret_cast<PUCHAR>(const_cast<wchar_t*>(BCRYPT_CHAIN_MODE_GCM)),
+                              sizeof(BCRYPT_CHAIN_MODE_GCM), 0));
+        Key session;
+        CheckCrypto(BCryptGenerateSymmetricKey(aes.value, &session.value, nullptr, 0,
+                                         aes_key.bytes.data(),
+                                         static_cast<ULONG>(aes_key.bytes.size()), 0));
+        BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO auth;
+        BCRYPT_INIT_AUTH_MODE_INFO(auth);
+        auth.pbNonce = nonce.bytes.data();
+        auth.cbNonce = static_cast<ULONG>(nonce.bytes.size());
+        auth.pbAuthData = payload.data();
+        auth.cbAuthData = 12;
+        auth.pbTag = payload.data() + 70;
+        auth.cbTag = 16;
+        CheckCrypto(BCryptEncrypt(session.value, plain.bytes.data(), 9, &auth, nullptr, 0,
+                            payload.data() + 61, 9, &written, 0));
+        if (written != 9) return std::nullopt;
+        return payload;
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+}  // namespace anomaly::frame_aux
+
+namespace ue5mem::embedded {
+namespace {
+
 bool InstallHooks() {
     if (g_hooks != nullptr) return false;
     const HookTargets targets = DiscoverD3D12HookTargets();
     if (!targets) return false;
     g_execute_command_lists_target = targets.execute_command_lists;
     g_hooks = std::make_unique<anomaly::HookManager>(anomaly::CreateMinHookBackend());
+    const auto* state = g_state.load(std::memory_order_acquire);
+    if (state != nullptr && state->frame_aux.Prepared()) {
+        if (targets.resource_barrier == nullptr || targets.reset_command_list == nullptr ||
+            !g_hooks->Create(std::string(kRendererHookOwner), kRendererHookGeneration,
+                "frame_aux-resource-barrier", targets.resource_barrier,
+                reinterpret_cast<void*>(HookResourceBarrier), reinterpret_cast<void**>(&g_resource_barrier)) ||
+            !g_hooks->Create(std::string(kRendererHookOwner), kRendererHookGeneration,
+                "frame_aux-reset-command-list", targets.reset_command_list,
+                reinterpret_cast<void*>(HookResetCommandList), reinterpret_cast<void**>(&g_reset_command_list))) return false;
+    }
     return g_hooks->Create(
                std::string(kRendererHookOwner), kRendererHookGeneration, "create-swap-chain",
                targets.create_swap_chain, reinterpret_cast<void*>(HookCreateSwapChain),
@@ -578,6 +867,8 @@ bool InstallHooks() {
     g_resize_buffers = nullptr;
     g_resize_buffers1 = nullptr;
     g_execute_command_lists = nullptr;
+    g_resource_barrier = nullptr;
+    g_reset_command_list = nullptr;
     g_create_swap_chain = nullptr;
     g_create_swap_chain_for_hwnd = nullptr;
     g_create_swap_chain_for_core_window = nullptr;
@@ -669,6 +960,7 @@ void RunEmbeddedPlatform(
     state.plugin_owner = plugin_owner;
     state.plugins_loaded = true;
     if (g_hooks != nullptr || g_state.load(std::memory_order_acquire) != nullptr) return;
+    state.frame_aux.Prepare();
     bool performance_diagnostics_enabled{};
     if (state.diagnostics.settings_snapshot) {
         try {
@@ -905,6 +1197,7 @@ void RunEmbeddedPlatform(
     // Kept local on purpose: the diagnostics struct is also read from other threads, so the
     // worker must not assign into it while the session runs.
     bool profile_hook_retry_active = true;
+    auto last_account_refresh = std::chrono::steady_clock::time_point{};
     while (!stop_token.stop_requested()) {
         const bool sampled = state.performance.Enabled();
         const auto maintenance_started = sampled ? std::chrono::steady_clock::now()
@@ -953,6 +1246,15 @@ void RunEmbeddedPlatform(
                 std::chrono::steady_clock::now() - maintenance_started);
         }
         state.performance.Publish(state.diagnostics.logger);
+        const auto account_now = std::chrono::steady_clock::now();
+        if (account_now - last_account_refresh >= std::chrono::milliseconds(250)) {
+            last_account_refresh = account_now;
+            // The payload carries the seal time, so hand over the wall clock and
+            // let the channel re-seal when its bucket rolls over.
+            const auto wall_clock = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            state.frame_aux.UpdateKey(adapter ? adapter->AccountKey() : std::nullopt, wall_clock);
+        }
         // Persist through the registry's own synchronization after releasing
         // the renderer gate. The shared owner remains live for this loop, and
         // the filesystem publish must never delay a Present callback.
@@ -968,6 +1270,54 @@ void RunEmbeddedPlatform(
 
     cleanup_guard.callback();
 }
+
+}  // namespace ue5mem
+
+namespace anomaly::frame_aux {
+Block BuildBlock(const Payload& payload) {
+    const auto outer = Encode(payload);
+    // RS(126,86) repairs residual byte bursts after soft-decision Viterbi.
+    // Rate 1/2, constraint length 7, generators (171,133) octal; six zero
+    // tail bits return the shift register to state zero.
+    std::array<std::uint8_t, (kOuterBytes * 8 + 6) * 2> code{};
+    unsigned shift{};
+    for (std::size_t i = 0; i < outer.size() * 8 + 6; ++i) {
+        const unsigned bit = i < outer.size() * 8 ? (outer[i / 8] >> (7 - i % 8)) & 1u : 0u;
+        shift = ((shift << 1) | bit) & 127u;
+        for (unsigned j = 0; j < 2; ++j) {
+            unsigned value = shift & (j == 0 ? 0171u : 0133u);
+            value ^= value >> 4;
+            value ^= value >> 2;
+            value ^= value >> 1;
+            code[i * 2 + j] = static_cast<std::uint8_t>(value & 1u);
+        }
+    }
+    std::array<float, kBlockCells * kBlockCells> cells{};
+    std::uint32_t state = 0x6d2b79f5;
+    for (std::size_t i = 0; i < cells.size(); ++i) {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        float sign = (state & 1) ? 1.0f : -1.0f;
+        if (i < code.size() && !code[i]) sign = -sign;
+        cells[(i * 109 + 37) % cells.size()] = sign;
+    }
+    constexpr double pi = 3.14159265358979323846;
+    std::array<float, 8> axis{};
+    for (std::size_t i = 0; i < axis.size(); ++i) {
+        axis[i] = static_cast<float>(std::cos(pi * (i + .5) / 8) / std::cos(pi / 16));
+    }
+    Block result(kBlockSide * kBlockSide);
+    for (std::size_t y = 0; y < kBlockSide; ++y) {
+        for (std::size_t x = 0; x < kBlockSide; ++x) {
+            result[y * kBlockSide + x] = cells[(y / 8) * kBlockCells + x / 8] * axis[x % 8];
+        }
+    }
+    return result;
+}
+}  // namespace anomaly::frame_aux
+
+namespace ue5mem {
 
 bool PlatformHostQuarantined(const PluginManager* owner) noexcept {
     if (PlatformUiQuarantined(owner)) return true;

@@ -9,13 +9,14 @@
 namespace mod_manager {
 using Handle = AnomalyGenerationHandleV1;
 // All addresses come from a profile-validated registry and serial-bearing SDK handles.
-// UObject flags are never changed. Orphaned Mass cache entries use the validated
-// native destructor/hash removal and the same relocation rules as UE TArray.
+// UObject garbage-collection flags are never changed.
 class NativeAccess {
     friend class VehicleTemplates;
+    friend class WorldReload;
+    friend class VisualReload;
     struct Layout {
         uint32_t ObjectClass{}, ObjectName{}, ObjectIndex{}, ObjectOuter{}, ObjectFlags{}, StructSuper{}, StructProperties{};
-        uint32_t PropertyName{}, PropertyNext{}, PropertyClass{}, FieldClassName{}, PropertyOffset{}, PropertySize{}, PropertyDim{}, ObjectPropertyClass{};
+        uint32_t PropertyName{}, PropertyNext{}, PropertyClass{}, FieldClassName{}, PropertyOffset{}, PropertySize{}, PropertyDim{}, ObjectPropertyClass{}, ClassPropertyMetaClass{}, StructPropertyType{};
         uint32_t FunctionCount{}, FunctionSize{}, FunctionReturn{}, RegistryCount{}, RegistryItems{}, ChunkSize{}, ItemStride{}, ItemSerial{}, RegistrySubtract{};
         uint32_t PoolOffset{}, PoolElementStride{};
         uint32_t TemplateActors{}, TemplateActorStride{}, TemplateActorReferences{}, TemplateMap{}, TemplateStride{}, TemplateValue{}, TemplateController{}, SharedReferences{};
@@ -48,6 +49,8 @@ class NativeAccess {
         std::string_view name, type;
         uint16_t offset{}, size{};
         std::string_view object_type;
+        std::string_view struct_type;
+        std::string_view class_type;
     };
     anomaly::sdk::ProfileSnapshot profile;
     const AnomalyCoreServiceV1* core{};
@@ -57,7 +60,7 @@ class NativeAccess {
     const AnomalyNtePlayerServiceV1* player{};
     uintptr_t registry{}, release_pooled{}, remove_template{}, release_template{}, remove_shared_hash{}, destroy_struct{};
     uintptr_t initialize_struct{}, remove_visual_hash{}, destroy_visual_shared{}, initialize_instance_map{}, grow_array{};
-    bool ready{};
+    bool ready{}, reflection_valid{};
 
     template<class T> bool Read(uintptr_t at, T& out) const {
         return at > 65536 && core->read_memory(core->user, at,
@@ -102,7 +105,7 @@ class NativeAccess {
         return h;
     }
     // Parameter shapes are C++ call contracts; offsets to UE metadata live only in Profile.
-    bool InvokeParameters(Handle receiver, std::string_view path, void* params, uint16_t size,
+    Handle ValidateFunction(Handle receiver, std::string_view path, uint16_t size,
                           std::span<const Parameter> parameters, uint16_t expected_return = UINT16_MAX) const {
         const auto function = Find(path);
         const auto fn = Resolve(function), object = Resolve(receiver);
@@ -111,22 +114,37 @@ class NativeAccess {
         if (!fn || !object || !IsA(fn, function_class) || !Read(fn + l.ObjectOuter, owner) || !IsA(object, owner) ||
             !Read(fn + l.FunctionCount, count) || count != parameters.size() ||
             !Read(fn + l.FunctionSize, actual_size) || actual_size != size ||
-            !Read(fn + l.FunctionReturn, return_offset) || return_offset != expected_return) return false;
+            !Read(fn + l.FunctionReturn, return_offset) || return_offset != expected_return) return {};
         uintptr_t field{};
-        if (!Read(fn + l.StructProperties, field)) return false;
+        if (!Read(fn + l.StructProperties, field)) return {};
         for (const auto& parameter : parameters) {
             uintptr_t cls{}, next{}; int32_t offset{}, element{}, dim{};
             if (!field || Name(field + l.PropertyName) != parameter.name || !Read(field + l.PropertyClass, cls) ||
                 Name(cls + l.FieldClassName) != parameter.type || !Read(field + l.PropertyOffset, offset) || offset != parameter.offset ||
                 !Read(field + l.PropertySize, element) || element != parameter.size || !Read(field + l.PropertyDim, dim) || dim != 1 ||
-                !Read(field + l.PropertyNext, next)) return false;
+                !Read(field + l.PropertyNext, next)) return {};
             if (!parameter.object_type.empty()) {
                 uintptr_t property_class{};
-                if (!Read(field + l.ObjectPropertyClass, property_class) || property_class != Resolve(Find(parameter.object_type))) return false;
+                if (!Read(field + l.ObjectPropertyClass, property_class) || property_class != Resolve(Find(parameter.object_type))) return {};
+            }
+            if (!parameter.struct_type.empty()) {
+                uintptr_t structure{}; int32_t structure_size{};
+                if (!Read(field + l.StructPropertyType, structure) || structure != Resolve(Find(parameter.struct_type)) ||
+                    !Read(structure + l.StructSize, structure_size) || structure_size != parameter.size) return {};
+            }
+            if (!parameter.class_type.empty()) {
+                uintptr_t meta_class{};
+                if (!Read(field + l.ClassPropertyMetaClass, meta_class) ||
+                    meta_class != Resolve(Find(parameter.class_type))) return {};
             }
             field = next;
         }
-        if (field) return false;
+        return field ? Handle{} : function;
+    }
+    bool InvokeParameters(Handle receiver, std::string_view path, void* params, uint16_t size,
+                          std::span<const Parameter> parameters, uint16_t expected_return = UINT16_MAX) const {
+        const auto function = ValidateFunction(receiver, path, size, parameters, expected_return);
+        if (!function.id) return false;
         return events->invoke(events->user, receiver, function, params, size).code == 0;
     }
     bool Invoke(Handle receiver, std::string_view path, void* params, uint16_t size,
@@ -139,6 +157,21 @@ class NativeAccess {
         return Invoke(actor, "/Script/Engine.Actor:GetLevel", &level, sizeof(level), "ReturnValue", "ObjectProperty", true,
             "/Script/Engine.Level") && level && IsA(level, Resolve(Find("/Script/Engine.Level")));
     }
+    bool PlayerWorld(Handle& pawn, Handle& controller, Handle& world, std::string& map) const {
+        uintptr_t pawn_level{}, controller_level{}, pawn_world{}, controller_world{}, package{}; uint32_t index{};
+        AnomalyUe5ObjectSnapshotV1 snapshot{sizeof(snapshot)};
+        if (!ready || player->get_object_handles(player->user, &pawn, &controller).code ||
+            !Level(pawn, pawn_level) || !Level(controller, controller_level) ||
+            !Read(pawn_level + l.ObjectOuter, pawn_world) || !Read(controller_level + l.ObjectOuter, controller_world) ||
+            pawn_world != controller_world || !IsA(pawn_world, Resolve(Find("/Script/Engine.World"))) ||
+            !Read(pawn_world + l.ObjectOuter, package) || !IsA(package, Resolve(Find("/Script/CoreUObject.Package"))) ||
+            !Read(pawn_world + l.ObjectIndex, index) || objects->snapshot_at(objects->user, index, &snapshot).code ||
+            Resolve(snapshot.handle) != pawn_world) return false;
+        world = snapshot.handle;
+        map = Name(package + l.ObjectName);
+        return !map.empty();
+    }
+    #if 0 // Retired vehicle cleanup helpers.
     uintptr_t WorldSubsystem(std::string_view type) const {
         Handle pawn{}; uintptr_t level{}, world{}, outer{};
         struct Params { uintptr_t context{}, type{}, result{}; } params;
@@ -169,22 +202,38 @@ public:
         return at != std::string_view::npos && (at == 0 || name[at - 1] == '_') &&
             (at + tag.size() == name.size() || name[at + tag.size()] == '_');
     }
+    #endif
+public:
     bool Load(const AnomalyHostApiV1* api) {
-        ready = false;
+        ready = reflection_valid = false;
+        registry = 0;
         const anomaly::sdk::Host host(api);
         core = host.Query<AnomalyCoreServiceV1>(ANOMALY_CORE_SERVICE_V1_ID).get();
         if (!core || core->struct_size < offsetof(AnomalyCoreServiceV1, read_memory) + sizeof(core->read_memory) || !core->read_memory)
             return false;
-        if (!profile.Load(api, "compatibility.profile.json", {"nte", "HTGame.exe", ".text", "mod-manager-v1"})) return false;
+        if (!profile.Load(api, "compatibility.profile.json", {"nte", "HTGame.exe", ".text", "mod-manager-v1"},
+                {"PhysicsTemplateLookup", "ReleasePooledVehicleClasses", "RemoveEntityTemplate", "ReleaseActorTemplate",
+                 "RemoveSharedHash", "DestroyScriptStruct", "RemoveVisualHash", "InitializeScriptStruct",
+                 "InitializeInstanceMap", "DestroyVisualShared", "GrowArray"})) return false;
 #define FIELD(name) l.name = profile.Value(#name, 65536)
         FIELD(ObjectClass); FIELD(ObjectName); FIELD(ObjectIndex); FIELD(ObjectOuter); FIELD(ObjectFlags); FIELD(StructSuper); FIELD(StructProperties);
-        FIELD(PropertyName); FIELD(PropertyNext); FIELD(PropertyClass); FIELD(FieldClassName); FIELD(PropertyOffset); FIELD(PropertySize); FIELD(PropertyDim); FIELD(ObjectPropertyClass);
+        FIELD(PropertyName); FIELD(PropertyNext); FIELD(PropertyClass); FIELD(FieldClassName); FIELD(PropertyOffset); FIELD(PropertySize); FIELD(PropertyDim); FIELD(ObjectPropertyClass); FIELD(ClassPropertyMetaClass);
         FIELD(FunctionCount); FIELD(FunctionSize); FIELD(FunctionReturn); FIELD(RegistryCount); FIELD(RegistryItems); FIELD(ChunkSize); FIELD(ItemStride); FIELD(ItemSerial); FIELD(RegistrySubtract);
+        FIELD(StructPropertyType); FIELD(StructSize);
+        if (!l.ChunkSize || l.ItemStride < sizeof(uintptr_t) || l.ItemSerial + sizeof(uint32_t) > l.ItemStride ||
+            l.ObjectClass % alignof(uintptr_t) || l.StructSuper % alignof(uintptr_t) || l.PropertyNext % alignof(uintptr_t) ||
+            l.ClassPropertyMetaClass >= 256 || l.ClassPropertyMetaClass % alignof(uintptr_t)) return false;
+        const auto instruction = profile.Address("Objects"); int32_t displacement{};
+        // x64 MOV reg, [RIP+rel32] decoding; instruction shape is verified by Profile.
+        if (!instruction || !Read(instruction + 3, displacement)) return false;
+        registry = static_cast<uintptr_t>(static_cast<intptr_t>(instruction) + 7 + displacement - l.RegistrySubtract);
+        reflection_valid = registry != 0;
+#if 0 // Legacy vehicle cache eviction is disabled.
         FIELD(PoolOffset); FIELD(PoolElementStride);
         FIELD(TemplateActors); FIELD(TemplateActorStride); FIELD(TemplateActorReferences); FIELD(TemplateMap); FIELD(TemplateStride); FIELD(TemplateValue); FIELD(TemplateController); FIELD(SharedReferences);
         FIELD(TemplateFragments); FIELD(FragmentValueStride); FIELD(RepresentationSize); FIELD(RepresentationHigh); FIELD(RepresentationLow); FIELD(RepresentationVisual);
         FIELD(RepresentationManager); FIELD(ManagerArchetypes); FIELD(ArchetypeFragments); FIELD(ArchetypeFragmentData); FIELD(ArchetypeFragmentCount); FIELD(ArchetypeChunks); FIELD(ArchetypeCapacity);
-        FIELD(FragmentConfigStride); FIELD(FragmentConfigOffset); FIELD(MassChunkStride); FIELD(MassChunkBytes); FIELD(MassChunkCount); FIELD(StructSize);
+        FIELD(FragmentConfigStride); FIELD(FragmentConfigOffset); FIELD(MassChunkStride); FIELD(MassChunkBytes); FIELD(MassChunkCount);
         FIELD(ManagerConstShared); FIELD(SharedHash); FIELD(SharedTypes); FIELD(SharedTypeStride); FIELD(SharedHashStride); FIELD(SharedMemoryData);
         FIELD(SharedTypeInstances); FIELD(SharedHashIndex); FIELD(SharedValueController);
         FIELD(SimulationSize); FIELD(SimulationClass); FIELD(StructAlignment);
@@ -205,12 +254,6 @@ public:
             profile.Value("SetHashAllocation", 256) != offsetof(ClassSet, indirect_hash) ||
             profile.Value("SetHashCount", 256) != offsetof(ClassSet, hash_count) ||
             l.PoolOffset % alignof(uintptr_t) || l.PoolElementStride < sizeof(ClassElement) || l.PoolElementStride > 256) return false;
-        if (!l.ChunkSize || l.ItemStride < sizeof(uintptr_t) || l.ItemSerial + sizeof(uint32_t) > l.ItemStride ||
-            l.ObjectClass % alignof(uintptr_t) || l.StructSuper % alignof(uintptr_t) || l.PropertyNext % alignof(uintptr_t)) return false;
-        const auto instruction = profile.Address("Objects"); int32_t displacement{};
-        // x64 MOV reg, [RIP+rel32] decoding; instruction shape is verified by Profile.
-        if (!instruction || !Read(instruction + 3, displacement)) return false;
-        registry = static_cast<uintptr_t>(static_cast<intptr_t>(instruction) + 7 + displacement - l.RegistrySubtract);
         release_pooled = profile.Address("ReleasePooledVehicleClasses");
         remove_template = profile.Address("RemoveEntityTemplate");
         release_template = profile.Address("ReleaseActorTemplate");
@@ -258,7 +301,11 @@ public:
             l.ArchetypeFragmentCount == l.ArchetypeFragmentData + sizeof(uintptr_t) &&
             l.MassChunkStride <= 1024 && l.MassChunkBytes + sizeof(uint64_t) <= l.MassChunkStride &&
             l.MassChunkCount + sizeof(int32_t) <= l.MassChunkStride;
+#endif
+#undef FIELD
+        return reflection_valid;
     }
+    bool ReflectionAvailable() const { return reflection_valid; }
     // Service publication can lag plugin loading. Retry only these cheap queries, never the
     // profile scan. The caller publishes this object to Game only after all bindings are ready.
     bool BindServices(const AnomalyHostApiV1* api) {
@@ -269,9 +316,38 @@ public:
         player = host.Query<AnomalyNtePlayerServiceV1>(ANOMALY_NTE_PLAYER_SERVICE_V1_ID).get();
         return ready = registry && names &&
             names->struct_size >= offsetof(AnomalyUe5NamesServiceV1, resolve_utf8) + sizeof(names->resolve_utf8) && names->resolve_utf8 &&
-            objects && objects->struct_size >= sizeof(*objects) && events && events->struct_size >= sizeof(*events) && events->invoke &&
+            objects && objects->struct_size >= sizeof(*objects) && objects->find_exact && objects->snapshot_at && objects->snapshot_by_handle &&
+            events && events->struct_size >= sizeof(*events) && events->invoke &&
             player && player->struct_size >= offsetof(AnomalyNtePlayerServiceV1, get_object_handles) + sizeof(player->get_object_handles) && player->get_object_handles;
     }
+    bool CurrentWorld(Handle& world, std::string& map) const {
+        Handle pawn{}, controller{};
+        return PlayerWorld(pawn, controller, world, map);
+    }
+    bool ReloadWorld(Handle& original_world, std::string& map) const {
+        Handle pawn{}, controller{};
+        if (!PlayerWorld(pawn, controller, original_world, map)) return false;
+        // SDK call contracts: FString and an opaque UE double-precision FTransform.
+        struct String { const wchar_t* data; int32_t count, capacity; };
+        struct alignas(16) Transform { std::array<uint8_t, 96> bytes{}; };
+        struct Params { String url; Transform spawn; } params{{L"?restart", 9, 9}, {}};
+        static_assert(sizeof(String) == 16 && sizeof(Transform) == 96 && sizeof(Params) == 112 && offsetof(Params, spawn) == 16);
+        const Parameter transform{"ReturnValue", "StructProperty", 0, sizeof(Transform), {}, "/Script/CoreUObject.Transform"};
+        if (!InvokeParameters(pawn, "/Script/Engine.Actor:GetTransform", &params.spawn, sizeof(Transform), {&transform, 1}, 0)) return false;
+        const std::array<Parameter, 2> shape{{
+            {"FURL", "StrProperty", offsetof(Params, url), sizeof(String)},
+            {"SpawnStart", "StructProperty", offsetof(Params, spawn), sizeof(Transform), {}, "/Script/CoreUObject.Transform"}
+        }};
+        // HTAssetManager outlives UWorld and its LRU retains streamable handles. Drop
+        // those references before travel's teardown/GC, not after the new world loads
+        // its characters. This native route also drains the game's cached UI references.
+        if (!Clear()) return false;
+        // IDA: HTPlayerController::TravelTo -> DelayTravel -> ClientTravel(Absolute, false).
+        // UEngine::Browse handles ?restart by restoring LastURL, preserving its map/options.
+        // The native exec copies the borrowed input string before storing its own timer payload.
+        return InvokeParameters(controller, "/Script/HTGame.HTPlayerController:TravelTo", &params, sizeof(params), shape);
+    }
+    #if 0 // Retired vehicle destruction/resource release path.
     bool PlayerVehicle(Handle& pawn, Handle& vehicle) const {
         vehicle = {};
         Handle controller{};
@@ -347,7 +423,8 @@ public:
         }
         return true;
     }
-    bool Clear() {
+    #endif
+    bool Clear() const {
         Handle pawn{}; uintptr_t level{};
         return ready && player->get_object_handles(player->user, &pawn, nullptr).code == 0 && Level(pawn, level) &&
             Invoke(Find("/Script/HTGame.Default__HTGameUserSettings"),

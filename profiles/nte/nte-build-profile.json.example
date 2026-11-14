@@ -856,7 +856,12 @@
     "skillDamage.size": 120,
     "gameplayAbilityTips.size": 184,
     "gameplayEffectTips.size": 136,
-    "monsterData.size": 296
+    "monsterData.size": 296,
+    "account.digits": 12,
+    "account.scanBatch": 2048,
+    "account.source0.size": 8,
+    "account.source1.size": 8,
+    "account.source2.size": 16
   },
   "layoutCandidates": [
     {

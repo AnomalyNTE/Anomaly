@@ -43,6 +43,8 @@ struct SummonSettings {
     bool advanced_combat_source{};
     std::string server_combat_blueprint; // Resolved from the active Profile, never imported.
     std::uint32_t level{}, skill_level{};
+    bool player_clone{};
+    bool hide_clone_effect{};
     bool hostile{}, pet{}, aggressive{}, ignore_player{}, compatibility{};
     bool mute_boss_music{}, mute_boss_dialogue{};
     bool skip_cutscenes{};
@@ -50,6 +52,7 @@ struct SummonSettings {
     BlueprintEdits editor;
     std::uint32_t count{1};
     double spacing{5.0};
+    double model_scale{1.0};
 };
 
 inline std::string_view SelectedCombatBlueprint(const SummonSettings& settings) {
@@ -69,7 +72,13 @@ struct SavedConfiguration {
     std::string catalog_filter, attribute_filter;
     std::string export_name{kDefaultPresetFileName}, export_folder, import_file;
     bool only_overrides{}, only_current_blueprint{true};
+    double management_scale{1.0};
 };
+
+inline bool ValidModelScale(double value) noexcept {
+    return std::isfinite(value) && value >= std::numeric_limits<float>::min() &&
+        value <= std::numeric_limits<float>::max();
+}
 
 inline bool ValidPresetName(std::string_view name) {
     return !name.empty() && name.size() < kPresetNameCapacity &&
@@ -105,7 +114,9 @@ inline nlohmann::json SettingsJson(const SummonSettings& value) {
                 {"enabled", attribute.enabled != 0}, {"value", attribute.value}};
     }
     if (!std::isfinite(value.spacing)) throw std::invalid_argument("spacing");
-    return {{"blueprint", value.class_path}, {"displayName", value.display_name},
+    if (!ValidModelScale(value.model_scale)) throw std::invalid_argument("model scale");
+    return {{"blueprint", value.class_path}, {"playerClone", value.player_clone},
+        {"hideCloneEffect", value.hide_clone_effect}, {"displayName", value.display_name},
         {"combatConfigBlueprint", value.combat_config_blueprint},
         {"advancedCombatBlueprint", value.advanced_combat_blueprint},
         {"advancedCombatSource", value.advanced_combat_source},
@@ -114,7 +125,7 @@ inline nlohmann::json SettingsJson(const SummonSettings& value) {
         {"ignorePlayer", value.ignore_player}, {"ftCompatibility", value.compatibility},
         {"muteBossMusic", value.mute_boss_music}, {"muteBossDialogue", value.mute_boss_dialogue},
         {"skipCutscenes", value.skip_cutscenes},
-        {"count", value.count}, {"spacing", value.spacing}, {"attributes", std::move(attributes)},
+        {"count", value.count}, {"spacing", value.spacing}, {"modelScale", value.model_scale}, {"attributes", std::move(attributes)},
         {"editor", EditorJson(value.editor)}};
 }
 
@@ -181,10 +192,15 @@ inline BlueprintEdits ReadEditor(const nlohmann::json& json) {
 inline SummonSettings ReadSettings(const nlohmann::json& json) {
     CheckKeys(json, {"blueprint", "displayName", "level", "skillLevel", "hostile", "pet", "aggressive",
         "ignorePlayer", "ftCompatibility", "muteBossMusic", "muteBossDialogue", "count", "spacing", "attributes",
-        "combatConfigBlueprint", "advancedCombatBlueprint", "advancedCombatSource", "editor", "skipCutscenes"});
+        "combatConfigBlueprint", "advancedCombatBlueprint", "advancedCombatSource", "editor", "skipCutscenes", "playerClone", "hideCloneEffect", "aggro", "modelScale"});
     SummonSettings result;
     result.class_path = ReadText(json.at("blueprint"), 512);
     result.display_name = ReadText(json.at("displayName"), 96);
+    result.player_clone = json.value("playerClone", false);
+    result.hide_clone_effect = json.value("hideCloneEffect", false);
+    result.model_scale = json.value("modelScale", 1.0);
+    if (!ValidModelScale(result.model_scale)) throw std::invalid_argument("model scale");
+    // Discard the removed spawn-aggro form from existing saved configurations.
     if (json.contains("combatConfigBlueprint")) {
         result.combat_config_blueprint = ReadText(json.at("combatConfigBlueprint"), 512);
         if (!result.combat_config_blueprint.empty() && !ValidBlueprintPath(result.combat_config_blueprint))
@@ -259,19 +275,21 @@ inline std::string ConfigurationJson(const SavedConfiguration& value) {
     auto editors = nlohmann::json::object();
     for (const auto& [path, edits] : value.editor_blueprints)
         if (!edits.empty()) editors[path] = EditorJson(edits);
+    if (!ValidModelScale(value.management_scale)) throw std::invalid_argument("management scale");
     return BoundedDocument({{"schemaVersion", kSettingsSchemaVersion}, {"current", SettingsJson(value.current)},
         {"presets", PresetsJson(value.presets)}, {"editorBlueprints", std::move(editors)}, {"ui", {
             {"catalogFilter", value.catalog_filter}, {"attributeFilter", value.attribute_filter},
             {"onlyOverrides", value.only_overrides}, {"onlyCurrentBlueprint", value.only_current_blueprint},
             {"exportName", value.export_name}, {"exportFolder", value.export_folder},
-            {"importFile", value.import_file}}}});
+            {"importFile", value.import_file}, {"managementScale", value.management_scale}}}});
 }
 
 inline bool ParseConfiguration(std::string_view text, SavedConfiguration& output) noexcept {
     try {
         if (text.size() > kMaximumSettingsBytes) return false;
         const auto json = nlohmann::json::parse(text);
-        CheckKeys(json, {"schemaVersion", "current", "presets", "ui", "editorBlueprints"});
+        // Accept and discard the removed local-combat experiment setting.
+        CheckKeys(json, {"schemaVersion", "current", "presets", "ui", "editorBlueprints", "localSummonCombat"});
         if (ReadUnsigned(json.at("schemaVersion"), kSettingsSchemaVersion) != kSettingsSchemaVersion) return false;
         SavedConfiguration parsed;
         parsed.current = ReadSettings(json.at("current"));
@@ -286,7 +304,7 @@ inline bool ParseConfiguration(std::string_view text, SavedConfiguration& output
         }
         const auto& ui = json.at("ui");
         CheckKeys(ui, {"catalogFilter", "attributeFilter", "onlyOverrides", "onlyCurrentBlueprint",
-            "exportName", "exportFolder", "importFile"});
+            "exportName", "exportFolder", "importFile", "managementScale"});
         parsed.catalog_filter = ReadText(ui.at("catalogFilter"), 64);
         parsed.attribute_filter = ReadText(ui.at("attributeFilter"), 64);
         parsed.only_overrides = ui.at("onlyOverrides").get<bool>();
@@ -294,6 +312,8 @@ inline bool ParseConfiguration(std::string_view text, SavedConfiguration& output
         parsed.export_name = ReadText(ui.at("exportName"), kPresetFileNameCapacity);
         parsed.export_folder = ReadText(ui.at("exportFolder"), kMaximumSettingsBytes);
         parsed.import_file = ReadText(ui.at("importFile"), kMaximumSettingsBytes);
+        parsed.management_scale = ui.value("managementScale", 1.0);
+        if (!ValidModelScale(parsed.management_scale)) return false;
         output = std::move(parsed);
         return true;
     } catch (...) { return false; }
@@ -328,9 +348,17 @@ inline std::string ConfigurationSchema() {
             {"required", {"enabled", "value"}}, {"properties", {{"enabled", boolean},
                 {"value", {{"type", "number"}, {"minimum", -std::numeric_limits<float>::max()},
                     {"maximum", std::numeric_limits<float>::max()}}}}}};
+    const Json scale{{"type", "number"}, {"minimum", std::numeric_limits<float>::min()},
+        {"maximum", std::numeric_limits<float>::max()}};
     const Json level{{"type", "integer"}, {"minimum", 0}, {"maximum", kMaximumLevel}};
     const Json path{{"type", "string"}, {"maxLength", 511}};
     const Json class_list{{"type", "array"}, {"items", path}, {"uniqueItems", true}};
+    // Read compatibility for configurations saved by the removed spawn-aggro form.
+    const Json aggro{{"type", "object"}, {"additionalProperties", false},
+        {"required", {"policy", "chaseDistance", "paused", "opponentBlueprints"}},
+        {"properties", {{"policy", {{"type", "integer"}, {"minimum", 0}, {"maximum", 3}}},
+            {"chaseDistance", {{"type", "number"}, {"minimum", 0}, {"maximum", 10000}}},
+            {"paused", boolean}, {"opponentBlueprints", class_list}, {"fightBatch", boolean}}}};
     const Json editor{{"type", "object"}, {"additionalProperties", false},
         {"required", {"fields", "disabledSkills", "removedEffects"}},
         {"properties", {{"disabledSkills", class_list}, {"removedEffects", class_list},
@@ -350,7 +378,8 @@ inline std::string ConfigurationSchema() {
             {"displayName", {{"type", "string"}, {"maxLength", 95}}}, {"level", level}, {"skillLevel", level},
             {"hostile", boolean}, {"pet", boolean}, {"aggressive", boolean}, {"ignorePlayer", boolean},
             {"ftCompatibility", boolean}, {"muteBossMusic", boolean}, {"muteBossDialogue", boolean},
-            {"skipCutscenes", boolean},
+            {"skipCutscenes", boolean}, {"playerClone", boolean}, {"hideCloneEffect", boolean},
+            {"aggro", aggro}, {"modelScale", scale},
             {"count", {{"type", "integer"}, {"minimum", 1}, {"maximum", std::numeric_limits<std::uint32_t>::max()}}},
             {"spacing", {{"type", "number"}, {"minimum", 0}, {"maximum", 100}}},
             {"attributes", {{"type", "object"}, {"additionalProperties", false}, {"properties", attributes}}}}}};
@@ -358,6 +387,7 @@ inline std::string ConfigurationSchema() {
         {"required", {"schemaVersion", "current", "presets", "ui"}},
         {"properties", {{"schemaVersion", {{"type", "integer"}, {"enum", {kSettingsSchemaVersion}}}},
             {"current", {{"$ref", "#/definitions/settings"}}},
+            {"localSummonCombat", boolean}, // Read compatibility only; no longer saved or used.
             {"editorBlueprints", {{"type", "object"}, {"additionalProperties", editor}}},
             {"presets", {{"type", "array"}, {"items", {
                 {"type", "object"}, {"additionalProperties", false}, {"required", {"name", "settings"}},
@@ -367,7 +397,7 @@ inline std::string ConfigurationSchema() {
                 {"required", {"catalogFilter", "attributeFilter", "onlyOverrides", "onlyCurrentBlueprint",
                     "exportName", "exportFolder", "importFile"}},
                 {"properties", {{"catalogFilter", text}, {"attributeFilter", text}, {"onlyOverrides", boolean},
-                    {"onlyCurrentBlueprint", boolean},
+                    {"onlyCurrentBlueprint", boolean}, {"managementScale", scale},
                     {"exportName", {{"type", "string"}, {"maxLength", kPresetFileNameCapacity - 1}}},
                     {"exportFolder", text}, {"importFile", text}}}}}}},
         {"definitions", {{"settings", settings}}}}.dump();

@@ -56,6 +56,7 @@ struct ProxyInstallationStatus final {
     ProxyInstallationError error{ProxyInstallationError::None};
     std::filesystem::path game_directory;
     std::string message;
+    bool proxy_enabled{};
 
     [[nodiscard]] bool Ok() const noexcept {
         return error == ProxyInstallationError::None;
@@ -66,6 +67,12 @@ struct ProxyInstallationSource final {
     std::filesystem::path proxy;
     std::filesystem::path runtime_directory;
 };
+
+// Files an installation of the runtime keeps when a newer package is published over it: they hold
+// the user's settings, repository configuration and run data rather than anything the package
+// owns. The path is relative to the installed `Anomaly` directory, which is also the layout
+// inside a runtime package, so an update of the launcher folder itself uses the same list.
+[[nodiscard]] bool PreservesInstalledRuntimeFile(const std::filesystem::path& relative) noexcept;
 
 [[nodiscard]] ProxyInstallationStatus InspectProxyInstallation(
     const std::filesystem::path& game_directory,
@@ -79,5 +86,10 @@ struct ProxyInstallationSource final {
     const std::filesystem::path& game_directory,
     const ProxyInstallationSource& source,
     bool enabled);
+
+// Removes the recognized proxy and the entire game-local Anomaly directory, including user data.
+[[nodiscard]] ProxyInstallationStatus UninstallProxy(
+    const std::filesystem::path& game_directory,
+    const ProxyInstallationSource& source);
 
 }  // namespace anomaly::launcher
