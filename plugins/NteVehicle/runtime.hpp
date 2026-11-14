@@ -1269,6 +1269,19 @@ struct Runtime : NativeAccess {
         }
     }
 
+    // Dump 5.6.1: 载具碰撞伤害链路的两个入口，命中后由插件把伤害事件掐断，因此不产生
+    // 耐久扣除（耐久数值本身由服务器持有，插件不写）。
+    //   VehicleTakeDamage  HandleVehicleTakeDamage 的受伤入口，返回 float 伤害值。
+    //   VehicleImpact      物理撞击处理器，返回 void。
+    // 两个地址都来自 profile 签名扫描，入口字节在 ProfileSnapshot::Load 阶段已经校验。
+    // 两个入口各自独立：任一符号解析失败仍可用另一条通路保护耐久；都失败才返回 false，
+    // 调用方据此停用耐久保护而不是猜测地址。
+    bool DurabilityGuardEntries(std::uintptr_t& take_damage, std::uintptr_t& impact) const noexcept {
+        take_damage = compatibility.Address("VehicleTakeDamage");
+        impact = compatibility.Address("VehicleImpact");
+        return take_damage != 0 || impact != 0;
+    }
+
     // Dump 5.6.1: HTWheeledVehicleDrivable::RepairSelf(bool RefreshDisplay). Resolve the live
     // current vehicle on every call; never reuse a previous vehicle's object.
     AnomalyStatusV1 VehicleRepairCurrentDurability() {

@@ -69,6 +69,26 @@
           "values": {}
         }
       ]
+    },
+    {
+      "name": "VehicleTakeDamage",
+      "candidates": [
+        {
+          "pattern": "48 8B C4 48 89 58 10 4C 89 48 20 4C 89 40 18 55 56 57 41 54 41 55 41 56 41 57 48 8D A8 D8 FC FF FF 48 81 EC F0 03 00 00",
+          "entry": "48 8B C4 48 89 58 10 4C 89 48 20",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "VehicleImpact",
+      "candidates": [
+        {
+          "pattern": "40 55 53 41 55 41 56 48 8D AC 24 28 FF FF FF 48 81 EC D8 01 00 00 80 B9 10 01 00 00 00",
+          "entry": "40 55 53 41 55 41 56 48 8D AC 24 28",
+          "values": {}
+        }
+      ]
     }
   ]
 }
