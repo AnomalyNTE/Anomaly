@@ -144,7 +144,17 @@ struct Layout final {
     std::string error_;
 };
 
-enum class Outcome : std::uint8_t { not_riding, moved, failed };
+enum class Outcome : std::uint8_t { not_riding, moved, unchanged, failed };
+
+// How a ride is asked to move. `anchored` adds `delta` to the vehicle's own
+// position, which is what a directional teleport needs: a zero offset then
+// means "stay where you are". Otherwise `target` names the spot the rider
+// should end up at, and the seat offset is preserved.
+struct VehicleMove final {
+    bool anchored{};
+    double target[3]{};
+    double delta[3]{};
+};
 
 // One entry of a reflected parameter list.
 struct Property final {
@@ -241,11 +251,12 @@ public:
         return true;
     }
 
-    // Moves the vehicle the local player rides so that the rider ends up at
-    // `target`. Returns not_riding when the player is on foot, moved when the
-    // vehicle was displaced, and failed with `status` set otherwise.
+    // Moves the vehicle the local player rides. Returns not_riding when the
+    // player is on foot, unchanged when the request resolves to the vehicle's
+    // current position, moved when it was displaced, and failed with `status`
+    // set otherwise.
     [[nodiscard]] Outcome MoveRiddenVehicle(
-        const double target[3], AnomalyStatusV1& status) {
+        const VehicleMove& move, AnomalyStatusV1& status) {
         status = {};
         if (!ready_ || services_.framework == nullptr ||
             services_.framework->is_game_thread(services_.framework->user) == 0) {
@@ -281,11 +292,24 @@ public:
             status = Status(ANOMALY_STATUS_V1_FAILED, "the ridden vehicle is unreadable");
             return Outcome::failed;
         }
-        // The rider sits on a fixed seat offset. Preserving it makes the rider
-        // arrive at the requested position instead of at the vehicle origin.
+        // The rider sits on a fixed seat offset. A fixed-point request names where the
+        // rider should land, so preserving the offset is what makes the two arrive
+        // together. A directional request is anchored on the vehicle instead, where a
+        // zero offset means the ride stays put.
         std::array<double, 3> destination{};
+        bool unchanged = true;
         for (std::size_t axis = 0; axis != 3; ++axis) {
-            destination[axis] = target[axis] + (vehicle_position[axis] - rider[axis]);
+            destination[axis] = move.anchored
+                ? vehicle_position[axis] + move.delta[axis]
+                : move.target[axis] + (vehicle_position[axis] - rider[axis]);
+            if (std::fabs(destination[axis] - vehicle_position[axis]) > 0.001) {
+                unchanged = false;
+            }
+        }
+        if (unchanged) {
+            status = Status(ANOMALY_STATUS_V1_OK, "the ride stayed in place");
+            note_ = "the ride stayed in place";
+            return Outcome::unchanged;
         }
         bool returned{};
         status = SetActorLocation(vehicle, destination, returned);
