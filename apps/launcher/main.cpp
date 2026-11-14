@@ -6537,8 +6537,6 @@ void DrawModsMode(
         page = 0;
         scroll_to_top = true;
     }
-
-
     if (mods.empty()) {
         ImGui::TextDisabled("%s", Text(translator, anomaly::MessageId::LauncherModsEmpty));
         return;
@@ -6707,7 +6705,7 @@ void DrawModsMode(
         (grid_width - grid_spacing * static_cast<float>(grid_columns - 1)) /
         static_cast<float>(grid_columns));
 
-    // A grid card is a cover, the name, the metadata, and the same controls a list row
+    // A grid card is a cover, the name, the notes preview, and the same controls a list row
     // carries: the enable switch, the batch box and the commands, in two rows of two because
     // a card is narrower than a row. The commands are shortened to the card's width and the
     // tooltip keeps the full label. The card also carries a surface of its own, the same one the
@@ -6742,20 +6740,6 @@ void DrawModsMode(
         } else {
             draw_notes(entry.notes, card_inner);
         }
-        std::string meta;
-        if (!entry.version.empty()) {
-            if (!meta.empty()) meta += "  ·  ";
-            meta += "v" + entry.version;
-        }
-        if (!entry.author.empty()) {
-            if (!meta.empty()) meta += "  ·  ";
-            meta += entry.author;
-        }
-        if (!entry.remote_version.empty() && entry.remote_version != entry.version) {
-            if (!meta.empty()) meta += "  ·  ";
-            meta += Tr(anomaly::MessageId::LauncherModsNewVersionInline, {entry.remote_version});
-        }
-        if (!meta.empty()) ImGui::TextDisabled("%s", Ellipsize(meta, card_inner).c_str());
         // The first row is the mod's state and its two shortcuts: the enable switch, the batch box,
         // and -- when the mod has them -- its source and its update. The card is narrow, so each
         // shortcut is measured against the room that is left instead of pushing the row out; the
