@@ -103,6 +103,10 @@ constexpr double kVehicleForwardDistanceMaximum = 5000.0;
 constexpr double kVehicleZOffsetDefault = 0.0;
 constexpr double kVehicleZOffsetMinimum = -1000.0;
 constexpr double kVehicleZOffsetMaximum = 2000.0;
+// A vehicle hold keeps the ride airborne after it arrives, so the destination
+// cells finish streaming before physics drops it. Zero seconds disables the hold.
+constexpr double kVehiclePreloadDelayDefault = 0.0;
+constexpr double kVehiclePreloadDelayMaximum = 15.0;
 constexpr std::string_view kSettingsSchema = R"json(
 {
   "type": "object",
@@ -132,6 +136,7 @@ constexpr std::string_view kSettingsSchema = R"json(
     "zLift": {"type": "number"},
     "vehicleForwardDistance": {"type": "number"},
     "vehicleZOffset": {"type": "number"},
+    "vehiclePreloadDelay": {"type": "number"},
     "landingLift": {"type": "number"},
     "sinkRetries": {"type": "integer"},
     "preloadDelay": {"type": "number"},
@@ -181,6 +186,7 @@ struct TeleportSettings {
     double z_lift{100.0};
     double vehicle_forward_distance{kVehicleForwardDistanceDefault};
     double vehicle_z_offset{kVehicleZOffsetDefault};
+    double vehicle_preload_delay{kVehiclePreloadDelayDefault};
     double landing_lift{250.0};
     std::uint32_t sink_retries{2};
     double preload_delay{kPreloadDelayDefault};
@@ -200,6 +206,12 @@ struct PendingTeleport {
     // Where the ridden vehicle goes when the player is in a seat: a directional
     // request carries its own offset, a fixed point carries its own target.
     nteteleport_vehicle::VehicleMove vehicle_move{};
+};
+
+struct VehicleHold {
+    bool active{};
+    std::uint64_t deadline_ms{};
+    double position[3]{};
 };
 
 // Tracks a teleport after it is issued so the plugin can detect the player
@@ -240,6 +252,7 @@ struct Context {
     double z_lift{100.0};
     double vehicle_forward_distance{kVehicleForwardDistanceDefault};
     double vehicle_z_offset{kVehicleZOffsetDefault};
+    double vehicle_preload_delay{kVehiclePreloadDelayDefault};
     double landing_lift{250.0};
     std::uint32_t sink_retries{2};
     double preload_delay{kPreloadDelayDefault};
@@ -251,6 +264,9 @@ struct Context {
     bool capturing_tracked{};
     TeleportAction hotkey_action{TeleportAction::none};
     LandingMonitor landing{};
+    // A vehicle teleport can hold the ride in the air until the destination has
+    // streamed in; the hold re-pins the vehicle every tick until its deadline.
+    VehicleHold vehicle_hold{};
     std::string import_folder;
     std::vector<ImportFile> import_files;
     std::size_t imported_page{};
@@ -980,6 +996,8 @@ bool ParseSettingsDocument(const std::string_view document, TeleportSettings& se
             if (!reader.ReadNumber(settings.vehicle_forward_distance)) return false;
         } else if (key == "vehicleZOffset") {
             if (!reader.ReadNumber(settings.vehicle_z_offset)) return false;
+        } else if (key == "vehiclePreloadDelay") {
+            if (!reader.ReadNumber(settings.vehicle_preload_delay)) return false;
         } else if (key == "landingLift") {
             if (!reader.ReadNumber(settings.landing_lift)) return false;
         } else if (key == "sinkRetries") {
@@ -1010,6 +1028,9 @@ bool ParseSettingsDocument(const std::string_view document, TeleportSettings& se
         std::isfinite(settings.vehicle_z_offset) &&
         settings.vehicle_z_offset >= kVehicleZOffsetMinimum &&
         settings.vehicle_z_offset <= kVehicleZOffsetMaximum &&
+        std::isfinite(settings.vehicle_preload_delay) &&
+        settings.vehicle_preload_delay >= kVehiclePreloadDelayDefault &&
+        settings.vehicle_preload_delay <= kVehiclePreloadDelayMaximum &&
         std::isfinite(settings.landing_lift) && settings.landing_lift >= 0.0 &&
         settings.landing_lift <= 2000.0 && settings.sink_retries <= 8U &&
         std::isfinite(settings.preload_delay) && settings.preload_delay >= 0.0 &&
@@ -1049,6 +1070,7 @@ std::string SerializeSettings(const TeleportSettings& settings) {
         ",\"zLift\":" + FormatDouble(settings.z_lift) +
         ",\"vehicleForwardDistance\":" + FormatDouble(settings.vehicle_forward_distance) +
         ",\"vehicleZOffset\":" + FormatDouble(settings.vehicle_z_offset) +
+        ",\"vehiclePreloadDelay\":" + FormatDouble(settings.vehicle_preload_delay) +
         ",\"landingLift\":" + FormatDouble(settings.landing_lift) +
         ",\"sinkRetries\":" + std::to_string(settings.sink_retries) +
         ",\"preloadDelay\":" + FormatDouble(settings.preload_delay) +
@@ -1105,6 +1127,7 @@ bool LoadSettings() {
         g_context.z_lift = settings.z_lift;
         g_context.vehicle_forward_distance = settings.vehicle_forward_distance;
         g_context.vehicle_z_offset = settings.vehicle_z_offset;
+        g_context.vehicle_preload_delay = settings.vehicle_preload_delay;
         g_context.landing_lift = settings.landing_lift;
         g_context.sink_retries = settings.sink_retries;
         g_context.preload_delay = settings.preload_delay;
@@ -1128,6 +1151,7 @@ bool SaveSettings() {
         settings.z_lift = g_context.z_lift;
         settings.vehicle_forward_distance = g_context.vehicle_forward_distance;
         settings.vehicle_z_offset = g_context.vehicle_z_offset;
+        settings.vehicle_preload_delay = g_context.vehicle_preload_delay;
         settings.landing_lift = g_context.landing_lift;
         settings.sink_retries = g_context.sink_retries;
         settings.preload_delay = g_context.preload_delay;
@@ -1848,6 +1872,65 @@ void ProcessLandingMonitor(const AnomalyHostApiV1* host) {
     g_context.landing.settle_ticks = 0;
 }
 
+// Keeps the ride in the air after a vehicle teleport. The vehicle is re-pinned
+// every tick because its physics resumes on the next frame and would drop it
+// before the destination terrain streams in.
+void ProcessVehicleHold(const AnomalyHostApiV1* host) {
+    VehicleHold hold{};
+    {
+        std::scoped_lock lock(g_context.mutex);
+        hold = g_context.vehicle_hold;
+    }
+    if (!hold.active || host == nullptr) return;
+
+    if (GetTickCount64() >= hold.deadline_ms) {
+        {
+            std::scoped_lock lock(g_context.mutex);
+            g_context.vehicle_hold = {};
+        }
+        Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO, "teleport vehicle: landed");
+        return;
+    }
+
+    auto& access = nteteleport_vehicle::Instance();
+    if (!access.Prepare(QueryVehicleServices(host))) return;
+    AnomalyStatusV1 status{};
+    if (access.HoldRiddenVehicle(hold.position, status) == nteteleport_vehicle::Outcome::moved) {
+        return;
+    }
+    const bool on_foot = status.code == ANOMALY_STATUS_V1_OK;
+    {
+        std::scoped_lock lock(g_context.mutex);
+        g_context.vehicle_hold = {};
+    }
+    Log(ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
+        (on_foot ? "teleport vehicle hold released: " : "teleport vehicle hold failed: ") +
+            (on_foot ? access.Note() : access.Error()));
+}
+
+// Arms the hold for a finished vehicle move. Zero seconds means the ride lands
+// immediately, so nothing is armed and physics takes over on the next tick.
+void ArmVehicleHold(const double position[3]) {
+    double delay{};
+    {
+        std::scoped_lock lock(g_context.mutex);
+        delay = g_context.vehicle_preload_delay;
+        if (!std::isfinite(delay) || delay <= 0.0) {
+            g_context.vehicle_hold = {};
+            return;
+        }
+        g_context.vehicle_hold.active = true;
+        g_context.vehicle_hold.deadline_ms = GetTickCount64() +
+            static_cast<std::uint64_t>(delay * 1000.0);
+        for (std::size_t axis = 0; axis != 3; ++axis) {
+            g_context.vehicle_hold.position[axis] = position[axis];
+        }
+    }
+    char detail[96]{};
+    std::snprintf(detail, sizeof(detail), "teleport vehicle: holding for %.1f s", delay);
+    Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO, detail);
+}
+
 void QueueRequest(
     const AnomalyNteSessionSnapshotV1& session, const AnomalyNtePlayerSnapshotV1& player,
     const double position[3], const bool apply_landing_lift = true,
@@ -2164,6 +2247,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
         g_context.z_lift = 100.0;
         g_context.vehicle_forward_distance = kVehicleForwardDistanceDefault;
         g_context.vehicle_z_offset = kVehicleZOffsetDefault;
+        g_context.vehicle_preload_delay = kVehiclePreloadDelayDefault;
         g_context.landing_lift = 250.0;
         g_context.sink_retries = 2;
         g_context.preload_delay = kPreloadDelayDefault;
@@ -2175,6 +2259,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
         g_context.capturing_tracked = false;
         g_context.hotkey_action = TeleportAction::none;
         g_context.landing = {};
+        g_context.vehicle_hold = {};
         g_context.import_folder.clear();
         g_context.import_files.clear();
         g_context.imported_page = 0;
@@ -2324,6 +2409,7 @@ void ANOMALY_CALL Update(void* context, double) {
     }
 
     ProcessLandingMonitor(host);
+    ProcessVehicleHold(host);
 
     // Persist a rebind or an option edit on the tick it happens. Writing only in on_stop
     // loses the change whenever the game exits abruptly (crash, force kill); the host's
@@ -2388,8 +2474,10 @@ void ANOMALY_CALL Update(void* context, double) {
             Log(ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
                 "vehicle teleport is unavailable: " + vehicle_access.Error());
         } else {
+            double vehicle_destination[3]{};
             const nteteleport_vehicle::Outcome outcome =
-                vehicle_access.MoveRiddenVehicle(pending.vehicle_move, vehicle_status);
+                vehicle_access.MoveRiddenVehicle(
+                    pending.vehicle_move, vehicle_status, vehicle_destination);
             if (outcome == nteteleport_vehicle::Outcome::not_riding) {
                 Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO,
                     "teleport on foot: " + vehicle_access.Note());
@@ -2428,6 +2516,9 @@ void ANOMALY_CALL Update(void* context, double) {
                 if (outcome == nteteleport_vehicle::Outcome::failed) {
                     Log(ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
                         "vehicle teleport failed: " + vehicle_access.Error());
+                }
+                if (outcome == nteteleport_vehicle::Outcome::moved) {
+                    ArmVehicleHold(vehicle_destination);
                 }
                 return;
             }
@@ -2824,6 +2915,7 @@ void DrawTabSettings(const AnomalyUiServiceV1* ui) {
     double z_lift{};
     double vehicle_forward_distance{};
     double vehicle_z_offset{};
+    double vehicle_preload_delay{};
     double landing_lift{};
     std::uint32_t sink_retries{};
     double preload_delay{};
@@ -2834,6 +2926,7 @@ void DrawTabSettings(const AnomalyUiServiceV1* ui) {
         z_lift = g_context.z_lift;
         vehicle_forward_distance = g_context.vehicle_forward_distance;
         vehicle_z_offset = g_context.vehicle_z_offset;
+        vehicle_preload_delay = g_context.vehicle_preload_delay;
         landing_lift = g_context.landing_lift;
         sink_retries = g_context.sink_retries;
         preload_delay = g_context.preload_delay;
@@ -2890,6 +2983,8 @@ void DrawTabSettings(const AnomalyUiServiceV1* ui) {
         "settings.vehicle.forward", "Vehicle forward distance", "vehicle-forward-distance");
     const std::string vehicle_z_offset_label = g_context.localizer.Label(
         "settings.vehicle.z_offset", "Vehicle Z offset", "vehicle-z-offset");
+    const std::string vehicle_hold_label = g_context.localizer.Label(
+        "settings.vehicle.hold", "Hold in the air (seconds)", "vehicle-preload-delay");
     // Drag steps mirror the on-foot fields: 100 units per step, 1000 per fast step.
     options_changed |= ui->input_double(
         ui->user, anomaly::sdk::StringView(vehicle_forward_label),
@@ -2897,6 +2992,9 @@ void DrawTabSettings(const AnomalyUiServiceV1* ui) {
     options_changed |= ui->input_double(
         ui->user, anomaly::sdk::StringView(vehicle_z_offset_label),
         &vehicle_z_offset, 10.0, 100.0) != 0;
+    options_changed |= ui->input_double(
+        ui->user, anomaly::sdk::StringView(vehicle_hold_label),
+        &vehicle_preload_delay, 0.5, 2.0) != 0;
     {
         std::scoped_lock lock(g_context.mutex);
         if (options_changed) {
@@ -2912,6 +3010,11 @@ void DrawTabSettings(const AnomalyUiServiceV1* ui) {
             if (std::isfinite(vehicle_z_offset)) {
                 g_context.vehicle_z_offset = std::clamp(
                     vehicle_z_offset, kVehicleZOffsetMinimum, kVehicleZOffsetMaximum);
+            }
+            if (std::isfinite(vehicle_preload_delay)) {
+                g_context.vehicle_preload_delay = std::clamp(
+                    vehicle_preload_delay, kVehiclePreloadDelayDefault,
+                    kVehiclePreloadDelayMaximum);
             }
             if (std::isfinite(landing_lift)) {
                 g_context.landing_lift = std::clamp(landing_lift, 0.0, kLandingLiftMaximum);
@@ -3002,6 +3105,6 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         anomaly::sdk::StringView("anomaly.nte-teleport"),
         anomaly::sdk::StringView("Teleport"), anomaly::sdk::StringView("Anomaly"),
-        anomaly::sdk::StringView("1.7.0"), Load, Start, Stop, Unload, Update, Draw};
+        anomaly::sdk::StringView("1.8.0"), Load, Start, Stop, Unload, Update, Draw};
     return anomaly::sdk::Ok();
 }

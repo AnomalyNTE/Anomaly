@@ -31,6 +31,7 @@
     "settings.vehicle.title": "载具传送",
     "settings.vehicle.forward": "载具向前距离",
     "settings.vehicle.z_offset": "载具 Z 偏移",
+    "settings.vehicle.hold": "滞空时间（秒）",
     "import.title": "导入 JSON 点位",
     "import.folder": "点位文件夹：{0}",
     "import.folder.empty": "未选择文件夹",

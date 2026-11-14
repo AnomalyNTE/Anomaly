@@ -256,53 +256,31 @@ public:
     // current position, moved when it was displaced, and failed with `status`
     // set otherwise.
     [[nodiscard]] Outcome MoveRiddenVehicle(
-        const VehicleMove& move, AnomalyStatusV1& status) {
+        const VehicleMove& move, AnomalyStatusV1& status,
+        double* destination = nullptr) {
         status = {};
-        if (!ready_ || services_.framework == nullptr ||
-            services_.framework->is_game_thread(services_.framework->user) == 0) {
-            note_ = "the vehicle access is not prepared on the game thread";
-            return Outcome::not_riding;
-        }
-        AnomalyGenerationHandleV1 pawn{};
-        AnomalyGenerationHandleV1 controller{};
-        if (services_.player->get_object_handles(
-                services_.player->user, &pawn, &controller).code != ANOMALY_STATUS_V1_OK) {
-            note_ = "the local player handles are unavailable";
-            return Outcome::not_riding;
-        }
-        if (pawn.id == 0) {
-            note_ = "the local player has no pawn";
-            return Outcome::not_riding;
-        }
-
-        std::array<double, 3> rider{};
-        if (!ActorLocation(pawn, rider)) {
-            note_ = "the pawn location is unreadable";
-            return Outcome::not_riding;
-        }
-
-        std::uintptr_t vehicle_pointer{};
-        if (!FindVehicle(controller, pawn, vehicle_pointer)) {
-            note_ = "no driven vehicle is attached to the player";
-            return Outcome::not_riding;
-        }
         AnomalyGenerationHandleV1 vehicle{};
+        std::array<double, 3> rider{};
         std::array<double, 3> vehicle_position{};
-        if (!HandleOfObject(vehicle_pointer, vehicle) || !ActorLocation(vehicle, vehicle_position)) {
-            status = Status(ANOMALY_STATUS_V1_FAILED, "the ridden vehicle is unreadable");
+        switch (ResolveRiddenVehicle(vehicle, rider, vehicle_position, status)) {
+        case Resolve::on_foot:
+            return Outcome::not_riding;
+        case Resolve::broken:
             return Outcome::failed;
+        case Resolve::ready:
+            break;
         }
         // The rider sits on a fixed seat offset. A fixed-point request names where the
         // rider should land, so preserving the offset is what makes the two arrive
         // together. A directional request is anchored on the vehicle instead, where a
         // zero offset means the ride stays put.
-        std::array<double, 3> destination{};
+        std::array<double, 3> next{};
         bool unchanged = true;
         for (std::size_t axis = 0; axis != 3; ++axis) {
-            destination[axis] = move.anchored
+            next[axis] = move.anchored
                 ? vehicle_position[axis] + move.delta[axis]
                 : move.target[axis] + (vehicle_position[axis] - rider[axis]);
-            if (std::fabs(destination[axis] - vehicle_position[axis]) > 0.001) {
+            if (std::fabs(next[axis] - vehicle_position[axis]) > 0.001) {
                 unchanged = false;
             }
         }
@@ -312,13 +290,47 @@ public:
             return Outcome::unchanged;
         }
         bool returned{};
-        status = SetActorLocation(vehicle, destination, returned);
+        status = SetActorLocation(vehicle, next, returned);
         if (status.code != ANOMALY_STATUS_V1_OK) return Outcome::failed;
         if (!returned) {
             status = Status(ANOMALY_STATUS_V1_FAILED, "the vehicle refused the move");
             return Outcome::failed;
         }
+        if (destination != nullptr) {
+            for (std::size_t axis = 0; axis != 3; ++axis) destination[axis] = next[axis];
+        }
         note_ = "the ridden vehicle was moved";
+        return Outcome::moved;
+    }
+
+    // Re-applies `position` to the ridden vehicle for one tick. A preload hold keeps
+    // the ride airborne while the destination streams in: the host pins the pawn, but
+    // a vehicle falls as soon as its physics resumes, so the caller repeats this every
+    // tick until the hold window elapses.
+    [[nodiscard]] Outcome HoldRiddenVehicle(
+        const double position[3], AnomalyStatusV1& status) {
+        status = {};
+        AnomalyGenerationHandleV1 vehicle{};
+        std::array<double, 3> rider{};
+        std::array<double, 3> vehicle_position{};
+        switch (ResolveRiddenVehicle(vehicle, rider, vehicle_position, status)) {
+        case Resolve::on_foot:
+            return Outcome::not_riding;
+        case Resolve::broken:
+            return Outcome::failed;
+        case Resolve::ready:
+            break;
+        }
+        std::array<double, 3> next{};
+        for (std::size_t axis = 0; axis != 3; ++axis) next[axis] = position[axis];
+        bool returned{};
+        status = SetActorLocation(vehicle, next, returned);
+        if (status.code != ANOMALY_STATUS_V1_OK) return Outcome::failed;
+        if (!returned) {
+            status = Status(ANOMALY_STATUS_V1_FAILED, "the vehicle refused the hold");
+            return Outcome::failed;
+        }
+        note_ = "the ride is held";
         return Outcome::moved;
     }
 
@@ -329,6 +341,48 @@ public:
     [[nodiscard]] const std::string& Note() const noexcept { return note_; }
 
 private:
+    // Why a ride could not be moved: there is nothing to move, or the object exists
+    // but its handles or coordinates are unreadable.
+    enum class Resolve : std::uint8_t { ready, on_foot, broken };
+
+    // Resolves the ridden vehicle together with the rider position that anchors its
+    // seat offset.
+    [[nodiscard]] Resolve ResolveRiddenVehicle(
+        AnomalyGenerationHandleV1& vehicle, std::array<double, 3>& rider,
+        std::array<double, 3>& vehicle_position, AnomalyStatusV1& status) {
+        if (!ready_ || services_.framework == nullptr ||
+            services_.framework->is_game_thread(services_.framework->user) == 0) {
+            note_ = "the vehicle access is not prepared on the game thread";
+            return Resolve::on_foot;
+        }
+        AnomalyGenerationHandleV1 pawn{};
+        AnomalyGenerationHandleV1 controller{};
+        if (services_.player->get_object_handles(
+                services_.player->user, &pawn, &controller).code != ANOMALY_STATUS_V1_OK) {
+            note_ = "the local player handles are unavailable";
+            return Resolve::on_foot;
+        }
+        if (pawn.id == 0) {
+            note_ = "the local player has no pawn";
+            return Resolve::on_foot;
+        }
+        if (!ActorLocation(pawn, rider)) {
+            note_ = "the pawn location is unreadable";
+            return Resolve::on_foot;
+        }
+        std::uintptr_t vehicle_pointer{};
+        if (!FindVehicle(controller, pawn, vehicle_pointer)) {
+            note_ = "no driven vehicle is attached to the player";
+            return Resolve::on_foot;
+        }
+        if (!HandleOfObject(vehicle_pointer, vehicle) ||
+            !ActorLocation(vehicle, vehicle_position)) {
+            status = Status(ANOMALY_STATUS_V1_FAILED, "the ridden vehicle is unreadable");
+            return Resolve::broken;
+        }
+        return Resolve::ready;
+    }
+
     [[nodiscard]] static AnomalyStatusV1 Status(
         const std::uint32_t code, const std::string_view message) noexcept {
         return {code, 0, anomaly::sdk::StringView(message)};
