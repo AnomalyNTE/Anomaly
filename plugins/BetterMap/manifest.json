@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 2,
+  "id": "b1ank.better-map",
+  "name": "Better Map",
+  "description": "Shows collectibles, enemy spawn points, and city crime locations, with optional click teleport on the game world map.",
+  "author": "b1ank",
+  "license": "AGPL-3.0-only",
+  "version": "0.1.16",
+  "entry": "plugin.dll",
+  "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
+  "games": ["nte"],
+  "builds": ["nte-*"],
+  "loadPhase": "game-ready",
+  "services": [
+    {"id": "anomaly.core", "minVersion": 1},
+    {"id": "anomaly.ui", "minVersion": 1},
+    {"id": "anomaly.window", "minVersion": 1, "optional": true},
+    {"id": "anomaly.input", "minVersion": 1, "optional": true},
+    {"id": "anomaly.config", "minVersion": 1, "optional": true},
+    {"id": "anomaly.scheduler", "minVersion": 1, "optional": true},
+    {"id": "anomaly.ue5.names", "minVersion": 1},
+    {"id": "anomaly.ue5.objects", "minVersion": 1},
+    {"id": "anomaly.ue5.build", "minVersion": 1},
+    {"id": "anomaly.ue5.framework", "minVersion": 1},
+    {"id": "anomaly.ue5.world", "minVersion": 1},
+    {"id": "anomaly.ue5.process-event", "minVersion": 1},
+    {"id": "anomaly.nte.player", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.session", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.player-teleport", "minVersion": 1, "optional": true},
+    {"id": "anomaly.nte.player-hold", "minVersion": 1, "optional": true},
+    {"id": "anomaly.localization", "minVersion": 1},
+    {"id": "anomaly.profile", "minVersion": 1},
+    {"id": "anomaly.json", "minVersion": 1},
+    {"id": "anomaly.interop.signature", "minVersion": 1},
+    {"id": "anomaly.interop.hook", "minVersion": 1, "optional": true}
+  ],
+  "capabilities": [
+    "ui", "ui-window", "input", "memory-read", "ue5-names", "ue5-objects", "ue5-build", "ue5-world",
+    "game-events", "nte-player-snapshot", "nte-session-snapshot", "nte-player-teleport", "nte-player-hold",
+    "json", "interop-signature", "interop-hook", "configuration", "scheduler"
+  ]
+}

@@ -10,6 +10,7 @@
 - `CameraTools`
 - `CameraBlurFix`
 - `BetterPose`
+- `BetterMap`
 - `HiFiVehicleMusic`
 - `BoxAuto`
 - `CombatBox`
