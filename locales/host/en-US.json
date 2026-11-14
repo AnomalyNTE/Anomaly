@@ -626,6 +626,7 @@
     "launcher.mods.refresh_list": "Refresh list",
     "launcher.mods.view_list": "List",
     "launcher.mods.view_grid": "Grid",
+    "launcher.mods.group_by_folder": "Group by folder",
     "launcher.mods.group_back": "All",
     "launcher.mods.group_count": "{0} mods",
     "launcher.mods.group_shared": "Whole character / shared resources",

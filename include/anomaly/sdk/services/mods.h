@@ -18,6 +18,9 @@ typedef struct AnomalyModEntryV1 {
     // Optional tail: comma-separated classification identifiers from resource directories.
     // Presentation only; a shared group does not imply a conflict or support for cleanup.
     AnomalyStringViewV1 resource_groups;
+    // Optional tail: the directory containing this mod, relative to ~mods, with '/' separators.
+    // Empty for a mod directly under ~mods. Preserves the original folder name casing.
+    AnomalyStringViewV1 parent_folder;
 } AnomalyModEntryV1;
 typedef int (ANOMALY_CALL *AnomalyModVisitorV1)(void* user, const AnomalyModEntryV1* entry);
 typedef int (ANOMALY_CALL *AnomalyModAssetVisitorV1)(void* user, AnomalyStringViewV1 package_path);

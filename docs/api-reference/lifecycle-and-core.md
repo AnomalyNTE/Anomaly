@@ -195,6 +195,10 @@ C++ 侧直接用 SDK 的 `anomaly::sdk::Localizer`（`include/anomaly/sdk/locali
 每个标识是两层：`Player_051/female` 表示 `Player_051` 分组内的 `female` 皮肤，`Vehicle_037`、`Pendant_07`
 以及以 `/` 开头的内容目录（如 `/game/wwiseaudio`）表示整个分组、没有皮肤。只有内容目录以 `/` 开头，
 因此第一个字符之后出现的 `/` 一定是分组与皮肤的分界；宿主不解析不合规标识时按整组处理。
+
+尾字段 `parent_folder` 是模组所在文件夹相对 `~mods` 的路径，使用 `/` 分隔并保留目录名大小写。根目录项返回空字符串。
+读取前检查 `struct_size >= offsetof(AnomalyModEntryV1, parent_folder) + sizeof(entry.parent_folder)`。
+旧宿主可从选择 key 取父路径，路径大小写以 key 为准。
 该字段只用于分类，不改变资源冲突判断；覆盖多个皮肤的 mod 列出全部皮肤，而不是列出皮肤组合；
 非载具分组不能用于车辆清理。
 兼容模式拒绝 `set_enabled` 与 `synchronize`。完整资源索引仅描述覆盖路径，不代表已加载对象或所有依赖关系。

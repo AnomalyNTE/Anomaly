@@ -1117,6 +1117,13 @@ public:
         }
     }
 
+    void SetModsGroupByFolder(const bool by_folder) {
+        std::scoped_lock lock(state_mutex_);
+        configuration_.view.mods_by_folder = by_folder;
+        state_.view.mods_by_folder = by_folder;
+        settings_dirty_ = true;
+    }
+
     void SetBrowseView(std::string sort, std::string category, const bool hide_mature) {
         {
             std::scoped_lock lock(state_mutex_);
@@ -2996,8 +3003,9 @@ anomaly::ModGroupLanguage LauncherModGroupLanguage() {
         ? anomaly::ModGroupLanguage::ZhCn : anomaly::ModGroupLanguage::EnUs;
 }
 
-std::string LauncherModGroupLabel(const anomaly::launcher::ModGroupPath& path) {
+std::string LauncherModGroupLabel(const anomaly::launcher::ModGroupPath& path, const bool by_folder = false) {
     if (path.empty()) return Tr(anomaly::MessageId::LauncherModsGroupBack);
+    if (by_folder) return path.back();
     if (path.size() == 1) return path.front().empty() ? Tr(anomaly::MessageId::LauncherModsUngrouped)
         : g_mod_group_names.Group(path.front(), LauncherModGroupLanguage());
     return path.size() == 2 ? g_mod_group_names.Skin(path.back(), LauncherModGroupLanguage()) : path.back();
@@ -6153,7 +6161,8 @@ bool DrawModsPager(std::size_t& page, const std::size_t pages, const ImVec2 area
 }
 
 std::optional<anomaly::launcher::ModGroupPath> DrawLauncherModBreadcrumbs(
-    const anomaly::launcher::ModGroupPath& path, const float width, const std::size_t count) {
+    const anomaly::launcher::ModGroupPath& path, const float width, const std::size_t count,
+    const bool by_folder) {
     std::optional<anomaly::launcher::ModGroupPath> path_request;
     if (LauncherChip((Tr(anomaly::MessageId::LauncherModsGroupBack) + "##back").c_str()))
         path_request = anomaly::launcher::ModGroupPath{};
@@ -6167,7 +6176,7 @@ std::optional<anomaly::launcher::ModGroupPath> DrawLauncherModBreadcrumbs(
         ImGui::TextDisabled("/");
         ImGui::SameLine();
         ImGui::AlignTextToFramePadding();
-        const auto label = LauncherModGroupLabel(prefix);
+        const auto label = LauncherModGroupLabel(prefix, by_folder);
         ImGui::TextUnformatted(Ellipsize(label, crumb_width).c_str());
         Tooltip(label.c_str());
         if (level + 1 < path.size()) {
@@ -6328,7 +6337,8 @@ bool BeginLauncherModSettingsPopup(const char* title,
 
 void DrawModsMode(
     HWND window, LauncherController& controller, const LauncherSnapshot& snapshot,
-    const anomaly::Translator& translator, const ImVec2 canvas_min, const ImVec2 canvas_size) {
+    const anomaly::Translator& translator, const ImVec2 canvas_min, const ImVec2 canvas_size,
+    const bool by_folder) {
     (void)window;
     static std::vector<LauncherModEntry> mods;
     static bool refreshed{};
@@ -6365,6 +6375,13 @@ void DrawModsMode(
     // Set by anything that changes what the page shows; the list is scrolled back to its top on
     // the next frame, because the list is the only part of this page that scrolls.
     static bool scroll_to_top{};
+    static bool previous_by_folder = by_folder;
+    if (std::exchange(previous_by_folder, by_folder) != by_folder) {
+        grid_path.clear();
+        group_collapsed.clear();
+        page = 0;
+        scroll_to_top = true;
+    }
     // A modal's ImGui name is both its title and its id: the visible half is translated, the half
     // after "##" keeps OpenPopup and BeginPopupModal paired. Without it the window shows the raw id
     // ("mod-notes"), which is neither translated nor a title.
@@ -6535,6 +6552,7 @@ void DrawModsMode(
         if (status_filter == 2 && entry.enabled) return false;
         if (needle.empty()) return true;
         std::string haystack = entry.display_name + " " + entry.name + " " + entry.author;
+        if (by_folder) haystack += " " + LauncherModStateKey(entry);
         std::transform(haystack.begin(), haystack.end(), haystack.begin(),
             [](const unsigned char c) { return static_cast<char>(std::tolower(c)); });
         return haystack.find(needle) != std::string::npos;
@@ -6546,8 +6564,15 @@ void DrawModsMode(
     // Both views use the same tree and placement ranges, including custom paths up to five levels.
     std::vector<anomaly::launcher::ModGroupingEntry> classified;
     classified.reserve(filtered.size());
-    for (const auto* entry : filtered) classified.push_back(LauncherClassifyMod(*entry));
-    const auto layout = anomaly::launcher::BuildModGrouping(classified);
+    for (const auto* entry : filtered) {
+        if (by_folder) {
+            classified.push_back({entry->display_name.empty() ? entry->name : entry->display_name,
+                {}, {}, anomaly::launcher::ModFolderGroups(LauncherModStateKey(*entry))});
+        } else {
+            classified.push_back(LauncherClassifyMod(*entry));
+        }
+    }
+    const auto layout = anomaly::launcher::BuildModGrouping(classified, by_folder);
     const auto open_node = anomaly::launcher::FindModGroup(layout, grid_path);
     if (grid_path != layout.nodes[open_node].path) {
         grid_path = layout.nodes[open_node].path;
@@ -6855,7 +6880,8 @@ void DrawModsMode(
             ImGui::PopID();
             return clicked;
         };
-        if (!grid_path.empty()) path_request = DrawLauncherModBreadcrumbs(grid_path, grid_width, open_group.count);
+        if (!grid_path.empty())
+            path_request = DrawLauncherModBreadcrumbs(grid_path, grid_width, open_group.count, by_folder);
         int column{};
         const auto end = (std::min)(page_items, (page + 1) * page_size);
         for (std::size_t index = page * page_size; index < end; ++index) {
@@ -6864,7 +6890,7 @@ void DrawModsMode(
                 const auto& group = layout.nodes[node];
                 if (column != 0) ImGui::SameLine(0.0f, grid_spacing);
                 column = (column + 1) % grid_columns;
-                if (draw_category_card(std::to_string(node).c_str(), LauncherModGroupLabel(group.path),
+                if (draw_category_card(std::to_string(node).c_str(), LauncherModGroupLabel(group.path, by_folder),
                         filtered[layout.placements[group.first]], group.count)) path_request = group.path;
             } else {
                 // Direct mods and nested groups may coexist at every level.
@@ -6902,7 +6928,7 @@ void DrawModsMode(
                     ImGui::Spacing();
                     const float indent = Scale(12.0f) * static_cast<float>(depth);
                     if (depth != 0) ImGui::Indent(indent);
-                    const auto label = LauncherModGroupLabel(section.path);
+                    const auto label = LauncherModGroupLabel(section.path, by_folder);
                     if (ImGui::Selectable(label.c_str(), false, 0,
                             ImVec2(ImGui::CalcTextSize(label.c_str()).x + Scale(16.0f), 0.0f)))
                         collapsed = !collapsed;
@@ -7419,10 +7445,24 @@ void DrawModMode(
             settings_error = Text(translator, anomaly::MessageId::SettingsSaveFailed);
         }
     }
+    const auto force_load_rect = ImGui::GetItemRectMax();
     ImGui::EndDisabled();
+    bool by_folder = snapshot.view.mods_by_folder;
+    if (mod_mode == 0) {
+        const char* const folder_label = Text(translator, anomaly::MessageId::LauncherModsGroupByFolder);
+        const auto& style = ImGui::GetStyle();
+        const float next_x = force_load_rect.x + style.ItemSpacing.x;
+        const float content_right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+        const float switch_width = anomaly::glass::SwitchSize().x + style.ItemInnerSpacing.x +
+            ImGui::CalcTextSize(folder_label).x;
+        if (next_x + switch_width <= content_right) {
+            ImGui::SetCursorScreenPos(ImVec2(next_x, switch_row_y));
+        }
+        if (anomaly::glass::Switch(folder_label, &by_folder)) controller.SetModsGroupByFolder(by_folder);
+    }
     if (!settings_error.empty()) ImGui::TextDisabled("%s", settings_error.c_str());
     if (ImGui::BeginChild(mod_mode == 0 ? "ModManagementContent" : "ModDownloadContent", ImVec2(0.0f, 0.0f))) {
-        if (mod_mode == 0) DrawModsMode(window, controller, snapshot, translator, canvas_min, canvas_size);
+        if (mod_mode == 0) DrawModsMode(window, controller, snapshot, translator, canvas_min, canvas_size, by_folder);
         else DrawBrowseMode(window, controller, snapshot, translator);
     }
     ImGui::EndChild();

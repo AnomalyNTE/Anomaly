@@ -244,7 +244,8 @@ struct PakModRuntime::Impl final {
                 for (const auto& group : row.resource_groups) { if (!groups.empty()) groups += ", "; groups += group; }
                 const auto view = [](const std::string& s) { return AnomalyStringViewV1{s.data(), s.size()}; };
                 const AnomalyModEntryV1 entry{sizeof(entry), row.enabled, row.disabled_files, row.index_complete,
-                    view(row.key), view(row.name), view(vehicles), view(row.analysis_error), view(groups)};
+                    view(row.key), view(row.name), view(vehicles), view(row.analysis_error), view(groups),
+                    view(row.parent_folder)};
                 if (!visitor(visitor_user, &entry)) break;
             }
             return Error(0);

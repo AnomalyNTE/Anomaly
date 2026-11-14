@@ -22,6 +22,7 @@ PakModGroupName ParsePakModGroup(std::string_view token);
 
 struct PakModCatalogEntry {
     std::string key, name;
+    std::string parent_folder;  // Relative to ~mods, with the folder's original spelling.
     std::set<std::string> assets, vehicles, model_vehicles;
     // Classified group tokens, see PakModGroupName. A mod that replaces two outfits of one
     // character carries both skins of that character, never a token per pair of them.

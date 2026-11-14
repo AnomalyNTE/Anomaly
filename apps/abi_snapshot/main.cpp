@@ -1659,7 +1659,8 @@ std::string BuildSnapshot() {
          {"name", offsetof(AnomalyModEntryV1, name)},
          {"vehicles", offsetof(AnomalyModEntryV1, vehicles)},
          {"analysis_error", offsetof(AnomalyModEntryV1, analysis_error)},
-         {"resource_groups", offsetof(AnomalyModEntryV1, resource_groups)}}, false);
+         {"resource_groups", offsetof(AnomalyModEntryV1, resource_groups)},
+         {"parent_folder", offsetof(AnomalyModEntryV1, parent_folder)}}, false);
     AppendStruct(output, "AnomalyModsServiceV1", sizeof(AnomalyModsServiceV1), alignof(AnomalyModsServiceV1),
         {{"struct_size", offsetof(AnomalyModsServiceV1, struct_size)},
          {"service_version", offsetof(AnomalyModsServiceV1, service_version)},

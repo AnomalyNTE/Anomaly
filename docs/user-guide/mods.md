@@ -215,6 +215,10 @@ GT3 RS 与 P1 都覆盖 `Vehicle_037`，Tourbillon 覆盖 `Vehicle_026`。覆盖
 
 #### 模组目录：文件夹是模组还是分类
 
+Launcher「管理模组」和游戏内 Mod 管理都有「按文件夹分组」开关，默认关闭。打开后按 `~mods`
+中的实际相对目录排布，根目录模组直接列出。Launcher 的网格和列表都支持多级目录，游戏内列表用相对路径作为分组标题。
+两边各自保存自己的设置。
+
 `~mods` 下的文件夹按内容判断，不看名字：
 
 - 直接含 `.pak` / `.utoc` 的文件夹是一个模组。
@@ -371,6 +375,7 @@ P1 示例 ZIP 内的轮毂选项是替代版本，应只导入一套 `.pak/.utoc
 | `theme` | 启动器主题的配色名（默认 `naiwa` 奶蛙） |
 | `language` | 启动器语言：`auto`（跟随系统）/ `zh-CN` / `en-US` |
 | `view.modsGrid` | 模组页排版（`true` = 网格，默认；`false` = 列表） |
+| `view.modsByFolder` | 模组按文件夹分组（默认 `false`，按自动分类或自定义分组显示） |
 | `view.modsPagination` | 模组页是否分页（默认 `false`） |
 | `view.modsPageSize` | 分页时每页模组数（默认 `10`） |
 | `view.browseSort` | 下载页的全量排序（`default` / `new` / `downloads` / `views` / `likes`） |

@@ -521,6 +521,8 @@ std::vector<PakModCatalogEntry> ReadPakModCatalog(const std::filesystem::path& d
         container.key = key;
         auto& row = found[key]; row.key = key;
         row.name = PakModFolderName(root.empty() ? std::string_view(stem) : std::string_view(root));
+        if (const auto slash = root.rfind('/'); slash != std::string::npos)
+            row.parent_folder = root.substr(0, slash);
         row.disabled_files = row.disabled_files || container.disabled;
         row.restricted = row.restricted || PakModNameRestricted(container.logical);
         row.containers.push_back(container.file);

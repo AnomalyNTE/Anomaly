@@ -20,8 +20,12 @@ using namespace anomaly::sdk;
 using Reload = mod_manager::WorldReload;
 using Visual = mod_manager::VisualReload;
 
+constexpr std::string_view kSettingsId = "anomaly.mod-manager.settings";
+constexpr std::string_view kSettingsSchema = R"({"type":"object","properties":{"groupByFolder":{"type":"boolean"}},"required":["groupByFolder"],"additionalProperties":false})";
+constexpr std::uint32_t kSettingsVersion = 1;
+
 struct Row {
-    std::string key, name;
+    std::string key, name, parent_folder;
     std::vector<std::string> groups;  // the categories the mod replaces, one section per set of them
     std::string skins;                // the variants inside those categories, shown on the mod's row
     bool enabled{}, disabled{}, complete{};
@@ -39,9 +43,11 @@ struct Context {
     const AnomalyModsServiceV1* mods{};
     const AnomalySchedulerServiceV1* scheduler{};
     const AnomalyWindowServiceV1* windows{};
+    const AnomalyConfigServiceV1* config{};
     AnomalyGenerationHandleV1 task{}, window{};
     std::mutex mutex;
     bool stopping{true}, busy{}, compatibility{}, profile_valid{}, services_ready{}, visual_ready{}, catalog_seen{};
+    bool settings_ready{}, group_by_folder{}, saved_group_by_folder{}, settings_save_failed{};
     const AnomalyNteSessionServiceV1* session{};
     std::set<std::string> pending_visual;
     std::map<std::string, std::set<std::string>> visual_index;
@@ -61,6 +67,52 @@ struct Context {
 
 std::string Copy(AnomalyStringViewV1 value) { return value.data ? std::string(value.data, value.size) : std::string{}; }
 std::string ErrorText(AnomalyStatusV1 value) { return value.message.size ? Copy(value.message) : std::to_string(value.code); }
+
+AnomalyByteSpanV1 Bytes(const std::string_view text) {
+    return {reinterpret_cast<const std::uint8_t*>(text.data()), text.size()};
+}
+
+bool LoadSettings() {
+    AnomalyGenerationHandleV1 schema{};
+    const auto id = StringView(kSettingsId);
+    if (g.config->register_schema(g.config->user, id, kSettingsVersion, Bytes(kSettingsSchema), &schema).code)
+        return false;
+    std::array<std::uint8_t, 128> buffer{};
+    auto size = buffer.size();
+    std::uint32_t version{};
+    const auto status = g.config->read(g.config->user, id, &version, {buffer.data(), buffer.size()}, &size);
+    if (status.code == ANOMALY_STATUS_V1_NOT_FOUND) return true;
+    if (status.code || version != kSettingsVersion || size > buffer.size()) return false;
+    const auto settings = nlohmann::json::parse(buffer.begin(), buffer.begin() + size, nullptr, false);
+    const auto group = settings.find("groupByFolder");
+    if (group == settings.end() || !group->is_boolean()) return false;
+    g.saved_group_by_folder = g.group_by_folder = group->get<bool>();
+    return true;
+}
+
+bool SaveSettings() {
+    bool by_folder;
+    {
+        std::scoped_lock lock(g.mutex);
+        by_folder = g.group_by_folder;
+        if (by_folder == g.saved_group_by_folder) return true;
+    }
+    const auto document = by_folder ? R"({"groupByFolder":true})" : R"({"groupByFolder":false})";
+    const bool saved = g.config->write_atomic(g.config->user, StringView(kSettingsId),
+        kSettingsVersion, Bytes(document)).code == ANOMALY_STATUS_V1_OK;
+    std::scoped_lock lock(g.mutex);
+    if (saved) g.saved_group_by_folder = by_folder;
+    g.settings_save_failed = !saved && g.group_by_folder != g.saved_group_by_folder;
+    return saved;
+}
+
+std::string ParentFolder(const AnomalyModEntryV1& entry, std::string_view key) {
+    if (entry.struct_size >= offsetof(AnomalyModEntryV1, parent_folder) + sizeof(entry.parent_folder))
+        return Copy(entry.parent_folder);
+    if (key.ends_with('/')) key.remove_suffix(1);
+    const auto slash = key.rfind('/');
+    return slash == std::string_view::npos ? std::string{} : std::string(key.substr(0, slash));
+}
 // The ABI carries the classification as `group/skin` tokens separated by ", ". The panel names the
 // group in the section header and the variants on the mod's own row, so two outfits of one character
 // stay one section instead of becoming a section of their own. Content directories are the only
@@ -110,7 +162,9 @@ int ANOMALY_CALL Collect(void* user, const AnomalyModEntryV1* entry) noexcept {
         const auto groups = Copy(entry->struct_size >= offsetof(AnomalyModEntryV1, resource_groups) + sizeof(entry->resource_groups)
             ? entry->resource_groups : entry->vehicles);
         const auto classification = SplitGroups(groups);
-        result.values.push_back({Copy(entry->key), Copy(entry->name),
+        auto key = Copy(entry->key);
+        auto folder = ParentFolder(*entry, key);
+        result.values.push_back({std::move(key), Copy(entry->name), std::move(folder),
             classification.first, classification.second,
             entry->enabled != 0, entry->disabled_files != 0, entry->index_complete != 0});
         return 1;
@@ -194,6 +248,7 @@ void ANOMALY_CALL Worker(void*, AnomalyGenerationHandleV1) noexcept {
             busy = g.busy; visual_ready = g.visual_ready; compatibility = g.compatibility;
             previous = g.rows;
         }
+        SaveSettings();
         if (g.native.ReflectionAvailable() && !services_ready && !binding_pending) {
             const Host host(g.api);
             const auto session = host.Query<AnomalyNteSessionServiceV1>(ANOMALY_NTE_SESSION_SERVICE_V1_ID).get();
@@ -408,7 +463,7 @@ std::string JoinNames(const std::vector<std::string>& values) {
 // category it replaces under both the identifier and the name it is shown as. Searching both is what
 // makes a Chinese input and an English one find the same row.
 std::string SearchText(const Row& row, const std::vector<std::string>& labels) {
-    std::string text = row.name + " " + row.key + " " + row.skins;
+    std::string text = row.name + " " + row.key + " " + row.parent_folder + " " + row.skins;
     for (std::size_t index = 0; index < row.groups.size(); ++index)
         text += " " + row.groups[index] + " " + labels[index];
     return text;
@@ -438,11 +493,13 @@ void ANOMALY_CALL Draw(void*, const AnomalyUiServiceV1* ui) noexcept {
         if (!visible) return;
         std::vector<Row> rows;
         std::string status;
-        bool busy{}, services_ready{};
+        bool busy{}, services_ready{}, by_folder{}, settings_save_failed{};
         {
             std::unique_lock lock(g.mutex, std::try_to_lock);
             if (!lock) return;
             rows = g.rows; status = g.status; busy = g.busy; services_ready = g.services_ready;
+            by_folder = g.group_by_folder;
+            settings_save_failed = g.settings_save_failed;
         }
         const auto TextLocalized = [&](std::string_view key, std::string_view fallback) {
             ui->text(ui->user, StringView(g.localizer.Text(key, fallback)));
@@ -456,6 +513,21 @@ void ANOMALY_CALL Draw(void*, const AnomalyUiServiceV1* ui) noexcept {
         if (!status.empty()) ui->text(ui->user, StringView(status));
         if (ui->button_enabled(ui->user, StringView(g.localizer.Text("action.reload_world", "Reload world")), 0, 0, !busy && !g.compatibility && services_ready))
             Request({Kind::ReloadWorld, {}});
+
+        if (g.settings_ready) {
+            int checked = by_folder;
+            if (ui->checkbox(ui->user, StringView(g.localizer.Text("view.group_by_folder", "Group by folder")), &checked)) {
+                std::scoped_lock lock(g.mutex);
+                if (!g.stopping) {
+                    by_folder = g.group_by_folder = checked != 0;
+                    g.settings_save_failed = settings_save_failed = false;
+                }
+            }
+        } else TextLocalized("status.view_load_failed", "Could not load the grouping preference.");
+        if (settings_save_failed) TextLocalized("status.view_save_failed", "Could not save the grouping preference.");
+        if (by_folder) std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) {
+            return std::tie(a.parent_folder, a.name, a.key) < std::tie(b.parent_folder, b.name, b.key);
+        });
 
         // The search box filters which rows the page lists; the whole set is drawn otherwise, so a
         // list of a couple of dozen mods needs no pager.
@@ -489,7 +561,7 @@ void ANOMALY_CALL Draw(void*, const AnomalyUiServiceV1* ui) noexcept {
             list.visible = ui->begin_child(ui->user, StringView("##mod-list"), 0.0f, 0.0f,
                                ANOMALY_UI_CHILD_V1_NONE) != 0;
         }
-        std::optional<std::vector<std::string>> group;
+        const Row* section{};
         std::size_t shown{};
         if (list.visible) {
             for (const auto& row : rows) {
@@ -504,10 +576,17 @@ void ANOMALY_CALL Draw(void*, const AnomalyUiServiceV1* ui) noexcept {
                     if (!matched) continue;
                 }
                 ++shown;
-                if (!group || row.groups != *group) {
-                    ui->separator(ui->user); group = row.groups;
-                    if (labels.empty()) labels = CategoryLabels(row);
-                    ui->text(ui->user, StringView(JoinNames(labels)));
+                if (!section || (by_folder ? row.parent_folder != section->parent_folder : row.groups != section->groups)) {
+                    ui->separator(ui->user);
+                    section = &row;
+                    if (by_folder) {
+                        const auto folder = row.parent_folder.empty()
+                            ? g.localizer.Text("group.root_folder", "Mods root") : row.parent_folder;
+                        ui->text(ui->user, StringView(folder));
+                    } else {
+                        if (labels.empty()) labels = CategoryLabels(row);
+                        ui->text(ui->user, StringView(JoinNames(labels)));
+                    }
                 }
                 int enabled = row.enabled;
                 if (ui->checkbox(ui->user, StringView("##enabled-" + row.key), &enabled) && !busy && !g.compatibility && (row.enabled || !row.disabled))
@@ -529,14 +608,20 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* api, void** context) n
         g.mods = host.Query<AnomalyModsServiceV1>(ANOMALY_MODS_SERVICE_V1_ID).get();
         g.scheduler = host.Query<AnomalySchedulerServiceV1>(ANOMALY_SCHEDULER_SERVICE_V1_ID).get();
         g.windows = host.Query<AnomalyWindowServiceV1>(ANOMALY_WINDOW_SERVICE_V1_ID).get();
+        g.config = host.Query<AnomalyConfigServiceV1>(ANOMALY_CONFIG_SERVICE_V1_ID).get();
         if (!context || !g.mods || g.mods->struct_size < sizeof(*g.mods) || !g.mods->synchronize ||
             !g.mods->assets || !g.mods->enumerate || !g.mods->set_enabled || !g.mods->compatibility_mode ||
             !g.scheduler || g.scheduler->struct_size < sizeof(*g.scheduler) ||
             !g.scheduler->schedule || !g.scheduler->cancel || !g.windows ||
+            !g.config || g.config->struct_size < offsetof(AnomalyConfigServiceV1, migrate) ||
+            !g.config->register_schema || !g.config->read || !g.config->write_atomic ||
             g.windows->struct_size < sizeof(*g.windows) || !g.windows->register_window ||
             !g.windows->release_window || !g.windows->state || !g.windows->begin || !g.windows->end)
             return {ANOMALY_STATUS_V1_UNAVAILABLE};
         g.compatibility = g.mods->compatibility_mode(g.mods->user) != 0;
+        g.saved_group_by_folder = g.group_by_folder = false;
+        g.settings_save_failed = false;
+        g.settings_ready = LoadSettings();
         LoadCategoryNames(ActiveLocale(
             host.Query<AnomalyLocalizationServiceV1>(ANOMALY_LOCALIZATION_SERVICE_V1_ID).get()));
         try { g.profile_valid = !g.compatibility && g.native.Load(api); } catch (...) { g.profile_valid = false; }
@@ -560,6 +645,12 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void*, uint32_t) noexcept {
     AnomalyGenerationHandleV1 task{};
     { std::scoped_lock lock(g.mutex); g.stopping = true; task = g.task; }
     if (task.id) g.scheduler->cancel(g.scheduler->user, task);
+    if (!SaveSettings()) {
+        const auto core = Host(g.api).Query<AnomalyCoreServiceV1>(ANOMALY_CORE_SERVICE_V1_ID);
+        if (core && core->struct_size >= offsetof(AnomalyCoreServiceV1, log) + sizeof(core->log) && core->log)
+            core->log(core->user, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
+                StringView("Mod Manager: grouping preference flush failed"));
+    }
     return g.reload.Stop();
 }
 void ANOMALY_CALL Unload(void*) noexcept {

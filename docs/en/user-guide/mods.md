@@ -22,6 +22,7 @@ The page shows the directory in use:
 | --- | --- |
 | Grid (default) | The view switch beside the list, with the grid first and selected: categories first, each card showing the cover of the category's first mod and its mod count; a click opens that category, which lists its skins as cards of their own (each showing that skin's first cover and mod count) when it has more than one, and a further click opens one skin's mods. Above the cards is the path: **All** returns to the outermost level and every named level in the path is clickable too, so no level needs to be left one step at a time. Every mod appears once, and the skins it also covers are part of its card metadata. Every level uses cards of the same size, covers are shown whole, several fit a row, and each card has a surface of its own; a mod card puts the enable switch, the batch box and, when the mod has them, **Source** and **Update** on its first row, and only **Settings** and **Uninstall** under them |
 | List | The same data as rows: switch, cover, name, file count, size, author and version, then the same commands on the right: Update (with a new version), Settings, Uninstall and Source (with a link), and the batch box last. A command a mod does not have leaves its column empty, so the box lines up down the list |
+| Group by folder | Show mods by their relative directory under `~mods`. Both Launcher layouts support nested folders, and the in-game Mod Manager uses relative folder paths as section headings. Each view saves its own preference. |
 | Pagination | **Off by default**: both views list every mod at once and only the list area scrolls. Turn it on under **Settings > Mods page** and set the page size; the pager is a floating glass capsule centred at the bottom of the list |
 | Enable / disable | Hot mode saves a selection for runtime mount/unmount; compatibility mode adds/removes `.disabled` on container files while the game is closed |
 | Enable switch | Enabling a mod disables conflicting model/resource replacements and synchronizes with the in-game Mod Manager |
@@ -406,6 +407,7 @@ Every launcher interface choice is stored in its own configuration, `<launcher>\
 | `theme` | Palette the launcher wears (default `naiwa`) |
 | `language` | Launcher language: `auto` (follow Windows), `zh-CN`, `en-US` |
 | `view.modsGrid` | Mods page layout (`true` = grid, the default; `false` = list) |
+| `view.modsByFolder` | Group mods by folder (default `false`, using automatic categories or custom groups) |
 | `view.modsPagination` | Whether the mods page paginates (default `false`) |
 | `view.modsPageSize` | Mods per page when it does (default `10`) |
 | `view.browseSort` | Download-page ordering (`default` / `new` / `downloads` / `views` / `likes`) |
