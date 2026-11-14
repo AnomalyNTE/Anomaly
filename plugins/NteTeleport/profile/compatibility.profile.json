@@ -10,7 +10,34 @@
     "kLocalPlayerControllerOffset": 48,
     "kControllerPlayerStateOffset": 720,
     "kNavPathActorLastRequestParamOffset": 1264,
-    "kNavPathRequestGoalLocationOffset": 40
+    "kNavPathRequestGoalLocationOffset": 40,
+    "object.class": 16,
+    "object.internalIndex": 12,
+    "object.nameOffset": 24,
+    "ufunction.numParms": 180,
+    "ufunction.parmsSize": 182,
+    "ufunction.returnValueOffset": 184,
+    "ustruct.propertyLink": 112,
+    "ustruct.superStruct": 64,
+    "fproperty.elementSize": 52,
+    "fproperty.offsetInternal": 68,
+    "fproperty.propertyLinkNext": 72,
+    "fboolProperty.byteMask": 114,
+    "fboolProperty.byteOffset": 113,
+    "fboolProperty.fieldMask": 115,
+    "ffield.name": 32,
+    "ffield.class": 8,
+    "ffieldClass.name": 0,
+    "objects.itemsOffset": 16,
+    "objects.countOffset": 36,
+    "objects.maxCountOffset": 32,
+    "objects.itemStride": 24,
+    "objects.objectOffset": 0,
+    "objects.serialOffset": 16,
+    "objects.chunkSize": 65536,
+    "objects.instructionDisplacement": 3,
+    "objects.instructionSize": 7,
+    "objects.registrySubtract": 16
   },
   "symbols": [
     {
@@ -19,6 +46,16 @@
         {
           "pattern": "48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01",
           "entry": "48 8B 1D",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "Objects",
+      "candidates": [
+        {
+          "pattern": "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3 33 C0 48 8B 00 C3",
+          "entry": "48 8B 05",
           "values": {}
         }
       ]
