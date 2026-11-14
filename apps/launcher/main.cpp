@@ -3860,7 +3860,7 @@ bool LauncherWriteLegacyBypass(const LauncherSnapshot& snapshot, const bool enab
         const auto text = document.dump(2) + '\n';
         anomaly::ReliableStorage storage(path.parent_path().wstring());
         if (!storage.WriteAtomic(path.filename().wstring(),
-                std::as_bytes(std::span(text.data(), text.size())))) return false;
+                std::as_bytes(std::span(text)), anomaly::StorageWriteMode::ReplaceReadOnly)) return false;
     }
     return true;
 }

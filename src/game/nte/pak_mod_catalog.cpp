@@ -643,7 +643,10 @@ void UpdatePakModSettings(const std::vector<std::filesystem::path>& paths,
     for (const auto& [path, text] : writes) {
         std::filesystem::create_directories(path.parent_path());
         ReliableStorage storage(path.parent_path().wstring());
-        if (!storage.WriteAtomic(path.filename().wstring(), std::as_bytes(std::span(text)))) throw std::runtime_error("cannot save mod settings");
+        if (!storage.WriteAtomic(path.filename().wstring(), std::as_bytes(std::span(text)),
+                StorageWriteMode::ReplaceReadOnly)) {
+            throw std::runtime_error("cannot save mod settings");
+        }
     }
 }
 } // namespace anomaly
