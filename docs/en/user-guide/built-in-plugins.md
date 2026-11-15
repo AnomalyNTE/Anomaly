@@ -12,6 +12,8 @@ The runtime package ships with user-facing built-in plugins. Like third-party pl
 
 `Skin Swapper Lite` (`b1ank.skin-changer`) provides character accessories, glider and awakening appearance previews, and custom license plates. After you turn on **Apply plate** on the license plate page, the text follows the supported vehicles you drive afterwards; turning the switch off restores the original plate. **Animated plate** scrolls the text in a loop, and you can adjust the scroll interval. The panel shows the usable characters and the plate width. These changes only affect the local appearance, and awakening previews grant no combat bonuses.
 
+Turn on **Use Elyms's Y2K HUD** in the **HUD** tab to keep the theme active when changing scenes. Turn it off to restore the game’s HUD for the current outfit and scene. The plugin saves the setting.
+
 ## Coordinate Display
 
 | | |
