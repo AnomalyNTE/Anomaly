@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <stop_token>
 #include <vector>
 
 namespace anomaly::launcher {
@@ -108,8 +109,11 @@ struct ManualMapLaunchResult final {
 [[nodiscard]] AttachableProcess InspectAttachableProcess(DWORD process_id) noexcept;
 [[nodiscard]] std::vector<AttachableProcess> EnumerateAttachableProcesses(
     std::wstring_view executable_name = L"HTGame.exe") noexcept;
+// Closing the caller cancels discovery/loader waits before mapping starts.
+// Once mapping starts it must finish reporting its result; cancellation does
+// not interrupt remote bootstrap code or terminate the target.
 [[nodiscard]] ManualMapLaunchResult LaunchAndManualMapRuntimeCore(
-    const ManualMapLaunchOptions& options) noexcept;
+    const ManualMapLaunchOptions& options, std::stop_token stop = {}) noexcept;
 // Manual-maps the runtime core into a process that is already running, so the game does not have to be
 // started by this launcher. The target is attached to as it is: nothing is relaunched, nothing is
 // terminated on failure, and the caller decides whether a failed attach leaves the game running.

@@ -893,7 +893,7 @@ public:
             options.manual_map.runtime_root = selected.runtime_root;
             options.manual_map.log_directory = options.manual_map.runtime_root / L"logs";
             const auto result =
-                anomaly::launcher::LaunchAndManualMapRuntimeCore(options);
+                anomaly::launcher::LaunchAndManualMapRuntimeCore(options, worker_.get_stop_token());
             if (result.Ok()) RefreshProcessesImpl();
 
             std::scoped_lock lock(state_mutex_);
