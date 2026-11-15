@@ -3,7 +3,7 @@
   "locale": "zh-CN",
   "messages": {
     "window.title": "空无一人",
-    "plugin.description": "空无一人：勾选后，人流和车流都不再生成，但不影响站桩NPC",
+    "plugin.description": "停止 Mass 人群与交通生成，并请求已生成的 Mass 实体退场；不影响任务脚本和静态 NPC。",
     "option.empty_streets": "空无一人",
     "label.hotkey": "快捷键：{0}",
     "action.rebind_hotkey": "改键",

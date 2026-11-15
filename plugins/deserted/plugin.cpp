@@ -16,6 +16,7 @@
 
 #include "anomaly/sdk/cpp.hpp"
 #include "anomaly/sdk/services/platform.h"
+#include "anomaly/sdk/services/ue5.h"
 #include "anomaly/sdk/localization.hpp"
 
 #include <windows.h>
@@ -53,12 +54,12 @@ constexpr std::uint32_t kCondFirstUseEver = 4u;
 
 
 constexpr std::uint32_t kMaxProfiles = 16;
-constexpr int kMaxSpawners = 16;
+constexpr int kMaxSpawners = 256;
 // 勾选期间按慢周期重新对齐：游戏在天气切换/关卡刷新时会重算密度。
 constexpr double kReapplySeconds = 1.0;
 // 扫描走完但仍缺目标（换关、布局待判定）时的重试周期。
 constexpr double kRetrySeconds = 2.0;
-const float kEmptyScales[5] = {0.01F, 0.01F, 0.01F, 0.01F, 0.01F};  // 空街值（昼/夜/晴/雨/雪）
+const float kEmptyScales[5] = {0.0F, 0.0F, 0.0F, 0.0F, 0.0F};  // 空街值（昼/夜/晴/雨/雪）
 const float kDefaultScales[5] = {1.0F, 1.0F, 1.0F, 1.0F, 1.0F};     // 游戏默认环境倍率（兜底初值）
 
 // 车辆生成器（HTMassVehicleSpawner）上的字段
@@ -80,7 +81,7 @@ constexpr std::uint32_t kWindowKey = VK_F8;
 
 // State 头部标记，供外部工具在 .data 中定位本结构
 constexpr std::uint64_t kStateMagic = 0x0054442D4D4F4E41ULL;  // "ANOM-DT\0"
-constexpr std::uint32_t kStateVersion = 2;
+constexpr std::uint32_t kStateVersion = 5;
 enum LayoutIndex {
     kLayoutChecked = 0,   // 与 req_toggle 相邻，外部可一次写入两个
     kLayoutReqToggle,
@@ -123,6 +124,7 @@ struct State {
     int veh_baseline_count[kMaxSpawners]{};
     float veh_baseline_scale[kMaxSpawners]{};
     int veh_baseline_min[kMaxSpawners]{};
+    int veh_has_min_active[kMaxSpawners]{};
 
     // 开关状态
     int checked{};        // 勾选状态
@@ -137,6 +139,7 @@ struct State {
     // 热键 / 窗口
     std::uint32_t hotkey{0};
     int capturing{};
+    int capture_baseline_pending{};
     int window_open{1};
     unsigned char prev_keys[32]{};
 
@@ -152,6 +155,7 @@ const AnomalyCoreServiceV1* g_core{};
 const AnomalySignatureServiceV1* g_signature{};
 const AnomalyUe5NamesServiceV1* g_names{};
 const AnomalyUe5ObjectsServiceV1* g_objects{};
+const AnomalyUe5ProcessEventServiceV1* g_events{};
 const AnomalyInputServiceV1* g_input{};
 const AnomalyStorageServiceV1* g_storage{};
 const AnomalySchedulerServiceV1* g_scheduler{};
@@ -366,7 +370,8 @@ bool ShapeMatchesCrowd(std::uintptr_t addr, const deserted_profile::Candidate& c
     return DefaultScalesSane(addr, candidate.kDefaultProfileOffset, require_active_values);
 }
 
-bool ShapeMatchesVehicle(std::uintptr_t addr, const deserted_profile::Candidate& candidate) {
+bool ShapeMatchesVehicle(std::uintptr_t addr, const deserted_profile::Candidate& candidate,
+                         bool has_min_active) {
     if (!LooksLikePointer(addr)) return false;
     const std::int32_t count = static_cast<std::int32_t>(
         SafeReadU32(addr + deserted_profile::base_layout.kSpawnCountOffset));
@@ -374,6 +379,7 @@ bool ShapeMatchesVehicle(std::uintptr_t addr, const deserted_profile::Candidate&
     if (!SafeReadF32(addr + deserted_profile::base_layout.kSpawnScaleOffset, &scale)) return false;
     if (count < 0 || count > 1000000) return false;
     if (!(scale >= 0.0F) || scale > 100.0F) return false;
+    if (!has_min_active) return true;
     const std::int32_t min_active = static_cast<std::int32_t>(SafeReadU32(addr + candidate.kVehMinActiveOffset));
     return min_active >= 0 && min_active <= 10000;
 }
@@ -396,26 +402,40 @@ bool IsVehicleSpawnerName(const char* name) {
     if (name == nullptr || name[0] == '\0') return false;
     if (std::strncmp(name, "Default__", 9) == 0) return false;
     if (std::strstr(name, "Subsystem") != nullptr) return false;
-    return std::strstr(name, "MassVehicleSpawner") != nullptr;
+    if (std::strstr(name, "Crowd") != nullptr) return false;
+    return std::strstr(name, "MassBusSpawner") != nullptr ||
+           std::strstr(name, "MassVehicleSpawner") != nullptr ||
+           std::strstr(name, "TrafficMonsterMassSpawner") != nullptr ||
+           std::strstr(name, "MassTrainSpawner") != nullptr;
 }
 
 bool IsVehicleSpawnerCandidate(std::uintptr_t addr) {
     if (!LooksLikePointer(addr)) return false;
-    if (!ClassNameContains(addr, "VehicleSpawner")) return false;  // 挡掉同名 UFunction
-    if (ClassNameContains(addr, "SpawnDataGenerator")) return false;
-    return true;
+    if (ClassNameContains(addr, "Crowd") || ClassNameContains(addr, "Subsystem") ||
+        ClassNameContains(addr, "SpawnDataGenerator")) return false;
+    return ClassNameContains(addr, "MassBusSpawner") ||
+           ClassNameContains(addr, "MassVehicleSpawner") ||
+           ClassNameContains(addr, "TrafficMonsterMassSpawner") ||
+           ClassNameContains(addr, "MassTrainSpawner");
+}
+
+bool VehicleSpawnerHasMinActive(std::uintptr_t addr) {
+    return !ClassNameContains(addr, "MassBusSpawner");
 }
 
 bool IsVehicleSpawnerObject(std::uintptr_t addr) {
     if (!deserted_profile::LayoutSelected()) return false;
     if (!IsVehicleSpawnerCandidate(addr)) return false;
-    return ShapeMatchesVehicle(addr, ActiveCandidate());
+    return ShapeMatchesVehicle(addr, ActiveCandidate(), VehicleSpawnerHasMinActive(addr));
 }
 
-void ReadVehicleParams(std::uintptr_t addr, int* count, float* scale, int* min_active) {
+void ReadVehicleParams(std::uintptr_t addr, int* count, float* scale, int* min_active,
+                       bool has_min_active) {
     *count = static_cast<std::int32_t>(SafeReadU32(addr + deserted_profile::native_layout.kSpawnCountOffset));
     if (!SafeReadF32(addr + deserted_profile::native_layout.kSpawnScaleOffset, scale)) *scale = kDefaultVehScale;
-    *min_active = static_cast<std::int32_t>(SafeReadU32(addr + deserted_profile::native_layout.kVehMinActiveOffset));
+    *min_active = has_min_active
+        ? static_cast<std::int32_t>(SafeReadU32(addr + deserted_profile::native_layout.kVehMinActiveOffset))
+        : -1;
 }
 
 // 把一台车辆生成器的生成能力对齐到 (count, scale, min_active)：先读后比，不一致才写
@@ -432,10 +452,12 @@ int SyncOneVehicle(std::uintptr_t addr, int count, float scale, int min_active) 
         WriteF32(addr + deserted_profile::native_layout.kSpawnScaleOffset, scale)) {
         ++written;
     }
-    const std::int32_t cur_min = static_cast<std::int32_t>(SafeReadU32(addr + deserted_profile::native_layout.kVehMinActiveOffset));
-    if (cur_min != min_active &&
-        WriteU32(addr + deserted_profile::native_layout.kVehMinActiveOffset, static_cast<std::uint32_t>(min_active))) {
-        ++written;
+    if (min_active >= 0) {
+        const std::int32_t cur_min = static_cast<std::int32_t>(SafeReadU32(addr + deserted_profile::native_layout.kVehMinActiveOffset));
+        if (cur_min != min_active &&
+            WriteU32(addr + deserted_profile::native_layout.kVehMinActiveOffset, static_cast<std::uint32_t>(min_active))) {
+            ++written;
+        }
     }
     return written;
 }
@@ -447,14 +469,40 @@ int SyncVehicles(int to_zero) {
     for (int i = 0; i < s.veh_count && i < kMaxSpawners; ++i) {
         const std::uintptr_t addr = s.veh[i];
         if (!IsVehicleSpawnerObject(addr)) continue;
+        const int min_active = s.veh_has_min_active[i] != 0 ? 0 : -1;
         if (to_zero != 0) {
-            written += SyncOneVehicle(addr, 0, 0.0F, 0);
+            written += SyncOneVehicle(addr, 0, 0.0F, min_active);
         } else if (s.veh_baseline_valid != 0) {
             written += SyncOneVehicle(addr, s.veh_baseline_count[i], s.veh_baseline_scale[i],
                                       s.veh_baseline_min[i]);
         }
     }
     return written;
+}
+
+void RequestDespawning(std::uint32_t object_index, AnomalyGenerationHandleV1 function) {
+    if (g_events == nullptr || g_events->struct_size < sizeof(AnomalyUe5ProcessEventServiceV1) ||
+        g_events->invoke == nullptr || g_objects == nullptr || g_objects->snapshot_at == nullptr) return;
+
+    AnomalyUe5ObjectSnapshotV1 receiver{};
+    receiver.struct_size = sizeof(receiver);
+    if (g_objects->snapshot_at(g_objects->user, object_index, &receiver).code !=
+        ANOMALY_STATUS_V1_OK) return;
+
+    (void)g_events->invoke(g_events->user, receiver.handle, function, nullptr, 0);
+}
+
+void RequestAllDespawning() {
+    State& s = g_state;
+    if (g_objects == nullptr || g_objects->find_exact == nullptr) return;
+    AnomalyGenerationHandleV1 function{};
+    constexpr auto function_path = "/Script/MassSpawner.MassSpawner.DoDespawning";
+    if (g_objects->find_exact(g_objects->user, StringView(function_path), &function).code !=
+        ANOMALY_STATUS_V1_OK) return;
+    for (int i = 0; i < s.spawner_count; ++i)
+        RequestDespawning(s.spawner_index[i], function);
+    for (int i = 0; i < s.veh_count; ++i)
+        RequestDespawning(s.veh_index[i], function);
 }
 
 void CaptureVehicleBaseline() {
@@ -465,12 +513,13 @@ void CaptureVehicleBaseline() {
         int count = 0;
         int min_active = 0;
         float scale = 1.0F;
-        ReadVehicleParams(s.veh[i], &count, &scale, &min_active);
+        const bool has_min_active = s.veh_has_min_active[i] != 0;
+        ReadVehicleParams(s.veh[i], &count, &scale, &min_active, has_min_active);
         // 已经是 0（上次没恢复）⇒ 不当作初值，用游戏默认值兜底
         if (count <= 0 || scale <= 0.0F) {
             count = kDefaultVehCount;
             scale = kDefaultVehScale;
-            min_active = kDefaultVehMinActive;
+            min_active = has_min_active ? kDefaultVehMinActive : -1;
         }
         s.veh_baseline_count[i] = count;
         s.veh_baseline_scale[i] = scale;
@@ -561,7 +610,8 @@ bool SelectLayoutFromObjects(const std::uintptr_t* crowd, int crowd_count,
             if (ShapeMatchesCrowd(crowd[k], candidate, true)) ++score;
         }
         for (int k = 0; k < vehicle_count; ++k) {
-            if (ShapeMatchesVehicle(vehicles[k], candidate)) ++score;
+            if (ShapeMatchesVehicle(vehicles[k], candidate,
+                                    VehicleSpawnerHasMinActive(vehicles[k]))) ++score;
         }
         if (score == 0) continue;
         ++matches;
@@ -609,7 +659,9 @@ void ResolveFoundObjects() {
     int v = 0;
     for (int i = 0; i < vehicles_found; ++i) {
         if (!IsVehicleSpawnerObject(vehicles[i])) continue;
-        s.veh[v++] = vehicles[i];
+        s.veh[v] = vehicles[i];
+        s.veh_has_min_active[v] = VehicleSpawnerHasMinActive(vehicles[i]) ? 1 : 0;
+        ++v;
     }
     s.veh_count = v;
 
@@ -623,7 +675,7 @@ void AdvanceScan(double dt) {
     if (s.walk_done != 0 && s.spawner_count > 0 && s.veh_count > 0) return;
     if (s.sig_tried == 0) TryResolveGobjectsSlot();
     if (s.gobjects_slot == 0) return;
-    if (s.walk_done != 0) {  // 已走完但仍缺目标：换关或布局待判定时按慢周期重试
+    if (s.walk_done != 0) {  // 已走完但仍缺目标：按慢周期重试
         s.retry_accum += (dt > 0.0) ? dt : 0.0;
         if (s.retry_accum < kRetrySeconds) return;
         s.retry_accum = 0.0;
@@ -761,23 +813,27 @@ void ReleaseHotkeys() {
 
 void BeginCapture() {
     g_state.capturing = 1;
+    g_state.capture_baseline_pending = 1;
     ReleaseHotkeys();
 }
 
 void EndCapture() {
     g_state.capturing = 0;
+    g_state.capture_baseline_pending = 0;
     RegisterHotkeys();
 }
 
 void CaptureTick() {
     State& s = g_state;
+    if (s.capturing == 0) return;
     if (g_input == nullptr || g_input->snapshot == nullptr) return;
     AnomalyInputSnapshotV1 snap{};
     snap.struct_size = sizeof(snap);
     if (g_input->snapshot(g_input->user, &snap).code != ANOMALY_STATUS_V1_OK) return;
 
-    if (s.capturing == 0) {
+    if (s.capture_baseline_pending != 0) {
         std::memcpy(s.prev_keys, snap.keys, sizeof(s.prev_keys));
+        s.capture_baseline_pending = 0;
         return;
     }
     for (int i = 0; i < 32; ++i) {
@@ -793,6 +849,7 @@ void CaptureTick() {
         }
         s.hotkey = (vk == VK_BACK) ? 0u : vk;  // 退格 = 解除绑定
         s.capturing = 0;
+        s.capture_baseline_pending = 0;
         RegisterHotkeys();
         SaveConfigImmediate();
         return;
@@ -1043,6 +1100,9 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
     const auto objects = view.Query<AnomalyUe5ObjectsServiceV1>(
         ANOMALY_UE5_OBJECTS_SERVICE_V1_ID, ANOMALY_UE5_OBJECTS_SERVICE_V1_VERSION);
     g_objects = objects ? objects.get() : nullptr;
+    const auto events = view.Query<AnomalyUe5ProcessEventServiceV1>(
+        ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_ID, ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_VERSION);
+    g_events = events ? events.get() : nullptr;
     const auto input = view.Query<AnomalyInputServiceV1>(ANOMALY_INPUT_SERVICE_V1_ID,
                                                          ANOMALY_INPUT_SERVICE_V1_VERSION);
     g_input = input ? input.get() : nullptr;
@@ -1098,6 +1158,7 @@ void ANOMALY_CALL Unload(void* context) {
     g_signature = nullptr;
     g_names = nullptr;
     g_objects = nullptr;
+    g_events = nullptr;
     g_input = nullptr;
     g_core = nullptr;
     g_storage = nullptr;
@@ -1145,6 +1206,7 @@ void ANOMALY_CALL Update(void* context, double delta_seconds) {
             s.need_apply = 0;
             if (s.spawner_count > 0) SyncScales(kEmptyScales);
             if (s.veh_count > 0) SyncVehicles(1);
+            RequestAllDespawning();
             s.reapply_accum = 0.0;
             return;
         }
@@ -1153,8 +1215,10 @@ void ANOMALY_CALL Update(void* context, double delta_seconds) {
         s.reapply_accum += dt;
         if (s.reapply_accum >= kReapplySeconds) {
             s.reapply_accum = 0.0;
-            if (s.spawner_count > 0) SyncScales(kEmptyScales);
-            if (s.veh_count > 0) SyncVehicles(1);
+            int writes = 0;
+            if (s.spawner_count > 0) writes += SyncScales(kEmptyScales);
+            if (s.veh_count > 0) writes += SyncVehicles(1);
+            if (writes > 0) RequestAllDespawning();
         }
         return;  // 其余时间不做逐帧检测
     }
@@ -1179,7 +1243,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     }
     *descriptor = {sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
                    StringView("wawmew.deserted"), StringView("Deserted"),
-                   StringView("WawMew"), StringView("0.6.4"), Load, Start, Stop, Unload, Update,
+                   StringView("WawMew"), StringView("0.6.6"), Load, Start, Stop, Unload, Update,
                    Draw};
     return anomaly::sdk::Ok();
 }
