@@ -521,6 +521,8 @@ std::vector<PakModCatalogEntry> ReadPakModCatalog(const std::filesystem::path& d
         container.key = key;
         auto& row = found[key]; row.key = key;
         row.name = PakModFolderName(root.empty() ? std::string_view(stem) : std::string_view(root));
+        if (const auto slash = root.rfind('/'); slash != std::string::npos)
+            row.parent_folder = root.substr(0, slash);
         row.disabled_files = row.disabled_files || container.disabled;
         row.restricted = row.restricted || PakModNameRestricted(container.logical);
         row.containers.push_back(container.file);
@@ -643,7 +645,10 @@ void UpdatePakModSettings(const std::vector<std::filesystem::path>& paths,
     for (const auto& [path, text] : writes) {
         std::filesystem::create_directories(path.parent_path());
         ReliableStorage storage(path.parent_path().wstring());
-        if (!storage.WriteAtomic(path.filename().wstring(), std::as_bytes(std::span(text)))) throw std::runtime_error("cannot save mod settings");
+        if (!storage.WriteAtomic(path.filename().wstring(), std::as_bytes(std::span(text)),
+                StorageWriteMode::ReplaceReadOnly)) {
+            throw std::runtime_error("cannot save mod settings");
+        }
     }
 }
 } // namespace anomaly

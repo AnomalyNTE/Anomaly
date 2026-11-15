@@ -38,6 +38,11 @@ struct StorageReadResult {
     [[nodiscard]] explicit operator bool() const noexcept { return ok(); }
 };
 
+enum class StorageWriteMode : std::uint8_t {
+    Default,
+    ReplaceReadOnly,
+};
+
 class ReliableStorage final {
 public:
     explicit ReliableStorage(std::wstring_view root_directory) noexcept;
@@ -52,7 +57,8 @@ public:
     [[nodiscard]] StorageReadResult Read(
         std::wstring_view relative_path, std::size_t max_bytes) noexcept;
     [[nodiscard]] StorageResult WriteAtomic(
-        std::wstring_view relative_path, std::span<const std::byte> bytes) noexcept;
+        std::wstring_view relative_path, std::span<const std::byte> bytes,
+        StorageWriteMode mode = StorageWriteMode::Default) noexcept;
     [[nodiscard]] StorageResult Delete(std::wstring_view relative_path) noexcept;
 
 private:

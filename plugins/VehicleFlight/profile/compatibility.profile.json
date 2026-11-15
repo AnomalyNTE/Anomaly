@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "game": "nte",
+  "module": "HTGame.exe",
+  "section": ".text",
+  "contract": "b1ank-vehicle-flight-v1",
+  "layout": {
+    "ObjectIndex": 12,
+    "ObjectClass": 16,
+    "ObjectName": 24,
+    "Super": 64,
+    "PropertyLink": 112,
+    "FieldClass": 8,
+    "FieldClassName": 0,
+    "FieldName": 32,
+    "PropertySize": 52,
+    "PropertyOffset": 68,
+    "PropertyNext": 72,
+    "FunctionFlags": 176,
+    "FunctionCount": 180,
+    "FunctionSize": 182,
+    "RegistryCount": 36,
+    "RegistryItems": 16,
+    "ItemStride": 24,
+    "Serial": 16,
+    "ChunkSize": 65536,
+    "RegistryLoad": 0,
+    "RegistrySubtract": 16
+  },
+  "symbols": [
+    {
+      "name": "Objects",
+      "candidates": [
+        {
+          "pattern": "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3 33 C0 48 8B 00 C3",
+          "entry": "48 8B 05",
+          "values": {}
+        }
+      ]
+    }
+  ]
+}

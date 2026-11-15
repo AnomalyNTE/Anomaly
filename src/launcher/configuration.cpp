@@ -467,6 +467,7 @@ LauncherConfigurationLoadResult LoadLauncherConfiguration(
                 const auto& view = document.at("view");
                 LauncherViewSettings& settings = result.configuration.view;
                 settings.mods_grid = view.value("modsGrid", settings.mods_grid);
+                settings.mods_by_folder = view.value("modsByFolder", settings.mods_by_folder);
                 settings.mods_pagination =
                     view.value("modsPagination", settings.mods_pagination);
                 settings.mods_page_size = LauncherNearestPageSize(
@@ -567,6 +568,7 @@ LauncherConfigurationSaveResult SaveLauncherConfiguration(
             }},
             {"view", {
                 {"modsGrid", configuration.view.mods_grid},
+                {"modsByFolder", configuration.view.mods_by_folder},
                 {"modsPagination", configuration.view.mods_pagination},
                 {"modsPageSize", configuration.view.mods_page_size},
                 {"browseSort", configuration.view.browse_sort},

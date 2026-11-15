@@ -18,6 +18,9 @@ typedef struct AnomalyModEntryV1 {
     // Optional tail: comma-separated classification identifiers from resource directories.
     // Presentation only; a shared group does not imply a conflict or support for cleanup.
     AnomalyStringViewV1 resource_groups;
+    // Optional tail: the directory containing this mod, relative to ~mods, with '/' separators.
+    // Empty for a mod directly under ~mods. Preserves the original folder name casing.
+    AnomalyStringViewV1 parent_folder;
 } AnomalyModEntryV1;
 typedef int (ANOMALY_CALL *AnomalyModVisitorV1)(void* user, const AnomalyModEntryV1* entry);
 typedef int (ANOMALY_CALL *AnomalyModAssetVisitorV1)(void* user, AnomalyStringViewV1 package_path);
@@ -38,6 +41,8 @@ typedef struct AnomalyModsServiceV1 {
     // Worker only. Applies and verifies the effective selection. Conflicting mods keep their
     // current mounts and are reported in pak-mods.json; a forced selection mounts them instead and
     // reports them under `forcedConflicts`. Unrelated mods still synchronize.
+    // A failed preflight or mount leaves other candidates eligible after safe cleanup.
+    // A failure's status.message is valid until the next synchronize call on this thread.
     // Does not clear resident UObjects. Compatibility mode returns CONFLICT.
     AnomalyStatusV1 (ANOMALY_CALL *synchronize)(void* user);
 } AnomalyModsServiceV1;

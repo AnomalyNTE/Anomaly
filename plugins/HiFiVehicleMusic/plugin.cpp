@@ -61,7 +61,13 @@ constexpr std::string_view kSettingsSchema = R"json(
     "volume":{"type":"number","minimum":0,"maximum":1},
     "musicFolder":{"type":"string","maxLength":4096},
     "metingKind":{"enum":["","search","playlist"]},
-    "metingQuery":{"type":"string","maxLength":512}
+    "metingQuery":{"type":"string","maxLength":512},
+    "lastKind":{"enum":["","library","meting","game"]},
+    "lastKey":{"type":"string","maxLength":512},
+    "lastLibrary":{"type":"integer","minimum":0,"maximum":100000},
+    "lastMeting":{"type":"integer","minimum":0,"maximum":100000},
+    "lastGameId":{"type":"string","maxLength":32},
+    "metingAlbum":{"type":"string","maxLength":65536}
   }
 }
 )json";
@@ -221,6 +227,9 @@ struct MetingSong final {
 // A request queued for the Meting worker.
 struct MetingRequest final {
     bool download{};
+    // A cover-only fetch, queued before the audio so the disc shows the song's artwork while the
+    // (much larger) audio file is still downloading.
+    bool cover{};
     std::string url;
     std::size_t index{};
     std::uint64_t generation{};
@@ -243,6 +252,16 @@ struct Settings final {
     // list, no audio. Empty kind = none.
     std::string meting_kind;   // "search" or "playlist"
     std::string meting_query;  // the keyword, or the playlist id
+    // What the player listened to last. Getting in the vehicle resumes it: the game's own "current
+    // song" can still name one of the synthetic rows, which made every trip start on that song.
+    std::string last_kind;     // "" | "library" | "meting" | "game"
+    std::string last_key;      // library track key (diagnostics)
+    std::uint32_t last_library{};  // library album slot the engine plays
+    std::uint32_t last_meting{};  // Meting song index
+    std::string last_game_id;  // decimal; game song ids exceed double precision
+    // The album the player built, as JSON: songs are added one by one, so a search must not be the
+    // thing that decides what the album holds across restarts.
+    std::string meting_album;
 };
 
 struct PlaybackLayout {
@@ -280,6 +299,9 @@ struct Context final {
     std::mutex mutex;
     Settings settings;
     bool settings_dirty{};
+    // Set when the player leaves the vehicle: the next vehicle post resumes the remembered song
+    // instead of the game's saved pick, then clears this.
+    bool pending_entry_restore{};
     bool stopped{};
     // At most one delayed persist task is queued; it clears the flag before it
     // snapshots the settings, so later edits queue the next write.
@@ -318,6 +340,10 @@ struct Context final {
     // The song list the album shows; guarded by meting_mutex. The generation
     // changes whenever a search or playlist replaces it.
     std::vector<MetingSong> meting_songs;
+    // The last search/playlist result, kept apart from the album so a search does not add every
+    // song: the player adds the ones they want (or all of them) from this list. Guarded by
+    // meting_mutex.
+    std::vector<MetingSong> meting_results;
     std::atomic<std::uint64_t> meting_generation{0};
     // The download queued or in flight; guarded by meting_mutex. The game posts
     // a pick several times in a row, and each must not download again.
@@ -325,6 +351,12 @@ struct Context final {
     std::size_t meting_download_index{};
     std::uint64_t meting_download_generation{};
     std::atomic<bool> meting_busy{};
+    // Album edits requested from the Draw (render) thread and applied on the game thread, which owns
+    // the album wiring: -1 = none.
+    std::atomic<int> meting_add_request{-1};
+    std::atomic<int> meting_remove_request{-1};
+    std::atomic<int> meting_add_all_request{0};
+    std::atomic<int> meting_clear_request{0};
     // Downloads failed in a row; reset by a successful one or a user pick.
     std::atomic<int> meting_failures{0};
     // Set by the worker when a list request succeeded with a new kind/query;
@@ -389,9 +421,12 @@ std::atomic<std::uintptr_t> g_import_buffer{0};          // the UFunction
 std::atomic<std::uintptr_t> g_rendering_library_cdo{0};  // its class default object
 std::mutex g_song_cover_mutex;
 std::vector<std::uint8_t> g_song_cover_pending;  // guarded by g_song_cover_mutex
-std::uint64_t g_song_cover_pending_key{};        // guarded by g_song_cover_mutex
+// The cover URL the pending/imported image belongs to. Identity by URL rather than by album index
+// and generation: editing the album bumps the generation, which used to leave the imported cover
+// unmatched and the disc on the default image.
+std::string g_song_cover_pending_pic;            // guarded by g_song_cover_mutex
+std::string g_song_cover_pic;                    // guarded by g_song_cover_mutex
 std::atomic<void*> g_song_cover{nullptr};         // Game thread writes; tick reads
-std::atomic<std::uint64_t> g_song_cover_key{0};
 
 // ProcessEvent parameter block of ImportBufferAsTexture2D: {UObject* world
 // context, TArray<uint8> buffer, UTexture2D* return}.
@@ -406,8 +441,10 @@ struct ImportBufferParameters final {
 };
 static_assert(sizeof(ImportBufferParameters) == 0x20);
 
-std::uint64_t SongCoverKey(const std::size_t index, const std::uint64_t generation) noexcept {
-    return (generation << 32U) | (static_cast<std::uint64_t>(index) + 1U);
+// The cover URL of the Meting song at `index`, empty when the album does not know it.
+std::string MetingSongPic(Context& context, const std::size_t index) {
+    std::scoped_lock lock(context.meting_mutex);
+    return index < context.meting_songs.size() ? context.meting_songs[index].pic : std::string{};
 }
 // MaterialInstanceDynamic::SetTextureParameterValue and the disc parameter's
 // FName; resolved once on the builder thread. 0 = not resolved.
@@ -583,6 +620,15 @@ void ReadSettings(Context& context) {
                     settings.meting_kind = meting_kind;
                     settings.meting_query = std::move(meting_query);
                 }
+                const std::string last_kind = json.value("lastKind", std::string{});
+                if (last_kind == "library" || last_kind == "meting" || last_kind == "game") {
+                    settings.last_kind = last_kind;
+                    settings.last_key = json.value("lastKey", std::string{});
+                    settings.last_library = json.value("lastLibrary", 0U);
+                    settings.last_meting = json.value("lastMeting", 0U);
+                    settings.last_game_id = json.value("lastGameId", std::string{});
+                }
+                settings.meting_album = json.value("metingAlbum", std::string{});
             }
         }
     }
@@ -606,6 +652,19 @@ bool SaveSettings(Context& context) {
     for (const auto& [value, key] : kDsdModeKeys) {
         if (settings.dsd_mode == value) dsd_mode = key;
     }
+    {
+        // The album is player-built state, so it is written from the live list rather than from the
+        // settings snapshot.
+        std::scoped_lock lock(context.meting_mutex);
+        nlohmann::json album = nlohmann::json::array();
+        for (const auto& song : context.meting_songs) {
+            album.push_back({{"name", song.name},
+                {"artist", song.artist},
+                {"url", song.url},
+                {"pic", song.pic}});
+        }
+        settings.meting_album = album.dump();
+    }
     const std::string document = nlohmann::json{
         {"enabled", settings.enabled},
         {"backend", backend},
@@ -616,6 +675,12 @@ bool SaveSettings(Context& context) {
         {"musicFolder", settings.folder},
         {"metingKind", settings.meting_kind},
         {"metingQuery", settings.meting_query},
+        {"metingAlbum", settings.meting_album},
+        {"lastKind", settings.last_kind},
+        {"lastKey", settings.last_key},
+        {"lastLibrary", settings.last_library},
+        {"lastMeting", settings.last_meting},
+        {"lastGameId", settings.last_game_id},
     }.dump();
     const AnomalyStatusV1 status = context.config->write_atomic(
         context.config->user, anomaly::sdk::StringView(kSettingsSchemaId),
@@ -828,8 +893,54 @@ std::string ResolveEventName(Context& context, const std::uint32_t name_id) {
 // False when the same pick is already downloading or nothing was queued.
 bool QueueMetingDownload(Context& context, std::size_t index) noexcept;
 
+std::uint64_t CurrentSongId(void* subsystem) noexcept;
+void CallSetCurrentId(void* subsystem, std::uint64_t id) noexcept;
+void* CachedSubsystem() noexcept;
+// Album edits, defined next to the Meting panel.
+void AddMetingResult(Context& context, std::size_t index) noexcept;
+void AddAllMetingResults(Context& context) noexcept;
+void RemoveMetingSong(Context& context, std::size_t index) noexcept;
+
+// Empties the album in one step; the rows rebuild for the empty list.
+void ClearMetingAlbum(Context& context) noexcept;
+
+// Switches the game itself to `song`, so the panel and the audio agree. Defined with the other
+// subsystem helpers.
+bool SwitchToGameSong(Context& context, void* subsystem, std::uint64_t song) noexcept;
+
+// Remembers what is actually being listened to, so getting in the vehicle can resume it. Written
+// through to the settings file on change, so a reload before the next get-off still resumes the
+// song the player actually left on.
+void RememberPlayed(Context& context, const std::string_view kind, const std::string_view key,
+    const std::uint32_t library, const std::uint32_t meting,
+    const std::uint64_t game = 0) noexcept {
+    try {
+        {
+            std::scoped_lock lock(context.mutex);
+            const std::string game_text = game != 0 ? std::to_string(game) : std::string{};
+            if (context.settings.last_kind == kind && context.settings.last_key == key &&
+                context.settings.last_library == library &&
+                context.settings.last_meting == meting &&
+                context.settings.last_game_id == game_text) {
+                return;
+            }
+            context.settings.last_kind = kind;
+            context.settings.last_key = key;
+            context.settings.last_library = library;
+            context.settings.last_meting = meting;
+            context.settings.last_game_id = game_text;
+            context.settings_dirty = true;
+        }
+        ScheduleSettingsPersist(context);
+    } catch (...) {
+    }
+}
+
+// `suppress_post` reports a post that must not run even though the plugin did not take playback
+// over: the game was switched to its own song, and the post's stale row would play over it.
 bool TakeOverPost(Context& context, void* self, void* event, void* list_id,
-    const float position, std::optional<std::size_t>& requested) noexcept {
+    const float position, std::optional<std::size_t>& requested,
+    bool* const suppress_post = nullptr) noexcept {
     try {
         const auto subsystem = reinterpret_cast<std::uintptr_t>(self);
         std::uint8_t player_type{};
@@ -875,6 +986,68 @@ bool TakeOverPost(Context& context, void* self, void* event, void* list_id,
         } else if (song && !context.engine.CanPlay(key)) {
             decision = EventDecision::NoTrack;
         }
+        // First vehicle post of a trip: resume the song that was playing when the player left. The
+        // pick is replaced here and then handled by the normal takeover below: taking a shortcut
+        // would leave the game's own "now playing" state on its saved song, so the panel and the
+        // audio disagreed.
+        bool resume_library{};
+        bool resume_meting{};
+        std::uint32_t resume_library_index{}, resume_meting_index{};
+        std::uint64_t resume_game{};
+        {
+            std::scoped_lock lock(context.mutex);
+            if (context.pending_entry_restore &&
+                player_type == profile::kPlayerTypeVehicle) {
+                // The trip's first post is consumed either way, so a later post in the same trip
+                // (the player changing song) is never overridden.
+                context.pending_entry_restore = false;
+                const std::string kind = context.settings.last_kind;
+                const auto album = g_album.load(std::memory_order_acquire);
+                if (kind == "game") {
+                    // The game's saved slot can still name one of our synthetic rows, so put its own
+                    // song back before the post is handled.
+                    const auto parsed =
+                        std::strtoull(context.settings.last_game_id.c_str(), nullptr, 10);
+                    if (parsed != 0 && parsed != id) resume_game = parsed;
+                } else if (song || meting) {
+                    if (kind == "library" && album != nullptr && AlbumActive(*album) &&
+                        context.settings.last_library < album->songs.size()) {
+                        resume_library = true;
+                        resume_library_index = context.settings.last_library;
+                    } else if (kind == "meting" && album != nullptr &&
+                               MetingAlbumActive(*album) &&
+                               context.settings.last_meting < album->meting_songs.size()) {
+                        resume_meting = true;
+                        resume_meting_index = context.settings.last_meting;
+                    }
+                }
+            }
+        }
+        if (resume_game != 0) {
+            // Only the game can play its own song: switch it here and skip the original post, whose
+            // stale row would otherwise play over the song the player actually left on.
+            if (SwitchToGameSong(context, self, resume_game)) {
+                Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
+                    "resumed game song " + std::to_string(resume_game) + " on entering");
+            }
+            if (suppress_post != nullptr) *suppress_post = true;
+            return false;
+        }
+        if (resume_library) {
+            // Local songs play by album slot; a key alone resolves to no file and the engine then
+            // advances to the next song.
+            song = static_cast<std::size_t>(resume_library_index);
+            meting.reset();
+            decision = EventDecision::Replaced;
+            Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
+                "resumed library song " + std::to_string(resume_library_index) + " on entering");
+        } else if (resume_meting) {
+            meting = static_cast<std::size_t>(resume_meting_index);
+            song.reset();
+            decision = EventDecision::Replaced;
+            Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
+                "resumed Meting song " + std::to_string(resume_meting_index) + " on entering");
+        }
         const bool replace = decision == EventDecision::Replaced;
         bool changed = false;
         {
@@ -894,6 +1067,8 @@ bool TakeOverPost(Context& context, void* self, void* event, void* list_id,
                     std::string(kReasons[static_cast<std::size_t>(decision)]));
         }
         if (!replace) {
+            // A game song becomes the trip's remembered song: getting in again resumes it.
+            if (decision == EventDecision::GameSong) RememberPlayed(context, "game", {}, 0, 0, id);
             // Non-vehicle music (e.g. after leaving the vehicle) must not
             // re-arm the grace period that a following vehicle Post cancels.
             if (decision == EventDecision::NoTrack) {
@@ -916,10 +1091,25 @@ bool TakeOverPost(Context& context, void* self, void* event, void* list_id,
                 // The download runs on the Meting worker; the engine stops the
                 // previous song now so the template event does not play meanwhile.
                 context.engine.StopNow();
+                // Name the song now: the panel otherwise keeps showing the row it was posted with
+                // until the download lands.
+                if (const auto album_now = g_album.load(std::memory_order_acquire);
+                    album_now != nullptr && MetingAlbumActive(*album_now))
+                    CallSetCurrentId(self, MetingSongId(*album_now, *meting));
+                RememberPlayed(context, "meting", {}, 0,
+                    static_cast<std::uint32_t>(*meting));
                 Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
                     "Meting song " + std::to_string(*meting) + " picked; downloading");
             }
             return true;
+        }
+        RememberPlayed(context, "library", key, static_cast<std::uint32_t>(song.value_or(0)), 0);
+        // After a resume the posted id names the game's old pick, so point it at the row that is
+        // about to play before the panel reads it.
+        if (song) {
+            if (const auto album_now = g_album.load(std::memory_order_acquire);
+                album_now != nullptr && AlbumActive(*album_now))
+                CallSetCurrentId(self, SongId(*album_now, *song));
         }
         context.engine.Play(std::move(key), position, song);
         requested = song;
@@ -972,6 +1162,7 @@ std::int64_t __fastcall PostDetour(void* self, void* event, void* list_id, const
     std::int64_t result = 0;
     auto* const context = g_context.load(std::memory_order_acquire);
     std::optional<std::size_t> requested;
+    bool suppress_post{};
     // `self` is the sound subsystem: remember it so the per-frame sync can keep
     // the current song id on the plugin song (a Meting pick reaches the post
     // without passing any other subsystem detour that would remember it).
@@ -979,7 +1170,8 @@ std::int64_t __fastcall PostDetour(void* self, void* event, void* list_id, const
     std::uint64_t posted{};
     if (context != nullptr && list_id != nullptr)
         static_cast<void>(ReadValue(*context, reinterpret_cast<std::uintptr_t>(list_id), posted));
-    if (context != nullptr && TakeOverPost(*context, self, event, list_id, position, requested)) {
+    if (context != nullptr &&
+        TakeOverPost(*context, self, event, list_id, position, requested, &suppress_post)) {
         // The skipped Post would have replaced the current Wwise music; stop it
         // through the original so the engine is not notified. The nested lease
         // keeps the Stop trampoline alive for the call; when it is unavailable
@@ -1012,6 +1204,9 @@ std::int64_t __fastcall PostDetour(void* self, void* event, void* list_id, const
         if (posted != 0 && IsLibrarySongId(posted) && CurrentSongId(self) == 0) {
             CallSetCurrentId(self, posted);
         }
+    } else if (suppress_post) {
+        // The game is already playing the song it was switched to here.
+        result = 0;
     } else {
         result = CallPost(original, self, event, list_id, position);
     }
@@ -1094,6 +1289,14 @@ void __fastcall EndGetOffDetour(void* self, const std::uint8_t set_location_and_
                 Log(*context, ANOMALY_CORE_LOG_LEVEL_V1_INFO, "player left the vehicle; music stopped");
             }
             context->engine.StopNow();
+            // Remember where the trip ended: the next vehicle post resumes this instead of the song
+            // the game saved as current.
+            {
+                std::scoped_lock lock(context->mutex);
+                context->pending_entry_restore = true;
+                context->settings_dirty = true;
+            }
+            ScheduleSettingsPersist(*context);
         } catch (...) {
         }
     }
@@ -2248,6 +2451,25 @@ void ANOMALY_CALL SyncCurrentSong(void* user, const AnomalyUe5AhudFrameV1*) {
     auto* const context = static_cast<Context*>(user);
     if (context == nullptr) return;
     ApplyDiscCover(*context);
+    // Album edits come from the Draw thread; apply them here, where the album wiring runs.
+    {
+        const int add = context->meting_add_request.exchange(-1, std::memory_order_acq_rel);
+        const int remove = context->meting_remove_request.exchange(-1, std::memory_order_acq_rel);
+        const int add_all = context->meting_add_all_request.exchange(0, std::memory_order_acq_rel);
+        const int clear_all = context->meting_clear_request.exchange(0, std::memory_order_acq_rel);
+        const bool edited = add >= 0 || remove >= 0 || add_all != 0 || clear_all != 0;
+        if (add >= 0) AddMetingResult(*context, static_cast<std::size_t>(add));
+        if (add_all != 0) AddAllMetingResults(*context);
+        if (remove >= 0) RemoveMetingSong(*context, static_cast<std::size_t>(remove));
+        if (clear_all != 0) ClearMetingAlbum(*context);
+        if (edited) {
+            {
+                std::scoped_lock lock(context->mutex);
+                context->settings_dirty = true;
+            }
+            ScheduleSettingsPersist(*context);
+        }
+    }
     if (g_set_current_id.load(std::memory_order_acquire) == 0) return;
     try {
         void* const subsystem = CachedSubsystem();
@@ -2592,8 +2814,28 @@ std::uintptr_t CallEntryClick(const std::uintptr_t original, void* self, const s
 // fewer songs than the list shows at once. When a library song was clicked
 // and the game did not switch to it, switch the way a song end does: queue
 // it, make it current and post it (the post is taken over as usual).
-std::uintptr_t __fastcall EntryClickDetour(void* self, const std::uint64_t* id) {
-    const AnomalyHookServiceV1* api{};
+// Switches the game to `song` the way its own song end does: queue it, make it current, then let it
+// change the sound. The panel follows the current id, so both end up on the same song.
+bool SwitchToGameSong(Context& context, void* subsystem, const std::uint64_t song) noexcept {
+    if (subsystem == nullptr || song == 0) return false;
+    try {
+        if (CurrentSongId(subsystem) == song) return false;
+        CallUnderLease(kSetCurrent, [&](const std::uintptr_t set_current) {
+            WithQueueIds(subsystem, song, [&] { CallSetCurrent(set_current, subsystem, song); });
+        });
+        CallSetCurrentId(subsystem, song);
+        CallUnderLease(kChangeSound, [&](const std::uintptr_t change) {
+            CallChangeSound(change, subsystem, 0.0F);
+        });
+        Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
+            "switched to game song " + std::to_string(song));
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+std::uintptr_t __fastcall EntryClickDetour(void* self, const std::uint64_t* id) {    const AnomalyHookServiceV1* api{};
     AnomalyGenerationHandleV1 lease{};
     std::uintptr_t original{};
     if (!BeginCallback(kEntryClick, api, lease, original)) return 0;
@@ -2861,11 +3103,11 @@ void ReleaseHooks(Context& context) noexcept {
     g_import_buffer.store(0, std::memory_order_release);
     g_rendering_library_cdo.store(0, std::memory_order_release);
     g_song_cover.store(nullptr, std::memory_order_release);
-    g_song_cover_key.store(0, std::memory_order_release);
     {
         std::scoped_lock lock(g_song_cover_mutex);
         g_song_cover_pending.clear();
-        g_song_cover_pending_key = 0;
+        g_song_cover_pending_pic.clear();
+        g_song_cover_pic.clear();
     }
     g_set_texture_parameter.store(0, std::memory_order_release);
     g_disc_parameter_name.store(0, std::memory_order_release);
@@ -3058,6 +3300,8 @@ std::pair<HookState, std::string> InstallHooks(Context& context) {
             g_set_item_flags.store(set_item_flags, std::memory_order_release);
             g_object_array.store(object_array, std::memory_order_release);
             g_serial_counter.store(serial_counter, std::memory_order_release);
+            Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
+                "cover helpers resolved: object array and import texture available");
         } else {
             Log(context, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
                 "album cover helpers not found; the album keeps the template cover");
@@ -3314,6 +3558,11 @@ void FetchSongCover(Context& context, const std::size_t index, const std::uint64
         if (index < context.meting_songs.size()) pic = context.meting_songs[index].pic;
     }
     if (pic.empty()) return;
+    {
+        // The prefetch already brought (or imported) this artwork.
+        std::scoped_lock lock(g_song_cover_mutex);
+        if (g_song_cover_pic == pic || g_song_cover_pending_pic == pic) return;
+    }
     std::string error;
     auto bytes = HttpGet(pic, kMetingCoverBytes, error);
     if (context.meting_stopping.load(std::memory_order_acquire)) return;
@@ -3323,7 +3572,7 @@ void FetchSongCover(Context& context, const std::size_t index, const std::uint64
     }
     std::scoped_lock lock(g_song_cover_mutex);
     g_song_cover_pending = std::move(*bytes);
-    g_song_cover_pending_key = SongCoverKey(index, generation);
+    g_song_cover_pending_pic = std::move(pic);
 }
 
 void SetMetingStatus(Context& context, std::string status) {
@@ -3339,6 +3588,15 @@ void RunMetingRequest(Context& context, const MetingRequest& request) {
     const auto body = HttpGet(request.url,
         request.download ? kMetingAudioBytes : kMetingListBytes, error);
     if (context.meting_stopping.load(std::memory_order_acquire)) return;
+    if (request.cover) {
+        if (!body || body->empty()) return;
+        {
+            std::scoped_lock lock(g_song_cover_mutex);
+            g_song_cover_pending = std::move(*body);
+            g_song_cover_pending_pic = request.url;
+        }
+        return;
+    }
     if (request.download) {
         {
             std::scoped_lock lock(context.meting_mutex);
@@ -3390,12 +3648,11 @@ void RunMetingRequest(Context& context, const MetingRequest& request) {
     const std::size_t count = songs.size();
     {
         std::scoped_lock lock(context.meting_mutex);
-        context.meting_songs = std::move(songs);
-        // The rows rebuild for the new list; a pending download is stale.
-        context.meting_generation.fetch_add(1, std::memory_order_acq_rel);
+        context.meting_results = std::move(songs);
         context.meting_status = std::to_string(count);
     }
-    Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO, "Meting list loaded: " + std::to_string(count) + " songs");
+    Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
+        "Meting search returned " + std::to_string(count) + " songs (not added yet)");
     context.builder_wake.notify_all();
     // Remember the request so the next load rebuilds the same album. Only a
     // non-empty list is remembered; a changed one is saved through the
@@ -3479,6 +3736,14 @@ bool QueueMetingDownload(Context& context, const std::size_t index) noexcept {
             context.meting_download_generation = generation;
             request.url = context.meting_songs[index].url;
             request.generation = generation;
+            if (!context.meting_songs[index].pic.empty()) {
+                MetingRequest cover;
+                cover.cover = true;
+                cover.index = index;
+                cover.generation = generation;
+                cover.url = context.meting_songs[index].pic;
+                static_cast<void>(QueueMetingRequest(context, std::move(cover)));
+            }
         }
         return QueueMetingRequest(context, std::move(request));
     } catch (...) {
@@ -3534,9 +3799,13 @@ void StopMetingWorker(Context& context) noexcept {
 // game's cover on the disc.
 void ResolveDiscFunction(Context& context, const std::uintptr_t material) noexcept {
     if (g_set_texture_parameter.load(std::memory_order_acquire) != 0) return;
-    static bool tried = false;
-    if (tried) return;
-    tried = true;
+    // Rate-limited retry instead of a one-shot latch: the first attempt can land before the object
+    // array or the material's class is readable, and latching that left the disc cover dead for the
+    // rest of the session.
+    static std::uint64_t next_attempt_ms{};
+    const std::uint64_t now = GetTickCount64();
+    if (next_attempt_ms != 0 && now < next_attempt_ms) return;
+    next_attempt_ms = now + 2000;
     try {
         const std::uintptr_t objects = g_object_array.load(std::memory_order_acquire);
         std::uintptr_t klass{};
@@ -3576,6 +3845,67 @@ void ResolveDiscFunction(Context& context, const std::uintptr_t material) noexce
     }
 }
 
+// Name-based lookup of MaterialInstanceDynamic::SetTextureParameterValue. The detail-page hook that
+// used to hand us the disc material no longer fires in this build, so the disc cover is resolved
+// from the object table by name instead of from that hook's pattern.
+bool ResolveSetTextureFunctionByName(Context& context) noexcept {
+    if (g_set_texture_parameter.load(std::memory_order_acquire) != 0) return true;
+    static std::uint64_t next_attempt_ms{};
+    const std::uint64_t now = GetTickCount64();
+    if (next_attempt_ms != 0 && now < next_attempt_ms) return false;
+    next_attempt_ms = now + 2000;
+    const std::uintptr_t objects = g_object_array.load(std::memory_order_acquire);
+    std::int32_t total{};
+    if (objects == 0 || !ReadValue(context, objects + profile::Layout.kObjectArrayCountOffset, total) ||
+        total <= 0)
+        return false;
+    try {
+        for (std::int32_t index = 0; index < total; ++index) {
+            if (context.builder_stopping.load(std::memory_order_acquire)) return false;
+            auto* const item = static_cast<std::byte*>(ObjectItem(context, index));
+            std::uintptr_t object{};
+            if (item == nullptr || !ReadValue(context, reinterpret_cast<std::uintptr_t>(item), object) ||
+                object == 0)
+                continue;
+            std::uint32_t name_id{};
+            if (!ReadValue(context, object + profile::Layout.kObjectNameOffset, name_id) || name_id == 0)
+                continue;
+            std::array<char, 64> buffer{};
+            std::size_t size = buffer.size();
+            if (context.names->resolve_utf8(context.names->user, name_id, buffer.data(), &size).code !=
+                    ANOMALY_STATUS_V1_OK ||
+                size > buffer.size())
+                continue;
+            std::string text(buffer.data(), size);
+            while (!text.empty() && text.back() == '\0') text.pop_back();
+            if (text != profile::kSetTextureParameterFunction) continue;
+            // A UFunction's outer is the class that declares it; require the material class so a
+            // same-named helper elsewhere cannot be mistaken for it.
+            std::uintptr_t outer{};
+            std::uint32_t outer_name{};
+            if (!ReadValue(context, object + profile::Layout.kObjectOuterOffset, outer) || outer == 0 ||
+                !ReadValue(context, outer + profile::Layout.kObjectNameOffset, outer_name) || outer_name == 0)
+                continue;            std::array<char, 64> outer_buffer{};
+            std::size_t outer_size = outer_buffer.size();
+            if (context.names->resolve_utf8(context.names->user, outer_name, outer_buffer.data(),
+                    &outer_size)
+                        .code != ANOMALY_STATUS_V1_OK ||
+                outer_size > outer_buffer.size())
+                continue;
+            std::string outer_text(outer_buffer.data(), outer_size);
+            while (!outer_text.empty() && outer_text.back() == '\0') outer_text.pop_back();
+            if (outer_text != "MaterialInstanceDynamic") {
+                continue;
+            }
+            g_set_texture_parameter.store(object, std::memory_order_release);
+            Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO, "disc cover function resolved by name");
+            return true;
+        }
+    } catch (...) {
+    }
+    return false;
+}
+
 std::string ObjectName(Context& context, std::uintptr_t object);
 
 // Builder thread, once: UKismetRenderingLibrary::ImportBufferAsTexture2D and
@@ -3585,12 +3915,17 @@ std::string ObjectName(Context& context, std::uintptr_t object);
 // the instance of that class whose name starts with "Default__". Stays 0 when
 // any is missing, which keeps the album cover on the disc.
 void ResolveImportBuffer(Context& context) noexcept {
-    static bool tried = false;
-    if (tried || g_import_buffer.load(std::memory_order_acquire) != 0) return;
+    // Rate-limited retry rather than a one-shot latch: the first attempt can run before the object
+    // array or the class it looks for is ready, and latching that failure left the per-song cover
+    // unimportable for the rest of the session.
+    static std::uint64_t next_attempt_ms{};
+    if (g_import_buffer.load(std::memory_order_acquire) != 0) return;
+    const std::uint64_t now = GetTickCount64();
+    if (next_attempt_ms != 0 && now < next_attempt_ms) return;
+    next_attempt_ms = now + 2000;
     const std::uintptr_t objects = g_object_array.load(std::memory_order_acquire);
     std::int32_t total{};
     if (objects == 0 || !ReadValue(context, objects + profile::Layout.kObjectArrayCountOffset, total) || total <= 0) return;
-    tried = true;
     try {
         std::uint32_t class_name_id{};
         std::uint32_t function_name_id{};
@@ -3925,12 +4260,13 @@ void ImportPendingSongCover(Context& context) noexcept {
     const std::uintptr_t library = g_rendering_library_cdo.load(std::memory_order_acquire);
     if (function == 0 || library == 0) return;
     std::vector<std::uint8_t> bytes;
-    std::uint64_t key{};
+    std::string pic;
     {
         std::unique_lock lock(g_song_cover_mutex, std::try_to_lock);
         if (!lock.owns_lock() || g_song_cover_pending.empty()) return;
         bytes.swap(g_song_cover_pending);
-        key = g_song_cover_pending_key;
+        pic = g_song_cover_pending_pic;
+        g_song_cover_pending_pic.clear();
     }
     if (bytes.size() > static_cast<std::size_t>((std::numeric_limits<std::int32_t>::max)())) return;
     void* const texture = CallImportBuffer(function, library, bytes);
@@ -3940,7 +4276,10 @@ void ImportPendingSongCover(Context& context) noexcept {
     }
     SetRooted(context, texture, true);
     void* const previous = g_song_cover.exchange(texture, std::memory_order_acq_rel);
-    g_song_cover_key.store(key, std::memory_order_release);
+    {
+        std::scoped_lock lock(g_song_cover_mutex);
+        g_song_cover_pic = std::move(pic);
+    }
     if (previous != nullptr && previous != texture) SetRooted(context, previous, false);
 }
 
@@ -3952,9 +4291,15 @@ void* PlayingCoverTexture(Context& context) noexcept {
     if (subsystem == nullptr || !TakenOver(context, subsystem)) return nullptr;
     if (const auto memory = context.engine.MemorySlot()) {
         void* const song = g_song_cover.load(std::memory_order_acquire);
-        const std::uint64_t key =
-            SongCoverKey(*memory, context.meting_generation.load(std::memory_order_acquire));
-        if (song != nullptr && g_song_cover_key.load(std::memory_order_acquire) == key) return song;
+        if (song != nullptr) {
+            const std::string playing_pic = MetingSongPic(context, *memory);
+            std::string imported_pic;
+            {
+                std::scoped_lock lock(g_song_cover_mutex);
+                imported_pic = g_song_cover_pic;
+            }
+            if (!playing_pic.empty() && playing_pic == imported_pic) return song;
+        }
         return g_meting_cover.load(std::memory_order_acquire);
     }
     if (context.engine.PlayingSlot()) return g_album_cover.load(std::memory_order_acquire);
@@ -3966,10 +4311,10 @@ void* PlayingCoverTexture(Context& context) noexcept {
 // now playing. A game album or game song keeps the game's own cover.
 void ApplyDiscCover(Context& context) noexcept {
     ImportPendingSongCover(context);
-    if (g_set_texture_parameter.load(std::memory_order_acquire) == 0 ||
-        g_disc_parameter_name.load(std::memory_order_acquire) == 0) {
-        return;
-    }
+    // The material parameter name comes from the album-detail hook. When that hook no longer fires
+    // the name stays unknown, and requiring it here skipped every cover write -- including the brush
+    // fallback below. Only the texture-parameter function is required now.
+    if (g_set_texture_parameter.load(std::memory_order_acquire) == 0) return;
     const std::uintptr_t view = g_disc_view.load(std::memory_order_acquire);
     std::uintptr_t klass{};
     std::uintptr_t image{};
@@ -3985,7 +4330,15 @@ void ApplyDiscCover(Context& context) noexcept {
         ReadValue(context, player + profile::Layout.kObjectClassOffset, klass) &&
         klass == g_player_view_class.load(std::memory_order_acquire) &&
         ReadValue(context, player + g_player_image_offset.load(std::memory_order_acquire), image)) {
-        SetDiscTexture(context, image, PlayingCoverTexture(context));
+        void* const cover = PlayingCoverTexture(context);
+        if (cover != nullptr) {
+            SetDiscTexture(context, image, cover);
+            // Without the material parameter name (its source is the detail-page hook that no longer
+            // fires) the brush is the only way in; it is reapplied every frame because the blueprint
+            // rebuilds the brush on its own update.
+            if (g_disc_parameter_name.load(std::memory_order_acquire) == 0)
+                SetImageTexture(reinterpret_cast<void*>(image), cover);
+        }
     }
 }
 // Background worker: retries the AHUD subscription that a boot-time load
@@ -4005,10 +4358,14 @@ void BuilderLoop(Context* context) {
             // A Meting song ended: continue with the next one in the Meting
             // list. The per-frame sync then points the game's current song at it.
             if (const auto ended = context->engine.TakeMemoryEnded()) StepMeting(*context, *ended, 1);
+            // Resolve the disc's texture-parameter function by name first: the detail-page hook that
+            // used to provide the material no longer fires in this build.
+            static_cast<void>(ResolveSetTextureFunctionByName(*context));
             ResolveDiscParameter(*context);
             FindPlayerDisc(*context);
-            // Only once the disc can show a texture at all.
-            if (g_set_texture_parameter.load(std::memory_order_acquire) != 0) ResolveImportBuffer(*context);
+            // Independent of the disc: the cover import only needs the object table and the
+            // rendering library, so a disc that never resolves must not block it.
+            ResolveImportBuffer(*context);
             // Skip the cycle while a game-thread detour is publishing under
             // g_build_mutex; the next cycle picks up the remaining work.
             std::unique_lock<std::mutex> build_lock(g_build_mutex, std::try_to_lock);
@@ -4077,6 +4434,9 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
             return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "music compatibility profile is unavailable");
         }
         ReadSettings(*context);
+        // The next vehicle post resumes the remembered song: loading is itself an "entry", so a
+        // reload behaves like getting back in instead of falling back to the game's saved row.
+        context->pending_entry_restore = true;
         *plugin_context = context;
         return anomaly::sdk::Ok();
     } catch (...) {
@@ -4130,20 +4490,33 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* plugin_context) {
         }
         try {
             StartMetingWorker(*context);
-            // Rebuild the Meting album from the last list request that
-            // succeeded; the worker fetches it like a fresh search.
-            MetingRequest replay;
+            // Restore the album the player built. A search only fills the result list, so it must not
+            // decide what the album holds after a restart.
+            std::vector<MetingSong> restored;
             {
                 std::scoped_lock lock(context->mutex);
-                if (!context->settings.meting_kind.empty()) {
-                    replay = MetingListRequest(context->settings.meting_kind, context->settings.meting_query);
+                if (!context->settings.meting_album.empty()) {
+                    const auto parsed =
+                        nlohmann::json::parse(context->settings.meting_album, nullptr, false);
+                    if (!parsed.is_discarded() && parsed.is_array()) {
+                        for (const auto& item : parsed) {
+                            if (!item.is_object()) continue;
+                            MetingSong song;
+                            song.name = item.value("name", std::string{});
+                            song.artist = item.value("artist", std::string{});
+                            song.url = item.value("url", std::string{});
+                            song.pic = item.value("pic", std::string{});
+                            if (!song.url.empty()) restored.push_back(std::move(song));
+                        }
+                    }
                 }
             }
-            if (!replay.url.empty()) {
-                context->meting_busy.store(true, std::memory_order_release);
-                if (!QueueMetingRequest(*context, std::move(replay))) {
-                    context->meting_busy.store(false, std::memory_order_release);
-                }
+            if (!restored.empty()) {
+                std::scoped_lock lock(context->meting_mutex);
+                context->meting_songs = std::move(restored);
+                context->meting_generation.fetch_add(1, std::memory_order_acq_rel);
+                Log(*context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
+                    "Meting album restored: " + std::to_string(context->meting_songs.size()) + " songs");
             }
         } catch (...) {
             Log(*context, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
@@ -4381,6 +4754,113 @@ std::string PlaylistId(const std::string_view input) {
 
 // The Meting section: search, playlist import and the current song list. A song
 // plays when picked in the game's "Meting" album or with its button here.
+// Adds one search result to the album, skipping songs already there (same proxy url). Runs on the
+// UI thread; the worker only rebuilds rows from the result.
+void AddMetingResult(Context& context, const std::size_t index) noexcept {
+    bool added{};
+    try {
+        {
+            std::scoped_lock lock(context.meting_mutex);
+            if (index < context.meting_results.size()) {
+                const MetingSong& song = context.meting_results[index];
+                const bool known = std::any_of(context.meting_songs.begin(),
+                    context.meting_songs.end(),
+                    [&song](const MetingSong& other) { return other.url == song.url; });
+                if (!known) {
+                    context.meting_songs.push_back(song);
+                    context.meting_generation.fetch_add(1, std::memory_order_acq_rel);
+                    added = true;
+                }
+            }
+        }
+    } catch (...) {
+        return;
+    }
+    if (added) context.builder_wake.notify_all();
+}
+
+void AddAllMetingResults(Context& context) noexcept {
+    bool added{};
+    try {
+        {
+            std::scoped_lock lock(context.meting_mutex);
+            for (const auto& song : context.meting_results) {
+                const bool known = std::any_of(context.meting_songs.begin(),
+                    context.meting_songs.end(),
+                    [&song](const MetingSong& other) { return other.url == song.url; });
+                if (!known) {
+                    context.meting_songs.push_back(song);
+                    added = true;
+                }
+            }
+            if (added) context.meting_generation.fetch_add(1, std::memory_order_acq_rel);
+        }
+    } catch (...) {
+        return;
+    }
+    if (added) context.builder_wake.notify_all();
+}
+
+// Removes song `index` from the album. The remembered index and a playing song follow the shift, so
+// resuming and playback keep pointing at the same track.
+void RemoveMetingSong(Context& context, const std::size_t index) noexcept {
+    bool removed{};
+    try {
+        {
+            std::scoped_lock lock(context.meting_mutex);
+            if (index < context.meting_songs.size()) {
+                context.meting_songs.erase(context.meting_songs.begin() +
+                    static_cast<std::ptrdiff_t>(index));
+                context.meting_generation.fetch_add(1, std::memory_order_acq_rel);
+                removed = true;
+            }
+        }
+    } catch (...) {
+        return;
+    }
+    if (!removed) return;
+    {
+        std::scoped_lock lock(context.mutex);
+        if (context.settings.last_kind == "meting") {
+            if (context.settings.last_meting == index) {
+                context.settings.last_kind.clear();
+                context.settings.last_meting = 0;
+            } else if (context.settings.last_meting > index) {
+                --context.settings.last_meting;
+            }
+        }
+    }
+    if (const auto playing = context.engine.MemorySlot(); playing && *playing == index)
+        context.engine.StopNow();
+    context.builder_wake.notify_all();
+}
+
+void ClearMetingAlbum(Context& context) noexcept {
+    bool cleared{};
+    try {
+        {
+            std::scoped_lock lock(context.meting_mutex);
+            if (!context.meting_songs.empty()) {
+                context.meting_songs.clear();
+                context.meting_generation.fetch_add(1, std::memory_order_acq_rel);
+                cleared = true;
+            }
+        }
+    } catch (...) {
+        return;
+    }
+    if (!cleared) return;
+    {
+        std::scoped_lock lock(context.mutex);
+        if (context.settings.last_kind == "meting") {
+            context.settings.last_kind.clear();
+            context.settings.last_meting = 0;
+        }
+    }
+    if (context.engine.MemorySlot()) context.engine.StopNow();
+    context.builder_wake.notify_all();
+}
+
 void DrawMeting(Context& context, const AnomalyUiServiceV1* ui) {
     const anomaly::sdk::Localizer& l10n = context.localizer;
     Text(ui, l10n.Text("meting.title", "Meting library (memory playback, no audio cache)"));
@@ -4418,10 +4898,12 @@ void DrawMeting(Context& context, const AnomalyUiServiceV1* ui) {
         }
     }
     std::vector<MetingSong> songs;
+    std::vector<MetingSong> results;
     std::string status;
     {
         std::scoped_lock lock(context.meting_mutex);
         songs = context.meting_songs;
+        results = context.meting_results;
         status = context.meting_status;
     }
     if (busy) {
@@ -4432,15 +4914,46 @@ void DrawMeting(Context& context, const AnomalyUiServiceV1* ui) {
             [](const char c) { return c >= '0' && c <= '9'; });
         const std::array<std::string_view, 1> args{status};
         if (count) {
-            Text(ui, l10n.Format("meting.found", "{0} songs in the in-game album \"Meting\"", args));
+            Text(ui, l10n.Format("meting.found", "{0} search results (not added yet)", args));
         } else {
             Text(ui, l10n.Format("meting.error", "Meting: {0}", args));
         }
-    } else if (songs.empty()) {
+    } else if (songs.empty() && results.empty()) {
         Text(ui, l10n.Text("meting.empty", "No results yet"));
     }
+    // Search results stay apart from the album: a song that is already in the album offers removal
+    // instead of adding it a second time, so one click always means what the marker shows.
+    const auto album_index = [&songs](const std::string& url) -> std::optional<std::size_t> {
+        for (std::size_t index{}; index < songs.size(); ++index)
+            if (songs[index].url == url) return index;
+        return std::nullopt;
+    };
+    if (!results.empty()) {
+        Text(ui, l10n.Text("meting.results", "Search results"));
+        if (Button(ui, l10n.Label("meting.add_all", "Add all", "meting-add-all")))
+            context.meting_add_all_request.store(1, std::memory_order_release);
+        for (std::size_t i = 0; i < results.size(); ++i) {
+            const std::optional<std::size_t> added = album_index(results[i].url);
+            const std::string label = std::string(added ? "[-] " : "[+] ") + results[i].name + " - " +
+                results[i].artist + "###meting-result-" + std::to_string(i);
+            if (Button(ui, label)) {
+                if (added)
+                    context.meting_remove_request.store(static_cast<int>(*added),
+                        std::memory_order_release);
+                else
+                    context.meting_add_request.store(static_cast<int>(i), std::memory_order_release);
+            }
+        }
+    }
+    Text(ui, l10n.Text("meting.album", "In-game album"));
+    if (Button(ui, l10n.Label("meting.remove_all", "Remove all", "meting-remove-all")))
+        context.meting_clear_request.store(1, std::memory_order_release);
     const std::optional<std::size_t> playing = context.engine.MemorySlot();
+    std::optional<std::size_t> remove_index;
     for (std::size_t i = 0; i < songs.size(); ++i) {
+        const std::string remove_label = "[-]###meting-remove-" + std::to_string(i);
+        if (Button(ui, remove_label)) remove_index = i;
+        ui->same_line(ui->user, 0.0F, -1.0F);
         const std::string label = (playing == i ? "> " : "") + songs[i].name + " - " + songs[i].artist +
             "###meting-song-" + std::to_string(i);
         if (Button(ui, label)) {
@@ -4448,6 +4961,8 @@ void DrawMeting(Context& context, const AnomalyUiServiceV1* ui) {
             QueueMetingDownload(context, i);
         }
     }
+    if (remove_index)
+        context.meting_remove_request.store(static_cast<int>(*remove_index), std::memory_order_release);
     // A list request succeeded with a new keyword/id: persist it like any
     // other setting change (Draw owns the scheduled save).
     if (context.meting_settings_changed.exchange(false, std::memory_order_acq_rel)) {

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -10,6 +11,17 @@ namespace anomaly::launcher {
 
 inline constexpr std::size_t kMaxModGroupDepth = 5;
 using ModGroupPath = std::vector<std::string>;
+
+// The selection key names the mod itself. Its containing folders are the display groups.
+inline ModGroupPath ModFolderGroups(std::string_view key) {
+    if (key.ends_with('/')) key.remove_suffix(1);
+    ModGroupPath path;
+    for (auto slash = key.find('/'); slash != std::string_view::npos; slash = key.find('/')) {
+        path.emplace_back(key.substr(0, slash));
+        key.remove_prefix(slash + 1);
+    }
+    return path;
+}
 
 inline ModGroupPath NormalizeModGroupPath(ModGroupPath path) {
     path.resize((std::min)(path.size(), kMaxModGroupDepth));
@@ -25,6 +37,7 @@ struct ModGroupingEntry {
     std::string name;
     std::vector<ModGroupingGroup> groups;
     ModGroupPath custom_path;
+    ModGroupPath folder_path;
 };
 struct ModGroupingNode {
     ModGroupPath path;
@@ -66,7 +79,7 @@ inline std::size_t ModGroupContent(const ModGrouping& layout, const std::size_t 
     return node;
 }
 
-inline ModGrouping BuildModGrouping(const std::vector<ModGroupingEntry>& entries) {
+inline ModGrouping BuildModGrouping(const std::vector<ModGroupingEntry>& entries, const bool by_folder = false) {
     ModGrouping result;
     std::vector<std::vector<std::size_t>> direct(1);
     const auto add = [&](const ModGroupPath& path, const std::size_t entry, const bool explicit_group) {
@@ -95,6 +108,10 @@ inline ModGrouping BuildModGrouping(const std::vector<ModGroupingEntry>& entries
     };
     for (std::size_t index = 0; index < entries.size(); ++index) {
         const auto& entry = entries[index];
+        if (by_folder) {
+            add(entry.folder_path, index, true);
+            continue;
+        }
         const auto custom = NormalizeModGroupPath(entry.custom_path);
         if (!custom.empty()) {
             add(custom, index, true);

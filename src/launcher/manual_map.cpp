@@ -11,6 +11,7 @@
 #include <array>
 #include <atomic>
 #include <cstddef>
+#include <cstdio>
 #include <cstring>
 #include <cwctype>
 #include <fstream>
@@ -536,11 +537,17 @@ bool TerminateExistingLauncherProcesses(
         error = snapshot_error;
         return false;
     }
+    // A launcher that ends while the sweep is walking the snapshot is gone, not a launcher that survived
+    // it: the bootstrap hands the session to the client it starts and exits, and each helper exits once
+    // the launcher it belongs to is terminated. Its pid then belongs to a snapshot it no longer answers
+    // to, and OpenProcess reports ERROR_INVALID_PARAMETER for a pid that does not resolve. The requirement
+    // is that no launcher outlives this call, and a process that ended before it could be opened meets it.
     for (const DWORD process_id : process_ids) {
         DWORD open_error{};
         Handle process = OpenProcessWithAccess(
             process_id, PROCESS_TERMINATE | SYNCHRONIZE, open_error);
         if (!process) {
+            if (open_error == ERROR_INVALID_PARAMETER) continue;
             error = open_error;
             return false;
         }
@@ -683,7 +690,6 @@ FastTargetCaptureResult CaptureTargetByFastPolling(
     std::wstring_view requested_target,
     const std::set<DWORD>& existing_targets,
     std::chrono::steady_clock::time_point deadline,
-    std::atomic_bool& ready,
     std::stop_token stop) {
     FastTargetCaptureResult result;
     result.error = ERROR_TIMEOUT;
@@ -692,7 +698,6 @@ FastTargetCaptureResult CaptureTargetByFastPolling(
     std::vector<DWORD> process_ids;
     process_ids.reserve(4);
     std::set<DWORD> rejected;
-    ready.store(true, std::memory_order_release);
 
     while (!stop.stop_requested() &&
         std::chrono::steady_clock::now() < deadline) {
@@ -743,6 +748,7 @@ FastTargetCaptureResult CaptureTargetByFastPolling(
         }
         static_cast<void>(SwitchToThread());
     }
+    if (stop.stop_requested()) result.error = ERROR_CANCELLED;
     return result;
 }
 
@@ -848,8 +854,13 @@ RemoteModuleMap SnapshotModules(HANDLE process, DWORD& error) {
 // three are the readiness test.
 bool WaitForLoaderReady(
     HANDLE process, std::wstring_view executable_name,
-    std::chrono::steady_clock::time_point deadline, RemoteModuleMap& modules, DWORD& error) {
+    std::chrono::steady_clock::time_point deadline, RemoteModuleMap& modules, DWORD& error,
+    std::stop_token stop = {}) {
     do {
+        if (stop.stop_requested()) {
+            error = ERROR_CANCELLED;
+            return false;
+        }
         modules = SnapshotModules(process, error);
         if (error == ERROR_SUCCESS &&
             modules.contains(Fold(std::wstring(executable_name))) &&
@@ -2273,7 +2284,7 @@ std::vector<AttachableProcess> EnumerateAttachableProcesses(
     return result;
 }
 
-static ManualMapResult ManualMapRuntimeCoreWithHandle(
+static ManualMapResult ManualMapRuntimeCoreImpl(
     const ManualMapOptions& options, const AttachableProcess& inspected,
     const Handle& process, std::chrono::milliseconds settle_budget,
     int resolve_attempts) noexcept {
@@ -2607,6 +2618,7 @@ static ManualMapResult ManualMapRuntimeCoreWithHandle(
         const bool cancellable = options.delivery == ManualMapDelivery::RemoteThread;
         if (delivery.outcome == DeliveryOutcome::TimedOut) {
             remote_image.retained = true;
+            attachment_marker.retained = true;
             remote_context.retained = true;
             remote_stub.retained = true;
             remote_start_info.retained = true;
@@ -2644,6 +2656,12 @@ static ManualMapResult ManualMapRuntimeCoreWithHandle(
         }
         if (context.bootstrap_error != ERROR_SUCCESS ||
             context.runtime_start_error != ERROR_SUCCESS) {
+            if (context.runtime_start_error == ERROR_ALREADY_INITIALIZED) {
+                return Failure(
+                    ManualMapError::AlreadyAttached, ERROR_ALREADY_EXISTS,
+                    "another Anomaly core already owns the target process",
+                    context.runtime_start_error);
+            }
             const DWORD error = context.bootstrap_error != ERROR_SUCCESS
                 ? context.bootstrap_error : context.runtime_start_error;
             return Failure(
@@ -2669,6 +2687,84 @@ static ManualMapResult ManualMapRuntimeCoreWithHandle(
             ManualMapError::ImageInvalid, ERROR_UNHANDLED_EXCEPTION,
             "manual-map attach raised an unexpected exception");
     }
+}
+
+namespace {
+
+void TraceAttach(
+    const ManualMapOptions& options, DWORD target_pid, const char* phase,
+    const ManualMapResult* result = nullptr) noexcept {
+    try {
+        const auto root = options.runtime_root.empty()
+            ? std::filesystem::absolute(options.core_path).parent_path()
+            : std::filesystem::absolute(options.runtime_root);
+        const auto logs = options.log_directory.empty() ? root / L"logs" : options.log_directory;
+        std::error_code ignored;
+        std::filesystem::create_directories(logs, ignored);
+        std::array<wchar_t, 32768> caller{};
+        GetModuleFileNameW(nullptr, caller.data(), static_cast<DWORD>(caller.size()));
+        SYSTEMTIME utc{};
+        GetSystemTime(&utc);
+        char timestamp[32]{};
+        std::snprintf(timestamp, sizeof(timestamp), "%04u-%02u-%02uT%02u:%02u:%02u.%03uZ",
+            utc.wYear, utc.wMonth, utc.wDay, utc.wHour, utc.wMinute, utc.wSecond, utc.wMilliseconds);
+        std::string line = std::string(timestamp) + " attach phase=" + phase +
+            " caller_pid=" + std::to_string(GetCurrentProcessId()) +
+            " caller_tid=" + std::to_string(GetCurrentThreadId()) +
+            " target_pid=" + std::to_string(target_pid) +
+            " caller=\"" + NarrowPath(caller.data()) +
+            "\" core=\"" + NarrowPath(std::filesystem::absolute(options.core_path)) +
+            "\" delivery=" + DeliveryName(options.delivery);
+        if (result) {
+            line += " image=" + std::to_string(result->remote_image) +
+                " error=" + std::to_string(static_cast<unsigned>(result->error)) +
+                " win32=" + std::to_string(result->win32_error) +
+                " runtime_error=" + std::to_string(result->runtime_start_error) +
+                " detail=" + result->message;
+        }
+        line += '\n';
+        Handle output(CreateFileW((logs / L"anomaly-runtime.log").c_str(), FILE_APPEND_DATA,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+            OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
+        if (output) {
+            DWORD written{};
+            WriteFile(output.Get(), line.data(), static_cast<DWORD>(line.size()), &written, nullptr);
+        }
+    } catch (...) {
+        // Optional diagnostics cannot change attachment behavior.
+    }
+}
+
+} // namespace
+
+static ManualMapResult ManualMapRuntimeCoreWithHandle(
+    const ManualMapOptions& options, const AttachableProcess& inspected,
+    const Handle& process, std::chrono::milliseconds settle_budget,
+    int resolve_attempts) noexcept {
+    TraceAttach(options, inspected.process_id, "begin");
+    ManualMapResult result;
+    try {
+        // HasPrivateMappedCore is only a snapshot. Keep check + mapping atomic
+        // across callers, including separate launcher/injector processes.
+        const auto name = L"Local\\Anomaly.Attach." + std::to_wstring(inspected.process_id);
+        Handle claim(CreateMutexW(nullptr, FALSE, name.c_str()));
+        const DWORD error = GetLastError();
+        if (!claim) {
+            result = Failure(ManualMapError::ProcessControlFailure, error,
+                "the target attachment claim could not be created");
+        } else if (error == ERROR_ALREADY_EXISTS) {
+            result = Failure(ManualMapError::AlreadyAttached, ERROR_BUSY,
+                "another attachment is in progress for the target process");
+        } else {
+            result = ManualMapRuntimeCoreImpl(
+                options, inspected, process, settle_budget, resolve_attempts);
+        }
+    } catch (...) {
+        result = Failure(ManualMapError::ProcessControlFailure, ERROR_UNHANDLED_EXCEPTION,
+            "the target attachment claim failed");
+    }
+    TraceAttach(options, inspected.process_id, "end", &result);
+    return result;
 }
 
 namespace {
@@ -2754,9 +2850,15 @@ ManualMapResult AttachToRunningProcess(const ManualMapOptions& options) noexcept
 }
 
 ManualMapLaunchResult LaunchAndManualMapRuntimeCore(
-    const ManualMapLaunchOptions& options) noexcept {
+    const ManualMapLaunchOptions& options, std::stop_token stop) noexcept {
     ManualMapLaunchResult result;
     try {
+        const auto cancelled = [&] {
+            result.mapping = Failure(ManualMapError::ProcessControlFailure, ERROR_CANCELLED,
+                "launch attachment was cancelled before mapping");
+            return result;
+        };
+        if (stop.stop_requested()) return cancelled();
         if (options.launcher_path.empty() || options.target_executable_name.empty() ||
             options.manual_map.core_path.empty()) {
             result.mapping = Failure(
@@ -2819,6 +2921,7 @@ ManualMapLaunchResult LaunchAndManualMapRuntimeCore(
         PROCESS_INFORMATION created{};
         constexpr DWORD incompatible_flags =
             DEBUG_PROCESS | DEBUG_ONLY_THIS_PROCESS | CREATE_SUSPENDED;
+        if (stop.stop_requested()) return cancelled();
         if (CreateProcessW(
                 launcher.c_str(), command_line.data(), nullptr, nullptr, FALSE,
                 options.creation_flags & ~incompatible_flags,
@@ -2845,7 +2948,8 @@ ManualMapLaunchResult LaunchAndManualMapRuntimeCore(
             RemoteModuleMap launcher_modules;
             std::string hook_failure;
             if (!WaitForLoaderReady(launcher_process.Get(), launcher.filename().wstring(),
-                    loader_deadline, launcher_modules, hook_error)) {
+                    loader_deadline, launcher_modules, hook_error, stop)) {
+                if (stop.stop_requested()) return cancelled();
                 result.mapping = Failure(ManualMapError::ProcessControlFailure,
                     hook_error == ERROR_SUCCESS ? ERROR_TIMEOUT : hook_error,
                     "the launcher's loader did not initialize before the hook timeout");
@@ -2860,26 +2964,22 @@ ManualMapLaunchResult LaunchAndManualMapRuntimeCore(
             }
         }
 
-        FastTargetCaptureResult captured;
-        std::atomic_bool capture_ready{};
-        std::jthread capture_thread([&](std::stop_token stop) noexcept {
-            try {
-                // Bounded, so a launcher whose hook never reports still falls back to capturing on
-                // the session's own timing instead of stalling the launch.
-                if (armed) {
-                    static_cast<void>(
-                        WaitForSingleObject(armed.Get(), kHookArmedTimeoutMilliseconds));
-                }
-                const auto deadline = std::chrono::steady_clock::now() +
-                    std::chrono::milliseconds(discovery_timeout);
-                captured = CaptureTargetByFastPolling(
-                    requested_target, existing_targets, deadline, capture_ready, stop);
-            } catch (...) {
-                captured.error = ERROR_UNHANDLED_EXCEPTION;
-                capture_ready.store(true, std::memory_order_release);
+        // Capture belongs to the controller's worker. A separate jthread that
+        // is immediately joined would hide the caller's shutdown request and
+        // let a closed launcher attach to a later game process.
+        if (armed) {
+            const auto armed_deadline = std::chrono::steady_clock::now() +
+                std::chrono::milliseconds(kHookArmedTimeoutMilliseconds);
+            while (!stop.stop_requested() && std::chrono::steady_clock::now() < armed_deadline) {
+                if (WaitForSingleObject(armed.Get(), 25) != WAIT_TIMEOUT) break;
             }
-        });
-        capture_thread.join();
+        }
+        if (stop.stop_requested()) return cancelled();
+        const auto deadline = std::chrono::steady_clock::now() +
+            std::chrono::milliseconds(discovery_timeout);
+        auto captured = CaptureTargetByFastPolling(
+            requested_target, existing_targets, deadline, stop);
+        if (stop.stop_requested()) return cancelled();
         Handle target_process = std::move(captured.process);
         Handle target_cleanup;
         AttachableProcess target;
@@ -2934,13 +3034,15 @@ ManualMapLaunchResult LaunchAndManualMapRuntimeCore(
             DWORD module_error = ERROR_NOT_READY;
             RemoteModuleMap loader_modules;
             if (!WaitForLoaderReady(target_process.Get(), target.executable_name,
-                    loader_deadline, loader_modules, module_error)) {
+                    loader_deadline, loader_modules, module_error, stop)) {
+                if (stop.stop_requested()) return cancelled();
                 result.mapping = Failure(
                     ManualMapError::DependencyFailure,
                     module_error == ERROR_SUCCESS ? ERROR_TIMEOUT : module_error,
                     "target process loader did not initialize before the timeout; the target "
                     "was left running because mapping had not started");
             } else {
+                if (stop.stop_requested()) return cancelled();
                 ManualMapOptions mapping_options = options.manual_map;
                 mapping_options.process_id = target.process_id;
                 // A launch enters a process this parent just created, and it does so the way 2.4 did: with a
@@ -2955,7 +3057,8 @@ ManualMapLaunchResult LaunchAndManualMapRuntimeCore(
             }
         }
 
-        if (!result.mapping.Ok() && mapping_started) {
+        if (!result.mapping.Ok() && mapping_started &&
+            result.mapping.error != ManualMapError::AlreadyAttached) {
             if (target_cleanup) {
                 static_cast<void>(TerminateProcess(
                     target_cleanup.Get(), ERROR_PROCESS_ABORTED));

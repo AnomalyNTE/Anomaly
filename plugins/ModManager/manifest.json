@@ -33,6 +33,10 @@
       "minVersion": 1
     },
     {
+      "id": "anomaly.config",
+      "minVersion": 1
+    },
+    {
       "id": "anomaly.mods",
       "minVersion": 1
     },
@@ -84,6 +88,7 @@
   "capabilities": [
     "ui",
     "ui-window",
+    "configuration",
     "mods",
     "scheduler",
     "json",

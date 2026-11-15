@@ -1371,7 +1371,7 @@
       }
     },
     "AnomalyModEntryV1": {
-      "size": 96,
+      "size": 112,
       "alignment": 8,
       "offsets": {
         "struct_size": 0,
@@ -1382,7 +1382,8 @@
         "name": 32,
         "vehicles": 48,
         "analysis_error": 64,
-        "resource_groups": 80
+        "resource_groups": 80,
+        "parent_folder": 96
       }
     },
     "AnomalyModsServiceV1": {

@@ -2247,7 +2247,7 @@ struct Runtime : NativeAccess {
             return false;
         };
         try {
-            if (!selected.vehicle_id_valid || selected.vehicle_id_comparison_index == 0) {
+            if (!selected.vehicle_id_valid && selected.name_comparison_index == 0) {
                 return fail(TextLocalized("backend.the_selected_vehicle_has_no_valid_vehicleid_140", "The selected vehicle has no valid VehicleID for module and skin matching."));
             }
             if (!ready || object_registry.items == 0 ||
@@ -2431,14 +2431,22 @@ struct Runtime : NativeAccess {
                         !ReadValue(*memory,
                             row + static_cast<std::uintptr_t>(vehicle_id_property.offset) + 4U,
                             vehicle_number) ||
-                        vehicle_comparison != selected.vehicle_id_comparison_index ||
-                        vehicle_number != selected.vehicle_id_number ||
                         !ReadValue(*memory,
                             row + static_cast<std::uintptr_t>(id_property.offset), id_comparison) ||
                         !ReadValue(*memory,
                             row + static_cast<std::uintptr_t>(id_property.offset) + 4U, id_number)) {
                         continue;
                     }
+                    // The owning model is referenced by either the independent VehicleID
+                    // column or the DT_VehicleData row key; both spellings are in use.
+                    const bool matches_vehicle_id = selected.vehicle_id_valid &&
+                        vehicle_comparison == selected.vehicle_id_comparison_index &&
+                        vehicle_number == selected.vehicle_id_number;
+                    const bool matches_row_name =
+                        selected.name_comparison_index != 0 &&
+                        vehicle_comparison == selected.name_comparison_index &&
+                        vehicle_number == selected.name_number;
+                    if (!matches_vehicle_id && !matches_row_name) continue;
                     std::string option_id;
                     if (!ResolveFNameLocked(id_comparison, id_number, option_id) ||
                         option_id.empty() || option_id == "None" ||
@@ -2481,8 +2489,9 @@ struct Runtime : NativeAccess {
                                 TextLocalized("backend.could_not_read_vehiclemoduledata_moduletype_154", "Could not read VehicleModuleData.ModuleType.");
                             return false;
                         }
-                        // EVehicleModuleType 0 (None) and 27 (Max) are sentinels in Dump 5.6.1.
-                        if (module_type == 0U || module_type >= 27U) continue;
+                        // EVehicleModuleType: None (0) and Max (28) are sentinels in Dump
+                        // 5.6.1; 27 is ExhaustSmoke and is a real slot.
+                        if (module_type == 0U || module_type >= 28U) continue;
                         option.module_type = module_type;
                     }
                     next.push_back(std::move(option));
@@ -3945,7 +3954,6 @@ struct Runtime : NativeAccess {
         if (torque.code != ANOMALY_STATUS_V1_OK) return torque;
         return friction;
     }
-
 
 };
 } // namespace nte_vehicle

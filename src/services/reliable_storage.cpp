@@ -33,6 +33,7 @@ constexpr FILE_INFORMATION_CLASS kNtFileRenameInformationEx =
     static_cast<FILE_INFORMATION_CLASS>(65);
 constexpr ULONG kNtFileRenameReplaceIfExists = 0x00000001;
 constexpr ULONG kNtFileRenamePosixSemantics = 0x00000002;
+constexpr ULONG kNtFileRenameIgnoreReadonlyAttribute = 0x00000040;
 
 StorageResult Success(std::size_t bytes = 0) noexcept {
     return {StorageError::None, ERROR_SUCCESS, bytes};
@@ -300,7 +301,7 @@ void MarkDelete(HANDLE handle) noexcept {
 }
 
 StorageResult RenameRelative(
-    HANDLE file, HANDLE parent, std::wstring_view target_name) {
+    HANDLE file, HANDLE parent, std::wstring_view target_name, StorageWriteMode mode) {
     const NativeApi& api = GetNativeApi();
     if (api.set_information == nullptr) {
         return Failure(StorageError::InternalFailure, ERROR_PROC_NOT_FOUND);
@@ -326,6 +327,8 @@ StorageResult RenameRelative(
     const std::size_t buffer_size =
         offsetof(NativeRenameInformationEx, file_name) + name_bytes;
     rename.flags = kNtFileRenameReplaceIfExists | kNtFileRenamePosixSemantics;
+    if (mode == StorageWriteMode::ReplaceReadOnly)
+        rename.flags |= kNtFileRenameIgnoreReadonlyAttribute;
     rename.root_directory = parent;
     rename.file_name_length = static_cast<ULONG>(name_bytes);
     std::memcpy(rename.file_name.data(), target_name.data(), name_bytes);
@@ -404,7 +407,7 @@ public:
     }
 
     StorageResult WriteAtomic(
-        std::wstring_view relative_path, std::span<const std::byte> bytes) {
+        std::wstring_view relative_path, std::span<const std::byte> bytes, StorageWriteMode mode) {
         std::scoped_lock lock(operation_mutex_);
         if (!initialization_result_) return initialization_result_;
 
@@ -446,7 +449,7 @@ public:
             MarkDelete(temp.get());
             return Failure(StorageError::IoFailure, error, offset);
         }
-        result = RenameRelative(temp.get(), parent, normalized.Leaf());
+        result = RenameRelative(temp.get(), parent, normalized.Leaf(), mode);
         if (!result) {
             MarkDelete(temp.get());
             result.bytes_processed = offset;
@@ -618,10 +621,11 @@ StorageReadResult ReliableStorage::Read(
 }
 
 StorageResult ReliableStorage::WriteAtomic(
-    std::wstring_view relative_path, std::span<const std::byte> bytes) noexcept {
+    std::wstring_view relative_path, std::span<const std::byte> bytes,
+    StorageWriteMode mode) noexcept {
     if (!impl_) return Failure(StorageError::OutOfMemory, ERROR_NOT_ENOUGH_MEMORY);
     try {
-        return impl_->WriteAtomic(relative_path, bytes);
+        return impl_->WriteAtomic(relative_path, bytes, mode);
     } catch (...) {
         return ExceptionFailure();
     }

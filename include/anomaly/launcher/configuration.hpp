@@ -58,6 +58,7 @@ struct LauncherViewSettings final {
     // The grid is the default view, and it lists every mod at once unless pagination is asked
     // for: a page of covers is easy to scroll, and a pager over it only gets in the way.
     bool mods_grid{true};
+    bool mods_by_folder{};
     bool mods_pagination{false};
     int mods_page_size{10};
     std::string browse_sort{"default"};

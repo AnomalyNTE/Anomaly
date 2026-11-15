@@ -626,6 +626,7 @@
     "launcher.mods.refresh_list": "刷新列表",
     "launcher.mods.view_list": "列表",
     "launcher.mods.view_grid": "网格",
+    "launcher.mods.group_by_folder": "按文件夹分组",
     "launcher.mods.group_back": "全部",
     "launcher.mods.group_count": "{0} 个模组",
     "launcher.mods.group_shared": "整角色/通用资源",
