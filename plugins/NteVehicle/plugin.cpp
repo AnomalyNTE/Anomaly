@@ -437,7 +437,7 @@ void RefreshCustomizationCatalogOnGameThread() {
             (native_option.kind != nte_vehicle::kCustomizationModule &&
              native_option.kind != nte_vehicle::kCustomizationSkin) ||
             (native_option.kind == nte_vehicle::kCustomizationModule &&
-             (native_option.module_type == 0 || native_option.module_type >= 27)) ||
+             (native_option.module_type == 0 || native_option.module_type >= 28)) ||
             (native_option.kind == nte_vehicle::kCustomizationSkin &&
              native_option.module_type != 0)) {
             std::scoped_lock lock(g_context.mutex);
@@ -1409,7 +1409,7 @@ void DrawCustomizationDetail(
         return;
     }
 
-    static constexpr std::array<std::string_view, 27> module_type_keys{
+    static constexpr std::array<std::string_view, 28> module_type_keys{
         "label.module.none", "label.module.engine", "label.module.gearbox",
         "label.module.brake", "label.module.suspension", "label.module.body_color",
         "label.module.front_bumper", "label.module.side_skirt", "label.module.rear_bumper",
@@ -1419,15 +1419,15 @@ void DrawCustomizationDetail(
         "label.module.stiffness", "label.module.skin", "label.module.interior_leather",
         "label.module.interior_stitch", "label.module.vehicle_badge",
         "label.module.tire_smoke", "label.module.tire_track", "label.module.tow_hook",
-        "label.module.ecu"
+        "label.module.ecu", "label.module.exhaust_smoke"
     };
-    static constexpr std::array<std::string_view, 27> module_type_english{
+    static constexpr std::array<std::string_view, 28> module_type_english{
         "None", "Engine", "Gearbox", "Brakes", "Suspension", "Body color module",
         "Front bumper", "Side skirt", "Rear bumper", "Rear wing", "Decal", "Wheels",
         "Hood", "License plate", "Roof", "Tires", "Accessories",
         "Limited-slip differential LSD", "Body rigidity", "Skin module",
         "Interior leather color", "Interior stitching color", "Vehicle badge",
-        "Tire smoke", "Tire tracks", "Tow hook", "ECU"
+        "Tire smoke", "Tire tracks", "Tow hook", "ECU", "Exhaust smoke"
     };
     const auto override_for_type = [&](const std::uint32_t module_type) -> std::string_view {
         const auto found = std::ranges::find_if(module_overrides,
@@ -1482,6 +1482,20 @@ void DrawCustomizationDetail(
         }
         return enabled && ui->button(ui->user, view, width, 0.0F) != 0;
     };
+    // Some shipped skins carry an empty FText name; exposing the raw SkinID there is
+    // unreadable, so fall back to the localized ordinal of that skin within the vehicle.
+    const auto skin_display_label = [&](const CustomizationOption& option) -> std::string {
+        if (!option.label.empty()) return option.label;
+        std::uint32_t ordinal = 1;
+        for (const auto& candidate : options) {
+            if (candidate.kind != nte_vehicle::kCustomizationSkin) continue;
+            if (candidate.id == option.id) break;
+            ++ordinal;
+        }
+        const std::string ordinal_text = std::to_string(ordinal);
+        const std::array arguments{std::string_view(ordinal_text)};
+        return g_context.localizer.Format("label.skin_fallback", "Skin {0}", arguments);
+    };
     const auto draw_skin_options = [&]() {
         DrawText(ui, g_context.localizer.Text("section.skins", "Choose a skin"));
         bool has_default_skin = false;
@@ -1489,12 +1503,12 @@ void DrawCustomizationDetail(
             if (option.kind != nte_vehicle::kCustomizationSkin) continue;
             has_default_skin = has_default_skin || option.is_default;
             const bool current = skin_id == option.id;
-            std::string label = option.label.empty() ? option.id : option.label;
+            std::string label = skin_display_label(option);
             label += "##custom-skin-" + option.id;
             if (ui->button(ui->user, anomaly::sdk::StringView(label), list_width, 0.0F)) {
                 std::scoped_lock lock(g_context.mutex);
                 g_context.customization_skin_id = option.id;
-                const std::string& skin_label = option.label.empty() ? option.id : option.label;
+                const std::string skin_label = skin_display_label(option);
                 const std::array arguments{
                     std::string_view(skin_label), std::string_view(option.id)};
                 g_context.customization_status = g_context.localizer.Format(
@@ -1514,8 +1528,7 @@ void DrawCustomizationDetail(
                 if (found != options.end()) {
                     std::scoped_lock lock(g_context.mutex);
                     g_context.customization_skin_id = found->id;
-                    const std::string& skin_label =
-                        found->label.empty() ? found->id : found->label;
+                    const std::string skin_label = skin_display_label(*found);
                     const std::array arguments{std::string_view(skin_label)};
                     g_context.customization_status = g_context.localizer.Format(
                         "status.skin_reset", "Restored the game default skin: {0}", arguments);
@@ -2362,6 +2375,6 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         anomaly::sdk::StringView("anomaly.nte-vehicle"),
         anomaly::sdk::StringView("Vehicle Control"), anomaly::sdk::StringView("Anomaly"),
-        anomaly::sdk::StringView("0.11.1"), Load, Start, Stop, Unload, UpdateCallback, DrawCallback};
+        anomaly::sdk::StringView("0.11.4"), Load, Start, Stop, Unload, UpdateCallback, DrawCallback};
     return anomaly::sdk::Ok();
 }
