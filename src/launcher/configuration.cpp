@@ -692,6 +692,12 @@ LauncherClientConfiguration DiscoverLauncherConfiguration(
     AddAncestors(roots, result.game_directory);
     AddAncestors(roots, result.launcher_executable.parent_path());
 
+    if (result.launcher_executable.empty()) {
+        if (const auto discovered = FindLauncherExecutable(roots, options.client)) {
+            result.launcher_executable = *discovered;
+            AddAncestors(roots, result.launcher_executable.parent_path());
+        }
+    }
     if (result.game_directory.empty()) {
         std::vector<std::filesystem::path> launcher_roots;
         AddAncestors(launcher_roots, result.launcher_executable.parent_path());
@@ -703,11 +709,6 @@ LauncherClientConfiguration DiscoverLauncherConfiguration(
                 result.game_directory = *searched;
                 AddAncestors(roots, result.game_directory);
             }
-        }
-    }
-    if (result.launcher_executable.empty()) {
-        if (const auto discovered = FindLauncherExecutable(roots, options.client)) {
-            result.launcher_executable = *discovered;
         }
     }
     return result;

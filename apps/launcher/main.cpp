@@ -725,6 +725,15 @@ public:
         {
             std::scoped_lock lock(state_mutex_);
             if (state_.busy) return;
+            if (anomaly::launcher::IsNteGameDirectory(directory)) {
+                auto& other_client = configuration_.selected_client ==
+                        anomaly::launcher::NteClient::Global
+                    ? configuration_.mainland_china
+                    : configuration_.global;
+                if (PathsEqual(directory, other_client.game_directory)) {
+                    other_client.game_directory.clear();
+                }
+            }
             state_.game_directory = std::move(directory);
             configuration_.Selected().game_directory = state_.game_directory;
         }
@@ -1388,7 +1397,6 @@ private:
 
     void InitializePathsImpl() {
         const auto loaded = anomaly::launcher::LoadLauncherConfiguration(configuration_path_);
-        const auto game_processes = anomaly::launcher::EnumerateAttachableProcesses();
         const auto mainland_launcher_processes =
             anomaly::launcher::EnumerateAttachableProcesses(L"NTELauncher.exe");
         const auto global_launcher_processes =
@@ -1404,22 +1412,14 @@ private:
                     anomaly::launcher::NteClient::Global);
             (keep_mainland ? configuration.global : configuration.mainland_china).game_directory.clear();
         }
-        const auto discover = [this, &game_processes, &configuration](
+        const auto discover = [this, &configuration](
                                   const anomaly::launcher::NteClient client,
                                   const auto& launcher_processes) {
             anomaly::launcher::LauncherDiscoveryOptions options;
             options.client = client;
             options.payload_root = payload_root_;
-            options.allow_unpaired_game_discovery = true;
             options.other_game_directory = client == anomaly::launcher::NteClient::Global
                 ? configuration.mainland_china.game_directory : configuration.global.game_directory;
-            if (configuration.selected_client == client) {
-                for (const auto& process : game_processes) {
-                    if (!process.executable_path.empty()) {
-                        options.running_game_executables.push_back(process.executable_path);
-                    }
-                }
-            }
             for (const auto& process : launcher_processes) {
                 if (!process.executable_path.empty()) {
                     options.running_launcher_executables.push_back(process.executable_path);
@@ -1486,16 +1486,7 @@ private:
         anomaly::launcher::LauncherDiscoveryOptions options;
         options.client = client;
         options.payload_root = payload_root_;
-        options.allow_unpaired_game_discovery = true;
         options.other_game_directory = std::move(other_game_directory);
-        // A game that is already running is the surest pairing there is: its own directory is where the client
-        // the user is switching to is installed, and it is the directory the process list filters on next. It
-        // only fills a directory that is not known yet -- a stored one always wins in the discovery below.
-        for (const auto& process : anomaly::launcher::EnumerateAttachableProcesses()) {
-            if (!process.executable_path.empty()) {
-                options.running_game_executables.push_back(process.executable_path);
-            }
-        }
         const auto discovered = anomaly::launcher::DiscoverLauncherConfiguration(
             preferred, options);
         std::scoped_lock lock(state_mutex_);
