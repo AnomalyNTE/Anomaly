@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "id": "b1ank.skin-changer",
   "name": "SkinChanger Lite",
-  "description": "Local accessory, glider, awakening, license plate and vehicle appearance previews.",
+  "description": "Local accessory, glider, awakening, license plate, vehicle appearance and HUD theme previews.",
   "author": "b1ank",
   "license": "AGPL-3.0-only",
   "version": "0.1.45",
@@ -46,6 +46,16 @@
       "minVersion": 1
     },
     {
+      "id": "anomaly.ue5.process-event",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.nte.player",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
       "id": "anomaly.interop.signature",
       "minVersion": 1
     },
@@ -81,6 +91,7 @@
     "interop-hook",
     "memory-write",
     "nte-combat-read",
+    "nte-player-snapshot",
     "json"
   ]
 }
