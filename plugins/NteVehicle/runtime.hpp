@@ -214,6 +214,10 @@ struct Runtime : NativeAccess {
     nte_vehicle_helpers::SpeedCapMaintenance<VehicleSpeedFieldBaseline>
         vehicle_speed_maintenance;
     bool vehicle_wheel_friction_enabled{true};
+    // SetEnableWheelFriction 的实现只写一个字节；关闭插件时按同一地址写回原值即可还原摩擦。
+    std::uintptr_t vehicle_friction_flag{};
+    std::uint8_t vehicle_friction_flag_original{};
+    bool vehicle_friction_flag_captured{};
     // 按非玩家载具的 MovementComponent 分别保存速率倍率和原始扭矩基准，绝不与玩家载具共用状态。
     std::unordered_map<std::uintptr_t, AnomalyGenerationHandleV1> other_vehicle_handles;
     std::unordered_map<std::uintptr_t, float> other_vehicle_velocity_ratios;
@@ -1035,6 +1039,16 @@ struct Runtime : NativeAccess {
         }
     }
 
+    // 摩擦开关字节：[component+frictionSetup] → +frictionState 处对象 → +frictionEnabled。
+    // 链路由 Profile 偏移给出，读取失败即放弃记录，绝不退回到写死地址。
+    bool ResolveWheelFrictionFlagLocked(std::uintptr_t& flag) const {
+        std::uintptr_t setup{}, state{};
+        return vehicle_movement_component != 0 &&
+            ReadPointerAt(*memory, vehicle_movement_component, layout.vehicle_frictionSetup, setup) &&
+            ReadPointerAt(*memory, setup, layout.vehicle_frictionState, state) &&
+            AddAddress(state, layout.vehicle_frictionEnabled, flag) && flag != 0;
+    }
+
     AnomalyStatusV1 VehicleSnapshot(nte_vehicle::StateSnapshot* snapshot) {
         if (!snapshot) return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
         if (GetCurrentThreadId() != game_thread_id.load(std::memory_order_acquire))
@@ -1267,6 +1281,19 @@ struct Runtime : NativeAccess {
             vehicle_speed_fields_applied = false;
             vehicle_speed_restore_status = LocalizedStatus("backend.the_game_reset_the_speed_cap_and_23", "The game reset the speed cap and reapplying it failed: {0}", {failure});
         }
+    }
+
+    // Dump 5.6.1: 载具碰撞伤害链路的两个入口，命中后由插件把伤害事件掐断，因此不产生
+    // 耐久扣除（耐久数值本身由服务器持有，插件不写）。
+    //   VehicleTakeDamage  HandleVehicleTakeDamage 的受伤入口，返回 float 伤害值。
+    //   VehicleImpact      物理撞击处理器，返回 void。
+    // 两个地址都来自 profile 签名扫描，入口字节在 ProfileSnapshot::Load 阶段已经校验。
+    // 两个入口各自独立：任一符号解析失败仍可用另一条通路保护耐久；都失败才返回 false，
+    // 调用方据此停用耐久保护而不是猜测地址。
+    bool DurabilityGuardEntries(std::uintptr_t& take_damage, std::uintptr_t& impact) const noexcept {
+        take_damage = compatibility.Address("VehicleTakeDamage");
+        impact = compatibility.Address("VehicleImpact");
+        return take_damage != 0 || impact != 0;
     }
 
     // Dump 5.6.1: HTWheeledVehicleDrivable::RepairSelf(bool RefreshDisplay). Resolve the live
@@ -2220,7 +2247,7 @@ struct Runtime : NativeAccess {
             return false;
         };
         try {
-            if (!selected.vehicle_id_valid || selected.vehicle_id_comparison_index == 0) {
+            if (!selected.vehicle_id_valid && selected.name_comparison_index == 0) {
                 return fail(TextLocalized("backend.the_selected_vehicle_has_no_valid_vehicleid_140", "The selected vehicle has no valid VehicleID for module and skin matching."));
             }
             if (!ready || object_registry.items == 0 ||
@@ -2404,14 +2431,22 @@ struct Runtime : NativeAccess {
                         !ReadValue(*memory,
                             row + static_cast<std::uintptr_t>(vehicle_id_property.offset) + 4U,
                             vehicle_number) ||
-                        vehicle_comparison != selected.vehicle_id_comparison_index ||
-                        vehicle_number != selected.vehicle_id_number ||
                         !ReadValue(*memory,
                             row + static_cast<std::uintptr_t>(id_property.offset), id_comparison) ||
                         !ReadValue(*memory,
                             row + static_cast<std::uintptr_t>(id_property.offset) + 4U, id_number)) {
                         continue;
                     }
+                    // The owning model is referenced by either the independent VehicleID
+                    // column or the DT_VehicleData row key; both spellings are in use.
+                    const bool matches_vehicle_id = selected.vehicle_id_valid &&
+                        vehicle_comparison == selected.vehicle_id_comparison_index &&
+                        vehicle_number == selected.vehicle_id_number;
+                    const bool matches_row_name =
+                        selected.name_comparison_index != 0 &&
+                        vehicle_comparison == selected.name_comparison_index &&
+                        vehicle_number == selected.name_number;
+                    if (!matches_vehicle_id && !matches_row_name) continue;
                     std::string option_id;
                     if (!ResolveFNameLocked(id_comparison, id_number, option_id) ||
                         option_id.empty() || option_id == "None" ||
@@ -2454,8 +2489,9 @@ struct Runtime : NativeAccess {
                                 TextLocalized("backend.could_not_read_vehiclemoduledata_moduletype_154", "Could not read VehicleModuleData.ModuleType.");
                             return false;
                         }
-                        // EVehicleModuleType 0 (None) and 27 (Max) are sentinels in Dump 5.6.1.
-                        if (module_type == 0U || module_type >= 27U) continue;
+                        // EVehicleModuleType: None (0) and Max (28) are sentinels in Dump
+                        // 5.6.1; 27 is ExhaustSmoke and is a real slot.
+                        if (module_type == 0U || module_type >= 28U) continue;
                         option.module_type = module_type;
                     }
                     next.push_back(std::move(option));
@@ -3793,14 +3829,48 @@ struct Runtime : NativeAccess {
             vehicle_bindings.set_wheel_friction.function == 0)
             return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
                 TextLocalized("backend.htvehiclemovementcomponent_setenablewheelfriction_bool_is_not_validated_254", "HTVehicleMovementComponent.SetEnableWheelFriction(bool) is not validated"));
+        // 关闭摩擦时才记录原值：调用后该字节必须真的变成 0，链路才算可信。
+        std::uintptr_t flag_address{};
+        std::uint8_t flag_before{};
+        const bool flag_readable = !enabled && ResolveWheelFrictionFlagLocked(flag_address) &&
+            ReadValue(*memory, flag_address, flag_before) && flag_before != 0;
+        // 换车或重新开启前，先把上一辆车记录的字节还回去。
+        if (vehicle_friction_flag_captured && vehicle_friction_flag != flag_address)
+            RestoreWheelFrictionLocked();
         std::array<std::uint8_t, 8> parameters{};
         parameters[vehicle_bindings.set_wheel_friction.parameter_offset] = enabled ? 1 : 0;
         if (!InvokeProcessEventGuarded(process_event_invoker, vehicle_movement_component,
                 vehicle_bindings.set_wheel_friction.function, parameters.data(),
                 vehicle_bindings.set_wheel_friction.parms_size))
             return Status(ANOMALY_STATUS_V1_FAILED, TextLocalized("backend.setenablewheelfriction_processevent_failed_255", "SetEnableWheelFriction ProcessEvent failed"));
+        if (flag_readable) {
+            std::uint8_t flag_after{};
+            if (ReadValue(*memory, flag_address, flag_after) && flag_after == 0) {
+                vehicle_friction_flag = flag_address;
+                vehicle_friction_flag_original = flag_before;
+                vehicle_friction_flag_captured = true;
+            }
+        }
         vehicle_wheel_friction_enabled = enabled;
         return Status(ANOMALY_STATUS_V1_OK);
+    }
+
+    // 生命周期回调跑在 Lifecycle worker 上：不经过 ProcessEvent，直接把捕获的字节写回。
+    void VehicleRestoreWheelFriction() {
+        std::scoped_lock lock(mutex);
+        RestoreWheelFrictionLocked();
+    }
+
+    void RestoreWheelFrictionLocked() {
+        if (!vehicle_friction_flag_captured) return;
+        std::uint8_t current{};
+        if (ReadValue(*memory, vehicle_friction_flag, current) && current == 0) {
+            const std::uint8_t original = vehicle_friction_flag_original;
+            static_cast<void>(memory->Write(vehicle_friction_flag, &original, sizeof(original)));
+        }
+        vehicle_friction_flag_captured = false;
+        vehicle_friction_flag = 0;
+        vehicle_wheel_friction_enabled = true;
     }
 
     AnomalyStatusV1 VehicleReset() {
@@ -3884,7 +3954,6 @@ struct Runtime : NativeAccess {
         if (torque.code != ANOMALY_STATUS_V1_OK) return torque;
         return friction;
     }
-
 
 };
 } // namespace nte_vehicle

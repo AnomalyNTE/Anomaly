@@ -8,4 +8,6 @@ namespace nte_vehicle {
     void TickBackend();
     void StopBackend();
     void UnloadBackend();
+    // 关闭插件时把摩擦开关字节写回原值（不需要 Game 线程）。
+    void RestoreWheelFrictionBackend();
 }

@@ -1463,7 +1463,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteTeleport")
     anomaly_add_plugin(anomaly_builtin_nte_vehicle
         SOURCES plugins/NteVehicle/plugin.cpp plugins/NteVehicle/runtime.cpp
-            plugins/NteVehicle/native_access.cpp
+            plugins/NteVehicle/native_access.cpp plugins/NteVehicle/durability_guard.cpp
         MANIFEST plugins/NteVehicle/manifest.json
         PACKAGE_NAME NteVehicle
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteVehicle")
@@ -1926,7 +1926,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
     anomaly_add_plugin(anomaly_builtin_skin_changer
         SOURCES plugins/SkinChanger/plugin.cpp plugins/SkinChanger/cosmetics.cpp
             plugins/SkinChanger/awakening.cpp plugins/SkinChanger/plates.cpp
-            plugins/SkinChanger/vehicle.cpp
+            plugins/SkinChanger/vehicle.cpp plugins/SkinChanger/hud_theme.cpp
         MANIFEST plugins/SkinChanger/manifest.json
         PACKAGE_NAME SkinChanger
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/SkinChanger")
@@ -1958,6 +1958,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
             add_test(NAME skin_changer_${suite}
                 COMMAND anomaly_skin_changer_${suite}_fixture)
         endforeach()
+        target_sources(anomaly_skin_changer_lifecycle_fixture PRIVATE plugins/SkinChanger/hud_theme.cpp)
         add_test(NAME skin_changer_cosmetics COMMAND anomaly_skin_changer_fixture)
         foreach(suite IN ITEMS awakening plate plate_follow vehicle)
             add_test(NAME skin_changer_${suite}

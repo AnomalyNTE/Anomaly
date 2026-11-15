@@ -97,6 +97,7 @@ struct NativeAccess {
     NativeMemory* memory{&storage};
     anomaly::sdk::ProfileSnapshot compatibility;
     NativeLayout layout;
+    const AnomalyHostApiV1* host_api{};
     const AnomalyUe5NamesServiceV1* names{};
     const AnomalyUe5ObjectsServiceV1* objects{};
     const AnomalyUe5ProcessEventServiceV1* events{};
@@ -116,6 +117,10 @@ struct NativeAccess {
     bool Load(const AnomalyHostApiV1* api);
     bool Refresh();
     bool ResolveVehicleLayout();
+    // The NTE bridge publishes its services once the world and the local player exist,
+    // which happens long after plugin load. Bind what is available and retry from the
+    // Game thread instead of failing the whole plugin.
+    bool BindGameServices();
     const char* Remember(std::string_view value) {
         result_message = value;
         return result_message.c_str();
