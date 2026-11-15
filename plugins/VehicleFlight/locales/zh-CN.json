@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "locale": "zh-CN",
+  "messages": {
+    "window.title": "载具飞行",
+    "plugin.description": "让正在驾驶的载具自由飞行，支持键盘和鼠标视角两种模式。",
+    "flight.enable": "启用载具飞行",
+    "flight.noclip": "穿墙",
+    "flight.speed": "飞行速度（米/秒）",
+    "flight.save_failed": "当前飞行设置未能保存。",
+    "hotkey.button": "飞行快捷键 · {0}",
+    "hotkey.unbound": "未绑定",
+    "hotkey.capture": "请按下要绑定的键或组合键。Esc 取消，退格清除。",
+    "hotkey.conflict": "这个快捷键已被占用。",
+    "hotkey.unavailable": "暂时无法注册这个快捷键。",
+    "hotkey.movement_key": "请选择飞行方向键以外的字母键、数字键或功能键。",
+    "flight.keyboard_mode": "键盘模式",
+    "flight.mouse_mode": "鼠标模式",
+    "flight.mode_selected": "{0}（已选）",
+    "flight.keyboard_help": "WASD 水平移动，空格上升，Ctrl 下降。",
+    "flight.mouse_help": "鼠标控制朝向。按 W 沿视角前进，按 S 后退，松开后悬停。",
+    "flight.starting": "正在识别当前载具…",
+    "flight.active": "载具飞行已开启。",
+    "flight.camera_unavailable": "正在等待视角数据，载具保持悬停。",
+    "flight.blocked": "当前方向受阻，换个方向可继续飞行。",
+    "flight.position_corrected": "游戏已调整载具位置，飞行保持开启。",
+    "flight.no_vehicle": "飞行保持开启，正在等待你坐进驾驶位。",
+    "flight.scene_changed": "场景已切换，飞行已停止。",
+    "flight.unavailable": "当前场景暂时无法使用载具飞行。"
+  }
+}
