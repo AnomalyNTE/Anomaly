@@ -529,6 +529,31 @@ std::set<DWORD> SnapshotLauncherProcessIds(
     return result;
 }
 
+// Ends one launcher process if it can be ended, and leaves it alone if it cannot.
+//
+// The official client shields its browser helpers: OpenProcess hands back a handle for a pid that the
+// process exists under, with PROCESS_TERMINATE silently stripped, and TerminateProcess then answers
+// ERROR_ACCESS_DENIED while the process keeps running. That refusal is permanent -- the player cannot
+// close those helpers either -- so it is a property of the client, not a fault of this sweep, and
+// failing the launch over it costs the whole action while leaving them up costs nothing.
+//
+// A process that ended while the sweep walked the snapshot is in the same position for the opposite
+// reason: OpenProcess answers ERROR_INVALID_PARAMETER for a pid that no longer resolves, and a launcher
+// that is already gone has met the only thing the sweep was after.
+void StopLauncherProcess(const DWORD process_id) noexcept {
+    DWORD open_error{};
+    Handle process = OpenProcessWithAccess(
+        process_id, PROCESS_TERMINATE | SYNCHRONIZE, open_error);
+    if (!process) return;
+    if (TerminateProcess(process.Get(), ERROR_PROCESS_ABORTED) == FALSE &&
+        WaitForSingleObject(process.Get(), 0) != WAIT_OBJECT_0) {
+        return;
+    }
+    // A process that was terminated is signalled; the wait only gives it time to leave before the
+    // launcher starts a new one. A helper that outlasts the budget keeps its pid, which nothing here reads.
+    static_cast<void>(WaitForSingleObject(process.Get(), 5000));
+}
+
 bool TerminateExistingLauncherProcesses(
     const std::filesystem::path& launcher_directory, DWORD& error) noexcept {
     DWORD snapshot_error{};
@@ -537,31 +562,11 @@ bool TerminateExistingLauncherProcesses(
         error = snapshot_error;
         return false;
     }
-    // A launcher that ends while the sweep is walking the snapshot is gone, not a launcher that survived
-    // it: the bootstrap hands the session to the client it starts and exits, and each helper exits once
-    // the launcher it belongs to is terminated. Its pid then belongs to a snapshot it no longer answers
-    // to, and OpenProcess reports ERROR_INVALID_PARAMETER for a pid that does not resolve. The requirement
-    // is that no launcher outlives this call, and a process that ended before it could be opened meets it.
-    for (const DWORD process_id : process_ids) {
-        DWORD open_error{};
-        Handle process = OpenProcessWithAccess(
-            process_id, PROCESS_TERMINATE | SYNCHRONIZE, open_error);
-        if (!process) {
-            if (open_error == ERROR_INVALID_PARAMETER) continue;
-            error = open_error;
-            return false;
-        }
-        if (TerminateProcess(process.Get(), ERROR_PROCESS_ABORTED) == FALSE &&
-            WaitForSingleObject(process.Get(), 0) != WAIT_OBJECT_0) {
-            error = GetLastError();
-            return false;
-        }
-        const DWORD wait = WaitForSingleObject(process.Get(), 5000);
-        if (wait != WAIT_OBJECT_0) {
-            error = wait == WAIT_FAILED ? GetLastError() : ERROR_TIMEOUT;
-            return false;
-        }
-    }
+    // Best effort, deliberately: what survives the sweep is what the client protects, and the launch
+    // below does not depend on it. A surviving launcher window is handed the session by the single
+    // instance logic of the launcher that starts next, and the capture records the target processes that
+    // exist after this call, so a stale helper can never be mistaken for the game.
+    for (const DWORD process_id : process_ids) StopLauncherProcess(process_id);
     error = ERROR_SUCCESS;
     return true;
 }
@@ -2882,7 +2887,7 @@ ManualMapLaunchResult LaunchAndManualMapRuntimeCore(
                 launcher.parent_path(), launcher_cleanup_error)) {
             result.mapping = Failure(
                 ManualMapError::ProcessControlFailure, launcher_cleanup_error,
-                "existing official launcher processes could not be stopped");
+                "existing official launcher processes could not be enumerated before launch");
             return result;
         }
 
