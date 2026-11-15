@@ -227,6 +227,9 @@ struct MetingSong final {
 // A request queued for the Meting worker.
 struct MetingRequest final {
     bool download{};
+    // A cover-only fetch, queued before the audio so the disc shows the song's artwork while the
+    // (much larger) audio file is still downloading.
+    bool cover{};
     std::string url;
     std::size_t index{};
     std::uint64_t generation{};
@@ -418,9 +421,12 @@ std::atomic<std::uintptr_t> g_import_buffer{0};          // the UFunction
 std::atomic<std::uintptr_t> g_rendering_library_cdo{0};  // its class default object
 std::mutex g_song_cover_mutex;
 std::vector<std::uint8_t> g_song_cover_pending;  // guarded by g_song_cover_mutex
-std::uint64_t g_song_cover_pending_key{};        // guarded by g_song_cover_mutex
+// The cover URL the pending/imported image belongs to. Identity by URL rather than by album index
+// and generation: editing the album bumps the generation, which used to leave the imported cover
+// unmatched and the disc on the default image.
+std::string g_song_cover_pending_pic;            // guarded by g_song_cover_mutex
+std::string g_song_cover_pic;                    // guarded by g_song_cover_mutex
 std::atomic<void*> g_song_cover{nullptr};         // Game thread writes; tick reads
-std::atomic<std::uint64_t> g_song_cover_key{0};
 
 // ProcessEvent parameter block of ImportBufferAsTexture2D: {UObject* world
 // context, TArray<uint8> buffer, UTexture2D* return}.
@@ -435,8 +441,10 @@ struct ImportBufferParameters final {
 };
 static_assert(sizeof(ImportBufferParameters) == 0x20);
 
-std::uint64_t SongCoverKey(const std::size_t index, const std::uint64_t generation) noexcept {
-    return (generation << 32U) | (static_cast<std::uint64_t>(index) + 1U);
+// The cover URL of the Meting song at `index`, empty when the album does not know it.
+std::string MetingSongPic(Context& context, const std::size_t index) {
+    std::scoped_lock lock(context.meting_mutex);
+    return index < context.meting_songs.size() ? context.meting_songs[index].pic : std::string{};
 }
 // MaterialInstanceDynamic::SetTextureParameterValue and the disc parameter's
 // FName; resolved once on the builder thread. 0 = not resolved.
@@ -1083,6 +1091,11 @@ bool TakeOverPost(Context& context, void* self, void* event, void* list_id,
                 // The download runs on the Meting worker; the engine stops the
                 // previous song now so the template event does not play meanwhile.
                 context.engine.StopNow();
+                // Name the song now: the panel otherwise keeps showing the row it was posted with
+                // until the download lands.
+                if (const auto album_now = g_album.load(std::memory_order_acquire);
+                    album_now != nullptr && MetingAlbumActive(*album_now))
+                    CallSetCurrentId(self, MetingSongId(*album_now, *meting));
                 RememberPlayed(context, "meting", {}, 0,
                     static_cast<std::uint32_t>(*meting));
                 Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
@@ -1091,6 +1104,13 @@ bool TakeOverPost(Context& context, void* self, void* event, void* list_id,
             return true;
         }
         RememberPlayed(context, "library", key, static_cast<std::uint32_t>(song.value_or(0)), 0);
+        // After a resume the posted id names the game's old pick, so point it at the row that is
+        // about to play before the panel reads it.
+        if (song) {
+            if (const auto album_now = g_album.load(std::memory_order_acquire);
+                album_now != nullptr && AlbumActive(*album_now))
+                CallSetCurrentId(self, SongId(*album_now, *song));
+        }
         context.engine.Play(std::move(key), position, song);
         requested = song;
         return true;
@@ -3083,11 +3103,11 @@ void ReleaseHooks(Context& context) noexcept {
     g_import_buffer.store(0, std::memory_order_release);
     g_rendering_library_cdo.store(0, std::memory_order_release);
     g_song_cover.store(nullptr, std::memory_order_release);
-    g_song_cover_key.store(0, std::memory_order_release);
     {
         std::scoped_lock lock(g_song_cover_mutex);
         g_song_cover_pending.clear();
-        g_song_cover_pending_key = 0;
+        g_song_cover_pending_pic.clear();
+        g_song_cover_pic.clear();
     }
     g_set_texture_parameter.store(0, std::memory_order_release);
     g_disc_parameter_name.store(0, std::memory_order_release);
@@ -3280,6 +3300,8 @@ std::pair<HookState, std::string> InstallHooks(Context& context) {
             g_set_item_flags.store(set_item_flags, std::memory_order_release);
             g_object_array.store(object_array, std::memory_order_release);
             g_serial_counter.store(serial_counter, std::memory_order_release);
+            Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
+                "cover helpers resolved: object array and import texture available");
         } else {
             Log(context, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
                 "album cover helpers not found; the album keeps the template cover");
@@ -3536,6 +3558,11 @@ void FetchSongCover(Context& context, const std::size_t index, const std::uint64
         if (index < context.meting_songs.size()) pic = context.meting_songs[index].pic;
     }
     if (pic.empty()) return;
+    {
+        // The prefetch already brought (or imported) this artwork.
+        std::scoped_lock lock(g_song_cover_mutex);
+        if (g_song_cover_pic == pic || g_song_cover_pending_pic == pic) return;
+    }
     std::string error;
     auto bytes = HttpGet(pic, kMetingCoverBytes, error);
     if (context.meting_stopping.load(std::memory_order_acquire)) return;
@@ -3545,7 +3572,7 @@ void FetchSongCover(Context& context, const std::size_t index, const std::uint64
     }
     std::scoped_lock lock(g_song_cover_mutex);
     g_song_cover_pending = std::move(*bytes);
-    g_song_cover_pending_key = SongCoverKey(index, generation);
+    g_song_cover_pending_pic = std::move(pic);
 }
 
 void SetMetingStatus(Context& context, std::string status) {
@@ -3561,6 +3588,15 @@ void RunMetingRequest(Context& context, const MetingRequest& request) {
     const auto body = HttpGet(request.url,
         request.download ? kMetingAudioBytes : kMetingListBytes, error);
     if (context.meting_stopping.load(std::memory_order_acquire)) return;
+    if (request.cover) {
+        if (!body || body->empty()) return;
+        {
+            std::scoped_lock lock(g_song_cover_mutex);
+            g_song_cover_pending = std::move(*body);
+            g_song_cover_pending_pic = request.url;
+        }
+        return;
+    }
     if (request.download) {
         {
             std::scoped_lock lock(context.meting_mutex);
@@ -3700,6 +3736,14 @@ bool QueueMetingDownload(Context& context, const std::size_t index) noexcept {
             context.meting_download_generation = generation;
             request.url = context.meting_songs[index].url;
             request.generation = generation;
+            if (!context.meting_songs[index].pic.empty()) {
+                MetingRequest cover;
+                cover.cover = true;
+                cover.index = index;
+                cover.generation = generation;
+                cover.url = context.meting_songs[index].pic;
+                static_cast<void>(QueueMetingRequest(context, std::move(cover)));
+            }
         }
         return QueueMetingRequest(context, std::move(request));
     } catch (...) {
@@ -3755,9 +3799,13 @@ void StopMetingWorker(Context& context) noexcept {
 // game's cover on the disc.
 void ResolveDiscFunction(Context& context, const std::uintptr_t material) noexcept {
     if (g_set_texture_parameter.load(std::memory_order_acquire) != 0) return;
-    static bool tried = false;
-    if (tried) return;
-    tried = true;
+    // Rate-limited retry instead of a one-shot latch: the first attempt can land before the object
+    // array or the material's class is readable, and latching that left the disc cover dead for the
+    // rest of the session.
+    static std::uint64_t next_attempt_ms{};
+    const std::uint64_t now = GetTickCount64();
+    if (next_attempt_ms != 0 && now < next_attempt_ms) return;
+    next_attempt_ms = now + 2000;
     try {
         const std::uintptr_t objects = g_object_array.load(std::memory_order_acquire);
         std::uintptr_t klass{};
@@ -3797,6 +3845,67 @@ void ResolveDiscFunction(Context& context, const std::uintptr_t material) noexce
     }
 }
 
+// Name-based lookup of MaterialInstanceDynamic::SetTextureParameterValue. The detail-page hook that
+// used to hand us the disc material no longer fires in this build, so the disc cover is resolved
+// from the object table by name instead of from that hook's pattern.
+bool ResolveSetTextureFunctionByName(Context& context) noexcept {
+    if (g_set_texture_parameter.load(std::memory_order_acquire) != 0) return true;
+    static std::uint64_t next_attempt_ms{};
+    const std::uint64_t now = GetTickCount64();
+    if (next_attempt_ms != 0 && now < next_attempt_ms) return false;
+    next_attempt_ms = now + 2000;
+    const std::uintptr_t objects = g_object_array.load(std::memory_order_acquire);
+    std::int32_t total{};
+    if (objects == 0 || !ReadValue(context, objects + profile::Layout.kObjectArrayCountOffset, total) ||
+        total <= 0)
+        return false;
+    try {
+        for (std::int32_t index = 0; index < total; ++index) {
+            if (context.builder_stopping.load(std::memory_order_acquire)) return false;
+            auto* const item = static_cast<std::byte*>(ObjectItem(context, index));
+            std::uintptr_t object{};
+            if (item == nullptr || !ReadValue(context, reinterpret_cast<std::uintptr_t>(item), object) ||
+                object == 0)
+                continue;
+            std::uint32_t name_id{};
+            if (!ReadValue(context, object + profile::Layout.kObjectNameOffset, name_id) || name_id == 0)
+                continue;
+            std::array<char, 64> buffer{};
+            std::size_t size = buffer.size();
+            if (context.names->resolve_utf8(context.names->user, name_id, buffer.data(), &size).code !=
+                    ANOMALY_STATUS_V1_OK ||
+                size > buffer.size())
+                continue;
+            std::string text(buffer.data(), size);
+            while (!text.empty() && text.back() == '\0') text.pop_back();
+            if (text != profile::kSetTextureParameterFunction) continue;
+            // A UFunction's outer is the class that declares it; require the material class so a
+            // same-named helper elsewhere cannot be mistaken for it.
+            std::uintptr_t outer{};
+            std::uint32_t outer_name{};
+            if (!ReadValue(context, object + profile::Layout.kObjectOuterOffset, outer) || outer == 0 ||
+                !ReadValue(context, outer + profile::Layout.kObjectNameOffset, outer_name) || outer_name == 0)
+                continue;            std::array<char, 64> outer_buffer{};
+            std::size_t outer_size = outer_buffer.size();
+            if (context.names->resolve_utf8(context.names->user, outer_name, outer_buffer.data(),
+                    &outer_size)
+                        .code != ANOMALY_STATUS_V1_OK ||
+                outer_size > outer_buffer.size())
+                continue;
+            std::string outer_text(outer_buffer.data(), outer_size);
+            while (!outer_text.empty() && outer_text.back() == '\0') outer_text.pop_back();
+            if (outer_text != "MaterialInstanceDynamic") {
+                continue;
+            }
+            g_set_texture_parameter.store(object, std::memory_order_release);
+            Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO, "disc cover function resolved by name");
+            return true;
+        }
+    } catch (...) {
+    }
+    return false;
+}
+
 std::string ObjectName(Context& context, std::uintptr_t object);
 
 // Builder thread, once: UKismetRenderingLibrary::ImportBufferAsTexture2D and
@@ -3806,12 +3915,17 @@ std::string ObjectName(Context& context, std::uintptr_t object);
 // the instance of that class whose name starts with "Default__". Stays 0 when
 // any is missing, which keeps the album cover on the disc.
 void ResolveImportBuffer(Context& context) noexcept {
-    static bool tried = false;
-    if (tried || g_import_buffer.load(std::memory_order_acquire) != 0) return;
+    // Rate-limited retry rather than a one-shot latch: the first attempt can run before the object
+    // array or the class it looks for is ready, and latching that failure left the per-song cover
+    // unimportable for the rest of the session.
+    static std::uint64_t next_attempt_ms{};
+    if (g_import_buffer.load(std::memory_order_acquire) != 0) return;
+    const std::uint64_t now = GetTickCount64();
+    if (next_attempt_ms != 0 && now < next_attempt_ms) return;
+    next_attempt_ms = now + 2000;
     const std::uintptr_t objects = g_object_array.load(std::memory_order_acquire);
     std::int32_t total{};
     if (objects == 0 || !ReadValue(context, objects + profile::Layout.kObjectArrayCountOffset, total) || total <= 0) return;
-    tried = true;
     try {
         std::uint32_t class_name_id{};
         std::uint32_t function_name_id{};
@@ -4146,12 +4260,13 @@ void ImportPendingSongCover(Context& context) noexcept {
     const std::uintptr_t library = g_rendering_library_cdo.load(std::memory_order_acquire);
     if (function == 0 || library == 0) return;
     std::vector<std::uint8_t> bytes;
-    std::uint64_t key{};
+    std::string pic;
     {
         std::unique_lock lock(g_song_cover_mutex, std::try_to_lock);
         if (!lock.owns_lock() || g_song_cover_pending.empty()) return;
         bytes.swap(g_song_cover_pending);
-        key = g_song_cover_pending_key;
+        pic = g_song_cover_pending_pic;
+        g_song_cover_pending_pic.clear();
     }
     if (bytes.size() > static_cast<std::size_t>((std::numeric_limits<std::int32_t>::max)())) return;
     void* const texture = CallImportBuffer(function, library, bytes);
@@ -4161,7 +4276,10 @@ void ImportPendingSongCover(Context& context) noexcept {
     }
     SetRooted(context, texture, true);
     void* const previous = g_song_cover.exchange(texture, std::memory_order_acq_rel);
-    g_song_cover_key.store(key, std::memory_order_release);
+    {
+        std::scoped_lock lock(g_song_cover_mutex);
+        g_song_cover_pic = std::move(pic);
+    }
     if (previous != nullptr && previous != texture) SetRooted(context, previous, false);
 }
 
@@ -4173,9 +4291,15 @@ void* PlayingCoverTexture(Context& context) noexcept {
     if (subsystem == nullptr || !TakenOver(context, subsystem)) return nullptr;
     if (const auto memory = context.engine.MemorySlot()) {
         void* const song = g_song_cover.load(std::memory_order_acquire);
-        const std::uint64_t key =
-            SongCoverKey(*memory, context.meting_generation.load(std::memory_order_acquire));
-        if (song != nullptr && g_song_cover_key.load(std::memory_order_acquire) == key) return song;
+        if (song != nullptr) {
+            const std::string playing_pic = MetingSongPic(context, *memory);
+            std::string imported_pic;
+            {
+                std::scoped_lock lock(g_song_cover_mutex);
+                imported_pic = g_song_cover_pic;
+            }
+            if (!playing_pic.empty() && playing_pic == imported_pic) return song;
+        }
         return g_meting_cover.load(std::memory_order_acquire);
     }
     if (context.engine.PlayingSlot()) return g_album_cover.load(std::memory_order_acquire);
@@ -4187,10 +4311,10 @@ void* PlayingCoverTexture(Context& context) noexcept {
 // now playing. A game album or game song keeps the game's own cover.
 void ApplyDiscCover(Context& context) noexcept {
     ImportPendingSongCover(context);
-    if (g_set_texture_parameter.load(std::memory_order_acquire) == 0 ||
-        g_disc_parameter_name.load(std::memory_order_acquire) == 0) {
-        return;
-    }
+    // The material parameter name comes from the album-detail hook. When that hook no longer fires
+    // the name stays unknown, and requiring it here skipped every cover write -- including the brush
+    // fallback below. Only the texture-parameter function is required now.
+    if (g_set_texture_parameter.load(std::memory_order_acquire) == 0) return;
     const std::uintptr_t view = g_disc_view.load(std::memory_order_acquire);
     std::uintptr_t klass{};
     std::uintptr_t image{};
@@ -4206,7 +4330,15 @@ void ApplyDiscCover(Context& context) noexcept {
         ReadValue(context, player + profile::Layout.kObjectClassOffset, klass) &&
         klass == g_player_view_class.load(std::memory_order_acquire) &&
         ReadValue(context, player + g_player_image_offset.load(std::memory_order_acquire), image)) {
-        SetDiscTexture(context, image, PlayingCoverTexture(context));
+        void* const cover = PlayingCoverTexture(context);
+        if (cover != nullptr) {
+            SetDiscTexture(context, image, cover);
+            // Without the material parameter name (its source is the detail-page hook that no longer
+            // fires) the brush is the only way in; it is reapplied every frame because the blueprint
+            // rebuilds the brush on its own update.
+            if (g_disc_parameter_name.load(std::memory_order_acquire) == 0)
+                SetImageTexture(reinterpret_cast<void*>(image), cover);
+        }
     }
 }
 // Background worker: retries the AHUD subscription that a boot-time load
@@ -4226,10 +4358,14 @@ void BuilderLoop(Context* context) {
             // A Meting song ended: continue with the next one in the Meting
             // list. The per-frame sync then points the game's current song at it.
             if (const auto ended = context->engine.TakeMemoryEnded()) StepMeting(*context, *ended, 1);
+            // Resolve the disc's texture-parameter function by name first: the detail-page hook that
+            // used to provide the material no longer fires in this build.
+            static_cast<void>(ResolveSetTextureFunctionByName(*context));
             ResolveDiscParameter(*context);
             FindPlayerDisc(*context);
-            // Only once the disc can show a texture at all.
-            if (g_set_texture_parameter.load(std::memory_order_acquire) != 0) ResolveImportBuffer(*context);
+            // Independent of the disc: the cover import only needs the object table and the
+            // rendering library, so a disc that never resolves must not block it.
+            ResolveImportBuffer(*context);
             // Skip the cycle while a game-thread detour is publishing under
             // g_build_mutex; the next cycle picks up the remaining work.
             std::unique_lock<std::mutex> build_lock(g_build_mutex, std::try_to_lock);
