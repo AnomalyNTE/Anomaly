@@ -5,6 +5,8 @@
 #include "anomaly/sdk/services/ue5.h"
 #include "anomaly/sdk/services/ui.h"
 #include "anomaly/sdk/services/nte.h"
+#include "anomaly/sdk/services/ipc.h"
+#include "anomaly/sdk/services/json.h"
 #include "anomaly/sdk/localization.hpp"
 
 // 共享自动战斗状态机（plugins/common/combat）：怪物识别、选靶、接近/攻击、
@@ -39,6 +41,43 @@ constexpr std::string_view kGWorldPattern = "kGWorldPattern";
 
 constexpr std::uint32_t kRipDisplacementOffset = 3;
 constexpr std::uint32_t kRipInstructionSize = 7;
+
+// ---------------------------------------------------------------------------
+// 插件间 IPC：一键副本控制端点
+//
+// 「自动日常」(yg.auto-daily) 不重复实现副本逻辑，改为通过 anomaly.ipc 驱动本插件
+// 既有的一键副本状态机（选本/难度/轮数 → 进本 → 战斗 → 领奖 → 退出）。
+//
+// 契约（请求与响应都是 UTF-8 JSON，两侧用宿主 anomaly.json 解析）：
+//   请求 start : {"op":"start","display":0,"sub":0,"level":1,"runs":6,"enterWait":4,"exitWait":8}
+//   请求 stop  : {"op":"stop"}
+//   请求 status: {"op":"status"}
+//   响应       : {"ok":true,"active":true,"phase":0,"runsDone":0,"runsTotal":6,"reason":"none"}
+//   reason 取值: none / complete / stopped / no_player / enter_timeout / claim_failed /
+//               claim_timeout
+//
+// schema hash 是上面两份 schema 文本的 SHA-256，调用方 (Daily) 必须持有同一份字节，
+// 否则宿主按 ANOMALY_IPC_ERROR_V1_SCHEMA_MISMATCH 拒绝。
+// ---------------------------------------------------------------------------
+constexpr std::string_view kOneKeyEndpointId = "ccyellowstar.clone-enter.onekey";
+constexpr std::uint32_t kOneKeyEndpointMajor = 1;
+constexpr std::uint32_t kOneKeyEndpointMinor = 1;
+constexpr std::uint32_t kOneKeyEndpointTimeoutMs = 3000;
+constexpr std::uint32_t kOneKeyRequestBytes = 512;
+constexpr std::uint32_t kOneKeyResponseBytes = 1024;
+constexpr std::string_view kOneKeyRequestSchema =
+    R"({"type":"object","required":["op"],"properties":{"op":{"enum":["start","stop","status"]},"display":{"type":"integer"},"sub":{"type":"integer"},"level":{"type":"integer"},"runs":{"type":"integer"},"enterWait":{"type":"integer"},"exitWait":{"type":"integer"}}})";
+constexpr std::string_view kOneKeyResponseSchema =
+    R"({"type":"object","properties":{"ok":{"type":"boolean"},"active":{"type":"boolean"},"phase":{"type":"integer"},"runsDone":{"type":"integer"},"runsTotal":{"type":"integer"},"reason":{"type":"string"}}})";
+constexpr AnomalyIpcSchemaHashV1 kOneKeyRequestSchemaHash{{
+    0x48, 0x0e, 0x12, 0x3e, 0xd9, 0x6e, 0x30, 0xcf, 0xa2, 0x72, 0xb7, 0x90, 0x56, 0xa6, 0x6f, 0xb9,
+    0xce, 0x97, 0xc1, 0x49, 0xca, 0xcf, 0x76, 0x94, 0x46, 0xb8, 0xbe, 0x02, 0x8a, 0x76, 0x03, 0x30}};
+constexpr AnomalyIpcSchemaHashV1 kOneKeyResponseSchemaHash{{
+    0xff, 0x53, 0xa4, 0x53, 0x56, 0xd8, 0xd6, 0x3a, 0x9c, 0x5b, 0xb5, 0x0c, 0x65, 0xb8, 0xe5, 0x0f,
+    0x78, 0x9f, 0x9e, 0x12, 0x71, 0x3f, 0xb4, 0xa8, 0x27, 0xb2, 0x46, 0xc6, 0x43, 0xef, 0x83, 0x14}};
+
+// 一键副本的对外结果码（Daily 只认这组数字 + reason，不解析本地化文案）。
+enum class OneKeyResult : int { Running = 0, Complete = 1, Aborted = 2 };
 
 
 
@@ -340,6 +379,13 @@ struct Context {
     bool one_key_enter_pos_valid{false};
     bool one_key_direct_enter{false};
     bool auto_claim_is_weekly{false};
+    // ---- 插件间 IPC（自动日常驱动一键副本）----
+    const AnomalyIpcServiceV1* ipc{};
+    const AnomalyJsonServiceV1* json{};
+    AnomalyGenerationHandleV1 onekey_endpoint{};
+    // 一键副本的完成度：0 运行中 / 1 打完全部轮次 / 2 中止。只在 Game 域写读。
+    std::atomic_int one_key_result{static_cast<int>(OneKeyResult::Running)};
+    std::string one_key_reason{"none"};
     std::atomic_bool test_attack_pending{false};
     bool test_attack_waiting{false};
     std::int32_t test_attack_phase{0};
@@ -3568,14 +3614,6 @@ bool DoEnterClone(Context& context) noexcept {
     std::memcpy(p + 8, &level, sizeof(level));
     p[12] = type;
     std::memcpy(p + 16, &custom_val, sizeof(custom_val));
-    std::FILE* fp = std::fopen("D:\\clone-enter.log", "a");
-    if (fp != nullptr) {
-        std::fprintf(fp, "Enter %s type=%u level=%d custom=%s\n",
-                     RenderFName(context, sub).c_str(),
-                     static_cast<unsigned>(type), level,
-                     RenderFName(context, match).c_str());
-        std::fclose(fp);
-    }
     return Invoke(context, reinterpret_cast<void*>(context.combat_state.player_state),
                   reinterpret_cast<void*>(fn), p);
 }
@@ -6417,9 +6455,17 @@ void AutoClaimTick(Context& context) noexcept {
 // 是同一个 5：模块负责计数，这里只负责跨过它）。
 constexpr std::uint32_t kOneKeyNoMonsterSeconds = 5;
 
+// 结果码与停链在文件后面实现（IPC provider 与生命周期都要用），这里先声明。
+void SetOneKeyResult(Context& context, OneKeyResult result, const char* reason) noexcept;
+void StopOneKeyAutoRun(Context& context) noexcept;
+
 void OneKeyTick(Context& context) noexcept {
     if (!context.one_key_active) return;
-    if (!GetPlayerState(context)) { context.combat_status = context.localizer.Text("status.one_key_no_player", "One-key run: no player"); return; }
+    if (!GetPlayerState(context)) {
+        context.one_key_reason = "no_player";
+        context.combat_status = context.localizer.Text("status.one_key_no_player", "One-key run: no player");
+        return;
+    }
     const auto now = std::chrono::steady_clock::now();
     switch (context.one_key_phase) {
     case 0: {
@@ -6462,6 +6508,7 @@ void OneKeyTick(Context& context) noexcept {
         if (now >= context.one_key_deadline) {
             context.combat_status = context.localizer.Text("status.one_key_enter_timeout", "One-key run failed: entering the dungeon timed out");
             context.one_key_active = false;
+            SetOneKeyResult(context, OneKeyResult::Aborted, "enter_timeout");
         }
         return;
     }
@@ -6486,11 +6533,6 @@ void OneKeyTick(Context& context) noexcept {
                 context.one_key_deadline = now + std::chrono::seconds(90);
                 context.combat_status = context.localizer.Text("status.one_key_claiming", "One-key run: claiming the rewards");
                 StartAutoClaim(context);
-                std::FILE* fp = std::fopen("D:\\rpc-diag.txt", "a");
-                if (fp != nullptr) {
-                    std::fprintf(fp, "[onekey] trigger autoclaim\n");
-                    std::fclose(fp);
-                }
             }
         }
         return;
@@ -6499,6 +6541,7 @@ void OneKeyTick(Context& context) noexcept {
         if (!context.auto_claim_active) {
             if (!context.auto_claim_succeeded) {
                 context.one_key_active = false;
+                SetOneKeyResult(context, OneKeyResult::Aborted, "claim_failed");
                 return;
             }
             ++context.one_key_loop_done;
@@ -6518,6 +6561,7 @@ void OneKeyTick(Context& context) noexcept {
                     "One-key run complete ({0}/{1} rounds)",
                     std::array<std::string_view, 2>{rounds_done, rounds_total});
                 context.one_key_active = false;
+                SetOneKeyResult(context, OneKeyResult::Complete, "complete");
                 context.one_key_loop_done = 0;
             }
             return;
@@ -6525,6 +6569,7 @@ void OneKeyTick(Context& context) noexcept {
         if (now >= context.one_key_deadline) {
             StopAutoClaim(context, context.localizer.Text("status.one_key_claim_timeout", "One-key run failed: claiming the rewards timed out"));
             context.one_key_active = false;
+            SetOneKeyResult(context, OneKeyResult::Aborted, "claim_timeout");
         }
         return;
     }
@@ -6554,6 +6599,170 @@ void OneKeyTick(Context& context) noexcept {
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// 一键副本的对外控制（anomaly.ipc provider）
+//
+// 端点只做「改状态 + 排队」：实际的进本/战斗/领奖仍全部由 OneKeyTick 在 Game 域推进，
+// 与面板按钮走同一条路径，因此两条入口不会各有一套行为。
+// ---------------------------------------------------------------------------
+void SetOneKeyResult(Context& context, const OneKeyResult result, const char* reason) noexcept {
+    context.one_key_result.store(static_cast<int>(result), std::memory_order_release);
+    context.one_key_reason = reason != nullptr ? reason : "none";
+}
+
+// 外部要求停止：清掉排队中的一键请求与自动战斗，并结束进行中的自动领取。
+void StopOneKeyAutoRun(Context& context) noexcept {
+    context.one_key_pending.store(false, std::memory_order_release);
+    context.one_key_active = false;
+    context.one_key_phase = 0;
+    context.one_key_loop_done = 0;
+    context.auto_attack.store(false, std::memory_order_release);
+    if (context.auto_claim_active) {
+        StopAutoClaim(context,
+            context.localizer.Text("status.daily_stop_requested", "One-key run: stopped on external request"));
+    }
+    SetOneKeyResult(context, OneKeyResult::Aborted, "stopped");
+}
+
+bool IpcObjectField(
+    Context& context, AnomalyGenerationHandleV1 document, const char* key,
+    AnomalyGenerationHandleV1& child) noexcept {
+    child = {};
+    return context.json != nullptr && context.json->object_find != nullptr &&
+        context.json->object_find(
+            context.json->user, document, {key, std::strlen(key)}, &child).code ==
+        ANOMALY_STATUS_V1_OK;
+}
+
+bool IpcStringField(
+    Context& context, AnomalyGenerationHandleV1 document, const char* key,
+    char* out, std::size_t capacity) noexcept {
+    if (out == nullptr || capacity < 2) return false;
+    AnomalyGenerationHandleV1 child{};
+    if (!IpcObjectField(context, document, key, child)) return false;
+    std::size_t size = capacity;
+    const bool ok = context.json->string_value(
+                        context.json->user, child, out, &size).code == ANOMALY_STATUS_V1_OK;
+    static_cast<void>(context.json->release(context.json->user, child));
+    out[capacity - 1] = '\0';
+    return ok;
+}
+
+bool IpcNumberField(
+    Context& context, AnomalyGenerationHandleV1 document, const char* key,
+    double& out) noexcept {
+    AnomalyGenerationHandleV1 child{};
+    if (!IpcObjectField(context, document, key, child)) return false;
+    const bool ok = context.json->number_value(context.json->user, child, &out).code ==
+        ANOMALY_STATUS_V1_OK;
+    static_cast<void>(context.json->release(context.json->user, child));
+    return ok;
+}
+
+std::uint32_t IpcClamp(const double value, const std::uint32_t minimum, const std::uint32_t maximum) {
+    if (!(value >= 0.0)) return minimum;
+    const auto rounded = static_cast<std::uint32_t>(value + 0.5);
+    return (std::min)((std::max)(rounded, minimum), maximum);
+}
+
+void OneKeyApplyStart(Context& context, AnomalyGenerationHandleV1 document) noexcept {
+    double display = context.display_index;
+    double sub = context.sub_choice_index;
+    double level = context.level_index;
+    double runs = context.one_key_loop_count;
+    double enter_wait = context.one_key_enter_wait;
+    double exit_wait = context.one_key_exit_wait;
+    static_cast<void>(IpcNumberField(context, document, "display", display));
+    static_cast<void>(IpcNumberField(context, document, "sub", sub));
+    static_cast<void>(IpcNumberField(context, document, "level", level));
+    static_cast<void>(IpcNumberField(context, document, "runs", runs));
+    static_cast<void>(IpcNumberField(context, document, "enterWait", enter_wait));
+    static_cast<void>(IpcNumberField(context, document, "exitWait", exit_wait));
+    const auto di = IpcClamp(display, 0, static_cast<std::uint32_t>(kDisplayCount - 1));
+    const auto& disp = kDisplays[di];
+    context.display_index = di;
+    context.sub_choice_index = IpcClamp(sub, 0, disp.sub_count > 1 ? disp.sub_count - 1 : 0);
+    context.level_index = IpcClamp(level, disp.min_level, disp.max_level);
+    context.one_key_loop_count = IpcClamp(runs, 1, 50);
+    context.one_key_enter_wait = IpcClamp(enter_wait, 1, 60);
+    context.one_key_exit_wait = IpcClamp(exit_wait, 1, 60);
+    context.one_key_loop_done = 0;
+    context.one_key_phase = 0;
+    SetOneKeyResult(context, OneKeyResult::Running, "none");
+    context.one_key_pending.store(true, std::memory_order_release);
+}
+
+void WriteOneKeyStatus(Context& context, char* out, std::size_t capacity) noexcept {
+    const int result = context.one_key_result.load(std::memory_order_acquire);
+    std::snprintf(out, capacity,
+        R"({"ok":true,"active":%s,"phase":%d,"runsDone":%u,"runsTotal":%u,"result":%d,"reason":"%s"})",
+        context.one_key_active ? "true" : "false",
+        static_cast<int>(context.one_key_phase),
+        context.one_key_loop_done, context.one_key_loop_count, result,
+        context.one_key_reason.c_str());
+}
+
+AnomalyStatusV1 ANOMALY_CALL OneKeyIpcRequest(
+    void* user, const AnomalyIpcRequestContextV1* /*request_context*/,
+    const AnomalyByteSpanV1 request, const AnomalyMutableByteSpanV1 response,
+    std::size_t* response_size) {
+    auto* context = static_cast<Context*>(user);
+    if (context == nullptr || response_size == nullptr || context->json == nullptr ||
+        context->json->parse == nullptr) {
+        return {ANOMALY_STATUS_V1_FAILED, 0, {nullptr, 0}};
+    }
+    AnomalyGenerationHandleV1 document{};
+    const AnomalyStatusV1 parsed = context->json->parse(
+        context->json->user,
+        {reinterpret_cast<const char*>(request.data), request.size}, &document);
+    if (parsed.code != ANOMALY_STATUS_V1_OK) {
+        return {ANOMALY_STATUS_V1_INVALID_ARGUMENT, 0, {nullptr, 0}};
+    }
+    char operation[16]{};
+    const bool has_operation =
+        IpcStringField(*context, document, "op", operation, sizeof(operation));
+    if (has_operation && std::strcmp(operation, "start") == 0) {
+        OneKeyApplyStart(*context, document);
+    } else if (has_operation && std::strcmp(operation, "stop") == 0) {
+        StopOneKeyAutoRun(*context);
+    } else if (!has_operation || std::strcmp(operation, "status") != 0) {
+        static_cast<void>(context->json->release(context->json->user, document));
+        return {ANOMALY_STATUS_V1_INVALID_ARGUMENT, 0, {nullptr, 0}};
+    }
+    static_cast<void>(context->json->release(context->json->user, document));
+    char document_out[kOneKeyResponseBytes]{};
+    WriteOneKeyStatus(*context, document_out, sizeof(document_out));
+    const std::size_t length = std::strlen(document_out);
+    *response_size = length + 1;
+    if (response.data == nullptr || response.size < length + 1) {
+        return {ANOMALY_STATUS_V1_BUFFER_TOO_SMALL, 0, {nullptr, 0}};
+    }
+    std::memcpy(response.data, document_out, length + 1);
+    return {ANOMALY_STATUS_V1_OK, 0, {nullptr, 0}};
+}
+
+bool RegisterOneKeyEndpoint(Context& context) noexcept {
+    if (context.ipc == nullptr || context.ipc->register_endpoint == nullptr) return false;
+    AnomalyIpcEndpointDescriptorV1 descriptor{};
+    descriptor.struct_size = sizeof(descriptor);
+    descriptor.endpoint_id = {kOneKeyEndpointId.data(), kOneKeyEndpointId.size()};
+    descriptor.major_version = kOneKeyEndpointMajor;
+    descriptor.minor_version = kOneKeyEndpointMinor;
+    descriptor.request_schema = kOneKeyRequestSchemaHash;
+    descriptor.response_schema = kOneKeyResponseSchemaHash;
+    descriptor.modes = ANOMALY_IPC_MODE_V1_SYNC_REQUEST | ANOMALY_IPC_MODE_V1_ASYNC_REQUEST;
+    descriptor.affinity = ANOMALY_IPC_AFFINITY_V1_GAME;
+    descriptor.timeout_milliseconds = kOneKeyEndpointTimeoutMs;
+    descriptor.reentrancy = ANOMALY_IPC_REENTRANCY_V1_REJECT;
+    descriptor.maximum_request_bytes = kOneKeyRequestBytes;
+    descriptor.maximum_response_bytes = kOneKeyResponseBytes;
+    descriptor.maximum_event_bytes = 0;
+    descriptor.maximum_queue_depth = 8;
+    const AnomalyStatusV1 status = context.ipc->register_endpoint(
+        context.ipc->user, &descriptor, &OneKeyIpcRequest, &context, &context.onekey_endpoint);
+    return status.code == ANOMALY_STATUS_V1_OK;
+}
 
 void TestAttackTick(Context& context) noexcept {
     if (!context.test_attack_waiting) return;
@@ -6585,13 +6794,6 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
     if (!context) return {ANOMALY_STATUS_V1_FAILED, 0, {nullptr, 0}};
     context->host = host;
     context->localizer = anomaly::sdk::Localizer(host);
-    {
-        std::FILE* fp = std::fopen("D:\\rpc-diag.txt", "a");
-        if (fp != nullptr) {
-            std::fprintf(fp, "[config] configdir=%s\n", GetConfigDir().c_str());
-            std::fclose(fp);
-        }
-    }
     LoadClickConfig(*context);
     LoadExitConfig(*context);
     LoadWeeklyConfig(*context);
@@ -6629,6 +6831,16 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
         ANOMALY_CORE_SERVICE_V1_ID, ANOMALY_CORE_SERVICE_V1_VERSION).get();
     context->input = view.Query<AnomalyInputServiceV1>(
         ANOMALY_INPUT_SERVICE_V1_ID, ANOMALY_INPUT_SERVICE_V1_VERSION).get();
+    // 一键副本的对外控制端点（自动日常通过它驱动本插件）。注册失败只告警，面板功能不受影响。
+    context->ipc = view.Query<AnomalyIpcServiceV1>(
+        ANOMALY_IPC_SERVICE_V1_ID, ANOMALY_IPC_SERVICE_V1_VERSION).get();
+    context->json = view.Query<AnomalyJsonServiceV1>(
+        ANOMALY_JSON_SERVICE_V1_ID, ANOMALY_JSON_SERVICE_V1_VERSION).get();
+    if (!RegisterOneKeyEndpoint(*context) && context->core != nullptr &&
+        context->core->log != nullptr) {
+        context->core->log(context->core->user, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
+                           anomaly::sdk::StringView("clone-enter: one-key IPC endpoint unavailable"));
+    }
     std::string legacy_cache_path;
     if (context->core != nullptr && context->core->plugin_directory != nullptr) {
         std::size_t sz = 0;
@@ -6696,11 +6908,27 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void* plugin_context, std::uint32_t) {
     auto& context = *static_cast<Context*>(plugin_context);
     context.capturing_exit_hotkey.store(false, std::memory_order_release);
     ReleaseExitHotkey(context);
+    // 停链 + 注销端点：generation 停止后不再有人能驱动一键副本。
+    StopOneKeyAutoRun(context);
+    if (context.ipc != nullptr && context.ipc->unregister_endpoint != nullptr &&
+        context.onekey_endpoint.id != 0) {
+        static_cast<void>(
+            context.ipc->unregister_endpoint(context.ipc->user, context.onekey_endpoint));
+        context.onekey_endpoint = {};
+    }
     return anomaly::sdk::Ok();
 }
 
 void ANOMALY_CALL Unload(void* plugin_context) {
-    delete static_cast<Context*>(plugin_context);
+    auto* context = static_cast<Context*>(plugin_context);
+    if (context != nullptr) {
+        if (context->ipc != nullptr && context->ipc->unregister_endpoint != nullptr &&
+            context->onekey_endpoint.id != 0) {
+            static_cast<void>(
+                context->ipc->unregister_endpoint(context->ipc->user, context->onekey_endpoint));
+        }
+        delete context;
+    }
 }
 
 // 模块把「普攻打不出来」和「等服务/等位置/等目标数据」都并进了 unavailable，而原实现
@@ -6969,6 +7197,7 @@ void ANOMALY_CALL Update(void* plugin_context, const double /*delta_seconds*/) {
         DumpSettlementUI(context);
     }
     if (context.one_key_pending.exchange(false, std::memory_order_acq_rel)) {
+        SetOneKeyResult(context, OneKeyResult::Running, "none");
         context.auto_attack.store(false, std::memory_order_release);
         auto host = MakeCombatHost(context);
         combat::Reset(host, context.combat_state);
@@ -7262,7 +7491,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         anomaly::sdk::StringView("ccyellowstar.clone-enter"),
         anomaly::sdk::StringView("Clone Enter"),
         anomaly::sdk::StringView("CCYellowStar"),
-        anomaly::sdk::StringView("0.2.14"),
+        anomaly::sdk::StringView("0.2.15"),
         Load, Start, Stop, Unload, Update, Draw};
     return anomaly::sdk::Ok();
 }
