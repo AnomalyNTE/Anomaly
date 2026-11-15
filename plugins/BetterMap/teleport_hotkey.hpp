@@ -81,8 +81,8 @@ public:
                 }
             }
         } else {
-            auto name = localizer.Text("hotkey.default", "Ctrl + left-click");
-            if (key_ && handle_.id) name += " / " + KeyName(key_);
+            const auto name = key_ && handle_.id ? KeyName(key_)
+                                                 : localizer.Text("hotkey.default", "Ctrl + left-click");
             const auto label = localizer.Format("hotkey.change", "Teleport shortcut · {0}",
                                              std::array<std::string_view, 1>{name});
             if (!input_ || !ui->button) {
