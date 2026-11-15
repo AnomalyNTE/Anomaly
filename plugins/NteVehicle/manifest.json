@@ -2,11 +2,11 @@
   "schemaVersion": 2,
   "id": "anomaly.nte-vehicle",
   "name": "Vehicle Control",
-  "description": "Vehicle control: plain vehicle summoning, per-model customized summoning, performance tuning, wheel friction, full durability for the current land vehicle, and diagnostics.",
+  "description": "Vehicle control: plain vehicle summoning, per-model customized summoning, performance tuning, wheel friction, collision damage guard for the current land vehicle (stops the vehicle damage entry so durability is never reduced, without writing the server-owned durability value), and diagnostics.",
   "author": "Anomaly",
   "license": "AGPL-3.0-only",
   "audience": "user",
-  "version": "0.11.4",
+  "version": "0.13.0",
   "entry": "plugin.dll",
   "api": {
     "major": 1,
@@ -76,6 +76,14 @@
     {
       "id": "anomaly.interop.signature",
       "minVersion": 1
+    },
+    {
+      "id": "anomaly.interop.hook",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.config",
+      "minVersion": 1
     }
   ],
   "capabilities": [
@@ -90,6 +98,7 @@
     "ue5-names",
     "ue5-objects",
     "game-events",
-    "interop-signature"
+    "interop-signature",
+    "interop-hook"
   ]
 }

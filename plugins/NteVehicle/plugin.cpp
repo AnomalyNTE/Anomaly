@@ -1,7 +1,9 @@
 #include "backend.hpp"
+#include "durability_guard.hpp"
 #include "runtime.hpp"
 #include "anomaly/sdk/cpp.hpp"
 #include "anomaly/sdk/services/nte.h"
+#include "anomaly/sdk/services/platform.h"
 #include "anomaly/sdk/services/ui.h"
 #include "anomaly/sdk/services/ui_resources.h"
 #include "anomaly/sdk/services/plugin_state.h"
@@ -50,10 +52,14 @@ struct CustomizationOption {
 
 struct Context {
     nte_vehicle::Runtime* vehicle{};
+    const AnomalyHostApiV1* host{};
+    const AnomalyCoreServiceV1* core{};
     const AnomalyNtePlayerServiceV1* player{};
     const AnomalyInputServiceV1* input{};
     const AnomalyWindowServiceV1* window_service{};
     const AnomalyPluginStateServiceV1* plugin_state{};
+    const AnomalyConfigServiceV1* config{};
+    AnomalyGenerationHandleV1 settings_schema{};
     anomaly::sdk::Localizer localizer;
     AnomalyGenerationHandleV1 menu_window_handle{};
     AnomalyGenerationHandleV1 menu_hotkey_handle{};
@@ -92,6 +98,14 @@ struct Context {
     std::atomic_bool summon{};
     std::atomic_bool summon_customized{};
     std::atomic_bool friction_toggle{};
+    // 载具耐久保护的开关与安装状态。开关在 Game 线程翻转，落盘只在生命周期回调执行。
+    bool durability_guard_enabled{true};
+    bool durability_guard_installed{};
+    std::string durability_guard_detail;
+    std::atomic_bool durability_guard_toggle{};
+    std::atomic_bool settings_dirty{};
+    // 玩家服务在游戏世界就绪后才发布，未就绪时每 60 个 Game tick 重查一次。
+    std::uint32_t service_retry_ticks{};
     std::atomic_bool started{};
     std::atomic_uint32_t durability_last_status_code{ANOMALY_STATUS_V1_NOT_FOUND};
     float speed_ratio{1.0F};
@@ -133,6 +147,18 @@ const Service* QueryService(const AnomalyHostApiV1* host,
     return static_cast<const Service*>(table);
 }
 
+std::string HexAddress(std::uintptr_t value) {
+    constexpr char kDigits[] = "0123456789ABCDEF";
+    std::string text("0x");
+    std::string digits;
+    do {
+        digits.push_back(kDigits[value & 0xFU]);
+        value >>= 4U;
+    } while (value != 0);
+    text.append(digits.rbegin(), digits.rend());
+    return text;
+}
+
 // 载具选择持久化：保存到插件自己的 state 目录下的 cfg 文件。
 std::string SavedSelectionPath() {
     if (g_context.state_directory.empty()) return {};
@@ -161,6 +187,98 @@ void SaveSelection(const std::string& vehicle_id) {
     if (path.empty()) return;
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     if (out) out << vehicle_id << "\n";
+}
+
+// 载具耐久保护开关由宿主 anomaly.config 持久化：Game 回调只置 dirty 位，
+// 文档读写全部留在生命周期回调（Load/Stop/Unload）里，避免在渲染/游戏回调做 I/O。
+constexpr std::string_view kSettingsSchemaId = "settings";
+constexpr std::uint32_t kSettingsSchemaVersion = 1;
+constexpr std::size_t kMaximumSettingsBytes = 512;
+constexpr std::string_view kSettingsSchema = R"json(
+{"type":"object","additionalProperties":false,"required":["durabilityGuard"],
+ "properties":{"durabilityGuard":{"type":"boolean"}}}
+)json";
+
+bool ConfigReady() noexcept {
+    const auto* config = g_context.config;
+    return HasField<AnomalyConfigServiceV1,
+               decltype(AnomalyConfigServiceV1::write_atomic)>(
+               config, offsetof(AnomalyConfigServiceV1, write_atomic)) &&
+        config->service_version >= ANOMALY_CONFIG_SERVICE_V1_VERSION &&
+        config->register_schema != nullptr && config->read != nullptr &&
+        config->write_atomic != nullptr;
+}
+
+bool ParseDurabilityGuardFlag(std::string_view document, bool& value) noexcept {
+    const auto key = document.find("\"durabilityGuard\"");
+    if (key == std::string_view::npos) return false;
+    const auto colon = document.find(':', key);
+    if (colon == std::string_view::npos) return false;
+    std::size_t at = colon + 1;
+    while (at < document.size() &&
+           (document[at] == ' ' || document[at] == '\n' || document[at] == '\r' ||
+            document[at] == '\t')) {
+        ++at;
+    }
+    if (document.substr(at, 4) == "true") {
+        value = true;
+        return true;
+    }
+    if (document.substr(at, 5) == "false") {
+        value = false;
+        return true;
+    }
+    return false;
+}
+
+void LoadSettings() {
+    g_context.durability_guard_enabled = true;
+    g_context.settings_dirty.store(false, std::memory_order_release);
+    if (!ConfigReady()) return;
+    std::uint32_t schema_version{};
+    std::size_t size{};
+    const auto size_status = g_context.config->read(
+        g_context.config->user, anomaly::sdk::StringView(kSettingsSchemaId), &schema_version,
+        {nullptr, 0}, &size);
+    // NOT_FOUND 表示还没有保存过的文档；保持默认值即可。
+    if (!anomaly::sdk::Succeeded(size_status) || size == 0 || size > kMaximumSettingsBytes) return;
+    std::vector<std::uint8_t> document(size);
+    std::size_t copied = document.size();
+    const auto read_status = g_context.config->read(
+        g_context.config->user, anomaly::sdk::StringView(kSettingsSchemaId), &schema_version,
+        {document.data(), document.size()}, &copied);
+    if (!anomaly::sdk::Succeeded(read_status) || schema_version != kSettingsSchemaVersion ||
+        copied == 0 || copied > document.size()) {
+        return;
+    }
+    bool enabled = true;
+    if (ParseDurabilityGuardFlag(
+            {reinterpret_cast<const char*>(document.data()), copied}, enabled)) {
+        g_context.durability_guard_enabled = enabled;
+    }
+}
+
+void SaveSettings() {
+    if (!ConfigReady() || !g_context.settings_dirty.exchange(false, std::memory_order_acq_rel))
+        return;
+    constexpr std::string_view kEnabledDocument = R"json({"durabilityGuard":true})json";
+    constexpr std::string_view kDisabledDocument = R"json({"durabilityGuard":false})json";
+    const auto document =
+        g_context.durability_guard_enabled ? kEnabledDocument : kDisabledDocument;
+    static_cast<void>(g_context.config->write_atomic(
+        g_context.config->user, anomaly::sdk::StringView(kSettingsSchemaId),
+        kSettingsSchemaVersion,
+        {reinterpret_cast<const std::uint8_t*>(document.data()), document.size()}));
+}
+
+bool RegisterSettingsSchema() {
+    if (!ConfigReady()) return false;
+    const auto status = g_context.config->register_schema(
+        g_context.config->user, anomaly::sdk::StringView(kSettingsSchemaId),
+        kSettingsSchemaVersion,
+        {reinterpret_cast<const std::uint8_t*>(kSettingsSchema.data()), kSettingsSchema.size()},
+        &g_context.settings_schema);
+    return anomaly::sdk::Succeeded(status) && g_context.settings_schema.id != 0;
 }
 
 bool InputReady(const AnomalyInputServiceV1* input) noexcept {
@@ -211,7 +329,59 @@ void ReleaseMenuHotkey(Context& context) noexcept {
     context.menu_hotkey_handle = {};
 }
 
+void SetStatus(std::string text);
 
+// 安装结果写进宿主日志：界面只显示「不可用」，具体原因与地址看日志。
+void LogCore(std::uint32_t level, std::string_view message) {
+    const auto* core = g_context.core;
+    if (core == nullptr || core->log == nullptr) return;
+    core->log(core->user, level, anomaly::sdk::StringView(message));
+}
+
+// 两个入口地址由 profile 签名扫描给出，缺项时停用该功能，不回退硬编码地址。
+// 安装状态与说明文本跨线程读写，统一在 mutex 下。
+void InstallDurabilityGuardOnStart() {
+    bool installed = false;
+    std::string detail;
+    std::uintptr_t take_damage = 0;
+    std::uintptr_t impact = 0;
+    if (g_context.vehicle == nullptr || g_context.host == nullptr) {
+        detail = g_context.localizer.Text("status.durability_guard_unavailable",
+            "Vehicle durability guard is unavailable: the vehicle backend is not loaded.");
+        LogCore(ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
+            "durability guard: the vehicle backend is not loaded");
+    } else if (!g_context.vehicle->DurabilityGuardEntries(take_damage, impact)) {
+        detail = g_context.localizer.Text("status.durability_guard_unavailable",
+            "Vehicle durability guard is unavailable: the compatibility profile did not resolve "
+            "the collision damage entries.");
+        LogCore(ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
+            "durability guard: profile entries unavailable, take_damage=" + HexAddress(take_damage) +
+                ", impact=" + HexAddress(impact));
+    } else {
+        std::string error;
+        if (nte_vehicle::InstallDurabilityGuard(g_context.host, take_damage, impact, error)) {
+            installed = true;
+            LogCore(ANOMALY_CORE_LOG_LEVEL_V1_INFO,
+                "durability guard: hooks installed, take_damage=" + HexAddress(take_damage) +
+                    ", impact=" + HexAddress(impact));
+        } else {
+            const std::array arguments{std::string_view(error)};
+            detail = g_context.localizer.Format("status.durability_guard_hook_failed",
+                "Durability guard unavailable: installing the damage hook failed ({0}).",
+                arguments);
+            LogCore(ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
+                "durability guard: hook installation failed: " + error + ", take_damage=" +
+                    HexAddress(take_damage) + ", impact=" + HexAddress(impact));
+        }
+    }
+    {
+        std::scoped_lock lock(g_context.mutex);
+        g_context.durability_guard_installed = installed;
+        g_context.durability_guard_detail = detail;
+    }
+    nte_vehicle::SetDurabilityGuardEnabled(installed && g_context.durability_guard_enabled);
+    if (!installed) SetStatus(std::move(detail));
+}
 
 void SetStatus(std::string text) {
     std::scoped_lock lock(g_context.mutex);
@@ -536,6 +706,17 @@ void RefreshCustomizationCatalogOnGameThread() {
 void Update() {
     if (!g_context.vehicle || !g_context.started.load(std::memory_order_acquire)) return;
 
+    // 玩家服务由 NTE 桥接层在本地玩家存在后才发布，这里按 tick 节流补绑。
+    if (g_context.player == nullptr) {
+        if (g_context.service_retry_ticks == 0) {
+            g_context.service_retry_ticks = 60;
+            g_context.player = QueryService<AnomalyNtePlayerServiceV1>(
+                g_context.host, ANOMALY_NTE_PLAYER_SERVICE_V1_ID, ANOMALY_NTE_PLAYER_SERVICE_V1_VERSION);
+        } else {
+            --g_context.service_retry_ticks;
+        }
+    }
+
     if (g_context.toggle_menu_requested.exchange(false, std::memory_order_acq_rel) &&
         g_context.window_service != nullptr && g_context.menu_window_handle.id != 0) {
         const auto toggle_status = g_context.window_service->toggle(
@@ -548,10 +729,14 @@ void Update() {
         }
     }
 
-    // Keep the current wheeled vehicle at maximum durability by calling Dump-validated
-    // RepairSelf(true) on every Game Update. The plugin resolves and validates the current vehicle
-    // each time; the plugin does not keep a stale actor pointer.
+    // 钩子装好时碰撞伤害已在扣耐久前被中止，无需再 RepairSelf 写入。
+    // 只有装不上钩子的环境才回退到旧的补满路径。
+    bool durability_guard_installed = false;
     {
+        std::scoped_lock lock(g_context.mutex);
+        durability_guard_installed = g_context.durability_guard_installed;
+    }
+    if (!durability_guard_installed) {
         const auto durability_status = g_context.vehicle->VehicleRepairCurrentDurability();
         const auto previous_code = g_context.durability_last_status_code.exchange(
             durability_status.code, std::memory_order_acq_rel);
@@ -935,6 +1120,23 @@ void Update() {
             SetStatus(g_context.localizer.Text("status.friction_toggle_failed",
                 "Toggling wheel friction failed."));
         }
+    }
+
+    if (g_context.durability_guard_toggle.exchange(false, std::memory_order_acq_rel)) {
+        const bool enabled = !nte_vehicle::DurabilityGuardEnabled();
+        nte_vehicle::SetDurabilityGuardEnabled(enabled);
+        const bool applied = nte_vehicle::DurabilityGuardEnabled();
+        {
+            std::scoped_lock lock(g_context.mutex);
+            g_context.durability_guard_enabled = applied;
+            g_context.status = applied
+                ? g_context.localizer.Text("status.durability_guard_enabled",
+                      "Vehicle durability guard enabled: collision damage no longer reduces "
+                      "durability.")
+                : g_context.localizer.Text("status.durability_guard_disabled",
+                      "Vehicle durability guard disabled: collision damage is applied again.");
+        }
+        g_context.settings_dirty.store(true, std::memory_order_release);
     }
 
     nte_vehicle::StateSnapshot snapshot{};
@@ -1878,10 +2080,11 @@ void DrawPerformanceTab(
 
     DrawDivider(ui);
     DrawText(ui, g_context.localizer.Text("text.durability_note",
-        "Current land vehicle durability: kept full automatically (enabled by default)"));
+        "Current land vehicle durability: the collision damage guard stops the damage event, so "
+        "durability is never reduced. The value itself stays server-owned."));
     DrawText(ui, g_context.localizer.Text("text.durability_detail",
-        "Relies on the RepairSelf(true) already verified by the dump; the current dump does "
-        "not confirm an equivalent repair entry point for water vehicles."));
+        "The guard blocks the dump-verified vehicle damage entry; without it the plugin falls "
+        "back to RepairSelf(true). Water vehicles have no verified equivalent."));
 
     DrawDivider(ui);
     DrawText(ui, g_context.localizer.Text("text.torque_heading",
@@ -1947,14 +2150,28 @@ void DrawPerformanceTab(
     }
 }
 
-void DrawChassisTab(const AnomalyUiServiceV1* ui, bool friction) {
+void DrawChassisTab(const AnomalyUiServiceV1* ui, bool friction, bool durability_guard,
+                    bool durability_guard_installed, const std::string& durability_guard_detail) {
     DrawText(ui, g_context.localizer.Text("section.wheel_friction", "Wheel friction"));
     DrawInlineGap(ui);
-    const auto friction_label = friction
-        ? g_context.localizer.Text("action.disable", "Disable")
-        : g_context.localizer.Text("action.enable", "Enable");
-    if (ui->button(ui->user, anomaly::sdk::StringView(friction_label), 0.0F, 0.0F)) {
+    int friction_flag = friction ? 1 : 0;
+    if (ui->checkbox(ui->user, anomaly::sdk::StringView("##friction"), &friction_flag) != 0) {
         g_context.friction_toggle.store(true, std::memory_order_release);
+    }
+
+    DrawDivider(ui);
+    DrawText(ui, g_context.localizer.Text("label.durability_guard", "Durability guard"));
+    if (!durability_guard_installed) {
+        DrawText(ui, durability_guard_detail.empty()
+            ? g_context.localizer.Text("status.durability_guard_unavailable",
+                  "Vehicle durability guard is unavailable.")
+            : durability_guard_detail);
+        return;
+    }
+    DrawInlineGap(ui);
+    int guard_flag = durability_guard ? 1 : 0;
+    if (ui->checkbox(ui->user, anomaly::sdk::StringView("##durability_guard"), &guard_flag) != 0) {
+        g_context.durability_guard_toggle.store(true, std::memory_order_release);
     }
 }
 
@@ -1963,7 +2180,7 @@ void DrawDebugPanel(
     const std::string& status, const std::string& selected,
     std::size_t catalog_size, bool player_position_valid) {
     DrawText(ui, g_context.localizer.Text("detail.build_marker",
-        "Build marker: NTE Vehicle 0.11.1"));
+        "Build marker: NTE Vehicle 0.13.0"));
     DrawText(ui, g_context.localizer.Text("detail.build_marker_abi",
         "Build marker: manifest schema v2 / Plugin API v1"));
     const std::array plugin_id_arguments{
@@ -2068,6 +2285,9 @@ void DrawContents(const AnomalyUiServiceV1* ui) {
     float other_speed_floor_ratio;
     float other_torque_ratio;
     bool friction;
+    bool durability_guard;
+    bool durability_guard_installed;
+    std::string durability_guard_detail;
     bool player_position_valid{};
     bool customization_status_failure{};
     {
@@ -2089,6 +2309,9 @@ void DrawContents(const AnomalyUiServiceV1* ui) {
         other_speed_floor_ratio = g_context.other_speed_floor_ratio;
         other_torque_ratio = g_context.other_torque_ratio;
         friction = g_context.friction_enabled;
+        durability_guard = g_context.durability_guard_enabled;
+        durability_guard_installed = g_context.durability_guard_installed;
+        durability_guard_detail = g_context.durability_guard_detail;
         player_position_valid = g_context.player_position_valid;
         customization_status_failure = g_context.customization_status_failure;
     }
@@ -2107,7 +2330,7 @@ void DrawContents(const AnomalyUiServiceV1* ui) {
     };
     nav_button(g_context.localizer.Text("action.tab_customization", "Customize vehicles"), 0);
     nav_button(g_context.localizer.Text("action.tab_performance", "Performance tuning"), 1);
-    nav_button(g_context.localizer.Text("action.tab_chassis", "Wheel friction"), 2);
+    nav_button(g_context.localizer.Text("action.tab_chassis", "Wheel friction and durability"), 2);
 
     nav_button(g_context.localizer.Text("action.tab_diagnostics", "Diagnostics"), 3);
     const auto refresh_label =
@@ -2128,7 +2351,8 @@ void DrawContents(const AnomalyUiServiceV1* ui) {
         DrawPerformanceTab(ui, snap, speed_ratio, torque_ratio, other_speed_ratio,
             other_speed_floor_ratio, other_torque_ratio);
     } else if (active_tab == 2) {
-        DrawChassisTab(ui, friction);
+        DrawChassisTab(ui, friction, durability_guard, durability_guard_installed,
+            durability_guard_detail);
     } else if (active_tab == 3) {
         DrawDebugPanel(ui, snap, status, selected, ids.size(), player_position_valid);
     }
@@ -2179,7 +2403,9 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
         host, ANOMALY_WINDOW_SERVICE_V1_ID, ANOMALY_WINDOW_SERVICE_V1_VERSION);
     const auto* plugin_state = QueryService<AnomalyPluginStateServiceV1>(
         host, ANOMALY_PLUGIN_STATE_SERVICE_V1_ID, ANOMALY_PLUGIN_STATE_SERVICE_V1_VERSION);
-    if (!vehicle || !player || !InputReady(input) || !WindowReady(window_service)) {
+    const auto* config = QueryService<AnomalyConfigServiceV1>(
+        host, ANOMALY_CONFIG_SERVICE_V1_ID, ANOMALY_CONFIG_SERVICE_V1_VERSION);
+    if (!vehicle || !InputReady(input) || !WindowReady(window_service)) {
         return FailureStatus(ANOMALY_STATUS_V1_UNAVAILABLE, "status.services_missing",
             "The vehicle menu requires the anomaly.input and anomaly.window services.");
     }
@@ -2207,10 +2433,18 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
     }
 
     g_context.vehicle = vehicle;
+    g_context.host = host;
     g_context.player = player;
     g_context.input = input;
     g_context.window_service = window_service;
     g_context.plugin_state = plugin_state;
+    g_context.config = config;
+    g_context.core = QueryService<AnomalyCoreServiceV1>(
+        host, ANOMALY_CORE_SERVICE_V1_ID, ANOMALY_CORE_SERVICE_V1_VERSION);
+    g_context.settings_schema = {};
+    g_context.durability_guard_toggle.store(false, std::memory_order_release);
+    static_cast<void>(RegisterSettingsSchema());
+    LoadSettings();
     // 生命周期回调里解析 state 目录并缓存；游戏/渲染回调不允许同步 state I/O。
     if (plugin_state != nullptr && plugin_state->directory != nullptr) {
         std::array<char, 512> buffer{};
@@ -2309,6 +2543,7 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* plugin_context) try {
     }
 
     g_context.toggle_menu_requested.store(false, std::memory_order_release);
+    InstallDurabilityGuardOnStart();
     static_cast<void>(g_context.window_service->set_open(
         g_context.window_service->user, g_context.menu_window_handle, 0));
     g_context.refresh_catalog_requested.store(true, std::memory_order_release);
@@ -2321,8 +2556,15 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void* plugin_context, std::uint32_t) try {
     if (plugin_context != &g_context) return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
     g_context.started.store(false, std::memory_order_release);
     g_context.toggle_menu_requested.store(false, std::memory_order_release);
+    nte_vehicle::ReleaseDurabilityGuard();
+    nte_vehicle::RestoreWheelFrictionBackend();
+    {
+        std::scoped_lock lock(g_context.mutex);
+        g_context.durability_guard_installed = false;
+    }
     nte_vehicle::StopBackend();
     SaveSelection(g_context.saved_vehicle_id);
+    SaveSettings();
     ReleaseMenuHotkey(g_context);
     if (g_context.window_service && g_context.menu_window_handle.id != 0) {
         static_cast<void>(g_context.window_service->set_open(
@@ -2339,8 +2581,15 @@ void ANOMALY_CALL Unload(void* plugin_context) try {
     if (plugin_context != &g_context) return;
     g_context.started.store(false, std::memory_order_release);
     g_context.toggle_menu_requested.store(false, std::memory_order_release);
+    nte_vehicle::ReleaseDurabilityGuard();
+    nte_vehicle::RestoreWheelFrictionBackend();
+    {
+        std::scoped_lock lock(g_context.mutex);
+        g_context.durability_guard_installed = false;
+    }
     nte_vehicle::StopBackend();
     SaveSelection(g_context.saved_vehicle_id);
+    SaveSettings();
     ReleaseMenuHotkey(g_context);
     if (g_context.window_service && g_context.menu_window_handle.id != 0) {
         static_cast<void>(g_context.window_service->release_window(
@@ -2349,9 +2598,13 @@ void ANOMALY_CALL Unload(void* plugin_context) try {
     g_context.menu_window_handle = {};
     nte_vehicle::UnloadBackend();
     g_context.vehicle = nullptr;
+    g_context.host = nullptr;
     g_context.player = nullptr;
     g_context.input = nullptr;
     g_context.window_service = nullptr;
+    g_context.config = nullptr;
+    g_context.core = nullptr;
+    g_context.settings_schema = {};
 } catch (...) {  }
 
 void ANOMALY_CALL UpdateCallback(void* plugin_context, double) try {
@@ -2375,6 +2628,6 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         anomaly::sdk::StringView("anomaly.nte-vehicle"),
         anomaly::sdk::StringView("Vehicle Control"), anomaly::sdk::StringView("Anomaly"),
-        anomaly::sdk::StringView("0.11.4"), Load, Start, Stop, Unload, UpdateCallback, DrawCallback};
+        anomaly::sdk::StringView("0.13.0"), Load, Start, Stop, Unload, UpdateCallback, DrawCallback};
     return anomaly::sdk::Ok();
 }

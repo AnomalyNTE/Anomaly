@@ -3,20 +3,10 @@
 namespace nte_vehicle {
 
 bool NativeAccess::Load(const AnomalyHostApiV1* api) {
+    host_api = api;
     const anomaly::sdk::Host host(api);
     storage.core = host.Query<AnomalyCoreServiceV1>(ANOMALY_CORE_SERVICE_V1_ID).get();
-    names = host.Query<AnomalyUe5NamesServiceV1>(ANOMALY_UE5_NAMES_SERVICE_V1_ID).get();
-    objects = host.Query<AnomalyUe5ObjectsServiceV1>(ANOMALY_UE5_OBJECTS_SERVICE_V1_ID).get();
-    events = host.Query<AnomalyUe5ProcessEventServiceV1>(ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_ID).get();
-    framework = host.Query<AnomalyUe5FrameworkServiceV1>(ANOMALY_UE5_FRAMEWORK_SERVICE_V1_ID).get();
-    player = host.Query<AnomalyNtePlayerServiceV1>(ANOMALY_NTE_PLAYER_SERVICE_V1_ID).get();
     if (!storage.core || storage.core->struct_size < sizeof(*storage.core) || !storage.core->read_memory || !storage.core->write_memory ||
-        !names || names->struct_size < offsetof(AnomalyUe5NamesServiceV1, find_utf8) ||
-        !names->resolve_utf8 || !objects || objects->struct_size < sizeof(*objects) || !objects->snapshot_at ||
-        !objects->snapshot_by_handle || !objects->find_exact || !objects->generation ||
-        !events || events->struct_size < sizeof(*events) || !events->invoke ||
-        !framework || framework->struct_size < sizeof(*framework) || !framework->is_game_thread || !player ||
-        player->struct_size < sizeof(*player) || !player->get_object_handles ||
         !compatibility.Load(api, "compatibility.profile.json",
             {"nte", "HTGame.exe", ".text", "nte-vehicle-v1"})) return false;
     try {
@@ -30,12 +20,32 @@ bool NativeAccess::Load(const AnomalyHostApiV1* api) {
             layout.objects_registrySubtract);
         process_event_invoker = [this](std::uintptr_t object, std::uintptr_t function,
                                       void* parameters, std::size_t size) {
+            // The bridge services are bound lazily, so read them at call time.
+            const auto* const bridge = events;
+            if (!bridge) return false;
             AnomalyGenerationHandleV1 receiver{}, method{};
             return ObjectHandleLocked(object, receiver) && ObjectHandleLocked(function, method) &&
-                events->invoke(events->user, receiver, method, parameters, size).code == ANOMALY_STATUS_V1_OK;
+                bridge->invoke(bridge->user, receiver, method, parameters, size).code == ANOMALY_STATUS_V1_OK;
         };
-        return true;
     } catch (...) { return false; }
+    static_cast<void>(BindGameServices());
+    return true;
+}
+
+bool NativeAccess::BindGameServices() {
+    if (names && objects && events && framework && player) return true;
+    const anomaly::sdk::Host host(host_api);
+    names = host.Query<AnomalyUe5NamesServiceV1>(ANOMALY_UE5_NAMES_SERVICE_V1_ID).get();
+    objects = host.Query<AnomalyUe5ObjectsServiceV1>(ANOMALY_UE5_OBJECTS_SERVICE_V1_ID).get();
+    events = host.Query<AnomalyUe5ProcessEventServiceV1>(ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_ID).get();
+    framework = host.Query<AnomalyUe5FrameworkServiceV1>(ANOMALY_UE5_FRAMEWORK_SERVICE_V1_ID).get();
+    player = host.Query<AnomalyNtePlayerServiceV1>(ANOMALY_NTE_PLAYER_SERVICE_V1_ID).get();
+    return names && names->struct_size >= offsetof(AnomalyUe5NamesServiceV1, find_utf8) &&
+        names->resolve_utf8 && objects && objects->struct_size >= sizeof(*objects) &&
+        objects->snapshot_at && objects->snapshot_by_handle && objects->find_exact && objects->generation &&
+        events && events->struct_size >= sizeof(*events) && events->invoke &&
+        framework && framework->struct_size >= sizeof(*framework) && framework->is_game_thread &&
+        player && player->struct_size >= sizeof(*player) && player->get_object_handles;
 }
 
 bool NativeAccess::LoadRegistry(ObjectRegistryState& output) const {
@@ -88,7 +98,7 @@ bool NativeAccess::ObjectHandleLocked(std::uintptr_t object, AnomalyGenerationHa
 bool NativeAccess::Refresh() {
     ready = false;
     player_pawn = player_controller = world_pointer = 0;
-    if (!framework || !framework->is_game_thread(framework->user)) return false;
+    if (!BindGameServices() || !framework->is_game_thread(framework->user)) return false;
     game_thread_id.store(GetCurrentThreadId(), std::memory_order_release);
     if (!LoadRegistry(object_registry)) return false;
     object_generation = objects->generation(objects->user);
