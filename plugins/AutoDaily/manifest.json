@@ -1,0 +1,106 @@
+{
+  "schemaVersion": 2,
+  "id": "yu-1021.daily",
+  "name": "Auto Daily",
+  "description": "Runs the daily routine in one pass: hands the dungeon run to the Clone Enter plugin, withdraws the one-shop income, then claims daily rewards. Configure once, then let it run after each start; Ctrl+S stops it in game.",
+  "author": "YU-1021",
+  "license": "AGPL-3.0-only",
+  "version": "4.3.1",
+  "entry": "plugin.dll",
+  "api": {
+    "major": 1,
+    "minMinor": 0,
+    "maxMinor": 0
+  },
+  "games": [
+    "nte"
+  ],
+  "builds": [
+    "nte-*"
+  ],
+  "loadPhase": "game-ready",
+  "dependencies": [
+    {
+      "id": "ccyellowstar.clone-enter",
+      "version": ">=0.2.16",
+      "optional": true
+    }
+  ],
+  "services": [
+    {
+      "id": "anomaly.core",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.ui",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.localization",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.config",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.json",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.input",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.scheduler",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.interop.signature",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.ipc",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.profile",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.ue5.names",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.ue5.objects",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.nte.ui-buttons",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.nte.session",
+      "minVersion": 1,
+      "optional": true
+    }
+  ],
+  "capabilities": [
+    "ui",
+    "configuration",
+    "json",
+    "input",
+    "scheduler",
+    "ipc",
+    "interop-signature",
+    "memory-read",
+    "ue5-names",
+    "ue5-objects",
+    "nte-ui-buttons",
+    "nte-session-snapshot"
+  ]
+}
