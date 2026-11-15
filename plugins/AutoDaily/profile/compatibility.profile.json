@@ -1,0 +1,53 @@
+{
+  "$schema": "https://anomaly.dev/schemas/plugin-profile.schema.json",
+  "schemaVersion": 1,
+  "game": "nte",
+  "module": "HTGame.exe",
+  "section": ".text",
+  "contract": "auto-daily-v1",
+  "layout": {
+    "ObjectInternalIndexOffset": 12,
+    "ObjectClassOffset": 16,
+    "ObjectNameOffset": 24,
+    "UStructSuperStructOffset": 64,
+    "UStructChildrenOffset": 72,
+    "UFieldNextOffset": 40,
+    "UFunctionNumParmsOffset": 180,
+    "UFunctionParmsSizeOffset": 182,
+    "ProcessEventVtableIndex": 76,
+    "ObjectItemsOffset": 16,
+    "ObjectCountOffset": 36,
+    "ObjectNumChunksOffset": 44,
+    "ObjectChunkSize": 65536,
+    "ObjectItemStride": 24,
+    "GObjectsBaseSubtract": 16,
+    "WorldGameInstanceOffset": 560,
+    "GameInstanceLocalPlayersOffset": 56,
+    "LocalPlayerControllerOffset": 48,
+    "ControllerPlayerStateOffset": 720,
+    "RpcMessageTypeOffset": 24,
+    "StoreManagementReceiveType": 17
+  },
+  "symbols": [
+    {
+      "name": "ue5.GObjects",
+      "candidates": [
+        {
+          "pattern": "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3 33 C0 48 8B 00 C3",
+          "entry": "48 8B 05",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "ue5.GWorld",
+      "candidates": [
+        {
+          "pattern": "48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01",
+          "entry": "48 8B 1D",
+          "values": {}
+        }
+      ]
+    }
+  ]
+}
