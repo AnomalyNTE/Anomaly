@@ -5615,6 +5615,7 @@ void DrawBrowseMode(
     g_decode_budget = 1;  // one image per frame
     struct PageResult final {
         int page{};
+        int generation{};
         bool ok{}, exhausted{};
         std::vector<LauncherGbItem> items;
     };
@@ -5627,6 +5628,18 @@ void DrawBrowseMode(
     static std::mutex browse_mutex;
     static bool browse_loading{};
     static std::optional<PageResult> browse_outcome;
+    // A page that failed stays unfetched, and an automatic request would ask for it again on the
+    // very next frame. This holds that request back instead of looping on a feed that is down.
+    static double load_retry_hold{};
+    // When the loading indicator goes out again. It is not the same moment the request ends: a feed
+    // that fills itself page by page lands one page and asks for the next within the same frame, so
+    // an indicator bound strictly to `browse_loading` dropped out for the frame in between and read
+    // as a blink on every page.
+    static double loading_until{};
+    // Changing the filter while a page is on the wire starts the new request immediately and lets it
+    // supersede the old one, so a control never has to be dimmed (or a click swallowed) to keep the
+    // two results from being applied in the wrong order.
+    static int load_generation{};
     static std::mutex install_mutex;
     static std::atomic<bool> install_running{false};
     static std::string install_result;
@@ -5649,11 +5662,16 @@ void DrawBrowseMode(
 
     const auto load_page = [&](const int page) {
         browse_loading = true;
-        status.clear();
+        // The status text of the previous page stays until the next one lands: clearing it here made
+        // the line disappear for the length of every request, which moved the whole list up and down
+        // while a feed filled itself page by page.
         if (page == 1) replace_pending = true;
-        std::thread([page, query = active_query, sort = active_sort, category = active_category] {
+        const int generation = ++load_generation;
+        std::thread([page, generation, query = active_query, sort = active_sort,
+                        category = active_category] {
             PageResult result;
             result.page = page;
+            result.generation = generation;
             try {
                 result.ok = LauncherLoadGbPage(page, query, sort, category, result.items, result.exhausted);
             } catch (...) {
@@ -5678,58 +5696,66 @@ void DrawBrowseMode(
         if (browse_outcome) {
             auto result = std::move(*browse_outcome);
             browse_outcome.reset();
-            browse_loading = false;
-            if (!result.ok) {
-                status = Tr(anomaly::MessageId::LauncherMsgLoadFailedNetwork);
-            } else {
-                for (const auto& item : result.items) {
-                    if (!item.category_id.empty() && !item.category.empty())
-                        g_gb_categories[item.category_id] = item.category;
-                }
-                exhausted = result.exhausted;
-                loaded_pages = result.page;
-                if (result.page == 1) {
-                    items = std::move(result.items);
-                    replace_pending = false;
-                    // A new feed is ordered on the next frame; the pages appended to it never are.
-                    applied_sort_mode = -1;
+            // A result the current request has superseded answers a feed that is no longer on screen:
+            // dropping it keeps the newest filter from being overwritten by an older page.
+            if (result.generation == load_generation) {
+                browse_loading = false;
+                if (!result.ok) {
+                    status = Tr(anomaly::MessageId::LauncherMsgLoadFailedNetwork);
+                    load_retry_hold = ImGui::GetTime() + 5.0;
                 } else {
-                    items.insert(items.end(), std::make_move_iterator(result.items.begin()),
-                        std::make_move_iterator(result.items.end()));
+                    for (const auto& item : result.items) {
+                        if (!item.category_id.empty() && !item.category.empty())
+                            g_gb_categories[item.category_id] = item.category;
+                    }
+                    exhausted = result.exhausted;
+                    loaded_pages = result.page;
+                    if (result.page == 1) {
+                        items = std::move(result.items);
+                        replace_pending = false;
+                        // A new feed is ordered on the next frame; the pages appended to it never are.
+                        applied_sort_mode = -1;
+                    } else {
+                        items.insert(items.end(), std::make_move_iterator(result.items.begin()),
+                            std::make_move_iterator(result.items.end()));
+                    }
+                    status = exhausted
+                        ? Tr(items.empty() ? anomaly::MessageId::LauncherMsgNoResults
+                                           : anomaly::MessageId::LauncherMsgLastPage)
+                        : Tr(anomaly::MessageId::LauncherMsgLoadedCount, {std::to_string(items.size())});
                 }
-                status = exhausted
-                    ? Tr(items.empty() ? anomaly::MessageId::LauncherMsgNoResults
-                                       : anomaly::MessageId::LauncherMsgLastPage)
-                    : Tr(anomaly::MessageId::LauncherMsgLoadedCount, {std::to_string(items.size())});
             }
         }
     }
     // The controls stay put and only the rows scroll, the way the mods page works: the toolbar is
     // part of the page, and the list below it is the one thing that moves.
-    ImGui::BeginDisabled(browse_loading);
+    //
+    // A background page load only fills the list. The controls keep their look and their state while
+    // one runs: nothing is drawn inside a disabled scope that opens and closes for the length of a
+    // request, and a command the user gives meanwhile starts the request it names and supersedes the
+    // one on the wire. Only the automatic page fetch below waits for `browse_loading`, because it
+    // would otherwise ask again on every frame it is drawn.
     const bool refresh_clicked = LauncherChip(Text(translator, anomaly::MessageId::LauncherModsRefreshList));
-    ImGui::EndDisabled();
     if (refresh_clicked) load_page(1);
     ImGui::SameLine();
-    if (browse_loading) {
-        // Text that shares a line with a chip aligns to the frame padding, the same way a label
-        // beside a framed widget does; left on the line's top edge it reads as misaligned.
+    ImGui::BeginDisabled(exhausted && !replace_pending);
+    const bool more_clicked = LauncherChip(exhausted && !replace_pending
+        ? Text(translator, anomaly::MessageId::LauncherBrowseAllLoaded)
+        : Text(translator, anomaly::MessageId::LauncherBrowseLoadMore));
+    ImGui::EndDisabled();
+    // If a new feed failed, retry its first page instead of appending it to the old feed.
+    if (more_clicked) load_page(replace_pending ? 1 : loaded_pages + 1);
+    if (browse_loading) loading_until = ImGui::GetTime() + 0.25;
+    if (browse_loading || ImGui::GetTime() < loading_until) {
+        // The indicator joins the row rather than replacing the command beside it: a row that swaps
+        // its widget out on every request moves the target the pointer was already on.
+        ImGui::SameLine();
         ImGui::AlignTextToFramePadding();
         ImGui::TextDisabled("%s", Tr(anomaly::MessageId::LauncherMsgLoading).c_str());
-    } else {
-        ImGui::BeginDisabled(exhausted && !replace_pending);
-        const bool more_clicked = LauncherChip(exhausted && !replace_pending
-            ? Text(translator, anomaly::MessageId::LauncherBrowseAllLoaded)
-            : Text(translator, anomaly::MessageId::LauncherBrowseLoadMore));
-        ImGui::EndDisabled();
-        // If a new feed failed, retry its first page instead of appending it to the old feed.
-        if (more_clicked) load_page(replace_pending ? 1 : loaded_pages + 1);
     }
-    ImGui::BeginDisabled(browse_loading);
     ImGui::SetNextItemWidth(Scale(280.0f));
     ImGui::InputTextWithHint("##gb-filter",
         Text(translator, anomaly::MessageId::LauncherBrowseSearchHint), search, sizeof(search));
-    ImGui::EndDisabled();
     {
         std::scoped_lock lock(install_mutex);
         if (install_ready) {
@@ -5750,7 +5776,13 @@ void DrawBrowseMode(
         ImGui::TextDisabled("%s",
             Tr(anomaly::MessageId::LauncherBrowseCjkHint).c_str());
     }
-    if (!status.empty()) ImGui::TextDisabled("%s", status.c_str());
+    // The status row holds its line even while it is empty: the feed replaces the text when a page
+    // lands, and a line that appeared and disappeared under it would shift everything below.
+    if (!status.empty()) {
+        ImGui::TextDisabled("%s", status.c_str());
+    } else {
+        ImGui::Dummy(ImVec2(0.0f, ImGui::GetTextLineHeight()));
+    }
     ImGui::Separator();
 
     std::string needle = search;
@@ -5774,11 +5806,9 @@ void DrawBrowseMode(
     const bool searching = !active_query.empty();
     bool category_changed = false;
     if (!searching) {
-        ImGui::BeginDisabled(browse_loading);
         ImGui::SetNextItemWidth(Scale(130.0f));
         category_changed = ImGui::Combo("##category", &category_index,
             category_labels.data(), static_cast<int>(category_labels.size()));
-        ImGui::EndDisabled();
         ImGui::SameLine();
     }
     if (category_changed) {
@@ -5805,12 +5835,10 @@ void DrawBrowseMode(
     for (int i = 0; i < 5; ++i) {
         if (active_sort == server_sort_values[i]) server_sort_index = i;
     }
-    ImGui::BeginDisabled(browse_loading);
     ImGui::SetNextItemWidth(Scale(140.0f));
     const char* server_sort_text[5]{};
     for (int i = 0; i < 5; ++i) server_sort_text[i] = Text(translator, server_sort_labels[i]);
     const bool server_sort_changed = ImGui::Combo("##server-sort", &server_sort_index, server_sort_text, 5);
-    ImGui::EndDisabled();
     if (server_sort_changed) {
         const std::string chosen = server_sort_values[server_sort_index];
         if (chosen != active_sort) {
@@ -6074,7 +6102,9 @@ void DrawBrowseMode(
     // Reading to the bottom of the list loads the next page. A list shorter than its own viewport has
     // no scroll range at all, so it also loads while there is nothing to scroll: otherwise the first
     // page of a short feed sat there with no scrollbar and therefore no way to ask for the rest.
-    if (!browse_loading && !exhausted &&
+    // A page that just failed is held back for a moment: asking for it again on the next frame turned
+    // a feed that was down into a request loop, and the list repainted for each attempt.
+    if (!browse_loading && !exhausted && ImGui::GetTime() >= load_retry_hold &&
         (ImGui::GetScrollMaxY() <= 0.0f ||
             ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - Scale(4.0f))) {
         load_page(replace_pending ? 1 : loaded_pages + 1);
