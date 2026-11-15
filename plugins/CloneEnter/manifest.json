@@ -5,7 +5,7 @@
   "description": "Enter clone dungeons and kill nearby monsters.",
   "author": "CCYellowStar",
   "license": "MIT",
-  "version": "0.2.15",
+  "version": "0.2.16",
   "entry": "plugin.dll",
   "api": {
     "major": 1,

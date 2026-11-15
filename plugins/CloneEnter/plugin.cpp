@@ -66,12 +66,12 @@ constexpr std::uint32_t kOneKeyEndpointTimeoutMs = 3000;
 constexpr std::uint32_t kOneKeyRequestBytes = 512;
 constexpr std::uint32_t kOneKeyResponseBytes = 1024;
 constexpr std::string_view kOneKeyRequestSchema =
-    R"({"type":"object","required":["op"],"properties":{"op":{"enum":["start","stop","status"]},"display":{"type":"integer"},"sub":{"type":"integer"},"level":{"type":"integer"},"runs":{"type":"integer"},"enterWait":{"type":"integer"},"exitWait":{"type":"integer"}}})";
+    R"({"type":"object","required":["op"],"properties":{"op":{"enum":["start","stop","status"]},"display":{"type":"integer"},"sub":{"type":"integer"},"level":{"type":"integer"},"runs":{"type":"integer"},"enterWait":{"type":"integer"},"exitWait":{"type":"integer"},"melee":{"type":"boolean"}}})";
 constexpr std::string_view kOneKeyResponseSchema =
     R"({"type":"object","properties":{"ok":{"type":"boolean"},"active":{"type":"boolean"},"phase":{"type":"integer"},"runsDone":{"type":"integer"},"runsTotal":{"type":"integer"},"reason":{"type":"string"}}})";
 constexpr AnomalyIpcSchemaHashV1 kOneKeyRequestSchemaHash{{
-    0x48, 0x0e, 0x12, 0x3e, 0xd9, 0x6e, 0x30, 0xcf, 0xa2, 0x72, 0xb7, 0x90, 0x56, 0xa6, 0x6f, 0xb9,
-    0xce, 0x97, 0xc1, 0x49, 0xca, 0xcf, 0x76, 0x94, 0x46, 0xb8, 0xbe, 0x02, 0x8a, 0x76, 0x03, 0x30}};
+    0x29, 0xef, 0xde, 0xaa, 0x2f, 0xb9, 0xb8, 0x46, 0x24, 0xf6, 0x80, 0xab, 0xff, 0x2f, 0x22, 0xeb,
+    0x2a, 0x5a, 0xf0, 0xe3, 0xb4, 0xca, 0xdc, 0x0f, 0x45, 0x64, 0xce, 0x64, 0x6f, 0x29, 0x15, 0x6a}};
 constexpr AnomalyIpcSchemaHashV1 kOneKeyResponseSchemaHash{{
     0xff, 0x53, 0xa4, 0x53, 0x56, 0xd8, 0xd6, 0x3a, 0x9c, 0x5b, 0xb5, 0x0c, 0x65, 0xb8, 0xe5, 0x0f,
     0x78, 0x9f, 0x9e, 0x12, 0x71, 0x3f, 0xb4, 0xa8, 0x27, 0xb2, 0x46, 0xc6, 0x43, 0xef, 0x83, 0x14}};
@@ -6660,6 +6660,18 @@ bool IpcNumberField(
     return ok;
 }
 
+bool IpcBooleanField(
+    Context& context, AnomalyGenerationHandleV1 document, const char* key, bool& out) noexcept {
+    AnomalyGenerationHandleV1 child{};
+    if (!IpcObjectField(context, document, key, child)) return false;
+    int32_t value = 0;
+    const bool ok = context.json->boolean_value(context.json->user, child, &value).code ==
+        ANOMALY_STATUS_V1_OK;
+    static_cast<void>(context.json->release(context.json->user, child));
+    if (ok) out = value != 0;
+    return ok;
+}
+
 std::uint32_t IpcClamp(const double value, const std::uint32_t minimum, const std::uint32_t maximum) {
     if (!(value >= 0.0)) return minimum;
     const auto rounded = static_cast<std::uint32_t>(value + 0.5);
@@ -6687,6 +6699,10 @@ void OneKeyApplyStart(Context& context, AnomalyGenerationHandleV1 document) noex
     context.one_key_loop_count = IpcClamp(runs, 1, 50);
     context.one_key_enter_wait = IpcClamp(enter_wait, 1, 60);
     context.one_key_exit_wait = IpcClamp(exit_wait, 1, 60);
+    // 平A模式（自动普攻为主）：调用方可以在 start 请求里覆盖，缺省不动现有开关。
+    bool melee = context.melee_mode;
+    static_cast<void>(IpcBooleanField(context, document, "melee", melee));
+    context.melee_mode = melee;
     context.one_key_loop_done = 0;
     context.one_key_phase = 0;
     SetOneKeyResult(context, OneKeyResult::Running, "none");
@@ -7491,7 +7507,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         anomaly::sdk::StringView("ccyellowstar.clone-enter"),
         anomaly::sdk::StringView("Clone Enter"),
         anomaly::sdk::StringView("CCYellowStar"),
-        anomaly::sdk::StringView("0.2.15"),
+        anomaly::sdk::StringView("0.2.16"),
         Load, Start, Stop, Unload, Update, Draw};
     return anomaly::sdk::Ok();
 }
