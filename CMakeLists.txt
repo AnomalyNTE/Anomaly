@@ -1852,6 +1852,12 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/NteFreeFly/manifest.json
         PACKAGE_NAME NteFreeFly
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteFreeFly")
+    anomaly_add_plugin(anomaly_builtin_vehicle_flight
+        SOURCES plugins/VehicleFlight/plugin.cpp
+        MANIFEST plugins/VehicleFlight/manifest.json
+        PACKAGE_NAME VehicleFlight
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/VehicleFlight")
+    target_link_libraries(anomaly_builtin_vehicle_flight PRIVATE user32)
     anomaly_add_plugin(anomaly_builtin_autofish
         SOURCES plugins/AutoFish/plugin.cpp
         MANIFEST plugins/AutoFish/manifest.json
@@ -2171,7 +2177,8 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         anomaly_builtin_wallet_collector anomaly_builtin_box_auto anomaly_builtin_combat_box
         anomaly_builtin_clone_enter anomaly_builtin_scene_loader
         anomaly_builtin_nte_quick_ultimate
-        anomaly_builtin_nte_free_fly anomaly_builtin_skin_changer anomaly_builtin_ui_buttons
+        anomaly_builtin_nte_free_fly anomaly_builtin_vehicle_flight
+        anomaly_builtin_skin_changer anomaly_builtin_ui_buttons
         anomaly_builtin_dll_loader anomaly_builtin_hifi_vehicle_music
         anomaly_builtin_model_scale anomaly_builtin_status_bar anomaly_builtin_autofish anomaly_builtin_autotaxi
         anomaly_builtin_autoclaw anomaly_builtin_character_studio anomaly_builtin_better_map
@@ -2204,6 +2211,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         target_compile_options(anomaly_builtin_scene_loader PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_nte_combat_tracker PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_nte_free_fly PRIVATE /utf-8)
+        target_compile_options(anomaly_builtin_vehicle_flight PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_skin_changer PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_autofish PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_autotaxi PRIVATE /utf-8)

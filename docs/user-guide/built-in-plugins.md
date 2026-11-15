@@ -481,6 +481,13 @@ JSON Schema 校验、原子替换与版本迁移全部由宿主完成，插件�
 `anomaly.nte.map-landmarks`，不保存签名或偏移，也不自行扫描对象、解析 DataTable 或调用
 UE `ProcessEvent`；关闭开发者模式后不会出现在已安装插件视图中，也不会执行传送请求。
 
+### 载具飞行
+
+在「平台设置 → 高级」开启开发者模式后，启用 `VehicleFlight`（`b1ank.vehicle-flight`）。
+坐进驾驶位，在插件窗口勾选「启用载具飞行」。键盘模式用 WASD 水平移动、空格上升、Ctrl 下降。
+鼠标模式用视角控制朝向，按 W 前进、S 后退，松开后悬停。飞行速度可设为 3–1000 米/秒。
+关闭开发者模式会退出飞行并隐藏窗口。
+
 ### Movement Hold Probe
 
 | | |
