@@ -6017,6 +6017,7 @@ void DrawBrowseMode(
                 ImGui::ProgressBar(static_cast<float>(done / total), ImVec2(Scale(240.0f), 0.0f),
                     overlay.c_str());
             } else {
+                ImGui::AlignTextToFramePadding();
                 ImGui::TextDisabled("%s",
                     Tr(anomaly::MessageId::LauncherBrowseInstalling,
                         {Tr(anomaly::MessageId::LauncherBrowseProgressBytes,
@@ -6050,6 +6051,8 @@ void DrawBrowseMode(
         }
         if (installed && !(install_running && install_target == item.id)) {
             ImGui::SameLine();
+            // Beside a chip the label rides the chip's baseline, like the facts that follow it.
+            ImGui::AlignTextToFramePadding();
             ImGui::TextDisabled("%s", Text(translator, anomaly::MessageId::LauncherModsInstalled));
         }
         // The row's facts end the line, to the right of the commands, on the same baseline a label
@@ -6475,6 +6478,7 @@ void DrawModsMode(
     // commands below stays with the list it acts on.
     ImGui::SameLine();
     if (check_running) {
+        ImGui::AlignTextToFramePadding();
         ImGui::TextDisabled("%s", Text(translator, anomaly::MessageId::LauncherModsChecking));
     } else if (LauncherChip(Text(translator, anomaly::MessageId::LauncherModsCheckUpdates))) {
         check_running = true;
@@ -7572,6 +7576,7 @@ void LauncherDrawDownloadProgress(const anomaly::Translator& translator) {
         ImGui::ProgressBar(static_cast<float>(done / total), ImVec2(Scale(260.0f), 0.0f),
             overlay.c_str());
     } else {
+        ImGui::AlignTextToFramePadding();
         ImGui::TextDisabled("%s", Format(translator,
             anomaly::MessageId::LauncherBrowseProgressBytes,
             {Num(megabytes, 1), Num(seconds, 0)}).c_str());
