@@ -536,11 +536,17 @@ bool TerminateExistingLauncherProcesses(
         error = snapshot_error;
         return false;
     }
+    // A launcher that ends while the sweep is walking the snapshot is gone, not a launcher that survived
+    // it: the bootstrap hands the session to the client it starts and exits, and each helper exits once
+    // the launcher it belongs to is terminated. Its pid then belongs to a snapshot it no longer answers
+    // to, and OpenProcess reports ERROR_INVALID_PARAMETER for a pid that does not resolve. The requirement
+    // is that no launcher outlives this call, and a process that ended before it could be opened meets it.
     for (const DWORD process_id : process_ids) {
         DWORD open_error{};
         Handle process = OpenProcessWithAccess(
             process_id, PROCESS_TERMINATE | SYNCHRONIZE, open_error);
         if (!process) {
+            if (open_error == ERROR_INVALID_PARAMETER) continue;
             error = open_error;
             return false;
         }
@@ -2644,6 +2650,12 @@ static ManualMapResult ManualMapRuntimeCoreWithHandle(
         }
         if (context.bootstrap_error != ERROR_SUCCESS ||
             context.runtime_start_error != ERROR_SUCCESS) {
+            if (context.runtime_start_error == ERROR_ALREADY_INITIALIZED) {
+                return Failure(
+                    ManualMapError::AlreadyAttached, ERROR_ALREADY_EXISTS,
+                    "another Anomaly core already owns the target process",
+                    context.runtime_start_error);
+            }
             const DWORD error = context.bootstrap_error != ERROR_SUCCESS
                 ? context.bootstrap_error : context.runtime_start_error;
             return Failure(
@@ -2955,7 +2967,8 @@ ManualMapLaunchResult LaunchAndManualMapRuntimeCore(
             }
         }
 
-        if (!result.mapping.Ok() && mapping_started) {
+        if (!result.mapping.Ok() && mapping_started &&
+            result.mapping.error != ManualMapError::AlreadyAttached) {
             if (target_cleanup) {
                 static_cast<void>(TerminateProcess(
                     target_cleanup.Get(), ERROR_PROCESS_ABORTED));
