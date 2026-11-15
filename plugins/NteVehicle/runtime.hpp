@@ -214,6 +214,10 @@ struct Runtime : NativeAccess {
     nte_vehicle_helpers::SpeedCapMaintenance<VehicleSpeedFieldBaseline>
         vehicle_speed_maintenance;
     bool vehicle_wheel_friction_enabled{true};
+    // SetEnableWheelFriction 的实现只写一个字节；关闭插件时按同一地址写回原值即可还原摩擦。
+    std::uintptr_t vehicle_friction_flag{};
+    std::uint8_t vehicle_friction_flag_original{};
+    bool vehicle_friction_flag_captured{};
     // 按非玩家载具的 MovementComponent 分别保存速率倍率和原始扭矩基准，绝不与玩家载具共用状态。
     std::unordered_map<std::uintptr_t, AnomalyGenerationHandleV1> other_vehicle_handles;
     std::unordered_map<std::uintptr_t, float> other_vehicle_velocity_ratios;
@@ -1033,6 +1037,16 @@ struct Runtime : NativeAccess {
             vehicle_movement_component = 0;
             return false;
         }
+    }
+
+    // 摩擦开关字节：[component+frictionSetup] → +frictionState 处对象 → +frictionEnabled。
+    // 链路由 Profile 偏移给出，读取失败即放弃记录，绝不退回到写死地址。
+    bool ResolveWheelFrictionFlagLocked(std::uintptr_t& flag) const {
+        std::uintptr_t setup{}, state{};
+        return vehicle_movement_component != 0 &&
+            ReadPointerAt(*memory, vehicle_movement_component, layout.vehicle_frictionSetup, setup) &&
+            ReadPointerAt(*memory, setup, layout.vehicle_frictionState, state) &&
+            AddAddress(state, layout.vehicle_frictionEnabled, flag) && flag != 0;
     }
 
     AnomalyStatusV1 VehicleSnapshot(nte_vehicle::StateSnapshot* snapshot) {
@@ -3806,14 +3820,48 @@ struct Runtime : NativeAccess {
             vehicle_bindings.set_wheel_friction.function == 0)
             return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
                 TextLocalized("backend.htvehiclemovementcomponent_setenablewheelfriction_bool_is_not_validated_254", "HTVehicleMovementComponent.SetEnableWheelFriction(bool) is not validated"));
+        // 关闭摩擦时才记录原值：调用后该字节必须真的变成 0，链路才算可信。
+        std::uintptr_t flag_address{};
+        std::uint8_t flag_before{};
+        const bool flag_readable = !enabled && ResolveWheelFrictionFlagLocked(flag_address) &&
+            ReadValue(*memory, flag_address, flag_before) && flag_before != 0;
+        // 换车或重新开启前，先把上一辆车记录的字节还回去。
+        if (vehicle_friction_flag_captured && vehicle_friction_flag != flag_address)
+            RestoreWheelFrictionLocked();
         std::array<std::uint8_t, 8> parameters{};
         parameters[vehicle_bindings.set_wheel_friction.parameter_offset] = enabled ? 1 : 0;
         if (!InvokeProcessEventGuarded(process_event_invoker, vehicle_movement_component,
                 vehicle_bindings.set_wheel_friction.function, parameters.data(),
                 vehicle_bindings.set_wheel_friction.parms_size))
             return Status(ANOMALY_STATUS_V1_FAILED, TextLocalized("backend.setenablewheelfriction_processevent_failed_255", "SetEnableWheelFriction ProcessEvent failed"));
+        if (flag_readable) {
+            std::uint8_t flag_after{};
+            if (ReadValue(*memory, flag_address, flag_after) && flag_after == 0) {
+                vehicle_friction_flag = flag_address;
+                vehicle_friction_flag_original = flag_before;
+                vehicle_friction_flag_captured = true;
+            }
+        }
         vehicle_wheel_friction_enabled = enabled;
         return Status(ANOMALY_STATUS_V1_OK);
+    }
+
+    // 生命周期回调跑在 Lifecycle worker 上：不经过 ProcessEvent，直接把捕获的字节写回。
+    void VehicleRestoreWheelFriction() {
+        std::scoped_lock lock(mutex);
+        RestoreWheelFrictionLocked();
+    }
+
+    void RestoreWheelFrictionLocked() {
+        if (!vehicle_friction_flag_captured) return;
+        std::uint8_t current{};
+        if (ReadValue(*memory, vehicle_friction_flag, current) && current == 0) {
+            const std::uint8_t original = vehicle_friction_flag_original;
+            static_cast<void>(memory->Write(vehicle_friction_flag, &original, sizeof(original)));
+        }
+        vehicle_friction_flag_captured = false;
+        vehicle_friction_flag = 0;
+        vehicle_wheel_friction_enabled = true;
     }
 
     AnomalyStatusV1 VehicleReset() {

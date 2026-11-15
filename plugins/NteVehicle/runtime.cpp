@@ -18,6 +18,7 @@ void Runtime::Tick() {
 }
 
 void Runtime::ClearObjectCaches() {
+    RestoreWheelFrictionLocked();
     vehicle_bindings = {};
     current_vehicle_object = vehicle_movement_component = 0;
     current_vehicle_handle = movement_handle = {};
@@ -57,6 +58,9 @@ void StopBackend() {
         backend->vehicle_speed_maintenance.Reset();
         backend->ready = false;
     }
+}
+void RestoreWheelFrictionBackend() {
+    if (backend) backend->VehicleRestoreWheelFriction();
 }
 void UnloadBackend() {
     backend.reset();

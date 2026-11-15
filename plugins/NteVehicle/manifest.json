@@ -6,7 +6,7 @@
   "author": "Anomaly",
   "license": "AGPL-3.0-only",
   "audience": "user",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "entry": "plugin.dll",
   "api": {
     "major": 1,

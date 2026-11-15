@@ -70,6 +70,11 @@ struct NativeLayout {
     std::int64_t vehicle_comfortMaxEngineTorque{-1};
     std::int64_t vehicle_comfortMaxEngineRPM{-1};
     std::int64_t vehicle_comfortTopSpeedInKmH{-1};
+    // SetEnableWheelFriction 的实现只写一个字节：[component+frictionSetup] 处指针
+    // +frictionState 处指针，再 +frictionEnabled 就是摩擦开关。关闭插件时按此链写回原值。
+    std::int64_t vehicle_frictionSetup{-1};
+    std::int64_t vehicle_frictionState{-1};
+    std::int64_t vehicle_frictionEnabled{-1};
 
     void Load(const anomaly::sdk::Profile& profile) {
         dataTable_rowMap = profile.Value("dataTable.rowMap", 65536, 8);
@@ -125,6 +130,9 @@ struct NativeLayout {
         ustruct_propertyLink = profile.Value("ustruct.propertyLink", 65536, 8);
         ustruct_superStruct = profile.Value("ustruct.superStruct", 65536, 8);
         world_levels = profile.Value("world.levels", 65536, 8);
+        vehicle_frictionSetup = profile.Value("vehicle.frictionSetup", 65536, 8);
+        vehicle_frictionState = profile.Value("vehicle.frictionState", 65536, 8);
+        vehicle_frictionEnabled = profile.Value("vehicle.frictionEnabled", 65536, 1);
     }
 
     std::int64_t VehicleField(std::string_view key) const {

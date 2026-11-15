@@ -10,14 +10,11 @@
 namespace nte_vehicle {
 namespace {
 
-// 两个入口的原始类型取自 dump（HTWheeledVehicle* 的碰撞处理成员函数）：
-//   take-damage  载具受伤入口，返回 float 伤害值；返回 0 表示「没有伤害」。
-//   impact       物理撞击处理器，返回 void；直接返回表示撞击事件不再推进。
+// 原始签名取自 dump：载具受伤入口返回 float 伤害值（0 = 无伤害），撞击处理器返回 void。
 using TakeDamageFn = float(ANOMALY_CALL*)(void* self, float damage, void* a3, void* a4, void* a5);
 using ImpactFn = void(ANOMALY_CALL*)(void* self, int a2, void* a3, void* a4, int a5, void* a6);
 
-// 线程纪律：detour 里只读写下面这些原子量，绝不调用宿主服务、不打日志、
-// 不分配内存。开关与 trampoline 指针都可能在另一线程被改动。
+// detour 只碰原子量：不调宿主服务、不打日志、不分配内存。
 std::atomic_bool g_enabled{};
 std::atomic_bool g_installed{};
 std::atomic<std::uintptr_t> g_take_damage_original{};
@@ -26,10 +23,6 @@ std::atomic<std::uint64_t> g_take_damage_handle_id{};
 std::atomic<std::uint64_t> g_take_damage_handle_generation{};
 std::atomic<std::uint64_t> g_impact_handle_id{};
 std::atomic<std::uint64_t> g_impact_handle_generation{};
-std::atomic<std::uint32_t> g_take_damage_calls{};
-std::atomic<std::uint32_t> g_take_damage_blocked{};
-std::atomic<std::uint32_t> g_impact_calls{};
-std::atomic<std::uint32_t> g_impact_blocked{};
 const AnomalyHookServiceV1* g_hook{};
 
 bool AcquireLease(const std::atomic<std::uint64_t>& handle_id,
@@ -58,11 +51,7 @@ void ReleaseLease(AnomalyGenerationHandleV1& lease) noexcept {  // NOLINT(readab
 
 float ANOMALY_CALL TakeDamageDetour(void* self, float damage, void* a3, void* a4,
                                     void* a5) noexcept {
-    g_take_damage_calls.fetch_add(1, std::memory_order_relaxed);
-    if (g_enabled.load(std::memory_order_relaxed)) {
-        g_take_damage_blocked.fetch_add(1, std::memory_order_relaxed);
-        return 0.0F;
-    }
+    if (g_enabled.load(std::memory_order_relaxed)) return 0.0F;
     const auto original =
         reinterpret_cast<TakeDamageFn>(g_take_damage_original.load(std::memory_order_acquire));
     if (original == nullptr) return 0.0F;
@@ -80,11 +69,7 @@ float ANOMALY_CALL TakeDamageDetour(void* self, float damage, void* a3, void* a4
 }
 
 void ANOMALY_CALL ImpactDetour(void* self, int a2, void* a3, void* a4, int a5, void* a6) noexcept {
-    g_impact_calls.fetch_add(1, std::memory_order_relaxed);
-    if (g_enabled.load(std::memory_order_relaxed)) {
-        g_impact_blocked.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
+    if (g_enabled.load(std::memory_order_relaxed)) return;
     const auto original =
         reinterpret_cast<ImpactFn>(g_impact_original.load(std::memory_order_acquire));
     if (original == nullptr) return;
@@ -133,7 +118,7 @@ void ReleaseOne(std::atomic<std::uintptr_t>& original,
     if (g_hook == nullptr || g_hook->release == nullptr) return;
     const std::uint64_t id = handle_id.load(std::memory_order_acquire);
     if (id == 0) return;
-    // 先摘掉 trampoline：detour 立刻退化为「直通空实现」，再释放钩子。
+    // 先摘 trampoline 再释放，detour 立刻退化为空实现。
     original.store(0, std::memory_order_release);
     AnomalyGenerationHandleV1 handle{};
     handle.id = id;
@@ -162,7 +147,7 @@ bool InstallDurabilityGuard(const AnomalyHostApiV1* host, std::uintptr_t take_da
         g_hook = nullptr;
         return false;
     }
-    // 两个入口各自独立安装：签名在别的游戏构建里单独失效时，另一条通路仍然成立。
+    // 两个入口各自独立安装，任一成功即可保护耐久。
     std::string take_damage_error;
     const bool take_damage_installed = take_damage != 0 &&
         InstallOne("nte-vehicle.durability.take-damage", take_damage,
@@ -196,24 +181,5 @@ void SetDurabilityGuardEnabled(bool enabled) noexcept {
 }
 
 bool DurabilityGuardEnabled() noexcept { return g_enabled.load(std::memory_order_acquire); }
-
-bool DurabilityGuardInstalled() noexcept { return g_installed.load(std::memory_order_acquire); }
-
-bool DurabilityGuardImpactHooked() noexcept {
-    return g_impact_handle_id.load(std::memory_order_acquire) != 0;
-}
-
-bool DurabilityGuardTakeDamageHooked() noexcept {
-    return g_take_damage_handle_id.load(std::memory_order_acquire) != 0;
-}
-
-DurabilityGuardCounters DurabilityGuardCounts() noexcept {
-    DurabilityGuardCounters counters;
-    counters.take_damage_calls = g_take_damage_calls.load(std::memory_order_relaxed);
-    counters.take_damage_blocked = g_take_damage_blocked.load(std::memory_order_relaxed);
-    counters.impact_calls = g_impact_calls.load(std::memory_order_relaxed);
-    counters.impact_blocked = g_impact_blocked.load(std::memory_order_relaxed);
-    return counters;
-}
 
 } // namespace nte_vehicle
