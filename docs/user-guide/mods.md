@@ -322,6 +322,7 @@ P1 示例 ZIP 内的轮毂选项是替代版本，应只导入一套 `.pak/.utoc
 | 现象 | 先看什么 |
 | --- | --- |
 | 模组不生效 | 查看 `pak status` 的 `lastError` 和各容器的 `state`、`message`，以及日志中的 `pak_mods.compatibility_refused` 和 `pak_mods.mount_failed` |
+| 预检报告重复 package chunk | 相同完整 chunk ID、长度及全部解码内容一致的重复项允许继续兼容性预检；内容冲突、读取失败或单项超过 128 MiB 比较上限仍拒绝挂载，需要作者修复容器 |
 | 列表为空 | 目录路径、`.disabled` 标记和清单的 `mods` 数组 |
 | 不能覆盖/禁用文件 | 容器是否已释放，是否仍有引擎读请求；文件被占用时先退出游戏 |
 | 挂载成功但资源没变 | 是否为已驻留资源；挂载不会主动刷新它们 |
