@@ -82,6 +82,8 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* context) noexcept {
 }
 
 AnomalyStatusV1 ANOMALY_CALL Stop(void* context, uint32_t reason) noexcept {
+    const auto hud_status = lite_hud_theme::Stop();
+    if (hud_status.code != ANOMALY_STATUS_V1_OK) return hud_status;
     lite_awakening::SetVisible(false);
     lite_vehicle::SetVisible(false);
     ReleaseWindow();

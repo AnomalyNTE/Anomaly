@@ -4,8 +4,10 @@
 #include <Windows.h>
 #include <anomaly/sdk/cpp.hpp>
 #include <anomaly/sdk/services/nte.h>
+#include <array>
 #include <atomic>
 #include <chrono>
+#include <mutex>
 #include <string>
 #include "hud_theme.hpp"
 #include "localization.hpp"
@@ -13,15 +15,84 @@
 #include "plate_access.hpp"
 
 namespace {
-enum class Request { None, Apply, Restore };
-enum class Status { Ready, Applied, Restored, Failed };
-std::atomic<Request> request{};
-std::atomic<Status> hud_status{};
+std::atomic_bool enabled{};
+std::atomic_bool waiting{};
+bool restore_pending{};
+Clock::time_point next_check{};
+AnomalyGenerationHandleV1 last_world{}, last_controller{}, theme_subsystem{};
+FName preview_theme{};
+
 const AnomalyUe5ObjectsServiceV1* objects{};
 const AnomalyUe5NamesServiceV1* names{};
 const AnomalyUe5ProcessEventServiceV1* events{};
 const AnomalyNtePlayerServiceV1* player{};
+const AnomalyNteSessionServiceV1* session{};
+const AnomalyConfigServiceV1* config{};
+const AnomalySchedulerServiceV1* scheduler{};
+std::atomic_bool settings_dirty{};
+std::mutex settings_save_mutex;
 bool available{};
+
+constexpr auto settings_id = "hud-theme";
+constexpr uint32_t settings_version = 1;
+constexpr std::string_view settings_schema = R"json({
+    "type":"object",
+    "properties":{"enabled":{"type":"boolean"}},
+    "required":["enabled"],
+    "additionalProperties":false
+})json";
+
+AnomalyByteSpanV1 Bytes(std::string_view text) noexcept {
+    return {reinterpret_cast<const uint8_t*>(text.data()), text.size()};
+}
+
+bool LoadSettings(const Host& host) noexcept {
+    const auto json = host.Query<AnomalyJsonServiceV1>(ANOMALY_JSON_SERVICE_V1_ID).get();
+    AnomalyGenerationHandleV1 schema{};
+    if (!config || !config->register_schema || !config->read || !config->write_atomic ||
+        !scheduler || !scheduler->schedule || !json || !json->parse || !json->object_find ||
+        !json->boolean_value || !json->release ||
+        !Succeeded(config->register_schema(config->user, StringView(settings_id), settings_version,
+            Bytes(settings_schema), &schema))) return false;
+
+    std::array<uint8_t, 128> buffer{};
+    size_t size = buffer.size();
+    uint32_t version{};
+    const auto result = config->read(config->user, StringView(settings_id), &version,
+        {buffer.data(), buffer.size()}, &size);
+    if (Succeeded(result) && version == settings_version && size <= buffer.size()) {
+        AnomalyGenerationHandleV1 document{}, field{};
+        const std::string_view text(reinterpret_cast<const char*>(buffer.data()), size);
+        if (Succeeded(json->parse(json->user, StringView(text), &document))) {
+            int32_t value{};
+            if (Succeeded(json->object_find(json->user, document, StringView("enabled"), &field))) {
+                if (Succeeded(json->boolean_value(json->user, field, &value))) enabled.store(value != 0);
+                json->release(json->user, field);
+            }
+            json->release(json->user, document);
+        }
+    }
+    return true;
+}
+
+bool SaveSettings() noexcept {
+    std::scoped_lock lock(settings_save_mutex);
+    if (!settings_dirty.exchange(false)) return true;
+    const auto data = enabled.load() ? R"({"enabled":true})" : R"({"enabled":false})";
+    if (Succeeded(config->write_atomic(config->user, StringView(settings_id), settings_version, Bytes(data))))
+        return true;
+    settings_dirty.store(true);
+    return false;
+}
+
+void ANOMALY_CALL SaveSettingsTask(void*, AnomalyGenerationHandleV1) {
+    static_cast<void>(SaveSettings());
+}
+
+bool SameHandle(AnomalyGenerationHandleV1 first, AnomalyGenerationHandleV1 second) noexcept {
+    return first.id == second.id && first.generation == second.generation;
+}
+
 struct HudLayout {
     uint32_t fashion_theme_id{};
     uint32_t theme_delegate{};
@@ -53,50 +124,44 @@ struct EngineFunction {
     const char* name;
     uint8_t parameter_count;
     uint16_t parameter_size;
+    AnomalyGenerationHandleV1 handle{};
 };
-
-bool Failed(std::string_view operation) {
-    Log("HUD theme: " + std::string(operation));
-    return false;
-}
 
 AnomalyGenerationHandleV1 Find(const char* path) {
     AnomalyGenerationHandleV1 handle{};
-    if (objects->find_exact(objects->user, StringView(path), &handle).code != ANOMALY_STATUS_V1_OK) {
-        Failed(path);
-        return {};
-    }
+    if (!Succeeded(objects->find_exact(objects->user, StringView(path), &handle))) return {};
     return handle;
 }
 
-bool Call(const Reader& reader, AnomalyGenerationHandleV1 receiver, const EngineFunction& function,
+bool Call(const Reader& reader, AnomalyGenerationHandleV1 receiver, EngineFunction& function,
         void* params, size_t size) {
-    const auto handle = Find(function.path);
-    if (!receiver.id || !handle.id) return false;
-    if (!reader.Function(Resolve(reader, objects, handle), function.name,
-            function.parameter_count, function.parameter_size))
-        return Failed(std::string(function.name) + " parameters did not match");
-    const auto result = events->invoke(events->user, receiver, handle, params, size);
-    if (result.code != ANOMALY_STATUS_V1_OK)
-        return Failed(std::string(function.name) + " returned " + std::to_string(result.code));
-    return true;
+    if (!receiver.id) return false;
+    if (!function.handle.id) {
+        const auto handle = Find(function.path);
+        if (!reader.Function(Resolve(reader, objects, handle), function.name,
+                function.parameter_count, function.parameter_size)) return false;
+        function.handle = handle;
+    }
+    if (Succeeded(events->invoke(events->user, receiver, function.handle, params, size))) return true;
+    function.handle = {};
+    return false;
 }
 
 template<class Params>
-bool Call(const Reader& reader, AnomalyGenerationHandleV1 receiver, const EngineFunction& function, Params& params) {
+bool Call(const Reader& reader, AnomalyGenerationHandleV1 receiver, EngineFunction& function, Params& params) {
     return Call(reader, receiver, function, &params, sizeof(params));
 }
 
-constexpr EngineFunction lookup{
+EngineFunction lookup{
     "/Script/Engine.SubsystemBlueprintLibrary.GetLocalPlayerSubSystemFromPlayerController",
     "GetLocalPlayerSubSystemFromPlayerController", 3, 24};
-constexpr EngineFunction set_theme{
+EngineFunction set_theme{
     "/Script/HTGame.HTUIThemeSubsystem.SetThemeID", "SetThemeID", 2, 9};
-constexpr EngineFunction get_theme{
+EngineFunction get_theme{
     "/Script/HTGame.HTUIThemeSubsystem.GetCurrentThemeID", "GetCurrentThemeID", 1, 8};
-constexpr EngineFunction refresh_theme{
+EngineFunction refresh_theme{
     "/Script/HTGame.HTUIThemeSubsystem.RefreshThemeFromContext", "RefreshThemeFromContext", 1, 8};
-constexpr EngineFunction invalidate_widget{
+EngineFunction invalidate_widget{
     "/Script/UMG.Widget.InvalidateLayoutAndVolatility", "InvalidateLayoutAndVolatility", 0, 0};
 
 AnomalyGenerationHandleV1 HandleAt(const Reader& reader, uintptr_t address) {
@@ -213,34 +278,54 @@ bool ReadThemeId(const Reader& reader, FName& theme) {
     return false;
 }
 
-bool ChangeTheme(Request action) {
+bool UpdateTheme(bool requested) {
     const Reader reader{names};
-    if (!Initialize(reader, objects)) return Failed("object registry unavailable");
-    AnomalyGenerationHandleV1 controller_handle{};
-    if (player->get_object_handles(player->user, nullptr, &controller_handle).code != ANOMALY_STATUS_V1_OK)
-        return Failed("local controller handle unavailable");
-    auto controller = Resolve(reader, objects, controller_handle);
-    if (!controller) return Failed("local controller unavailable");
-    const auto subsystem = ThemeSubsystem(reader, controller);
-    if (!subsystem.id) return Failed("local HUD theme subsystem unavailable");
+    AnomalyNteSessionSnapshotV1 scene{sizeof(scene)};
+    if (!Succeeded(session->snapshot(session->user, &scene)) ||
+        scene.state != ANOMALY_NTE_SESSION_V1_WORLD_READY) {
+        last_world = {};
+        return false;
+    }
+    if (!Initialize(reader, objects)) return false;
 
+    AnomalyGenerationHandleV1 controller_handle{};
+    if (!Succeeded(player->get_object_handles(player->user, nullptr, &controller_handle))) return false;
+    auto controller = Resolve(reader, objects, controller_handle);
+    if (!controller) return false;
+
+    const bool scene_changed = !SameHandle(last_world, scene.world) ||
+        !SameHandle(last_controller, controller_handle);
+    if (scene_changed || !Resolve(reader, objects, theme_subsystem)) {
+        theme_subsystem = ThemeSubsystem(reader, controller);
+        if (!theme_subsystem.id) return false;
+    }
+
+    if (!requested) {
+        if (!Call(reader, theme_subsystem, refresh_theme, controller)) return false;
+        RefreshShortcutBar(reader, theme_subsystem);
+        restore_pending = false;
+        last_world = {};
+        last_controller = {};
+        return true;
+    }
+
+    if (!preview_theme.id && !ReadThemeId(reader, preview_theme)) return false;
     FName current{};
-    if (action == Request::Apply) {
+    if (!Call(reader, theme_subsystem, get_theme, current)) return false;
+    const bool needs_apply = current.id != preview_theme.id || current.number != preview_theme.number;
+    if (needs_apply) {
         constexpr uint8_t player_equipped = 3;
         struct Params { FName theme; uint8_t source; };
-        Params params{{}, player_equipped};
-        if (!ReadThemeId(reader, params.theme)) return Failed("outfit theme data unavailable");
-        if (!Call(reader, subsystem, set_theme, params) ||
-            !Call(reader, subsystem, get_theme, current)) return false;
-        if (current.id != params.theme.id || current.number != params.theme.number)
-            return Failed("theme read-back did not match");
-    } else {
-        // Let the game recalculate from the current scene and actual outfit.
-        if (!Call(reader, subsystem, refresh_theme, controller) ||
-            !Call(reader, subsystem, get_theme, current)) return false;
+        Params params{preview_theme, player_equipped};
+        if (!Call(reader, theme_subsystem, set_theme, params)) return false;
+        restore_pending = true;
+        if (!Call(reader, theme_subsystem, get_theme, current) ||
+            current.id != preview_theme.id || current.number != preview_theme.number) return false;
     }
-    RefreshShortcutBar(reader, subsystem);
-    Log("HUD theme: " + reader.Name(current));
+    if (needs_apply || scene_changed) RefreshShortcutBar(reader, theme_subsystem);
+    last_world = scene.world;
+    last_controller = controller_handle;
+    restore_pending = true;
     return true;
 }
 }
@@ -253,51 +338,64 @@ void Load(const AnomalyHostApiV1* host) noexcept {
     names = services.Query<AnomalyUe5NamesServiceV1>(ANOMALY_UE5_NAMES_SERVICE_V1_ID).get();
     events = services.Query<AnomalyUe5ProcessEventServiceV1>(ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_ID).get();
     player = services.Query<AnomalyNtePlayerServiceV1>(ANOMALY_NTE_PLAYER_SERVICE_V1_ID).get();
+    session = services.Query<AnomalyNteSessionServiceV1>(ANOMALY_NTE_SESSION_SERVICE_V1_ID).get();
+    config = services.Query<AnomalyConfigServiceV1>(ANOMALY_CONFIG_SERVICE_V1_ID).get();
+    scheduler = services.Query<AnomalySchedulerServiceV1>(ANOMALY_SCHEDULER_SERVICE_V1_ID).get();
+    enabled.store(false);
+    settings_dirty.store(false);
     available = LoadLayout() && objects && objects->find_exact && objects->snapshot_at &&
         names && names->resolve_utf8 &&
         events && events->struct_size >= offsetof(AnomalyUe5ProcessEventServiceV1, invoke) + sizeof(events->invoke) &&
         events->invoke &&
         player && player->struct_size >= offsetof(AnomalyNtePlayerServiceV1, get_object_handles) +
-            sizeof(player->get_object_handles) && player->get_object_handles;
+            sizeof(player->get_object_handles) && player->get_object_handles &&
+        session && session->snapshot && LoadSettings(services);
     registry = 0;
     retry_init = {};
-    request.store(Request::None);
-    hud_status.store(Status::Ready);
+    restore_pending = false;
+    next_check = {};
+    last_world = last_controller = theme_subsystem = {};
+    preview_theme = {};
+    for (auto* function : {&lookup, &set_theme, &get_theme, &refresh_theme, &invalidate_widget})
+        function->handle = {};
+    waiting.store(false);
 }
 
 bool Available() noexcept { return available; }
 
+AnomalyStatusV1 Stop() noexcept {
+    return SaveSettings() ? Ok() : AnomalyStatusV1{ANOMALY_STATUS_V1_FAILED, 0, {}};
+}
+
 void Update() noexcept {
-    const auto pending = request.exchange(Request::None);
-    if (pending == Request::None) return;
+    if (!available) return;
+    const auto requested = enabled.load();
+    if (!requested && !restore_pending) {
+        next_check = {};
+        waiting.store(false);
+        return;
+    }
+    const auto now = Clock::now();
+    if (now < next_check) return;
+    next_check = now + std::chrono::milliseconds(400);
     try {
-        if (available && ChangeTheme(pending)) {
-            hud_status.store(pending == Request::Apply ? Status::Applied : Status::Restored);
-            return;
-        }
+        waiting.store(!UpdateTheme(requested));
+        return;
     } catch (...) {}
-    hud_status.store(Status::Failed);
+    waiting.store(true);
 }
 
 void Draw(const AnomalyUiServiceV1* ui) {
     const auto& localizer = lite_i18n::localizer;
-    if (!ui->button) return;
-    if (ui->button(ui->user, StringView(localizer.Text("hud.apply", "Apply Elyms's Y2K HUD")), 0, 0))
-        request.store(Request::Apply);
-    if (ui->button(ui->user, StringView(localizer.Text("hud.restore", "Restore game HUD")), 0, 0))
-        request.store(Request::Restore);
-    switch (hud_status.load()) {
-    case Status::Applied:
-        ui->text(ui->user, StringView(localizer.Text("hud.applied", "Applied the Y2K HUD to the current game interface.")));
-        break;
-    case Status::Restored:
-        ui->text(ui->user, StringView(localizer.Text("hud.restored", "Restored the theme for the current outfit and scene.")));
-        break;
-    case Status::Failed:
-        ui->text(ui->user, StringView(localizer.Text("hud.failed", "HUD theme change failed. Enter the world and retry.")));
-        break;
-    case Status::Ready:
-        break;
+    if (!ui->checkbox) return;
+    int32_t checked = enabled.load();
+    if (ui->checkbox(ui->user, StringView(localizer.Text("hud.enabled", "Use Elyms's Y2K HUD")), &checked)) {
+        enabled.store(checked != 0);
+        settings_dirty.store(true);
+        AnomalyGenerationHandleV1 save_task{};
+        scheduler->schedule(scheduler->user, 0, SaveSettingsTask, nullptr, &save_task);
     }
+    if (waiting.load())
+        ui->text(ui->user, StringView(localizer.Text("hud.waiting", "Waiting for the game HUD.")));
 }
 }

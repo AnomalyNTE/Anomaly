@@ -56,6 +56,21 @@
       "optional": true
     },
     {
+      "id": "anomaly.nte.session",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.config",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
+      "id": "anomaly.scheduler",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
       "id": "anomaly.interop.signature",
       "minVersion": 1
     },
@@ -92,6 +107,9 @@
     "memory-write",
     "nte-combat-read",
     "nte-player-snapshot",
+    "nte-session-snapshot",
+    "configuration",
+    "scheduler",
     "json"
   ]
 }
