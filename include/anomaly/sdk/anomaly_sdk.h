@@ -2,6 +2,7 @@
 #include "anomaly/sdk/version.h"
 #include "anomaly/sdk/base.h"
 #include "anomaly/sdk/services/core.h"
+#include "anomaly/sdk/services/dx12.h"
 #include "anomaly/sdk/services/plugin_state.h"
 #include "anomaly/sdk/services/platform.h"
 #include "anomaly/sdk/services/localization.h"

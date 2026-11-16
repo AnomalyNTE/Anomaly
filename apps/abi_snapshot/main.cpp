@@ -913,6 +913,13 @@ std::string BuildSnapshot() {
          {"on_overlay", offsetof(AnomalyPluginDescriptorV1, on_overlay)}},
         false);
     AppendStruct(
+        output, "AnomalyDx12BindingServiceV1",
+        sizeof(AnomalyDx12BindingServiceV1), alignof(AnomalyDx12BindingServiceV1),
+        {{"struct_size", offsetof(AnomalyDx12BindingServiceV1, struct_size)},
+         {"service_version", offsetof(AnomalyDx12BindingServiceV1, service_version)},
+         {"user", offsetof(AnomalyDx12BindingServiceV1, user)},
+         {"acquire", offsetof(AnomalyDx12BindingServiceV1, acquire)}}, false);
+    AppendStruct(
         output,
         "AnomalyCoreServiceV1",
         sizeof(AnomalyCoreServiceV1),
@@ -2492,6 +2499,8 @@ std::string BuildSnapshot() {
     output.append("  },\n");
 
     output.append("  \"services\": [\n");
+    AppendService(output, ANOMALY_DX12_BINDING_SERVICE_V1_ID,
+        ANOMALY_DX12_BINDING_SERVICE_V1_VERSION, "AnomalyDx12BindingServiceV1", false);
     AppendService(output, ANOMALY_CORE_SERVICE_V1_ID,
         ANOMALY_CORE_SERVICE_V1_VERSION, "AnomalyCoreServiceV1", false);
     AppendService(output, ANOMALY_PLUGIN_STATE_SERVICE_V1_ID,

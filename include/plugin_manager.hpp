@@ -6,6 +6,7 @@
 #include "anomaly/plugin_config_watcher.hpp"
 #include "anomaly/plugin_enablement.hpp"
 #include "anomaly/input_service.hpp"
+#include "anomaly/dx12_binding.hpp"
 #include "anomaly/ipc_registry.hpp"
 #include "anomaly/nte_esc_menu_button.hpp"
 #include "anomaly/plugin_scope.hpp"
@@ -276,6 +277,7 @@ public:
         return *ui_resources_;
     }
     [[nodiscard]] anomaly::InputService& Input() noexcept { return input_service_; }
+    [[nodiscard]] anomaly::Dx12Binding& Dx12Binding() noexcept { return dx12_binding_; }
     [[nodiscard]] const anomaly::InputService& Input() const noexcept { return input_service_; }
     [[nodiscard]] const PluginCallbackBudgets& CallbackBudgets() const noexcept {
         return callback_budgets_;
@@ -386,6 +388,7 @@ private:
     std::shared_ptr<anomaly::UiResourceRegistry> ui_resources_ =
         std::make_shared<anomaly::UiResourceRegistry>();
     anomaly::InputService input_service_;
+    anomaly::Dx12Binding dx12_binding_;
     UiResourceWorkerDispatcher ui_resource_worker_dispatcher_;
     std::shared_ptr<UiResourceWorkerGate> ui_resource_worker_gate_;
     mutable std::mutex ui_resource_backend_mutex_;

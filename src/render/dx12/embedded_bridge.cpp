@@ -1005,6 +1005,7 @@ void RunEmbeddedPlatform(
         try {
             state.performance.SetEnabled(false);
             if (state.plugins != nullptr) {
+                state.plugins->Dx12Binding().Stop();
                 state.plugins->SetPerformanceDiagnosticsEnabled(false);
             }
             tick_enabled->store(false, std::memory_order_release);

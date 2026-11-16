@@ -121,6 +121,7 @@ Many functions that return variable-length data use a signature of the form `(..
 | `anomaly.interop.patch` | 1 | `interop-patch` | [patch](interop-and-memory.md#anomalyinteroppatch) |
 | `anomaly.ipc` | 1 | `ipc` | [ipc](ipc.md) |
 | `anomaly.websocket` | 1 | `websocket` | [websocket](websocket.md) |
+| `anomaly.dx12.binding` | 1 | `dx12-binding` | [DX12 binding](dx12-binding.md) |
 | `anomaly.ui` | 1 | `ui` | [ui](ui-services.md#anomalyui) |
 | `anomaly.window` | 1 | `ui-window` | [window](ui-services.md#anomalywindow) |
 | `anomaly.font` | 1 | `ui-font` | [font](ui-services.md#anomalyfont) |

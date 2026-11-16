@@ -639,6 +639,16 @@
         "on_overlay": 120
       }
     },
+    "AnomalyDx12BindingServiceV1": {
+      "size": 24,
+      "alignment": 8,
+      "offsets": {
+        "struct_size": 0,
+        "service_version": 4,
+        "user": 8,
+        "acquire": 16
+      }
+    },
     "AnomalyCoreServiceV1": {
       "size": 48,
       "alignment": 8,
@@ -2219,6 +2229,7 @@
     }
   },
   "services": [
+    { "id": "anomaly.dx12.binding", "version": 1, "table": "AnomalyDx12BindingServiceV1" },
     { "id": "anomaly.core", "version": 1, "table": "AnomalyCoreServiceV1" },
     { "id": "anomaly.plugin-state", "version": 1, "table": "AnomalyPluginStateServiceV1" },
     { "id": "anomaly.config", "version": 1, "table": "AnomalyConfigServiceV1" },

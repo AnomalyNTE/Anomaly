@@ -973,6 +973,21 @@ namespace {
 
 bool CompleteGraphicsInitialization(EmbeddedState& state);
 
+void PublishDx12Binding(EmbeddedState& state) {
+    if (state.plugins == nullptr) return;
+    // Only the private-data binding written by creation/ResizeBuffers1 is proof.
+    // The renderer's thread/latest-submission fallback must never be exported.
+    Microsoft::WRL::ComPtr<ID3D12CommandQueue> captured;
+    captured.Attach(AcquirePresentationQueue(state.source_swap_chain));
+    if (state.renderer == RendererLifecycle::Ready &&
+        state.render_api == EmbeddedRenderApi::D3D12 && captured &&
+        SameComObject(captured.Get(), state.render_queue)) {
+        state.plugins->Dx12Binding().Publish(state.source_swap_chain, captured.Get());
+    } else {
+        state.plugins->Dx12Binding().Withdraw();
+    }
+}
+
 bool InitializeGraphicsD3D12(EmbeddedState& state, IDXGISwapChain* swap_chain) {
     if (state.plugins == nullptr || state.quarantined_plugin_owner != nullptr ||
         PlatformUiQuarantined(state.plugins)) {
@@ -1275,6 +1290,7 @@ bool CompleteGraphicsInitialization(EmbeddedState& state) {
         return false;
     }
     state.renderer = RendererLifecycle::Ready;
+    PublishDx12Binding(state);
     std::ostringstream message;
     message << "embedded=1 hwnd=" << state.window
             << " buffers=" << state.frames.size() << " ui_generation="
@@ -1561,6 +1577,7 @@ namespace ue5mem::embedded {
 
 bool ReleaseGraphics(
     EmbeddedState& state, RendererLifecycle final_state, bool force_release) {
+    if (state.plugins != nullptr) state.plugins->Dx12Binding().Withdraw();
     state.renderer = final_state;
     if (!state.frame_aux.Release()) return false;
     if (state.imgui_context != nullptr &&
@@ -1995,6 +2012,7 @@ void RenderEmbedded(IDXGISwapChain* swap_chain, UINT flags) {
     }
     if (FAILED(queue->Signal(state->fence, signal_value))) {
         state->submission_unfenced = true;
+        if (state->plugins != nullptr) state->plugins->Dx12Binding().Withdraw();
         state->renderer = RendererLifecycle::DeviceLost;
         return;
     }
@@ -2017,6 +2035,7 @@ bool BeforeResize(
     std::scoped_lock lock(state->render_mutex);
     if (state->source_swap_chain != swap_chain ||
         state->renderer.load() != RendererLifecycle::Ready) return false;
+    if (state->plugins != nullptr) state->plugins->Dx12Binding().Withdraw();
     if (!state->frame_aux.Release(100)) return false;
     SelectPendingResizeQueue(
         *state, present_queue_count, present_queues, validate_present_queues);
@@ -2045,13 +2064,14 @@ bool AfterResize(bool affected, HRESULT result) {
     }
     bool queue_changed{};
     if (SUCCEEDED(result)) {
+        const bool captured_queue = state->pending_resize_queue != nullptr;
         const ResizeQueueAdoption queue = AdoptPendingResizeQueue(*state);
         if (queue == ResizeQueueAdoption::Invalid) {
             static_cast<void>(ReleaseGraphics(*state, RendererLifecycle::Stopped));
             return false;
         }
         queue_changed = queue == ResizeQueueAdoption::Changed;
-        if (queue_changed) BindPresentationQueue(state->source_swap_chain, state->render_queue);
+        if (captured_queue) BindPresentationQueue(state->source_swap_chain, state->render_queue);
     } else {
         ClearPendingResizeQueue(*state);
     }
@@ -2059,7 +2079,10 @@ bool AfterResize(bool affected, HRESULT result) {
         // Keep a successful Resize gated until the bridge has published its
         // callback. That establishes the coordinator's Resize epoch before a
         // post-Resize Present is allowed to complete the next pixel probe.
-        if (FAILED(result)) state->renderer = RendererLifecycle::Ready;
+        if (FAILED(result)) {
+            state->renderer = RendererLifecycle::Ready;
+            PublishDx12Binding(*state);
+        }
         return SUCCEEDED(result);
     }
     static_cast<void>(ReleaseGraphics(
@@ -2079,7 +2102,9 @@ void FinishResizeEvidenceHandoff(bool successful) noexcept {
         // when this capture generation had already reported pixels.
         RearmSmokeProbeAfterResize(state->pixel_probe.policy);
         state->renderer = RendererLifecycle::Ready;
+        PublishDx12Binding(*state);
     } catch (...) {
+        if (state->plugins != nullptr) state->plugins->Dx12Binding().Withdraw();
         state->renderer = RendererLifecycle::DeviceLost;
     }
 }
