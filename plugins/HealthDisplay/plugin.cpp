@@ -450,6 +450,11 @@ void Discover(Clock::time_point now) {
 void UpdateAnchor(const Target& target, std::array<double, 3>& position) {
     const auto& f = runtime.functions;
     double height = target.head_height;
+    // The verified capsule caps the anchor. A mesh bounds box is only trusted
+    // while its top stays below the capsule top: player_076_shinku reports a
+    // box extent of 368 cm against an 88 cm capsule (its wing fashion is
+    // included), and following it projected that bar metres above the character.
+    const double capsule_top = position[2] + height;
     std::uintptr_t mesh{};
     // Re-read the owned mesh every sample: character construction may replace it,
     // and scale can change after discovery without a new actor being spawned.
@@ -463,7 +468,7 @@ void UpdateAnchor(const Target& target, std::array<double, 3>& position) {
             std::ranges::all_of(bounds.extent, [](double v) { return std::isfinite(v) && v >= 0; }) &&
             bounds.extent[2] > 0) {
             const double top = bounds.origin[2] + bounds.extent[2] + 12.0;
-            if (std::isfinite(top)) {
+            if (std::isfinite(top) && top < capsule_top) {
                 position = bounds.origin;
                 position[2] = top;
                 return;
@@ -474,7 +479,7 @@ void UpdateAnchor(const Target& target, std::array<double, 3>& position) {
             std::isfinite(scale[2]) && scale[2] > 0 && std::isfinite(height * scale[2]))
             height *= scale[2];
     }
-    position[2] += height;
+    position[2] = std::min(capsule_top, position[2] + height);
 }
 
 void Collect(const Settings& settings) {
