@@ -2,10 +2,10 @@
   "schemaVersion": 2,
   "id": "wawmew.deserted",
   "name": "Deserted",
-  "description": "Stops Mass crowd and traffic spawning and requests despawning of active Mass entities.",
+  "description": "Reduces Mass crowd and traffic spawning by adjusting spawner settings.",
   "author": "WawMew",
   "license": "AGPL-3.0-only",
-  "version": "0.6.6",
+  "version": "0.6.7",
   "entry": "plugin.dll",
   "api": {
     "major": 1,
@@ -49,10 +49,6 @@
       "optional": true
     },
     {
-      "id": "anomaly.ue5.process-event",
-      "minVersion": 1
-    },
-    {
       "id": "anomaly.input",
       "minVersion": 1,
       "optional": true
@@ -83,7 +79,6 @@
     "interop-signature",
     "ue5-names",
     "ue5-objects",
-    "game-events",
     "input",
     "storage",
     "scheduler",

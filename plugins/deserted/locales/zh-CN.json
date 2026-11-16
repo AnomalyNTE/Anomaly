@@ -3,7 +3,7 @@
   "locale": "zh-CN",
   "messages": {
     "window.title": "空无一人",
-    "plugin.description": "停止 Mass 人群与交通生成，并请求已生成的 Mass 实体退场；不影响任务脚本和静态 NPC。",
+    "plugin.description": "调整 Mass 生成器参数以减少人群与交通生成。",
     "option.empty_streets": "空无一人",
     "label.hotkey": "快捷键：{0}",
     "action.rebind_hotkey": "改键",
@@ -13,7 +13,8 @@
     "text.key_enter": "回车",
     "status.deserted": "当前状态：空无一人",
     "status.normal": "当前状态：正常",
-    "status.locating_spawners": "正在定位人群生成器…",
+    "status.scan_progress": "正在扫描对象表：{0}/{1}",
+    "status.no_spawners": "扫描完成：没有找到可用的生成器",
     "status.signature_unavailable": "签名服务不可用",
     "status.gobjects_signature_missing": "未命中对象表签名（游戏版本可能变了）",
     "status.gobjects_address_invalid": "对象表符号地址非法",

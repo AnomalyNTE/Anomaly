@@ -16,7 +16,6 @@
 
 #include "anomaly/sdk/cpp.hpp"
 #include "anomaly/sdk/services/platform.h"
-#include "anomaly/sdk/services/ue5.h"
 #include "anomaly/sdk/localization.hpp"
 
 #include <windows.h>
@@ -59,7 +58,7 @@ constexpr int kMaxSpawners = 256;
 constexpr double kReapplySeconds = 1.0;
 // 扫描走完但仍缺目标（换关、布局待判定）时的重试周期。
 constexpr double kRetrySeconds = 2.0;
-const float kEmptyScales[5] = {0.0F, 0.0F, 0.0F, 0.0F, 0.0F};  // 空街值（昼/夜/晴/雨/雪）
+const float kEmptyScales[5] = {0.01F, 0.01F, 0.01F, 0.01F, 0.01F};  // 空街值（昼/夜/晴/雨/雪）
 const float kDefaultScales[5] = {1.0F, 1.0F, 1.0F, 1.0F, 1.0F};     // 游戏默认环境倍率（兜底初值）
 
 // 车辆生成器（HTMassVehicleSpawner）上的字段
@@ -81,7 +80,7 @@ constexpr std::uint32_t kWindowKey = VK_F8;
 
 // State 头部标记，供外部工具在 .data 中定位本结构
 constexpr std::uint64_t kStateMagic = 0x0054442D4D4F4E41ULL;  // "ANOM-DT\0"
-constexpr std::uint32_t kStateVersion = 5;
+constexpr std::uint32_t kStateVersion = 7;
 enum LayoutIndex {
     kLayoutChecked = 0,   // 与 req_toggle 相邻，外部可一次写入两个
     kLayoutReqToggle,
@@ -107,18 +106,25 @@ struct State {
     std::uintptr_t gobjects_slot{};
     std::uint32_t walk_total{};
     std::uint32_t walk_cursor{};
+    std::uint64_t walk_generation{};
     int walk_done{};
-    std::uint32_t spawner_index[kMaxSpawners]{};
+    std::uint32_t spawner_found_index[kMaxSpawners]{};
+    AnomalyGenerationHandleV1 spawner_found_handle[kMaxSpawners]{};
     int spawner_found{};
 
     // 目标
     std::uintptr_t spawner[kMaxSpawners]{};
+    std::uint32_t spawner_index[kMaxSpawners]{};
+    AnomalyGenerationHandleV1 spawner_handle[kMaxSpawners]{};
     int spawner_count{};
 
     // 车辆生成器（同一套扫描流程，名字含 MassVehicleSpawner）
-    std::uint32_t veh_index[kMaxSpawners]{};
+    std::uint32_t veh_found_index[kMaxSpawners]{};
+    AnomalyGenerationHandleV1 veh_found_handle[kMaxSpawners]{};
     int veh_found{};
     std::uintptr_t veh[kMaxSpawners]{};
+    std::uint32_t veh_index[kMaxSpawners]{};
+    AnomalyGenerationHandleV1 veh_handle[kMaxSpawners]{};
     int veh_count{};
     int veh_baseline_valid{};
     int veh_baseline_count[kMaxSpawners]{};
@@ -155,7 +161,6 @@ const AnomalyCoreServiceV1* g_core{};
 const AnomalySignatureServiceV1* g_signature{};
 const AnomalyUe5NamesServiceV1* g_names{};
 const AnomalyUe5ObjectsServiceV1* g_objects{};
-const AnomalyUe5ProcessEventServiceV1* g_events{};
 const AnomalyInputServiceV1* g_input{};
 const AnomalyStorageServiceV1* g_storage{};
 const AnomalySchedulerServiceV1* g_scheduler{};
@@ -301,6 +306,22 @@ std::uintptr_t IndexToAddress(std::uint32_t index) {
     return object;
 }
 
+bool ResolveCurrentObject(std::uint32_t index, AnomalyGenerationHandleV1 expected,
+                          std::uintptr_t* address) {
+    if (address == nullptr || expected.id == 0 || g_objects == nullptr ||
+        g_objects->snapshot_by_handle == nullptr ||
+        ANOMALY_UE5_OBJECT_HANDLE_INDEX(expected) != index) return false;
+    AnomalyUe5ObjectSnapshotV1 snapshot{};
+    snapshot.struct_size = sizeof(snapshot);
+    if (g_objects->snapshot_by_handle(g_objects->user, expected, &snapshot).code !=
+        ANOMALY_STATUS_V1_OK || snapshot.handle.id != expected.id ||
+        snapshot.handle.generation != expected.generation) return false;
+    const std::uintptr_t current = IndexToAddress(index);
+    if (!LooksLikePointer(current)) return false;
+    *address = current;
+    return true;
+}
+
 // 对象类名里是否含 needle（不区分大小写）
 bool ClassNameContains(std::uintptr_t addr, const char* needle) {
     if (!LooksLikePointer(addr) || needle == nullptr) return false;
@@ -420,7 +441,8 @@ bool IsVehicleSpawnerCandidate(std::uintptr_t addr) {
 }
 
 bool VehicleSpawnerHasMinActive(std::uintptr_t addr) {
-    return !ClassNameContains(addr, "MassBusSpawner");
+    // 该字段只属于 HTMassVehicleSpawner；公交和列车在同一偏移放了其他数据。
+    return ClassNameContains(addr, "MassVehicleSpawner");
 }
 
 bool IsVehicleSpawnerObject(std::uintptr_t addr) {
@@ -467,7 +489,9 @@ int SyncVehicles(int to_zero) {
     State& s = g_state;
     int written = 0;
     for (int i = 0; i < s.veh_count && i < kMaxSpawners; ++i) {
-        const std::uintptr_t addr = s.veh[i];
+        std::uintptr_t addr = 0;
+        if (!ResolveCurrentObject(s.veh_index[i], s.veh_handle[i], &addr)) continue;
+        s.veh[i] = addr;
         if (!IsVehicleSpawnerObject(addr)) continue;
         const int min_active = s.veh_has_min_active[i] != 0 ? 0 : -1;
         if (to_zero != 0) {
@@ -480,41 +504,19 @@ int SyncVehicles(int to_zero) {
     return written;
 }
 
-void RequestDespawning(std::uint32_t object_index, AnomalyGenerationHandleV1 function) {
-    if (g_events == nullptr || g_events->struct_size < sizeof(AnomalyUe5ProcessEventServiceV1) ||
-        g_events->invoke == nullptr || g_objects == nullptr || g_objects->snapshot_at == nullptr) return;
-
-    AnomalyUe5ObjectSnapshotV1 receiver{};
-    receiver.struct_size = sizeof(receiver);
-    if (g_objects->snapshot_at(g_objects->user, object_index, &receiver).code !=
-        ANOMALY_STATUS_V1_OK) return;
-
-    (void)g_events->invoke(g_events->user, receiver.handle, function, nullptr, 0);
-}
-
-void RequestAllDespawning() {
-    State& s = g_state;
-    if (g_objects == nullptr || g_objects->find_exact == nullptr) return;
-    AnomalyGenerationHandleV1 function{};
-    constexpr auto function_path = "/Script/MassSpawner.MassSpawner.DoDespawning";
-    if (g_objects->find_exact(g_objects->user, StringView(function_path), &function).code !=
-        ANOMALY_STATUS_V1_OK) return;
-    for (int i = 0; i < s.spawner_count; ++i)
-        RequestDespawning(s.spawner_index[i], function);
-    for (int i = 0; i < s.veh_count; ++i)
-        RequestDespawning(s.veh_index[i], function);
-}
-
 void CaptureVehicleBaseline() {
     State& s = g_state;
     s.veh_baseline_valid = 0;
     for (int i = 0; i < s.veh_count && i < kMaxSpawners; ++i) {
-        if (!IsVehicleSpawnerObject(s.veh[i])) continue;
+        std::uintptr_t addr = 0;
+        if (!ResolveCurrentObject(s.veh_index[i], s.veh_handle[i], &addr)) continue;
+        s.veh[i] = addr;
+        if (!IsVehicleSpawnerObject(addr)) continue;
         int count = 0;
         int min_active = 0;
         float scale = 1.0F;
         const bool has_min_active = s.veh_has_min_active[i] != 0;
-        ReadVehicleParams(s.veh[i], &count, &scale, &min_active, has_min_active);
+        ReadVehicleParams(addr, &count, &scale, &min_active, has_min_active);
         // 已经是 0（上次没恢复）⇒ 不当作初值，用游戏默认值兜底
         if (count <= 0 || scale <= 0.0F) {
             count = kDefaultVehCount;
@@ -565,7 +567,9 @@ int SyncScales(const float* values) {
     State& s = g_state;
     int written = 0;
     for (int i = 0; i < s.spawner_count; ++i) {
-        const std::uintptr_t sp = s.spawner[i];
+        std::uintptr_t sp = 0;
+        if (!ResolveCurrentObject(s.spawner_index[i], s.spawner_handle[i], &sp)) continue;
+        s.spawner[i] = sp;
         if (!IsSpawnerObject(sp)) continue;
         written += SyncScale(sp + deserted_profile::native_layout.kDefaultProfileOffset, values);
 
@@ -592,9 +596,11 @@ void ResetScan() {
     s.walk_done = 0;
     s.walk_cursor = 0;
     s.walk_total = 0;
+    s.walk_generation = 0;
     s.retry_accum = 0.0;
     s.reapply_accum = 0.0;
     s.need_apply = (s.checked != 0) ? 1 : 0;  // 换关后重新应用（只在勾选状态下有意义）
+    SetStatus("");
 }
 
 // 候选布局判定：签名全失配时用真实对象做证据，只有唯一候选自洽才采用，否则不猜。
@@ -623,21 +629,36 @@ bool SelectLayoutFromObjects(const std::uintptr_t* crowd, int crowd_count,
 
 void ResolveFoundObjects() {
     State& s = g_state;
+    struct Target {
+        std::uint32_t index{};
+        AnomalyGenerationHandleV1 handle{};
+        std::uintptr_t address{};
+    };
+    Target crowd_targets[kMaxSpawners]{};
+    Target vehicle_targets[kMaxSpawners]{};
     std::uintptr_t crowd[kMaxSpawners]{};
     std::uintptr_t vehicles[kMaxSpawners]{};
     int crowd_found = 0;
     int vehicles_found = 0;
     for (int i = 0; i < s.spawner_found && crowd_found < kMaxSpawners; ++i) {
-        const std::uintptr_t addr = IndexToAddress(s.spawner_index[i]);
+        const auto index = s.spawner_found_index[i];
+        const auto handle = s.spawner_found_handle[i];
+        std::uintptr_t addr = 0;
+        if (!ResolveCurrentObject(index, handle, &addr)) continue;
         if (!IsCrowdSpawnerCandidate(addr)) continue;
         // 跳过「本身是类」的对象（UClass / BlueprintGeneratedClass）
         if (ClassNameContains(addr, "Class")) continue;
+        crowd_targets[crowd_found] = {index, handle, addr};
         crowd[crowd_found++] = addr;
     }
     for (int i = 0; i < s.veh_found && vehicles_found < kMaxSpawners; ++i) {
-        const std::uintptr_t addr = IndexToAddress(s.veh_index[i]);
+        const auto index = s.veh_found_index[i];
+        const auto handle = s.veh_found_handle[i];
+        std::uintptr_t addr = 0;
+        if (!ResolveCurrentObject(index, handle, &addr)) continue;
         if (!IsVehicleSpawnerCandidate(addr)) continue;
         if (ClassNameContains(addr, "Class")) continue;
+        vehicle_targets[vehicles_found] = {index, handle, addr};
         vehicles[vehicles_found++] = addr;
     }
     if (!deserted_profile::LayoutSelected() &&
@@ -653,6 +674,8 @@ void ResolveFoundObjects() {
     for (int i = 0; i < crowd_found; ++i) {
         if (!IsSpawnerObject(crowd[i])) continue;
         s.spawner[n++] = crowd[i];
+        s.spawner_index[n - 1] = crowd_targets[i].index;
+        s.spawner_handle[n - 1] = crowd_targets[i].handle;
     }
     s.spawner_count = n;
 
@@ -660,6 +683,8 @@ void ResolveFoundObjects() {
     for (int i = 0; i < vehicles_found; ++i) {
         if (!IsVehicleSpawnerObject(vehicles[i])) continue;
         s.veh[v] = vehicles[i];
+        s.veh_index[v] = vehicle_targets[i].index;
+        s.veh_handle[v] = vehicle_targets[i].handle;
         s.veh_has_min_active[v] = VehicleSpawnerHasMinActive(vehicles[i]) ? 1 : 0;
         ++v;
     }
@@ -672,20 +697,24 @@ void ResolveFoundObjects() {
 // 分片遍历对象表，找 HTMassCrowdSpawner 实例
 void AdvanceScan(double dt) {
     State& s = g_state;
-    if (s.walk_done != 0 && s.spawner_count > 0 && s.veh_count > 0) return;
     if (s.sig_tried == 0) TryResolveGobjectsSlot();
     if (s.gobjects_slot == 0) return;
+    if (g_objects == nullptr || g_objects->snapshot_at == nullptr ||
+        g_objects->count == nullptr || g_objects->generation == nullptr ||
+        g_names == nullptr || g_names->resolve_utf8 == nullptr) {
+        s.walk_done = 1;
+        SetStatus(g_localizer.Text("status.registry_unavailable", "The object table or name service is unavailable").c_str());
+        return;
+    }
+    const std::uint64_t generation = g_objects->generation(g_objects->user);
+    if (s.walk_generation != 0 && generation != s.walk_generation) ResetScan();
+    if (s.walk_generation == 0) s.walk_generation = generation;
+    if (s.walk_done != 0 && s.spawner_count > 0 && s.veh_count > 0) return;
     if (s.walk_done != 0) {  // 已走完但仍缺目标：按慢周期重试
         s.retry_accum += (dt > 0.0) ? dt : 0.0;
         if (s.retry_accum < kRetrySeconds) return;
         s.retry_accum = 0.0;
         ResolveFoundObjects();
-        return;
-    }
-    if (g_objects == nullptr || g_objects->snapshot_at == nullptr ||
-        g_objects->count == nullptr || g_names == nullptr || g_names->resolve_utf8 == nullptr) {
-        s.walk_done = 1;
-        SetStatus(g_localizer.Text("status.registry_unavailable", "The object table or name service is unavailable").c_str());
         return;
     }
     if (s.walk_total == 0) s.walk_total = g_objects->count(g_objects->user);
@@ -706,10 +735,14 @@ void AdvanceScan(double dt) {
                     const std::uintptr_t addr = IndexToAddress(s.walk_cursor);
                     // 跳过「本身是类」的对象（UClass / BlueprintGeneratedClass）
                     if (addr != 0 && !ClassNameContains(addr, "Class")) {
-                        if (crowd && s.spawner_found < kMaxSpawners) {
-                            s.spawner_index[s.spawner_found++] = s.walk_cursor;
-                        } else if (vehicle && s.veh_found < kMaxSpawners) {
-                            s.veh_index[s.veh_found++] = s.walk_cursor;
+                        if (crowd && s.spawner_found < kMaxSpawners &&
+                            ANOMALY_UE5_OBJECT_HANDLE_INDEX(snapshot.handle) == s.walk_cursor) {
+                            s.spawner_found_index[s.spawner_found] = s.walk_cursor;
+                            s.spawner_found_handle[s.spawner_found++] = snapshot.handle;
+                        } else if (vehicle && s.veh_found < kMaxSpawners &&
+                                   ANOMALY_UE5_OBJECT_HANDLE_INDEX(snapshot.handle) == s.walk_cursor) {
+                            s.veh_found_index[s.veh_found] = s.walk_cursor;
+                            s.veh_found_handle[s.veh_found++] = snapshot.handle;
                         }
                     }
                 }
@@ -717,6 +750,7 @@ void AdvanceScan(double dt) {
         }
         ++s.walk_cursor;
     }
+    if (deserted_profile::LayoutSelected()) ResolveFoundObjects();
     if (s.walk_cursor >= s.walk_total) {
         s.walk_done = 1;
         ResolveFoundObjects();
@@ -731,16 +765,22 @@ void ValidateTargets(double dt) {
     s.validate_accum = 0.0;
     if (s.spawner_count == 0 && s.veh_count == 0) return;
     for (int i = 0; i < s.spawner_count; ++i) {
-        if (!IsSpawnerObject(s.spawner[i])) {
+        std::uintptr_t current = 0;
+        if (!ResolveCurrentObject(s.spawner_index[i], s.spawner_handle[i], &current) ||
+            !IsSpawnerObject(current)) {
             ResetScan();
             return;
         }
+        s.spawner[i] = current;
     }
     for (int i = 0; i < s.veh_count; ++i) {
-        if (!IsVehicleSpawnerObject(s.veh[i])) {
+        std::uintptr_t current = 0;
+        if (!ResolveCurrentObject(s.veh_index[i], s.veh_handle[i], &current) ||
+            !IsVehicleSpawnerObject(current)) {
             ResetScan();
             return;
         }
+        s.veh[i] = current;
     }
 }
 
@@ -753,7 +793,10 @@ void HandleToggle() {
     if (s.checked != 0) {
         // 勾选：优先用游戏当前值当初值；当前已是空街值就沿用旧初值；再没有就用默认 1.0 兜底
         float fresh[5]{};
-        if (s.spawner_count > 0 && ReadScales(s.spawner[0], fresh) && BaselineSane(fresh)) {
+        std::uintptr_t first_spawner = 0;
+        if (s.spawner_count > 0 &&
+            ResolveCurrentObject(s.spawner_index[0], s.spawner_handle[0], &first_spawner) &&
+            IsSpawnerObject(first_spawner) && ReadScales(first_spawner, fresh) && BaselineSane(fresh)) {
             std::memcpy(s.baseline, fresh, sizeof(s.baseline));
             s.baseline_valid = 1;
         } else if (s.baseline_valid == 0) {
@@ -1011,8 +1054,19 @@ void DrawMain(const AnomalyUiServiceV1* ui) {
     if (s.status[0] != '\0') {
         Text(ui, s.status);
     } else if (s.spawner_count == 0 && s.veh_count == 0) {
-        Text(ui, g_localizer.Text("status.locating_spawners",
-                                 "Locating the crowd spawners...").c_str());
+        if (s.walk_done != 0) {
+            Text(ui, g_localizer.Text("status.no_spawners",
+                "No supported generators were found in the object table").c_str());
+        } else {
+            char cursor[16]{};
+            char total[16]{};
+            std::snprintf(cursor, sizeof(cursor), "%u", s.walk_cursor);
+            std::snprintf(total, sizeof(total), "%u", s.walk_total);
+            const std::string progress = g_localizer.Format("status.scan_progress",
+                "Scanning object table: {0}/{1}",
+                std::array<std::string_view, 2>{cursor, total});
+            Text(ui, progress.c_str());
+        }
     } else {
         char crowd_count[16]{};
         char vehicle_count[16]{};
@@ -1100,9 +1154,6 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
     const auto objects = view.Query<AnomalyUe5ObjectsServiceV1>(
         ANOMALY_UE5_OBJECTS_SERVICE_V1_ID, ANOMALY_UE5_OBJECTS_SERVICE_V1_VERSION);
     g_objects = objects ? objects.get() : nullptr;
-    const auto events = view.Query<AnomalyUe5ProcessEventServiceV1>(
-        ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_ID, ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_VERSION);
-    g_events = events ? events.get() : nullptr;
     const auto input = view.Query<AnomalyInputServiceV1>(ANOMALY_INPUT_SERVICE_V1_ID,
                                                          ANOMALY_INPUT_SERVICE_V1_VERSION);
     g_input = input ? input.get() : nullptr;
@@ -1158,7 +1209,6 @@ void ANOMALY_CALL Unload(void* context) {
     g_signature = nullptr;
     g_names = nullptr;
     g_objects = nullptr;
-    g_events = nullptr;
     g_input = nullptr;
     g_core = nullptr;
     g_storage = nullptr;
@@ -1193,7 +1243,9 @@ void ANOMALY_CALL Update(void* context, double delta_seconds) {
         // 勾选：确保有初值，然后把环境倍率压到空街值并保持
         if (s.spawner_count > 0 && s.baseline_valid == 0) {
             float fresh[5]{};
-            if (ReadScales(s.spawner[0], fresh) && BaselineSane(fresh)) {
+            std::uintptr_t first_spawner = 0;
+            if (ResolveCurrentObject(s.spawner_index[0], s.spawner_handle[0], &first_spawner) &&
+                IsSpawnerObject(first_spawner) && ReadScales(first_spawner, fresh) && BaselineSane(fresh)) {
                 std::memcpy(s.baseline, fresh, sizeof(s.baseline));
             } else {
                 std::memcpy(s.baseline, kDefaultScales, sizeof(s.baseline));  // 兜底初值
@@ -1206,7 +1258,6 @@ void ANOMALY_CALL Update(void* context, double delta_seconds) {
             s.need_apply = 0;
             if (s.spawner_count > 0) SyncScales(kEmptyScales);
             if (s.veh_count > 0) SyncVehicles(1);
-            RequestAllDespawning();
             s.reapply_accum = 0.0;
             return;
         }
@@ -1215,10 +1266,8 @@ void ANOMALY_CALL Update(void* context, double delta_seconds) {
         s.reapply_accum += dt;
         if (s.reapply_accum >= kReapplySeconds) {
             s.reapply_accum = 0.0;
-            int writes = 0;
-            if (s.spawner_count > 0) writes += SyncScales(kEmptyScales);
-            if (s.veh_count > 0) writes += SyncVehicles(1);
-            if (writes > 0) RequestAllDespawning();
+            if (s.spawner_count > 0) SyncScales(kEmptyScales);
+            if (s.veh_count > 0) SyncVehicles(1);
         }
         return;  // 其余时间不做逐帧检测
     }
@@ -1243,7 +1292,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     }
     *descriptor = {sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
                    StringView("wawmew.deserted"), StringView("Deserted"),
-                   StringView("WawMew"), StringView("0.6.6"), Load, Start, Stop, Unload, Update,
+                   StringView("WawMew"), StringView("0.6.7"), Load, Start, Stop, Unload, Update,
                    Draw};
     return anomaly::sdk::Ok();
 }
