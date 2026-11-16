@@ -158,6 +158,16 @@
             "kRobBankAwardDropIdOffset": 3088,
             "kStaticItemElementDataOffset": 440
           }
+        },
+        {
+          "pattern": "48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 56 48 83 EC 20 80 B9 48 2B 00 00 00 48 8B F2 48 8B F9 0F 84 A4 00 00 00",
+          "entry": "48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 56 48 83 EC 20",
+          "values": {
+            "kRobBankCanInteractOffset": 3104,
+            "kRobBankPointUidOffset": 2984,
+            "kRobBankAwardDropIdOffset": 3088,
+            "kStaticItemElementDataOffset": 440
+          }
         }
       ]
     },

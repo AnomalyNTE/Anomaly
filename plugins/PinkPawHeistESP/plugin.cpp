@@ -2516,6 +2516,22 @@ void ProcessBankAction() {
             : std::string(StatusName(result.code))));
 }
 
+// A compatibility profile that no longer matches the game disables loot highlighting and every
+// automation entry at once, yet nothing else observes that failure: the panel simply stays empty.
+// Report the runtime state on every load so a stale profile stays diagnosable.
+void PublishRobBankState(const bool available) {
+    const auto core = QueryService<AnomalyCoreServiceV1>(g_context.host,
+        ANOMALY_CORE_SERVICE_V1_ID, ANOMALY_CORE_SERVICE_V1_VERSION);
+    if (!core || core.service->log == nullptr) return;
+    const std::string message = available
+        ? std::string("pink-paw.rob-bank state=ready")
+        : std::string("pink-paw.rob-bank state=unavailable: compatibility profile or UE "
+            "reflection validation failed");
+    core.service->log(core.service->user,
+        available ? ANOMALY_CORE_LOG_LEVEL_V1_INFO : ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
+        anomaly::sdk::StringView(message));
+}
+
 void PublishBankLoop() {
     const auto previous = g_bank_loop_display.load(std::memory_order_acquire);
     const bool state_changed = !previous || previous->phase != g_bank_loop.Phase() ||
@@ -3737,7 +3753,7 @@ AnomalyStatusV1 ANOMALY_CALL Start(void*) {
         g_pickup.result_message[0] = '\0';
     }
     g_auto_teleport_pickup = {};
-    static_cast<void>(g_rob_bank.Start(g_context.host));
+    PublishRobBankState(g_rob_bank.Start(g_context.host));
     g_world_gate.Reset();
     g_in_pink_paw_world = false;
     g_world_gate_refresh_requested.store(false, std::memory_order_release);
