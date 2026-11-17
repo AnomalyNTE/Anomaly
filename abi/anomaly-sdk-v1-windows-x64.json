@@ -1055,7 +1055,7 @@
       }
     },
     "AnomalyUiServiceV1": {
-      "size": 448,
+      "size": 456,
       "alignment": 8,
       "offsets": {
         "struct_size": 0,
@@ -1114,7 +1114,8 @@
         "overlay_measure_text": 416,
         "overlay_text": 424,
         "overlay_glass_ring_sector": 432,
-        "draw_screen_primitives": 440
+        "draw_screen_primitives": 440,
+        "checkbox_square": 448
       }
     },
     "AnomalyWindowSpecV1": {

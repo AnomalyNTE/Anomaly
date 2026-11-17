@@ -34,7 +34,7 @@ struct Row {
 struct RowCollection { std::vector<Row> values; bool failed{}; };
 struct AssetCollection { std::set<std::string> values; bool failed{}; };
 enum class Kind { Toggle, ReloadWorld };
-struct Action { Kind kind; std::string key; bool enabled{}; };
+struct Action { Kind kind; std::vector<std::string> keys; bool enabled{}; };
 struct Prepared { bool reload_world{}; std::vector<std::string> packages; };
 
 struct Context {
@@ -54,12 +54,13 @@ struct Context {
     std::vector<Row> rows;
     std::optional<Action> action;
     std::optional<Prepared> prepared;
-    std::string status;
+    std::string status, save_error;
     // The Chinese names of the categories, keyed by the container identifier they classify. The
     // table is read once at load, so the panel never touches the file system while drawing.
     std::map<std::string, std::string, std::less<>> category_names;
-    // The search box. Only the draw callback reads and writes it, so it needs no lock.
+    // Only the draw callback owns the search and batch selection.
     std::string filter;
+    std::set<std::string> selected_keys;
     mod_manager::NativeAccess native;
     Reload reload;
     Visual visual;
@@ -268,15 +269,29 @@ void ANOMALY_CALL Worker(void*, AnomalyGenerationHandleV1) noexcept {
 
         bool ok = true, synchronized = false;
         if (action && action->kind == Kind::Toggle) {
-            const auto saved = compatibility ? AnomalyStatusV1{ANOMALY_STATUS_V1_CONFLICT}
-                : g.mods->set_enabled(g.mods->user, StringView(action->key), action->enabled);
-            ok = saved.code == 0;
+            ok = false;
+            std::string save_error;
+            for (const auto& key : action->keys) {
+                const auto saved = g.mods->set_enabled(g.mods->user, StringView(key), action->enabled);
+                if (!saved.code) ok = true;
+                else if (save_error.empty()) {
+                    const auto detail = ErrorText(saved);
+                    const std::array<std::string_view, 2> args{key, detail};
+                    save_error = g.localizer.Format("status.save_failed", "Could not save {0}: {1}", args);
+                }
+            }
+            const bool all_saved = save_error.empty();
+            if (!all_saved) {
+                std::scoped_lock lock(g.mutex);
+                g.save_error = std::move(save_error);
+                g.status.clear();
+            }
             if (ok) {
                 const auto mounted = g.mods->synchronize(g.mods->user);
                 synchronized = mounted.code == 0; ok = synchronized;
-                if (ok) LocalizedStatus("status.saved", "Applied");
-                else ReportMountFailure(mounted);
-            } else LocalizedStatus("status.save_failed", "Save failed: {0}", ErrorText(saved));
+                if (!ok) ReportMountFailure(mounted);
+                else if (all_saved) LocalizedStatus("status.saved", "Applied");
+            }
         }
 
         RowCollection collection;
@@ -366,6 +381,7 @@ void Request(Action action) {
     std::scoped_lock lock(g.mutex);
     if (g.stopping || g.busy || g.compatibility) return;
     g.action = std::move(action); g.busy = true;
+    g.save_error.clear();
     g.status = g.localizer.Text("status.queued", "Queued");
 }
 void ReportReload(Reload::Result result) {
@@ -500,12 +516,13 @@ void ANOMALY_CALL Draw(void*, const AnomalyUiServiceV1* ui) noexcept {
         struct End { ~End() { g.windows->end(g.windows->user, g.window); } } end;
         if (!visible) return;
         std::vector<Row> rows;
-        std::string status;
+        std::string status, save_error;
         bool busy{}, services_ready{}, by_folder{}, settings_save_failed{};
         {
             std::unique_lock lock(g.mutex, std::try_to_lock);
             if (!lock) return;
             rows = g.rows; status = g.status; busy = g.busy; services_ready = g.services_ready;
+            save_error = g.save_error;
             by_folder = g.group_by_folder;
             settings_save_failed = g.settings_save_failed;
         }
@@ -518,11 +535,14 @@ void ANOMALY_CALL Draw(void*, const AnomalyUiServiceV1* ui) noexcept {
             TextLocalized("status.profile_unavailable", "Profile mismatch; refresh unavailable");
         else if (!g.compatibility && !services_ready)
             TextLocalized("status.services_pending", "Waiting for game services.");
-        if (!status.empty()) {
+        const auto draw_status = [&](const std::string& message) {
+            if (message.empty()) return;
             if (UiFieldAvailable(ui, offsetof(AnomalyUiServiceV1, text_wrapped), sizeof(ui->text_wrapped)) &&
-                ui->text_wrapped) ui->text_wrapped(ui->user, StringView(status));
-            else ui->text(ui->user, StringView(status));
-        }
+                ui->text_wrapped) ui->text_wrapped(ui->user, StringView(message));
+            else ui->text(ui->user, StringView(message));
+        };
+        draw_status(status);
+        draw_status(save_error);
         if (ui->button_enabled(ui->user, StringView(g.localizer.Text("action.reload_world", "Reload world")), 0, 0, !busy && !g.compatibility && services_ready))
             Request({Kind::ReloadWorld, {}});
 
@@ -554,10 +574,44 @@ void ANOMALY_CALL Draw(void*, const AnomalyUiServiceV1* ui) noexcept {
         }
         const bool host_filter = UiFieldAvailable(ui, offsetof(AnomalyUiServiceV1, filter_match),
             sizeof(decltype(AnomalyUiServiceV1::filter_match))) && ui->filter_match;
-        // Only the list scrolls. The mode, the status, the reload button and the search box are drawn
-        // above it and keep their place; the rows take the rest of the window inside their own scroll
-        // region, which a width and height of zero fill. A window too short for the header leaves
-        // nothing to fill, and the body scrolls the page as the only way to reach the controls.
+        const bool has_rows = !rows.empty();
+        if (!g.filter.empty()) {
+            std::erase_if(rows, [&](const Row& row) {
+                const auto search = SearchText(row, CategoryLabels(row));
+                return host_filter
+                    ? ui->filter_match(ui->user, StringView(g.filter), StringView(search)) == 0
+                    : !ContainsFolded(search, g.filter);
+            });
+        }
+
+        const bool select_all = rows.empty() || std::any_of(rows.begin(), rows.end(), [](const Row& row) {
+            return !g.selected_keys.contains(row.key);
+        });
+        const auto selection_label = select_all ? g.localizer.Text("action.select_all", "Select all")
+            : g.localizer.Text("action.deselect_all", "Deselect all");
+        if (ui->button_enabled(ui->user, StringView(selection_label + "###mod-batch-selection"), 0, 0, !rows.empty())) {
+            for (const auto& row : rows) {
+                if (select_all) g.selected_keys.insert(row.key);
+                else g.selected_keys.erase(row.key);
+            }
+        }
+        const auto draw_batch_toggle = [&](const std::string& label, const bool enabled) {
+            const auto eligible = [&](const Row& row) {
+                return row.enabled != enabled && (!enabled || !row.disabled) && g.selected_keys.contains(row.key);
+            };
+            ui->same_line(ui->user, 0, -1);
+            const bool available = !busy && !g.compatibility && std::any_of(rows.begin(), rows.end(), eligible);
+            if (ui->button_enabled(ui->user, StringView(label), 0, 0, available)) {
+                Action action{Kind::Toggle, {}, enabled};
+                for (const auto& row : rows) {
+                    if (eligible(row)) action.keys.push_back(row.key);
+                }
+                Request(std::move(action));
+            }
+        };
+        draw_batch_toggle(g.localizer.Text("action.bulk_enable", "Enable selected"), true);
+        draw_batch_toggle(g.localizer.Text("action.bulk_disable", "Disable selected"), false);
+        // Keep the controls above the scrolling list.
         const bool has_list = UiFieldAvailable(ui, offsetof(AnomalyUiServiceV1, begin_child),
                                   sizeof(decltype(AnomalyUiServiceV1::begin_child))) &&
             ui->begin_child && UiFieldAvailable(ui, offsetof(AnomalyUiServiceV1, end_child),
@@ -574,20 +628,10 @@ void ANOMALY_CALL Draw(void*, const AnomalyUiServiceV1* ui) noexcept {
                                ANOMALY_UI_CHILD_V1_NONE) != 0;
         }
         const Row* section{};
-        std::size_t shown{};
         if (list.visible) {
+            const bool square_checkbox = UiFieldAvailable(ui, offsetof(AnomalyUiServiceV1, checkbox_square),
+                sizeof(ui->checkbox_square)) && ui->checkbox_square;
             for (const auto& row : rows) {
-                const bool filtered = !g.filter.empty();
-                std::vector<std::string> labels;
-                if (filtered) {
-                    labels = CategoryLabels(row);
-                    const auto search = SearchText(row, labels);
-                    const bool matched = host_filter
-                        ? ui->filter_match(ui->user, StringView(g.filter), StringView(search)) != 0
-                        : ContainsFolded(search, g.filter);
-                    if (!matched) continue;
-                }
-                ++shown;
                 if (!section || (by_folder ? row.parent_folder != section->parent_folder : row.groups != section->groups)) {
                     ui->separator(ui->user);
                     section = &row;
@@ -596,20 +640,33 @@ void ANOMALY_CALL Draw(void*, const AnomalyUiServiceV1* ui) noexcept {
                             ? g.localizer.Text("group.root_folder", "Mods root") : row.parent_folder;
                         ui->text(ui->user, StringView(folder));
                     } else {
-                        if (labels.empty()) labels = CategoryLabels(row);
-                        ui->text(ui->user, StringView(JoinNames(labels)));
+                        ui->text(ui->user, StringView(JoinNames(CategoryLabels(row))));
                     }
                 }
+                int selected = g.selected_keys.contains(row.key);
+                const auto label = "###selected-" + row.key;
+                bool changed{};
+                if (square_checkbox) {
+                    changed = ui->checkbox_square(ui->user, StringView(label), &selected) != 0;
+                } else if (ui->button_enabled(ui->user, StringView((selected ? "[x]" : "[ ]") + label), 0, 0, 1)) {
+                    selected = !selected;
+                    changed = true;
+                }
+                if (changed) {
+                    if (selected) g.selected_keys.insert(row.key);
+                    else g.selected_keys.erase(row.key);
+                }
+                ui->same_line(ui->user, 0, -1);
                 int enabled = row.enabled;
                 if (ui->checkbox(ui->user, StringView("##enabled-" + row.key), &enabled) && !busy && !g.compatibility && (row.enabled || !row.disabled))
-                    Request({Kind::Toggle, row.key, enabled != 0});
+                    Request({Kind::Toggle, {row.key}, enabled != 0});
                 ui->same_line(ui->user, 0, -1); ui->text(ui->user, StringView(row.name));
                 // The variants this mod replaces, on its own row: the section is the character.
                 if (!row.skins.empty()) { ui->same_line(ui->user, 0, -1); ui->text(ui->user, StringView(row.skins)); }
                 if (!row.complete) TextLocalized("row.incomplete", "Index unavailable.");
                 if (row.disabled) TextLocalized("row.disabled_files", "Files disabled; restore in Launcher.");
             }
-            if (shown == 0 && !rows.empty()) TextLocalized("search.empty", "No matching mods.");
+            if (rows.empty() && has_rows) TextLocalized("search.empty", "No matching mods.");
         }
     } catch (...) {}
 }

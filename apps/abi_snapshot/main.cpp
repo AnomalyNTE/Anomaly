@@ -1395,7 +1395,8 @@ std::string BuildSnapshot() {
          {"overlay_measure_text", offsetof(AnomalyUiServiceV1, overlay_measure_text)},
          {"overlay_text", offsetof(AnomalyUiServiceV1, overlay_text)},
          {"overlay_glass_ring_sector", offsetof(AnomalyUiServiceV1, overlay_glass_ring_sector)},
-         {"draw_screen_primitives", offsetof(AnomalyUiServiceV1, draw_screen_primitives)}},
+         {"draw_screen_primitives", offsetof(AnomalyUiServiceV1, draw_screen_primitives)},
+         {"checkbox_square", offsetof(AnomalyUiServiceV1, checkbox_square)}},
         false);
     AppendStruct(
         output,

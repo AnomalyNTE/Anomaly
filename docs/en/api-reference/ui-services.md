@@ -98,6 +98,7 @@ typedef struct AnomalyUiServiceV1 {
     int  (ANOMALY_CALL *slider_float_enabled)(void* user, AnomalyStringViewV1 label, float* value, float minimum, float maximum, int enabled);
     void (ANOMALY_CALL *set_next_item_width)(void* user, float width);
     int  (ANOMALY_CALL *draw_screen_primitives)(void* user, const AnomalyUiScreenPrimitiveV1* primitives, size_t count);
+    int  (ANOMALY_CALL *checkbox_square)(void* user, AnomalyStringViewV1 label, int* value);
 } AnomalyUiServiceV1;
 ```
 
@@ -106,6 +107,7 @@ typedef struct AnomalyUiServiceV1 {
 | `set_next_window_size(w, h, condition)` | Sets the size of the next window |
 | `begin_window(title, open, flags)` / `end_window()` | Begins / ends a window, returns whether it is expanded |
 | `text` / `button` / `button_enabled` / `checkbox` / `slider_float` / `color_edit4` / `input_*` | Basic widgets and bounded input |
+| `checkbox_square` | Optional square check box. Sets `*value` to 1 when checked or 0 when cleared and returns 1 when the value changes. Check `struct_size` and the function pointer before calling |
 | `same_line` / `set_cursor_pos_x` | Compact inline widgets and local horizontal positioning |
 | `text_link(label, url)` | Shows a left-clickable text link; accepts only `http://` or `https://`, and after the click the host requests the default browser once drawing has finished |
 | `begin_child` / `begin_table` / `begin_menu` / `begin_popup_modal` and the matching `end_*` | Scoped UI containers |

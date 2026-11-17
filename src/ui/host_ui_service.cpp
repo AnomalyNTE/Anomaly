@@ -742,9 +742,16 @@ int ANOMALY_CALL Checkbox(void*, AnomalyStringViewV1 label, int* value) {
     if (value == nullptr) return 0;
     const std::string text = Copy(label);
     bool checked = *value != 0;
-    // Every boolean the plugin ABI exposes is a switch, so plugin pages match
-    // the shell without a new entry point.
     const bool changed = glass::Switch(text.c_str(), &checked);
+    *value = checked ? 1 : 0;
+    return changed ? 1 : 0;
+}
+
+int ANOMALY_CALL CheckboxSquare(void*, AnomalyStringViewV1 label, int* value) {
+    if (value == nullptr) return 0;
+    const std::string text = Copy(label);
+    bool checked = *value != 0;
+    const bool changed = ImGui::Checkbox(text.c_str(), &checked);
     *value = checked ? 1 : 0;
     return changed ? 1 : 0;
 }
@@ -1438,7 +1445,7 @@ const AnomalyUiServiceV1 kUiService{
     TextWrapped, BeginChildAutoFitY, SliderFloatEnabled, SetNextItemWidth,
     OverlayViewportSize, OverlayGlass, OverlayRectFilled, OverlayLine, OverlayCircle,
     OverlayRingSector, OverlayMeasureText, OverlayText, OverlayGlassRingSector,
-    DrawScreenPrimitives};
+    DrawScreenPrimitives, CheckboxSquare};
 
 }  // namespace
 

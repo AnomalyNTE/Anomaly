@@ -3,7 +3,7 @@
 namespace anomaly {
 
 bool UiServiceRegistry::Publish(const AnomalyUiServiceV1* service) noexcept {
-    if (service == nullptr || service->struct_size < sizeof(AnomalyUiServiceV1) ||
+    if (service == nullptr || service->struct_size < offsetof(AnomalyUiServiceV1, checkbox_square) ||
         service->service_version != ANOMALY_UI_SERVICE_V1_VERSION ||
         service->begin_window == nullptr ||
         service->end_window == nullptr || service->text == nullptr) {

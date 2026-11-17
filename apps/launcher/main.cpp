@@ -6393,7 +6393,7 @@ void DrawModsMode(
     static std::string notes_error;
     static std::string pending_uninstall;   // single uninstall awaiting confirmation
     static std::set<std::string> selected_names;  // batch selection by mod key: one per mod, also across categories
-    static bool bulk_uninstall_pending{};
+    static std::set<std::string> pending_bulk_uninstall;
     static std::map<anomaly::launcher::ModGroupPath, bool> group_collapsed;
     static std::string update_status;
     static std::mutex check_mutex;
@@ -6433,6 +6433,7 @@ void DrawModsMode(
             page = 0;
             grid_path.clear();
             selected_names.clear();
+            pending_bulk_uninstall.clear();
             group_collapsed.clear();
             import_message.clear();
             update_status.clear();
@@ -6593,8 +6594,8 @@ void DrawModsMode(
             [](const unsigned char c) { return static_cast<char>(std::tolower(c)); });
         return haystack.find(needle) != std::string::npos;
     };
-    std::vector<const LauncherModEntry*> filtered;
-    for (const auto& entry : mods) {
+    std::vector<LauncherModEntry*> filtered;
+    for (auto& entry : mods) {
         if (matches(entry)) filtered.push_back(&entry);
     }
     // Both views use the same tree and placement ranges, including custom paths up to five levels.
@@ -6610,12 +6611,17 @@ void DrawModsMode(
     }
     const auto layout = anomaly::launcher::BuildModGrouping(classified, by_folder);
     const auto open_node = anomaly::launcher::FindModGroup(layout, grid_path);
-    if (grid_path != layout.nodes[open_node].path) {
+    // A filter can empty the active category while matching mods elsewhere.
+    const bool group_missing = grid_path != layout.nodes[open_node].path;
+    const bool group_filtered_out = group_missing && (!needle.empty() || status_filter != 0);
+    if (group_missing && !group_filtered_out) {
         grid_path = layout.nodes[open_node].path;
         page = 0;
         scroll_to_top = true;
     }
-    const auto& open_group = layout.nodes[anomaly::launcher::ModGroupContent(layout, open_node)];
+    const anomaly::launcher::ModGroupingNode empty_group;
+    const auto& open_group = group_filtered_out ? empty_group
+        : layout.nodes[anomaly::launcher::ModGroupContent(layout, open_node)];
     const std::size_t page_items = !view.mods_grid ? layout.placements.size()
         : open_group.children.size() + open_group.direct_count;
     const std::size_t page_size = view.mods_pagination
@@ -6625,18 +6631,35 @@ void DrawModsMode(
         (page_items + page_size - 1) / page_size);
     page = (std::min)(page, pages - 1);
     {
-        // Batch operations act on the selection across the whole set, not just the rows on screen.
-        std::size_t selected_count{};
-        bool any_unselected{};
-        for (const auto& entry : mods) {
-            if (entry.selected) ++selected_count;
-            else any_unselected = true;
+        std::vector<bool> in_scope(filtered.size());
+        if (view.mods_grid) {
+            for (auto i = open_group.first; i < open_group.first + open_group.count; ++i)
+                in_scope[layout.placements[i]] = true;
+        } else {
+            std::vector<bool> hidden(layout.nodes.size());
+            for (std::size_t node = 1; node < layout.nodes.size(); ++node) {
+                const auto& group = layout.nodes[node];
+                const auto collapsed = group_collapsed.find(group.path);
+                hidden[node] = hidden[group.parent] ||
+                    (collapsed != group_collapsed.end() && collapsed->second &&
+                        anomaly::launcher::ModGroupContent(layout, group.parent) != node);
+            }
+            for (std::size_t i = 0; i < layout.placements.size(); ++i) {
+                if (!hidden[layout.placement_nodes[i]]) in_scope[layout.placements[i]] = true;
+            }
         }
-        // Same lock the per-row switch uses; that variable is declared further down.
-        ImGui::BeginDisabled(!snapshot.processes.empty() && mod_settings.compatibility);
+        // A mod can be placed under several categories. Keep one entry in catalog order.
+        std::vector<LauncherModEntry*> batch_scope;
+        for (std::size_t i = 0; i < filtered.size(); ++i) {
+            if (in_scope[i]) batch_scope.push_back(filtered[i]);
+        }
+        const auto selected_count = std::count_if(batch_scope.begin(), batch_scope.end(),
+            [](const auto* entry) { return entry->selected; });
+        const bool any_unselected = selected_count < std::ssize(batch_scope);
+        ImGui::BeginDisabled(toggles_locked || batch_scope.empty());
         // The button says what the next click does, one label at a time, and keeps the width of the
         // longer of the two so the buttons beside it never shift when the selection flips.
-        const char* const select_label = Text(translator, any_unselected
+        const char* const select_label = Text(translator, any_unselected || batch_scope.empty()
             ? anomaly::MessageId::LauncherModsSelectAll
             : anomaly::MessageId::LauncherModsDeselectAll);
         const float select_width =
@@ -6645,30 +6668,33 @@ void DrawModsMode(
             Scale(30.0f);
         if (LauncherChip((std::string(select_label) + "##select-all").c_str(),
                 ImVec2(select_width, 0.0f))) {
-            for (auto& entry : mods) entry.selected = any_unselected;
-            selected_names.clear();
-            if (any_unselected) {
-                for (const auto& entry : mods) selected_names.insert(LauncherModStateKey(entry));
+            for (auto* entry : batch_scope) {
+                entry->selected = any_unselected;
+                if (any_unselected) selected_names.insert(LauncherModStateKey(*entry));
+                else selected_names.erase(LauncherModStateKey(*entry));
             }
         }
         ImGui::SameLine();
         ImGui::BeginDisabled(selected_count == 0);
         if (LauncherChip(Text(translator, anomaly::MessageId::LauncherModsBulkEnable))) {
-            for (const auto& entry : mods) {
-                if (entry.selected && !entry.enabled) LauncherSetModEnabled(snapshot, entry, true);
+            for (const auto* entry : batch_scope) {
+                if (entry->selected && !entry->enabled) LauncherSetModEnabled(snapshot, *entry, true);
             }
             refreshed = false;
         }
         ImGui::SameLine();
         if (LauncherChip(Text(translator, anomaly::MessageId::LauncherModsBulkDisable))) {
-            for (const auto& entry : mods) {
-                if (entry.selected && entry.enabled) LauncherSetModEnabled(snapshot, entry, false);
+            for (const auto* entry : batch_scope) {
+                if (entry->selected && entry->enabled) LauncherSetModEnabled(snapshot, *entry, false);
             }
             refreshed = false;
         }
         ImGui::SameLine();
         if (LauncherChip(Text(translator, anomaly::MessageId::LauncherModsBulkUninstall))) {
-            bulk_uninstall_pending = true;
+            pending_bulk_uninstall.clear();
+            for (const auto* entry : batch_scope) {
+                if (entry->selected) pending_bulk_uninstall.insert(LauncherModStateKey(*entry));
+            }
             ImGui::OpenPopup(modal_name(anomaly::MessageId::LauncherModsBulkUninstall, "bulk-uninstall").c_str());
         }
         ImGui::EndDisabled();
@@ -7077,7 +7103,7 @@ void DrawModsMode(
             ImGui::Spacing();
         }
     }
-    if (filtered.empty()) {
+    if (filtered.empty() || (view.mods_grid && group_filtered_out)) {
         ImGui::TextDisabled("%s", Text(translator, anomaly::MessageId::LauncherModsNoMatches));
     }
     // The pager floats over the bottom of the list rather than sitting above it: the covers can
@@ -7130,23 +7156,20 @@ void DrawModsMode(
         ImGui::EndPopup();
     }
     if (ImGui::BeginPopupModal(modal_name(anomaly::MessageId::LauncherModsBulkUninstall, "bulk-uninstall").c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        std::size_t count{};
-        for (const auto& entry : mods) {
-            if (entry.selected) ++count;
-        }
         ImGui::Text("%s", Format(translator, anomaly::MessageId::LauncherModsConfirmUninstallMany,
-            {std::to_string(count)}).c_str());
+            {std::to_string(pending_bulk_uninstall.size())}).c_str());
         const auto answer = DrawLauncherModConfirmationButtons();
         if (answer == LauncherModConfirmationResult::Confirm) {
             for (const auto& entry : mods) {
-                if (entry.selected) LauncherRemoveMod(snapshot, entry);
+                const auto key = LauncherModStateKey(entry);
+                if (pending_bulk_uninstall.contains(key) && LauncherRemoveMod(snapshot, entry))
+                    selected_names.erase(key);
             }
-            selected_names.clear();
-            bulk_uninstall_pending = false;
+            pending_bulk_uninstall.clear();
             refresh_mods();
         }
         if (answer == LauncherModConfirmationResult::Cancel) {
-            bulk_uninstall_pending = false;
+            pending_bulk_uninstall.clear();
         }
         ImGui::EndPopup();
     }
