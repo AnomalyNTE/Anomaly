@@ -93,7 +93,7 @@ public:
             item.id = {static_cast<std::uint32_t>(key),
                        static_cast<std::uint32_t>(key >> 32)};
             item.code = ue_.Spelling(item.id);
-            item.chinese = ue_.Text(row + text.offset);
+            item.display_name = ue_.Text(row + text.offset);
             if (!default_ids.contains(key)) {
                 const auto character = ue_.Instanced(row, rows.type,
                     "ElementData", "CharacterItemData");
@@ -139,7 +139,7 @@ public:
         // Reserve before spawning so an allocation failure cannot lose a live actor.
         if (models_.size() == models_.capacity())
             models_.reserve(std::max(models_.size() + 1, models_.capacity() * 2));
-        Model record{next_id_, {}, world_, chosen->chinese + " [" + chosen->code + "]",
+        Model record{next_id_, {}, world_, chosen->display_name + " [" + chosen->code + "]",
                      position, yaw};
         Transform transform = At(position, yaw);
         const auto begin = ue_.Call(

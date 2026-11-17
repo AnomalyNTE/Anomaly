@@ -5,7 +5,7 @@
 namespace character_studio {
 struct Character {
     Name id{};
-    std::string code, chinese;
+    std::string code, display_name;
 };
 struct CatalogRow {
     Character character;
@@ -32,10 +32,10 @@ inline std::vector<Character> BuildCatalog(
         }
         // Filter before deduplicating: an unusable alias must never hide the
         // actual character. Missing display names are not a shared identity.
-        if (!item.chinese.empty()) {
-            if (!names.insert(item.chinese).second) continue;
+        if (!item.display_name.empty()) {
+            if (!names.insert(item.display_name).second) continue;
         } else {
-            item.chinese = item.code;
+            item.display_name = item.code;
         }
         result.push_back(std::move(item));
     }

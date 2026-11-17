@@ -34,12 +34,25 @@ bool InvokeNative(Address entry, Address object, Address function, void* data) n
         return false;
     }
 }
+struct NativeString {
+    Address data;
+    std::int32_t count, capacity;
+};
+// FText::ToString returns a borrowed FString reference owned by the engine.
+Address InvokeTextToString(Address entry, Address text) noexcept {
+    __try {
+        return reinterpret_cast<Address(__fastcall*)(const void*)>(entry)(
+            reinterpret_cast<const void*>(text));
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
 struct LiveProcess final : Process {
     const AnomalyCoreServiceV1* core{};
     const AnomalyUe5NamesServiceV1* names{};
     const AnomalyUe5ObjectsServiceV1* objects{};
     const AnomalyUe5FrameworkServiceV1* framework{};
-    Address entry{};
+    Address entry{}, text_to_string{};
     bool faulted{};
 
     bool Read(Address address, void* data, std::size_t size) override {
@@ -54,10 +67,39 @@ struct LiveProcess final : Process {
         });
     }
     std::string ResolveText(Address address) override {
+        // The engine refreshes FText history before returning the display string.
+        // The SDK reader can fall back to source text even when a translation exists.
+        constexpr std::string_view missing_entry = "<MISSING STRING TABLE ENTRY>";
+        if (auto localized = LocalizedText(address); !localized.empty() && localized != missing_entry)
+            return localized;
         if (!names || !names->resolve_ftext_utf8) return {};
-        return String([&](char* out, std::size_t* size) {
+        auto cached = String([&](char* out, std::size_t* size) {
             return names->resolve_ftext_utf8(names->user, address, out, size);
         });
+        if (cached == missing_entry) cached.clear();
+        return cached;
+    }
+    std::string LocalizedText(Address address) {
+        if (!text_to_string || !IsGameThread()) return {};
+        const auto borrowed = InvokeTextToString(text_to_string, address);
+        if (!borrowed) {
+            text_to_string = 0; // Disable this binding for the generation after a native fault.
+            return {};
+        }
+        NativeString value{};
+        if (!Read(borrowed, &value, sizeof(value)) || !value.data || value.count < 2 ||
+            value.count > 512 || value.count > value.capacity) return {};
+        std::wstring wide(value.count, L'\0');
+        if (!Read(value.data, wide.data(), wide.size() * sizeof(wchar_t)) ||
+            wide.back() != L'\0') return {};
+        const int count = value.count - 1;
+        const int size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
+            wide.data(), count, nullptr, 0, nullptr, nullptr);
+        if (size <= 0) return {};
+        std::string result(size, '\0');
+        if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide.data(), count,
+            result.data(), size, nullptr, nullptr) != size) return {};
+        return result;
     }
     template<class Copy> static std::string String(Copy copy) {
         std::array<char, 512> first{};
@@ -83,9 +125,11 @@ struct LiveProcess final : Process {
     std::uint64_t Generation() override {
         return objects && objects->generation ? objects->generation(objects->user) : 0;
     }
+    bool IsGameThread() const {
+        return framework && framework->is_game_thread && framework->is_game_thread(framework->user);
+    }
     bool Invoke(Address object, Address function, void* data, std::size_t size) override {
-        if (faulted || !entry || !framework || !framework->is_game_thread ||
-            !framework->is_game_thread(framework->user)) return false;
+        if (faulted || !entry || !IsGameThread()) return false;
         if (!InvokeNative(entry, object, function, size ? data : nullptr)) {
             // A native fault disables further calls in this generation. Never continue
             // stepping through a guessed initialization chain after an engine exception.
@@ -243,8 +287,16 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** output) n
             c->process.objects->find_exact && c->process.objects->generation &&
             c->process.framework &&
             c->process.framework->is_game_thread && c->session && c->session->snapshot) {
+            const auto text = anomaly::sdk::ResolveProfileSymbol(
+                signatures, core, resource, "ue5.FText.ToString");
             c->engine = std::make_unique<Engine>(c->process, std::move(resource), registry,
                                                  c->localizer);
+            const auto& layout = c->engine->data_layout();
+            if (layout.array_size == sizeof(NativeString) &&
+                layout.array_data == offsetof(NativeString, data) &&
+                layout.array_count == offsetof(NativeString, count) &&
+                layout.array_capacity == offsetof(NativeString, capacity) &&
+                Executable(text.address)) c->process.text_to_string = text.address;
             c->studio = std::make_unique<Studio>(*c->engine, c->localizer);
             Status(*c, c->localizer.Text("status.engine_ready",
                 "Engine interfaces initialized; waiting for a world update"));
@@ -630,7 +682,7 @@ void ANOMALY_CALL Draw(void* context, const AnomalyUiServiceV1* ui) noexcept {
                 std::vector<const Character*> filtered;
                 const Character* selected{};
                 for (const auto& item : *view->characters) {
-                    if (item.chinese.find(r.filter) != std::string::npos ||
+                    if (item.display_name.find(r.filter) != std::string::npos ||
                         item.code.find(r.filter) != std::string::npos) {
                         filtered.push_back(&item);
                         if (item.id == r.character) selected = &item;
@@ -654,7 +706,7 @@ void ANOMALY_CALL Draw(void* context, const AnomalyUiServiceV1* ui) noexcept {
                             ui->table_next_column(ui->user);
                         } else if ((i - start) % 3 != 0) same_line();
                         const auto& item = *filtered[i];
-                        const auto label = item.chinese + "##character-" + item.code;
+                        const auto label = item.display_name + "###character-" + item.code;
                         int checked = item.id == r.character;
                         if (ui->checkbox(ui->user, StringView(label), &checked) && checked) {
                             selected = &item;
@@ -668,7 +720,7 @@ void ANOMALY_CALL Draw(void* context, const AnomalyUiServiceV1* ui) noexcept {
                         : c.localizer.Text("status.no_match", "No character matches the filter"));
                 }
                 if (selected) {
-                    const std::array arguments{std::string_view(selected->chinese)};
+                    const std::array arguments{std::string_view(selected->display_name)};
                     Text(ui, c.localizer.Format("text.selected", "Selected: {0}", arguments));
                 }
                 ui->input_uint32(ui->user, StringView(c.localizer.Text("label.count", "Count")),
