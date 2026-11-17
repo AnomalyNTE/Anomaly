@@ -4,7 +4,7 @@
 //    取消：恢复初值
 // 目标字段：HTMassCrowdSpawner（默认档 +kDefaultProfileOffset、数组 +kDensityProfilesOffset）
 //          内 HTMassCrowdDensityProfile 的 +0x0C/+0x10/+0x14/+0x18/+0x1C（1.4b 起未变）。
-// 窗口热键固定 F8；开关热键可改键，默认未绑定。
+// 等待世界就绪后扫描；界面可请求重新扫描。
 //
 // 兼容策略（游戏每次更新只会动这几处）：
 //   1. 版本无关的字段全部来自 Profile 的 layout 块；随版本变化的三处偏移放在 layout 符号的
@@ -16,6 +16,7 @@
 
 #include "anomaly/sdk/cpp.hpp"
 #include "anomaly/sdk/services/platform.h"
+#include "anomaly/sdk/services/nte.h"
 #include "anomaly/sdk/localization.hpp"
 
 #include <windows.h>
@@ -76,17 +77,15 @@ constexpr int kDefaultVehMinActive = 50;
 
 constexpr int kConfVersion = 5;
 constexpr const char* kConfFile = "deserted.conf";
-constexpr std::uint32_t kWindowKey = VK_F8;
 
 // State 头部标记，供外部工具在 .data 中定位本结构
 constexpr std::uint64_t kStateMagic = 0x0054442D4D4F4E41ULL;  // "ANOM-DT\0"
-constexpr std::uint32_t kStateVersion = 7;
+constexpr std::uint32_t kStateVersion = 8;
 enum LayoutIndex {
     kLayoutChecked = 0,   // 与 req_toggle 相邻，外部可一次写入两个
     kLayoutReqToggle,
     kLayoutBaseline,      // float[5]
     kLayoutBaselineValid,
-    kLayoutHotkey,
     kLayoutSpawnerCount,
     kLayoutWrites,
     kLayoutFaults,
@@ -102,6 +101,8 @@ struct State {
     std::uint32_t layout[kLayoutCount]{};
 
     // 扫描
+    AnomalyGenerationHandleV1 world{};
+    int req_rescan{};
     int sig_tried{};
     std::uintptr_t gobjects_slot{};
     std::uint32_t walk_total{};
@@ -126,7 +127,7 @@ struct State {
     std::uint32_t veh_index[kMaxSpawners]{};
     AnomalyGenerationHandleV1 veh_handle[kMaxSpawners]{};
     int veh_count{};
-    int veh_baseline_valid{};
+    int veh_baseline_valid[kMaxSpawners]{};
     int veh_baseline_count[kMaxSpawners]{};
     float veh_baseline_scale[kMaxSpawners]{};
     int veh_baseline_min[kMaxSpawners]{};
@@ -142,12 +143,8 @@ struct State {
     double reapply_accum{};  // 勾选期间重新对齐的慢周期累计
     double retry_accum{};    // 扫描走完但仍缺目标时的重试累计
 
-    // 热键 / 窗口
-    std::uint32_t hotkey{0};
-    int capturing{};
-    int capture_baseline_pending{};
+    // 窗口
     int window_open{1};
-    unsigned char prev_keys[32]{};
 
     // 诊断
     std::uint64_t writes{};
@@ -161,11 +158,9 @@ const AnomalyCoreServiceV1* g_core{};
 const AnomalySignatureServiceV1* g_signature{};
 const AnomalyUe5NamesServiceV1* g_names{};
 const AnomalyUe5ObjectsServiceV1* g_objects{};
-const AnomalyInputServiceV1* g_input{};
+const AnomalyNteSessionServiceV1* g_session{};
 const AnomalyStorageServiceV1* g_storage{};
 const AnomalySchedulerServiceV1* g_scheduler{};
-AnomalyGenerationHandleV1 g_hotkey_window{};
-AnomalyGenerationHandleV1 g_hotkey_toggle{};
 anomaly::sdk::Localizer g_localizer;
 
 void SetStatus(const char* text) {
@@ -496,7 +491,7 @@ int SyncVehicles(int to_zero) {
         const int min_active = s.veh_has_min_active[i] != 0 ? 0 : -1;
         if (to_zero != 0) {
             written += SyncOneVehicle(addr, 0, 0.0F, min_active);
-        } else if (s.veh_baseline_valid != 0) {
+        } else if (s.veh_baseline_valid[i] != 0) {
             written += SyncOneVehicle(addr, s.veh_baseline_count[i], s.veh_baseline_scale[i],
                                       s.veh_baseline_min[i]);
         }
@@ -506,8 +501,8 @@ int SyncVehicles(int to_zero) {
 
 void CaptureVehicleBaseline() {
     State& s = g_state;
-    s.veh_baseline_valid = 0;
     for (int i = 0; i < s.veh_count && i < kMaxSpawners; ++i) {
+        if (s.veh_baseline_valid[i] != 0) continue;
         std::uintptr_t addr = 0;
         if (!ResolveCurrentObject(s.veh_index[i], s.veh_handle[i], &addr)) continue;
         s.veh[i] = addr;
@@ -526,7 +521,7 @@ void CaptureVehicleBaseline() {
         s.veh_baseline_count[i] = count;
         s.veh_baseline_scale[i] = scale;
         s.veh_baseline_min[i] = min_active;
-        s.veh_baseline_valid = 1;
+        s.veh_baseline_valid[i] = 1;
     }
 }
 
@@ -587,20 +582,60 @@ int SyncScales(const float* values) {
 }
 
 // --------------------------- 目标扫描 ----------------------------------------
-void ResetScan() {
+void RestartDiscovery() {
     State& s = g_state;
-    s.spawner_count = 0;
-    s.spawner_found = 0;
-    s.veh_count = 0;
-    s.veh_found = 0;
+    // 保留已发现目标，避免重扫早期批次尚未走到它们时丢失恢复值。
+    s.spawner_found = s.spawner_count;
+    s.veh_found = s.veh_count;
+    for (int i = 0; i < s.spawner_count; ++i) {
+        s.spawner_found_index[i] = s.spawner_index[i];
+        s.spawner_found_handle[i] = s.spawner_handle[i];
+    }
+    for (int i = 0; i < s.veh_count; ++i) {
+        s.veh_found_index[i] = s.veh_index[i];
+        s.veh_found_handle[i] = s.veh_handle[i];
+    }
     s.walk_done = 0;
     s.walk_cursor = 0;
     s.walk_total = 0;
-    s.walk_generation = 0;
     s.retry_accum = 0.0;
     s.reapply_accum = 0.0;
     s.need_apply = (s.checked != 0) ? 1 : 0;  // 换关后重新应用（只在勾选状态下有意义）
     SetStatus("");
+}
+
+void ResetScan() {
+    g_state.spawner_count = 0;
+    g_state.veh_count = 0;
+    RestartDiscovery();
+    g_state.walk_generation = 0;
+    std::memset(g_state.veh_baseline_valid, 0, sizeof(g_state.veh_baseline_valid));
+}
+
+bool ContainsHandle(const AnomalyGenerationHandleV1* handles, int count,
+                    AnomalyGenerationHandleV1 handle) {
+    for (int i = 0; i < count; ++i) {
+        if (handles[i].id == handle.id && handles[i].generation == handle.generation) return true;
+    }
+    return false;
+}
+
+bool UpdateWorld() {
+    AnomalyNteSessionSnapshotV1 session{};
+    session.struct_size = sizeof(session);
+    State& s = g_state;
+    if (g_session == nullptr || g_session->snapshot == nullptr ||
+        g_session->snapshot(g_session->user, &session).code != ANOMALY_STATUS_V1_OK ||
+        session.state != ANOMALY_NTE_SESSION_V1_WORLD_READY || session.world.id == 0) {
+        if (s.world.id != 0) ResetScan();
+        s.world = {};
+        return false;
+    }
+    if (s.world.id != session.world.id || s.world.generation != session.world.generation) {
+        ResetScan();
+        s.world = session.world;
+    }
+    return true;
 }
 
 // 候选布局判定：签名全失配时用真实对象做证据，只有唯一候选自洽才采用，否则不猜。
@@ -633,6 +668,10 @@ void ResolveFoundObjects() {
         std::uint32_t index{};
         AnomalyGenerationHandleV1 handle{};
         std::uintptr_t address{};
+        int baseline_valid{};
+        int baseline_count{};
+        float baseline_scale{};
+        int baseline_min{};
     };
     Target crowd_targets[kMaxSpawners]{};
     Target vehicle_targets[kMaxSpawners]{};
@@ -659,6 +698,16 @@ void ResolveFoundObjects() {
         if (!IsVehicleSpawnerCandidate(addr)) continue;
         if (ClassNameContains(addr, "Class")) continue;
         vehicle_targets[vehicles_found] = {index, handle, addr};
+        // 同一世界重扫时按句柄保留原值，不能把插件已写入的零值捕获为初值。
+        auto& target = vehicle_targets[vehicles_found];
+        for (int j = 0; j < s.veh_count; ++j) {
+            if (s.veh_handle[j].id != handle.id || s.veh_handle[j].generation != handle.generation) continue;
+            target.baseline_valid = s.veh_baseline_valid[j];
+            target.baseline_count = s.veh_baseline_count[j];
+            target.baseline_scale = s.veh_baseline_scale[j];
+            target.baseline_min = s.veh_baseline_min[j];
+            break;
+        }
         vehicles[vehicles_found++] = addr;
     }
     if (!deserted_profile::LayoutSelected() &&
@@ -685,6 +734,10 @@ void ResolveFoundObjects() {
         s.veh[v] = vehicles[i];
         s.veh_index[v] = vehicle_targets[i].index;
         s.veh_handle[v] = vehicle_targets[i].handle;
+        s.veh_baseline_valid[v] = vehicle_targets[i].baseline_valid;
+        s.veh_baseline_count[v] = vehicle_targets[i].baseline_count;
+        s.veh_baseline_scale[v] = vehicle_targets[i].baseline_scale;
+        s.veh_baseline_min[v] = vehicle_targets[i].baseline_min;
         s.veh_has_min_active[v] = VehicleSpawnerHasMinActive(vehicles[i]) ? 1 : 0;
         ++v;
     }
@@ -713,12 +766,13 @@ void AdvanceScan(double dt) {
     if (s.walk_done != 0) {  // 已走完但仍缺目标：按慢周期重试
         s.retry_accum += (dt > 0.0) ? dt : 0.0;
         if (s.retry_accum < kRetrySeconds) return;
-        s.retry_accum = 0.0;
-        ResolveFoundObjects();
-        return;
+        // 新对象可追加或复用已扫过的槽位，且不改变 registry generation。
+        RestartDiscovery();
     }
     if (s.walk_total == 0) s.walk_total = g_objects->count(g_objects->user);
 
+    const int previous_crowd_found = s.spawner_found;
+    const int previous_vehicle_found = s.veh_found;
     std::uint32_t budget = 4096;
     while (budget-- > 0 && s.walk_cursor < s.walk_total) {
         AnomalyUe5ObjectSnapshotV1 snapshot{};
@@ -736,10 +790,12 @@ void AdvanceScan(double dt) {
                     // 跳过「本身是类」的对象（UClass / BlueprintGeneratedClass）
                     if (addr != 0 && !ClassNameContains(addr, "Class")) {
                         if (crowd && s.spawner_found < kMaxSpawners &&
+                            !ContainsHandle(s.spawner_found_handle, s.spawner_found, snapshot.handle) &&
                             ANOMALY_UE5_OBJECT_HANDLE_INDEX(snapshot.handle) == s.walk_cursor) {
                             s.spawner_found_index[s.spawner_found] = s.walk_cursor;
                             s.spawner_found_handle[s.spawner_found++] = snapshot.handle;
                         } else if (vehicle && s.veh_found < kMaxSpawners &&
+                                   !ContainsHandle(s.veh_found_handle, s.veh_found, snapshot.handle) &&
                                    ANOMALY_UE5_OBJECT_HANDLE_INDEX(snapshot.handle) == s.walk_cursor) {
                             s.veh_found_index[s.veh_found] = s.walk_cursor;
                             s.veh_found_handle[s.veh_found++] = snapshot.handle;
@@ -750,9 +806,11 @@ void AdvanceScan(double dt) {
         }
         ++s.walk_cursor;
     }
-    if (deserted_profile::LayoutSelected()) ResolveFoundObjects();
     if (s.walk_cursor >= s.walk_total) {
         s.walk_done = 1;
+        ResolveFoundObjects();
+    } else if (deserted_profile::LayoutSelected() &&
+               (s.spawner_found != previous_crowd_found || s.veh_found != previous_vehicle_found)) {
         ResolveFoundObjects();
     }
 }
@@ -804,128 +862,11 @@ void HandleToggle() {
             s.baseline_valid = 1;
         }
         // 车辆同样以「当前值」为初值（每次勾选都重新读）
-        s.veh_baseline_valid = 0;
+        std::memset(s.veh_baseline_valid, 0, sizeof(s.veh_baseline_valid));
         if (s.veh_count > 0) CaptureVehicleBaseline();
     }
     SaveConfigImmediate();
     SetStatus("");
-}
-
-// --------------------------- 热键 -------------------------------------------
-void RegisterHotkeys();
-void ReleaseHotkeys();
-
-void ANOMALY_CALL OnHotkey(void* user, AnomalyGenerationHandleV1 hotkey,
-                           const AnomalyInputSnapshotV1* snapshot) {
-    (void)user;
-    (void)snapshot;
-    State& s = g_state;
-    if (hotkey.id == g_hotkey_window.id) {
-        s.window_open = (s.window_open != 0) ? 0 : 1;
-    } else if (hotkey.id == g_hotkey_toggle.id) {
-        s.req_toggle = 1;
-    }
-}
-
-void RegisterHotkeys() {
-    if (g_input == nullptr || g_input->register_hotkey == nullptr) return;
-    AnomalyHotkeySpecV1 spec{};
-    spec.struct_size = sizeof(spec);
-    spec.flags = ANOMALY_HOTKEY_V1_ALLOW_WHILE_UI_CAPTURED;  // UI 抢键盘时也生效
-
-    if (g_state.hotkey != 0) {
-        spec.modifiers = 0u;
-        spec.virtual_key = g_state.hotkey;
-        spec.id = StringView("deserted.toggle");
-        g_input->register_hotkey(g_input->user, &spec, &OnHotkey, nullptr, &g_hotkey_toggle);
-    }
-    spec.modifiers = 0u;
-    spec.virtual_key = kWindowKey;
-    spec.id = StringView("deserted.window");
-    g_input->register_hotkey(g_input->user, &spec, &OnHotkey, nullptr, &g_hotkey_window);
-}
-
-void ReleaseHotkeys() {
-    if (g_input != nullptr && g_input->release_hotkey != nullptr) {
-        if (g_hotkey_toggle.id != 0) g_input->release_hotkey(g_input->user, g_hotkey_toggle);
-        if (g_hotkey_window.id != 0) g_input->release_hotkey(g_input->user, g_hotkey_window);
-    }
-    g_hotkey_toggle = AnomalyGenerationHandleV1{};
-    g_hotkey_window = AnomalyGenerationHandleV1{};
-}
-
-void BeginCapture() {
-    g_state.capturing = 1;
-    g_state.capture_baseline_pending = 1;
-    ReleaseHotkeys();
-}
-
-void EndCapture() {
-    g_state.capturing = 0;
-    g_state.capture_baseline_pending = 0;
-    RegisterHotkeys();
-}
-
-void CaptureTick() {
-    State& s = g_state;
-    if (s.capturing == 0) return;
-    if (g_input == nullptr || g_input->snapshot == nullptr) return;
-    AnomalyInputSnapshotV1 snap{};
-    snap.struct_size = sizeof(snap);
-    if (g_input->snapshot(g_input->user, &snap).code != ANOMALY_STATUS_V1_OK) return;
-
-    if (s.capture_baseline_pending != 0) {
-        std::memcpy(s.prev_keys, snap.keys, sizeof(s.prev_keys));
-        s.capture_baseline_pending = 0;
-        return;
-    }
-    for (int i = 0; i < 32; ++i) {
-        const unsigned int freshly = static_cast<unsigned int>(snap.keys[i] & ~s.prev_keys[i]);
-        if (freshly == 0) continue;
-        std::uint32_t bit = 0;
-        while (bit < 8 && (freshly & (1u << bit)) == 0) ++bit;
-        if (bit >= 8) continue;
-        const std::uint32_t vk = static_cast<std::uint32_t>(i) * 8u + bit;
-        if (vk == VK_ESCAPE) {
-            EndCapture();
-            return;
-        }
-        s.hotkey = (vk == VK_BACK) ? 0u : vk;  // 退格 = 解除绑定
-        s.capturing = 0;
-        s.capture_baseline_pending = 0;
-        RegisterHotkeys();
-        SaveConfigImmediate();
-        return;
-    }
-    std::memcpy(s.prev_keys, snap.keys, sizeof(s.prev_keys));
-}
-
-void KeyName(std::uint32_t vk, char* out, std::size_t capacity) {
-    if (vk == 0) {
-        std::snprintf(out, capacity, "%s",
-                      g_localizer.Text("text.hotkey_unbound", "Unbound").c_str());
-    } else if (vk >= '0' && vk <= '9') {
-        std::snprintf(out, capacity, "%c", static_cast<char>(vk));
-    } else if (vk >= 'A' && vk <= 'Z') {
-        std::snprintf(out, capacity, "%c", static_cast<char>(vk));
-    } else if (vk >= VK_F1 && vk <= VK_F12) {
-        std::snprintf(out, capacity, "F%u", vk - VK_F1 + 1u);
-    } else {
-        switch (vk) {
-            case VK_SPACE:
-                std::snprintf(out, capacity, "%s",
-                              g_localizer.Text("text.key_space", "Space").c_str());
-                break;
-            case VK_TAB: std::snprintf(out, capacity, "Tab"); break;
-            case VK_RETURN:
-                std::snprintf(out, capacity, "%s",
-                              g_localizer.Text("text.key_enter", "Enter").c_str());
-                break;
-            case VK_DELETE: std::snprintf(out, capacity, "Delete"); break;
-            case VK_INSERT: std::snprintf(out, capacity, "Insert"); break;
-            default: std::snprintf(out, capacity, "VK 0x%02X", vk); break;
-        }
-    }
 }
 
 // --------------------------- 配置持久化 --------------------------------------
@@ -944,10 +885,6 @@ std::size_t FormatConfig(char* text, std::size_t capacity) {
                                 static_cast<double>(s.baseline[i]));
         if (written <= 0) break;
         off += static_cast<std::size_t>(written);
-    }
-    if (off < capacity) {
-        written = std::snprintf(text + off, capacity - off, "hotkey=%u\n", s.hotkey);
-        if (written > 0) off += static_cast<std::size_t>(written);
     }
     return (off < capacity) ? off : capacity - 1;
 }
@@ -999,7 +936,6 @@ void LoadConfig() {
     int checked = 0;
     int baseline_valid = 0;
     float baseline[5] = {1.0F, 1.0F, 1.0F, 1.0F, 1.0F};
-    std::uint32_t hotkey = 0;
     char* line = text;
     while (line != nullptr && *line != '\0') {
         char* next = std::strchr(line, '\n');
@@ -1018,15 +954,12 @@ void LoadConfig() {
             } else if (std::strncmp(key, "baseline", 8) == 0) {
                 const int idx = std::atoi(key + 8);
                 if (idx >= 0 && idx < 5) baseline[idx] = static_cast<float>(std::atof(value));
-            } else if (std::strcmp(key, "hotkey") == 0) {
-                hotkey = static_cast<std::uint32_t>(std::strtoul(value, nullptr, 10));
             }
         }
         line = (next != nullptr) ? next + 1 : nullptr;
     }
 
     if (conf_version != kConfVersion) return;  // 版本不符 ⇒ 全用默认值
-    s.hotkey = (hotkey <= 0xFFu) ? hotkey : 0u;
     if (baseline_valid != 0 && BaselineSane(baseline)) {
         std::memcpy(s.baseline, baseline, sizeof(s.baseline));
         s.baseline_valid = 1;
@@ -1044,19 +977,19 @@ void Text(const AnomalyUiServiceV1* ui, const char* utf8) {
 
 void DrawMain(const AnomalyUiServiceV1* ui) {
     State& s = g_state;
-    char line[160];
-    char key_name[64];
 
     const std::string state_text = (s.checked != 0)
         ? g_localizer.Text("status.deserted", "Status: deserted")
         : g_localizer.Text("status.normal", "Status: normal");
     Text(ui, state_text.c_str());
-    if (s.status[0] != '\0') {
+    if (s.world.id == 0) {
+        Text(ui, g_localizer.Text("status.waiting_world", "Waiting for world initialization...").c_str());
+    } else if (s.status[0] != '\0') {
         Text(ui, s.status);
     } else if (s.spawner_count == 0 && s.veh_count == 0) {
         if (s.walk_done != 0) {
             Text(ui, g_localizer.Text("status.no_spawners",
-                "No supported generators were found in the object table").c_str());
+                "No supported generators found yet; retrying automatically").c_str());
         } else {
             char cursor[16]{};
             char total[16]{};
@@ -1092,20 +1025,10 @@ void DrawMain(const AnomalyUiServiceV1* ui) {
 
     if (HAS(ui, separator)) ui->separator(ui->user);
 
-    KeyName(s.hotkey, key_name, sizeof(key_name));
-    const std::string key_text = g_localizer.Format("label.hotkey", "Hotkey: {0}",
-        std::array<std::string_view, 1>{key_name});
-    std::snprintf(line, sizeof(line), "%s", key_text.c_str());
-    Text(ui, line);
-    if (HAS(ui, same_line)) ui->same_line(ui->user, 0.0F, 8.0F);
-    const std::string rebind_label =
-        g_localizer.Label("action.rebind_hotkey", "Rebind hotkey", "td-rb");
-    if (HAS(ui, button) && ui->button(ui->user, StringView(rebind_label), 64.0F, 0.0F)) {
-        BeginCapture();
-    }
-    if (s.capturing != 0) {
-        Text(ui, g_localizer.Text("hint.capture_hotkey",
-                                 "Press the new hotkey... (Backspace unbinds, Esc cancels)").c_str());
+    const std::string rescan_label =
+        g_localizer.Label("action.rescan", "Rescan", "td-rescan");
+    if (HAS(ui, button) && ui->button(ui->user, StringView(rescan_label), 0.0F, 0.0F)) {
+        s.req_rescan = 1;  // 扫描在 Game Update 执行，Render 只投递请求。
     }
 }
 
@@ -1154,9 +1077,9 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
     const auto objects = view.Query<AnomalyUe5ObjectsServiceV1>(
         ANOMALY_UE5_OBJECTS_SERVICE_V1_ID, ANOMALY_UE5_OBJECTS_SERVICE_V1_VERSION);
     g_objects = objects ? objects.get() : nullptr;
-    const auto input = view.Query<AnomalyInputServiceV1>(ANOMALY_INPUT_SERVICE_V1_ID,
-                                                         ANOMALY_INPUT_SERVICE_V1_VERSION);
-    g_input = input ? input.get() : nullptr;
+    const auto session = view.Query<AnomalyNteSessionServiceV1>(ANOMALY_NTE_SESSION_SERVICE_V1_ID,
+                                                               ANOMALY_NTE_SESSION_SERVICE_V1_VERSION);
+    g_session = session ? session.get() : nullptr;
     const auto storage = view.Query<AnomalyStorageServiceV1>(ANOMALY_STORAGE_SERVICE_V1_ID,
                                                              ANOMALY_STORAGE_SERVICE_V1_VERSION);
     g_storage = storage ? storage.get() : nullptr;
@@ -1170,7 +1093,6 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
     g_state.layout[kLayoutBaseline] = static_cast<std::uint32_t>(offsetof(State, baseline));
     g_state.layout[kLayoutBaselineValid] =
         static_cast<std::uint32_t>(offsetof(State, baseline_valid));
-    g_state.layout[kLayoutHotkey] = static_cast<std::uint32_t>(offsetof(State, hotkey));
     g_state.layout[kLayoutSpawnerCount] = static_cast<std::uint32_t>(offsetof(State, spawner_count));
     g_state.layout[kLayoutWrites] = static_cast<std::uint32_t>(offsetof(State, writes));
     g_state.layout[kLayoutFaults] = static_cast<std::uint32_t>(offsetof(State, faults));
@@ -1183,10 +1105,8 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
 
 AnomalyStatusV1 ANOMALY_CALL Start(void* context) {
     (void)context;
-    g_state.capturing = 0;
     g_state.req_toggle = 0;
     LoadConfig();
-    RegisterHotkeys();
     return anomaly::sdk::Ok();
 }
 
@@ -1199,17 +1119,15 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void* context, std::uint32_t deadline_millisec
         SyncVehicles(0);
     }
     SaveConfig();
-    ReleaseHotkeys();
     return anomaly::sdk::Ok();
 }
 
 void ANOMALY_CALL Unload(void* context) {
     (void)context;
-    ReleaseHotkeys();
     g_signature = nullptr;
     g_names = nullptr;
     g_objects = nullptr;
-    g_input = nullptr;
+    g_session = nullptr;
     g_core = nullptr;
     g_storage = nullptr;
     g_scheduler = nullptr;
@@ -1229,15 +1147,21 @@ void ANOMALY_CALL Update(void* context, double delta_seconds) {
         s.struct_version = kStateVersion;
     }
 
-    AdvanceScan(dt);
-    ValidateTargets(dt);
-    CaptureTick();
+    const bool world_ready = UpdateWorld();
+    if (s.req_rescan != 0 && world_ready) {
+        s.req_rescan = 0;
+        RestartDiscovery();
+    }
+    if (world_ready) {
+        AdvanceScan(dt);
+        ValidateTargets(dt);
+    }
 
     if (s.req_toggle != 0) {
         s.req_toggle = 0;
         HandleToggle();
     }
-    if (s.spawner_count == 0 && s.veh_count == 0) return;
+    if (!world_ready || (s.spawner_count == 0 && s.veh_count == 0)) return;
 
     if (s.checked != 0) {
         // 勾选：确保有初值，然后把环境倍率压到空街值并保持
@@ -1253,7 +1177,7 @@ void ANOMALY_CALL Update(void* context, double delta_seconds) {
             s.baseline_valid = 1;
             SaveConfigImmediate();
         }
-        if (s.veh_count > 0 && s.veh_baseline_valid == 0) CaptureVehicleBaseline();
+        if (s.veh_count > 0) CaptureVehicleBaseline();
         if (s.need_apply != 0) {
             s.need_apply = 0;
             if (s.spawner_count > 0) SyncScales(kEmptyScales);
@@ -1292,7 +1216,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     }
     *descriptor = {sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
                    StringView("wawmew.deserted"), StringView("Deserted"),
-                   StringView("WawMew"), StringView("0.6.7"), Load, Start, Stop, Unload, Update,
+                   StringView("WawMew"), StringView("0.6.8"), Load, Start, Stop, Unload, Update,
                    Draw};
     return anomaly::sdk::Ok();
 }
