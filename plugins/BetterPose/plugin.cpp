@@ -967,6 +967,9 @@ struct Context final {
   std::map<std::string, std::array<double, 12>> library_pose_locals;
   std::uintptr_t pose_base_mesh{};
   std::uintptr_t pose_base_asset{};  // cache key: a skin swap keeps the mesh but replaces the asset
+  // Component the cached SkeletalMesh asset was read from: a skin swap keeps this component and
+  // replaces its asset, while selecting another target changes the component itself.
+  std::uintptr_t mesh_asset_owner{};
   bool pose_base_ready{};
   struct TPoseCalibrationSession {
     bool pose_override_was_enabled{};
@@ -5398,15 +5401,20 @@ bool ReadPoseArrays(Context &context) noexcept {
   const bool asset_readable =
       Read(context, mesh + native_layout.kMeshSkeletalMeshOffset, asset) && asset != 0;
   if (asset_readable) {
-    if (context.runtime.mesh_asset != 0 && asset != context.runtime.mesh_asset) {
+    const bool same_component = context.mesh_asset_owner == mesh;
+    if (same_component && context.runtime.mesh_asset != 0 &&
+        asset != context.runtime.mesh_asset) {
       context.extra_build_pending = true;
-      context.pose_base_ready = false;   // the base pose belonged to the previous mesh asset
+      // A skin swap also invalidates the pose caches: their baseline came from the previous asset,
+      // and the reference pose of the old asset leaves undriven bones (and the head chain) at the
+      // old bind.
+      context.pose_base_ready = false;
       {
         std::lock_guard<std::mutex> guard(context.pose_angles_mutex);
         context.pose_base_locals.clear();
       }
-      // The reference pose is read from the mesh too: keeping the previous skin's copy leaves the
-      // undriven bones (and the head chain's baseline) sitting at the old bind.
+      context.ref_locals.clear();
+      context.ref_pose_attempted = false;
       context.ref_locals.clear();
       context.ref_pose_attempted = false;
       context.mesh_scan_owner = 0;
@@ -5423,6 +5431,7 @@ bool ReadPoseArrays(Context &context) noexcept {
                              " asset=" + Hex(asset));
     }
     context.runtime.mesh_asset = asset;
+    context.mesh_asset_owner = mesh;
   }
   std::uintptr_t bone_space_data{};
   std::uint32_t bone_space_count{};
