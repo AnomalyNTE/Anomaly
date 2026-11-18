@@ -710,6 +710,19 @@ struct Context final {
   std::chrono::steady_clock::time_point overlay_perf_last_callback{};
   std::mutex overlay_screen_primitives_mutex;
   std::vector<AnomalyUiScreenPrimitiveV1> overlay_screen_primitives;
+  // The on-screen timeline is drawn from the per-frame UI callback: geometry through one
+  // batched submission (ImGui background list) and labels through overlay_text (foreground
+  // list), so the panel fill cannot cover them. Per-primitive canvas calls were the cost.
+  struct OverlayTextItem {
+    float x{}, y{};
+    std::uint32_t color{};
+    float size{};
+    std::string text;
+  };
+  std::mutex keyframe_overlay_primitives_mutex;
+  std::vector<AnomalyUiScreenPrimitiveV1> keyframe_overlay_primitives;
+  std::vector<OverlayTextItem> keyframe_overlay_texts;
+  std::atomic_bool overlay_text_available{};
   std::atomic<std::uint64_t> overlay_imgui_last_submit_ms{};
   std::mutex overlay_mutex;
   std::vector<std::array<float, 2>> overlay_screen_joints;
@@ -22256,48 +22269,89 @@ constexpr std::uint32_t kTimelineDelete = ANOMALY_RGBA_V1(240, 80, 80, 255);
 constexpr std::uint32_t kTimelineUnsaved = ANOMALY_RGBA_V1(255, 150, 60, 255);
 
 // A rectangle outline from four lines.
-void TimelineFrame(const AnomalyUe5AhudFrameV1 *frame, const better_pose::timeline::Rect &r,
+// Geometry joins the overlay's single batched submission; labels are collected for the
+// UI thread to replay through overlay_text, which composites above that geometry.
+struct TimelineCanvas {
+  const AnomalyUe5AhudFrameV1 *frame{};
+  std::vector<AnomalyUiScreenPrimitiveV1> *batch{};
+  bool batched{};
+  std::vector<Context::OverlayTextItem> *texts{};
+
+  void Rect(const float x, const float y, const float width, const float height,
+            const std::uint32_t color) const {
+    if (batched)
+      batch->push_back(UiPrimitive(ANOMALY_UI_SCREEN_PRIMITIVE_V1_FILLED_RECT, color, x, y,
+                                   width, height, 0.0F));
+    else
+      frame->draw_rect(frame->user, x, y, width, height, color);
+  }
+  void Line(const float x1, const float y1, const float x2, const float y2,
+            const std::uint32_t color, const float thickness) const {
+    if (batched)
+      batch->push_back(
+          UiPrimitive(ANOMALY_UI_SCREEN_PRIMITIVE_V1_LINE, color, x1, y1, x2, y2, thickness));
+    else
+      frame->draw_line(frame->user, x1, y1, x2, y2, color, thickness);
+  }
+  void Text(const AnomalyStringViewV1 value, const float x, const float y,
+            const std::uint32_t color, const float scale) const {
+    if (texts != nullptr) {
+      Context::OverlayTextItem item;
+      item.x = x;
+      item.y = y;
+      item.color = color;
+      item.size = scale * 20.0F;
+      item.text.assign(value.data, value.size);
+      texts->push_back(std::move(item));
+      return;
+    }
+    frame->draw_text(frame->user, value, x, y, color, scale);
+  }
+};
+
+void TimelineFrame(const TimelineCanvas &canvas, const better_pose::timeline::Rect &r,
                    const std::uint32_t color, const float thickness) noexcept {
-  frame->draw_line(frame->user, r.left, r.top, r.right, r.top, color, thickness);
-  frame->draw_line(frame->user, r.right, r.top, r.right, r.bottom, color, thickness);
-  frame->draw_line(frame->user, r.right, r.bottom, r.left, r.bottom, color, thickness);
-  frame->draw_line(frame->user, r.left, r.bottom, r.left, r.top, color, thickness);
+  canvas.Line(r.left, r.top, r.right, r.top, color, thickness);
+  canvas.Line(r.right, r.top, r.right, r.bottom, color, thickness);
+  canvas.Line(r.right, r.bottom, r.left, r.bottom, color, thickness);
+  canvas.Line(r.left, r.bottom, r.left, r.top, color, thickness);
 }
 
 // A canvas button: dark fill, outline in `accent` when usable (grey when not),
 // a lighter fill under the cursor, and the label centred in white.
-void TimelineButton(const AnomalyUe5AhudFrameV1 *frame, const better_pose::timeline::Rect &r,
+void TimelineButton(const TimelineCanvas &canvas, const better_pose::timeline::Rect &r,
                     const std::string_view label, const std::uint32_t accent, const bool enabled,
                     const bool hot) noexcept {
-  frame->draw_rect(frame->user, r.left, r.top, r.right - r.left, r.bottom - r.top,
+  canvas.Rect(r.left, r.top, r.right - r.left, r.bottom - r.top,
                    enabled && hot ? kTimelineButtonHot : kTimelineButton);
-  TimelineFrame(frame, r, enabled ? accent : kTimelineEdge, enabled ? 1.5F : 1.0F);
+  TimelineFrame(canvas, r, enabled ? accent : kTimelineEdge, enabled ? 1.5F : 1.0F);
   float width = 0.0F;
   float height = 0.0F;
-  const bool measured = frame->measure_text != nullptr &&
-                        frame->measure_text(frame->user, anomaly::sdk::StringView(label), 0.85F,
-                                            &width, &height) != 0;
+  const bool measured = canvas.frame->measure_text != nullptr &&
+                        canvas.frame->measure_text(
+                            canvas.frame->user, anomaly::sdk::StringView(label), 0.85F,
+                            &width, &height) != 0;
   if (!measured) {
     width = static_cast<float>(label.size()) * 7.0F;
     height = 14.0F;
   }
-  frame->draw_text(frame->user, anomaly::sdk::StringView(label),
+  canvas.Text(anomaly::sdk::StringView(label),
                    (r.left + r.right - width) * 0.5F, (r.top + r.bottom - height) * 0.5F,
                    enabled ? kTimelineText : kTimelineMuted, 0.85F);
 }
 
-void TimelineLine(const AnomalyUe5AhudFrameV1 *frame, const float x1, const float y1,
+void TimelineLine(const TimelineCanvas &canvas, const float x1, const float y1,
                   const float x2, const float y2, const std::uint32_t color,
                   const float thickness = 1.0F) noexcept {
-  frame->draw_line(frame->user, x1, y1, x2, y2, color, thickness);
+  canvas.Line(x1, y1, x2, y2, color, thickness);
 }
 
-void TimelineDiamond(const AnomalyUe5AhudFrameV1 *frame, const float x, const float y,
+void TimelineDiamond(const TimelineCanvas &canvas, const float x, const float y,
                      const std::uint32_t color, const float size = 6.0F) noexcept {
-  frame->draw_line(frame->user, x - size, y, x, y - size, color, 1.5F);
-  frame->draw_line(frame->user, x, y - size, x + size, y, color, 1.5F);
-  frame->draw_line(frame->user, x + size, y, x, y + size, color, 1.5F);
-  frame->draw_line(frame->user, x, y + size, x - size, y, color, 1.5F);
+  canvas.Line(x - size, y, x, y - size, color, 1.5F);
+  canvas.Line(x, y - size, x + size, y, color, 1.5F);
+  canvas.Line(x + size, y, x, y + size, color, 1.5F);
+  canvas.Line(x, y + size, x - size, y, color, 1.5F);
 }
 
 struct KeyframeOverlayStats {
@@ -22318,6 +22372,11 @@ KeyframeOverlayStats DrawKeyframeOverlay(
   if (!context.keyframe_overlay_enabled.load(std::memory_order_acquire) ||
       motion_loaded || frame == nullptr || frame->viewport_width < 400 ||
       frame->viewport_height < 200) {
+    {
+      std::lock_guard<std::mutex> lock(context.keyframe_overlay_primitives_mutex);
+      context.keyframe_overlay_primitives.clear();
+      context.keyframe_overlay_texts.clear();
+    }
     std::lock_guard<std::mutex> lock(context.keyframe_overlay_mutex);
     context.keyframe_overlay_valid = false;
     stats.draw_us = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -22325,6 +22384,20 @@ KeyframeOverlayStats DrawKeyframeOverlay(
                         .count();
     return stats;
   }
+  const std::uint64_t batch_now = GetTickCount64();
+  const std::uint64_t batch_last =
+      context.overlay_imgui_last_submit_ms.load(std::memory_order_acquire);
+  const bool batch_ready =
+      batch_last != 0 && batch_now - batch_last < 250U &&
+      context.overlay_text_available.load(std::memory_order_acquire);
+  std::vector<AnomalyUiScreenPrimitiveV1> primitives;
+  std::vector<Context::OverlayTextItem> texts;
+  if (batch_ready) {
+    primitives.reserve(256U);
+    texts.reserve(32U);
+  }
+  const TimelineCanvas canvas{frame, &primitives, batch_ready,
+                              batch_ready ? &texts : nullptr};
   std::vector<tl::KeyMark> marks;
   {
     std::lock_guard<std::mutex> lock(context.keyframe_overlay_mutex);
@@ -22365,11 +22438,11 @@ KeyframeOverlayStats DrawKeyframeOverlay(
                                static_cast<float>(frame->viewport_height), length,
                                playhead, std::move(marks), view);
   const bool zoomed = view.start > 0.0 || view.end < static_cast<double>((std::max)(length, 1U));
-  frame->draw_rect(frame->user, layout.panel.left, layout.panel.top,
+  canvas.Rect(layout.panel.left, layout.panel.top,
                    layout.panel.right - layout.panel.left, layout.panel.bottom - layout.panel.top,
                    kTimelineBackground);
-  TimelineFrame(frame, layout.panel, kTimelineEdge, 1.0F);
-  frame->draw_rect(frame->user, layout.track.left, layout.track.top,
+  TimelineFrame(canvas, layout.panel, kTimelineEdge, 1.0F);
+  canvas.Rect(layout.track.left, layout.track.top,
                    layout.track.right - layout.track.left, layout.track.bottom - layout.track.top,
                    kTimelineTrack);
   const float key_y =
@@ -22394,7 +22467,7 @@ KeyframeOverlayStats DrawKeyframeOverlay(
        static_cast<double>(tick) <= static_cast<double>(layout.frame_end); tick += tick_step) {
     const float x = tl::FrameToX(layout, tick);
     const bool major = tick % major_step == 0;
-    TimelineLine(frame, x,
+    TimelineLine(canvas, x,
                  layout.track.bottom - (major ? 10.0F : 5.0F),
                  x, layout.track.bottom, kTimelineTick, 1.0F);
     if (major) {
@@ -22403,7 +22476,7 @@ KeyframeOverlayStats DrawKeyframeOverlay(
         std::snprintf(label, sizeof(label), "%us", tick / 30U);
       else
         std::snprintf(label, sizeof(label), "%u", tick);
-      frame->draw_text(frame->user, anomaly::sdk::StringView(label), x + 2.0F,
+      canvas.Text(anomaly::sdk::StringView(label), x + 2.0F,
                        layout.track.bottom + 2.0F, kTimelineMuted, 0.7F);
     }
   }
@@ -22415,22 +22488,22 @@ KeyframeOverlayStats DrawKeyframeOverlay(
   const float cursor_x = context.keyframe_overlay_cursor_x.load(std::memory_order_acquire);
   const float cursor_y = context.keyframe_overlay_cursor_y.load(std::memory_order_acquire);
   const auto hot = [&](const tl::Rect &r) { return tl::Contains(r, cursor_x, cursor_y); };
-  TimelineButton(frame, layout.play_button, timeline_playing ? "||" : ">",
+  TimelineButton(canvas, layout.play_button, timeline_playing ? "||" : ">",
                  kTimelinePlayhead, true,
                  hot(layout.play_button));
-  TimelineButton(frame, layout.stop_button, "|<", kTimelinePlayhead, true, hot(layout.stop_button));
-  TimelineButton(frame, layout.delete_button,
+  TimelineButton(canvas, layout.stop_button, "|<", kTimelinePlayhead, true, hot(layout.stop_button));
+  TimelineButton(canvas, layout.delete_button,
                  context.localizer.Text("keyframe.overlay.delete",
                                         "Delete key"),
                  kTimelineDelete, has_selected_key,
                  hot(layout.delete_button));
-  TimelineButton(frame, layout.record_button,
+  TimelineButton(canvas, layout.record_button,
                  context.localizer.Text("keyframe.overlay.record",
                                         "Record key"),
                  kTimelineRecord, true, hot(layout.record_button));
   // Usable only when zoomed in; the accent is the playhead's, like the other
   // view/playback buttons.
-  TimelineButton(frame, layout.fit_button,
+  TimelineButton(canvas, layout.fit_button,
                  context.localizer.Text("keyframe.overlay.fit", "Fit all"),
                  kTimelinePlayhead, zoomed, hot(layout.fit_button));
   for (std::size_t i{}; i != layout.keys.size(); ++i) {
@@ -22440,23 +22513,23 @@ KeyframeOverlayStats DrawKeyframeOverlay(
     const bool selected_key =
         has_selected_key && static_cast<std::size_t>(selected) == i;
     if (selected_key)
-      TimelineDiamond(frame, key.x, key_y, kTimelineText, 10.0F);
-    if (key.pose) TimelineDiamond(frame, key.x, key_y, kTimelinePose);
+      TimelineDiamond(canvas, key.x, key_y, kTimelineText, 10.0F);
+    if (key.pose) TimelineDiamond(canvas, key.x, key_y, kTimelinePose);
     if (key.expression)
-      TimelineDiamond(frame, key.x + 2.0F, key_y,
+      TimelineDiamond(canvas, key.x + 2.0F, key_y,
                       kTimelineExpression, 4.0F);
     if (key.camera)
-      TimelineDiamond(frame, key.x - 2.0F, key_y, kTimelineCamera, 3.0F);
+      TimelineDiamond(canvas, key.x - 2.0F, key_y, kTimelineCamera, 3.0F);
   }
   if (layout.playhead_visible) {
-    TimelineLine(frame, layout.playhead_x, layout.track.top - 8.0F, layout.playhead_x,
+    TimelineLine(canvas, layout.playhead_x, layout.track.top - 8.0F, layout.playhead_x,
                  layout.track.bottom + 4.0F, kTimelinePlayhead, 2.0F);
     // Playhead handle: a small triangle above the track.
-    TimelineLine(frame, layout.playhead_x - 5.0F, layout.track.top - 9.0F,
+    TimelineLine(canvas, layout.playhead_x - 5.0F, layout.track.top - 9.0F,
                  layout.playhead_x + 5.0F, layout.track.top - 9.0F, kTimelinePlayhead, 2.0F);
-    TimelineLine(frame, layout.playhead_x - 5.0F, layout.track.top - 9.0F, layout.playhead_x,
+    TimelineLine(canvas, layout.playhead_x - 5.0F, layout.track.top - 9.0F, layout.playhead_x,
                  layout.track.top - 3.0F, kTimelinePlayhead, 2.0F);
-    TimelineLine(frame, layout.playhead_x + 5.0F, layout.track.top - 9.0F, layout.playhead_x,
+    TimelineLine(canvas, layout.playhead_x + 5.0F, layout.track.top - 9.0F, layout.playhead_x,
                  layout.track.top - 3.0F, kTimelinePlayhead, 2.0F);
   } else {
     // Off the zoomed window: an arrow at the edge it went past.
@@ -22464,8 +22537,8 @@ KeyframeOverlayStats DrawKeyframeOverlay(
     const float edge = right ? layout.track.right - 2.0F : layout.track.left + 2.0F;
     const float tip = right ? edge + 6.0F : edge - 6.0F;
     const float mid = (layout.track.top + layout.track.bottom) * 0.5F;
-    TimelineLine(frame, edge, mid - 6.0F, tip, mid, kTimelinePlayhead, 2.0F);
-    TimelineLine(frame, tip, mid, edge, mid + 6.0F, kTimelinePlayhead, 2.0F);
+    TimelineLine(canvas, edge, mid - 6.0F, tip, mid, kTimelinePlayhead, 2.0F);
+    TimelineLine(canvas, tip, mid, edge, mid + 6.0F, kTimelinePlayhead, 2.0F);
   }
   const double current_frame =
       context.keyframe_frame.load(std::memory_order_acquire);
@@ -22514,7 +22587,7 @@ KeyframeOverlayStats DrawKeyframeOverlay(
       frame->measure_text(frame->user, anomaly::sdk::StringView(count_text), 0.75F, &count_width,
                           &count_height) == 0)
     count_width = static_cast<float>(count_text.size()) * 6.0F;
-  frame->draw_text(frame->user, anomaly::sdk::StringView(count_text),
+  canvas.Text(anomaly::sdk::StringView(count_text),
                    layout.track.right - count_width, layout.panel.bottom - 18.0F,
                    kTimelineMuted, 0.75F);
   stats.key_count = key_count;
@@ -22534,6 +22607,11 @@ KeyframeOverlayStats DrawKeyframeOverlay(
     std::lock_guard<std::mutex> lock(context.keyframe_overlay_mutex);
     context.keyframe_overlay_layout = std::move(layout);
     context.keyframe_overlay_valid = true;
+  }
+  {
+    std::lock_guard<std::mutex> lock(context.keyframe_overlay_primitives_mutex);
+    context.keyframe_overlay_primitives = std::move(primitives);
+    context.keyframe_overlay_texts = std::move(texts);
   }
   stats.draw_us = std::chrono::duration_cast<std::chrono::microseconds>(
                       std::chrono::steady_clock::now() - started)
@@ -22613,7 +22691,8 @@ void DrawBoneTooltip(Context &context, const AnomalyUe5AhudFrameV1 *frame,
       screen[bone][0], screen[bone][1], width, height, 12.0F,
       static_cast<float>(frame->viewport_width), static_cast<float>(frame->viewport_height));
   frame->draw_rect(frame->user, box.left, box.top, width, height, kTimelineBackground);
-  TimelineFrame(frame, {box.left, box.top, box.left + width, box.top + height},
+  TimelineFrame(TimelineCanvas{frame, nullptr, false, nullptr},
+                {box.left, box.top, box.left + width, box.top + height},
                 bone == selected ? kOverlaySelectedColor : kTimelineEdge, 1.0F);
   frame->draw_text(frame->user, anomaly::sdk::StringView(label), box.left + kPadX,
                    box.top + kPadY, kTimelineText, kScale);
@@ -25157,8 +25236,14 @@ void DrawPendingOverlayPrimitives(
     return;
   std::vector<AnomalyUiScreenPrimitiveV1> primitives;
   {
+    // The timeline used to be drawn before the skeleton overlay, so it goes in first.
+    std::lock_guard<std::mutex> lock(context.keyframe_overlay_primitives_mutex);
+    primitives = context.keyframe_overlay_primitives;
+  }
+  {
     std::lock_guard<std::mutex> lock(context.overlay_screen_primitives_mutex);
-    primitives = context.overlay_screen_primitives;
+    primitives.insert(primitives.end(), context.overlay_screen_primitives.begin(),
+                      context.overlay_screen_primitives.end());
   }
   if (primitives.empty())
     return;
@@ -25170,13 +25255,10 @@ void DrawPendingOverlayPrimitives(
 
 void ANOMALY_CALL DrawOverlay(void *plugin_context,
                               const AnomalyUiServiceV1 *ui) noexcept {
-  auto *context = static_cast<Context *>(plugin_context);
-  if (context == nullptr || ui == nullptr)
-    return;
-  try {
-    DrawPendingOverlayPrimitives(*context, ui);
-  } catch (...) {
-  }
+  // The host calls this only a few times per second: too slow to keep the batched
+  // submission alive or to animate the timeline. Draw() submits every UI frame instead.
+  static_cast<void>(plugin_context);
+  static_cast<void>(ui);
 }
 
 void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
@@ -25197,6 +25279,29 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
     UpdateSkeletonOverlayPicking(*context, ui);
   UpdateOrbitCameraInput(*context, ui, timeline_owns_mouse);
   UpdatePoseHistoryInput(*context, ui);
+
+  try {
+    DrawPendingOverlayPrimitives(*context, ui);
+  } catch (...) {
+  }
+  const bool text_api =
+      ui->struct_size >=
+          offsetof(AnomalyUiServiceV1, overlay_text) + sizeof(ui->overlay_text) &&
+      ui->overlay_text != nullptr;
+  context->overlay_text_available.store(text_api, std::memory_order_release);
+  if (text_api) {
+    try {
+      std::vector<Context::OverlayTextItem> texts;
+      {
+        std::lock_guard<std::mutex> lock(context->keyframe_overlay_primitives_mutex);
+        texts = context->keyframe_overlay_texts;
+      }
+      for (const auto &item : texts)
+        ui->overlay_text(ui->user, item.x, item.y, anomaly::sdk::StringView(item.text),
+                         item.color, item.size);
+    } catch (...) {
+    }
+  }
 
   RenderSnapshot snapshot{};
   {
