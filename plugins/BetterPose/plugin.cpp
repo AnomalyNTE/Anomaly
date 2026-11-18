@@ -22,6 +22,7 @@ using Microsoft::WRL::ComPtr;
 #include <nlohmann/json.hpp>
 #include "better_pose_profile.hpp"
 #include "accessory_dynamics.hpp"
+#include "accessory_storage.hpp"
 #include "secondary_rules.hpp"
 #include "edit_history.hpp"
 #include "pose_history.hpp"
@@ -6382,6 +6383,12 @@ void ProcessSkeletalMeshTick(Context *context, const std::size_t slot,
         // The one allowed native hook may belong to a summoned entity while
         // the Player is selected. Finalize the selected body from this same
         // post-tick callback so both component classes remain driven.
+        //
+        // Gating this on "does this component belong to us" was tried twice (actor
+        // ownership, then the scanned accessory list) and both times the selected body
+        // stopped being driven on a modded character: the drag stopped following and the
+        // skeleton overlay vanished. Whatever component ticks here is part of how this
+        // character's body stays driven, so the write stays unconditional.
         if (!context->blender_active.load(std::memory_order_acquire) ||
             context->blender_frame.valid) {
           static_cast<void>(ReadPoseArrays(*context));
@@ -13420,25 +13427,29 @@ void WriteExtraMeshes(Context &context,
       // for the previous mesh is then wrong (modular hair stops following), so treat a different
       // asset as a rebuild trigger too.
       std::uintptr_t live_asset{};
-      if (!Read(context, extra.object + native_layout.kMeshSkeletalMeshOffset, live_asset) ||
-          live_asset == 0 || (extra.asset != 0 && live_asset != extra.asset)) {
-        context.extra_build_pending = true;
+      const bool asset_readable = Read(
+          context, extra.object + native_layout.kMeshSkeletalMeshOffset, live_asset);
+      const auto asset_state = better_pose::accessory_storage::Asset(asset_readable, live_asset, extra.asset);
+      if (asset_state != better_pose::accessory_storage::Decision::Ready) {
+        // Missing storage is temporary, not a new mapping. Keep Kawaii retry/configuration state.
+        if (asset_state == better_pose::accessory_storage::Decision::Rebuild)
+          context.extra_build_pending = true;
         continue;
       }
       std::uintptr_t component_data{};
       std::uint32_t component_count{};
       std::uintptr_t bone_data{};
       std::uint32_t bone_data_count{};
-      const bool live =
+      const bool arrays_readable =
           ReadArrayHeader(context, extra.object + native_layout.kMeshComponentSpaceBuffer1Offset,
                           component_data, component_count) &&
           ReadArrayHeader(context, extra.object + native_layout.kMeshComponentSpaceBuffer0Offset,
-                          bone_data, bone_data_count) &&
-          component_data != 0 && bone_data != 0 &&
-          component_count >= extra.bone_count && bone_data_count >= extra.bone_count;
-      if (!live) {
-        // The mesh no longer has the shape this entry was built for: rebuild instead of writing.
-        context.extra_build_pending = true;
+                          bone_data, bone_data_count);
+      const auto storage_state = better_pose::accessory_storage::Buffers(
+          arrays_readable, component_data, component_count, bone_data, bone_data_count, extra.bone_count);
+      if (storage_state != better_pose::accessory_storage::Decision::Ready) {
+        if (storage_state == better_pose::accessory_storage::Decision::Rebuild)
+          context.extra_build_pending = true;
         continue;
       }
       extra.component_space_data = component_data;
@@ -23906,6 +23917,8 @@ AnomalyStatusV1 ANOMALY_CALL Start(void *plugin_context) {
                   "GWorld discovery signature is unavailable");
   }
   context->stopping.store(false, std::memory_order_release);
+  // The detour always forwards to the engine's Update; see render_pose_bridge.hpp for why
+  // skipping that call when the lease is refused crashed the game on reload-in-world.
   static_cast<void>(render_pose_bridge::Install(*context));
   BlenderStartServer(*context);
   UpdateRuntime(*context, 0.0);

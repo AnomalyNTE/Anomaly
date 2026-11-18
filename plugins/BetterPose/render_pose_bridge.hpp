@@ -122,31 +122,45 @@ inline void ANOMALY_CALL UpdateDetour(void *object, std::uint32_t lod, void *inp
                                      void *arg9) noexcept {
   const auto *api = hook_api;
   AnomalyGenerationHandleV1 lease{};
-  if (api == nullptr || api->begin_callback(api->user, update_lease_source, &lease).code != ANOMALY_STATUS_V1_OK)
-    return;
+  const bool leased =
+      api != nullptr &&
+      api->begin_callback(api->user, update_lease_source, &lease).code == ANOMALY_STATUS_V1_OK;
   {
-    auto *context = active.load(std::memory_order_acquire);
-    Context::RenderBridgeState::Sample sample;
-    InputSnapshot copied_input;
+    // The engine's Update must always run. While the host disables the hook during a
+    // reload the lease is refused, and skipping the call breaks the skeletal mesh
+    // pipeline; without a lease we simply forward the original input untouched.
     void *render_input = input;
-    try {
-      if (context != nullptr && !context->stopping.load(std::memory_order_acquire) &&
-          context->render_bridge.enabled.load(std::memory_order_acquire) &&
-          FindSample(*context, reinterpret_cast<std::uintptr_t>(object), sample) &&
-          copied_input.Prepare(*context, input, reinterpret_cast<std::uintptr_t>(object), sample))
-        render_input = copied_input.Data();
-    } catch (...) {
-      render_input = input;
+    if (leased) {
+      auto *context = active.load(std::memory_order_acquire);
+      Context::RenderBridgeState::Sample sample;
+      InputSnapshot copied_input;
+      try {
+        if (context != nullptr && !context->stopping.load(std::memory_order_acquire) &&
+            context->render_bridge.enabled.load(std::memory_order_acquire) &&
+            FindSample(*context, reinterpret_cast<std::uintptr_t>(object), sample) &&
+            copied_input.Prepare(*context, input, reinterpret_cast<std::uintptr_t>(object), sample))
+          render_input = copied_input.Data();
+      } catch (...) {
+        render_input = input;
+      }
+      try {
+        if (update_original)
+          reinterpret_cast<UpdateFn>(update_original)(object, lod, render_input, arg4, arg5, arg6,
+                                                     arg7, arg8, arg9);
+      } catch (...) {
+      }
+      // Native Update copies/converts the pose before queuing its owned payload. The
+      // snapshot and copy die here, before the callback lease is released.
+    } else if (update_original) {
+      try {
+        reinterpret_cast<UpdateFn>(update_original)(object, lod, input, arg4, arg5, arg6, arg7,
+                                                    arg8, arg9);
+      } catch (...) {
+      }
     }
-    try {
-      if (update_original)
-        reinterpret_cast<UpdateFn>(update_original)(object, lod, render_input, arg4, arg5, arg6, arg7, arg8, arg9);
-    } catch (...) {
-    }
-    // Native Update copies/converts the pose before queuing its owned payload. Release our
-    // snapshot/copy before the callback lease; the caller's original input remains untouched.
   }
-  static_cast<void>(api->end_callback(api->user, lease));
+  if (leased)
+    static_cast<void>(api->end_callback(api->user, lease));
 }
 
 inline bool Release(Context &context) noexcept {
