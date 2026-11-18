@@ -59,6 +59,11 @@ struct Layout {
     std::uint32_t kMeshAnimationModeOffset{};
     std::uint32_t kMeshForceMeshObjectUpdateOffset{};
     std::uint32_t kMeshForceMeshObjectUpdateBit{};
+    std::uint32_t kRenderMeshObjectOffset{};
+    std::uint32_t kRenderLeaderWeakOffset{};
+    std::uint32_t kRenderContextSourceOffset{};
+    std::uint32_t kRenderContextCountOffset{};
+    std::uint32_t kRenderContextCopySpan{};
     std::uint32_t kMeshAnimationFlagsOffset{};
     std::uint32_t kSkeletalMeshTickVtableSlot{};
     std::uint32_t kUStructChildPropertiesOffset{};
@@ -153,6 +158,11 @@ inline bool LoadCompatibility(const AnomalyHostApiV1* host) noexcept {
         parsed.kMeshAnimationModeOffset = compatibility.Value("kMeshAnimationModeOffset", 16384);
         parsed.kMeshForceMeshObjectUpdateOffset = compatibility.Value("kMeshForceMeshObjectUpdateOffset", 16384);
         parsed.kMeshForceMeshObjectUpdateBit = compatibility.Value("kMeshForceMeshObjectUpdateBit", 16384);
+        parsed.kRenderMeshObjectOffset = compatibility.Value("kRenderMeshObjectOffset", 16384);
+        parsed.kRenderLeaderWeakOffset = compatibility.Value("kRenderLeaderWeakOffset", 16384, 8);
+        parsed.kRenderContextSourceOffset = compatibility.Value("kRenderContextSourceOffset", 16384);
+        parsed.kRenderContextCountOffset = compatibility.Value("kRenderContextCountOffset", 16384);
+        parsed.kRenderContextCopySpan = compatibility.Value("kRenderContextCopySpan", 4096, 16);
         parsed.kMeshAnimationFlagsOffset = compatibility.Value("kMeshAnimationFlagsOffset", 16384);
         parsed.kSkeletalMeshTickVtableSlot = compatibility.Value("kSkeletalMeshTickVtableSlot", 16384);
         parsed.kUStructChildPropertiesOffset = compatibility.Value("kUStructChildPropertiesOffset", 16384);

@@ -6,14 +6,15 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <map>
+#include <string>
 #include <vector>
 
 // Undo/redo for the manual joint pose, by snapshots.
 //
 // Every edit path -- sliders, reset buttons, on-screen drags and IK, pose
-// import -- ends up in the same two values: the per-bone angle table and the
-// body offset. So instead of teaching each path to record itself, the history
-// watches those values: while they keep changing (a slider being dragged, a
+// import -- ends up in the per-bone angles, body offset and named library locals.
+// Instead of teaching each path to record itself, the history watches those values: while they keep changing (a slider being dragged, a
 // joint being pulled) nothing is recorded, and once they have been still for
 // a moment the state before the change becomes one undo step. One drag is one
 // step however many frames it took.
@@ -22,10 +23,12 @@ namespace better_pose::history {
 struct PoseState {
   std::vector<std::array<double, 3>> angles;
   std::array<double, 3> root_offset{};
+  std::map<std::string, std::array<double, 12>> library_pose_locals;
 
   // Trailing zero angles do not change the pose; the table grows on demand.
   bool SameAs(const PoseState &other) const noexcept {
     constexpr double kEpsilon = 1e-9;
+    if (library_pose_locals != other.library_pose_locals) return false;
     for (std::size_t axis{}; axis != 3; ++axis)
       if (std::abs(root_offset[axis] - other.root_offset[axis]) > kEpsilon)
         return false;
