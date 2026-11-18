@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <string>
 #include <string_view>
@@ -43,6 +44,9 @@ constexpr std::uint32_t kRightKey = 'D';
 constexpr std::uint32_t kUpKey = VK_SPACE;
 constexpr std::uint32_t kDownKey = VK_SHIFT;
 constexpr std::uint32_t kBoostKey = VK_CONTROL;
+// A first-person camera narrows ViewPitchMax to a small cone (20 degrees in this build); a
+// camera that keeps a normal range is left with its own rotation.
+constexpr float kRestrictedViewPitchMax = 45.0F;
 
 constexpr std::string_view kSettingsSchema = R"json(
 {
@@ -54,6 +58,7 @@ constexpr std::string_view kSettingsSchema = R"json(
     "fov":{"type":"number","minimum":0.0,"maximum":170.0,"default":0.0},
     "freeCameraEnabled":{"type":"boolean"},
     "blockForcedRotation":{"type":"boolean","default":false},
+    "unclampView":{"type":"boolean","default":true},
     "lodFollowsCamera":{"type":"boolean","default":false},
     "speed":{"type":"number","minimum":100.0,"maximum":5000.0},
     "toggle":{"type":"integer","minimum":1,"maximum":255},
@@ -77,6 +82,7 @@ struct Context final {
   const AnomalyUiServiceV1 *ui{};
   const AnomalySignatureServiceV1 *signature{};
   const AnomalyHookServiceV1 *hook{};
+  const AnomalySchedulerServiceV1 *scheduler{};
   AnomalyGenerationHandleV1 settings_schema{};
   AnomalyGenerationHandleV1 toggle_hotkey{};
   AnomalyGenerationHandleV1 teleport_hotkey{};
@@ -86,6 +92,9 @@ struct Context final {
   std::uintptr_t process_rotation_original{};
   std::uintptr_t process_rotation_target{};
   std::atomic_bool block_forced_rotation{};
+  // Lifts the pitch and yaw limits of the view the player drives; the same manual rotation as
+  // the forced-rotation block, but for a camera that only allows a small cone.
+  std::atomic_bool unclamp_view{true};
   std::atomic<std::uintptr_t> rotation_manager{};
   std::atomic_bool manual_rotation_valid{};
   std::array<std::atomic<double>, 3> manual_rotation{};
@@ -100,6 +109,11 @@ struct Context final {
   std::atomic<std::uint32_t> teleport_key{kDefaultTeleportKey};
   std::atomic_bool capturing_toggle{};
   std::atomic_bool capturing_teleport{};
+  // Persisting settings happens on a Worker task, so the pending handle is guarded and the
+  // in-flight flag keeps one save at a time.
+  std::mutex save_mutex;
+  AnomalyGenerationHandleV1 save_task{};
+  std::atomic_bool save_in_flight{};
   std::atomic_bool enabled{};
   std::atomic_bool configured_enabled{};
   std::atomic_bool active{};
@@ -248,6 +262,13 @@ bool SignatureReady(const AnomalySignatureServiceV1 *service) noexcept {
                   decltype(AnomalySignatureServiceV1::resolve)>(
              service, offsetof(AnomalySignatureServiceV1, resolve)) &&
          service->resolve != nullptr;
+}
+
+bool SchedulerReady(const AnomalySchedulerServiceV1 *service) noexcept {
+  return HasField<AnomalySchedulerServiceV1,
+                  decltype(AnomalySchedulerServiceV1::cancel)>(
+             service, offsetof(AnomalySchedulerServiceV1, cancel)) &&
+         service->schedule != nullptr && service->cancel != nullptr;
 }
 
 bool HookReady(const AnomalyHookServiceV1 *service) noexcept {
@@ -711,6 +732,7 @@ bool PersistSettings(Context &context) noexcept {
             {"fov", fov},
             {"blockForcedRotation",
              context.block_forced_rotation.load(std::memory_order_acquire)},
+            {"unclampView", context.unclamp_view.load(std::memory_order_acquire)},
             {"freeCameraEnabled",
              context.configured_enabled.load(std::memory_order_acquire)},
             {"lodFollowsCamera",
@@ -752,6 +774,7 @@ bool LoadSettings(Context &context) noexcept {
       context.configured_enabled.store(false, std::memory_order_release);
       context.enabled.store(false, std::memory_order_release);
       context.block_forced_rotation.store(false, std::memory_order_release);
+      context.unclamp_view.store(true, std::memory_order_release);
       context.streaming_source_follows_camera.store(
           false, std::memory_order_release);
       return PersistSettings(context);
@@ -779,13 +802,15 @@ bool LoadSettings(Context &context) noexcept {
     const bool has_teleport = json.is_object() && json.contains("teleport");
     const bool has_fov = json.is_object() && json.contains("fov");
     const bool has_rotation = json.is_object() && json.contains("blockForcedRotation");
-    if (!json.is_object() || json.size() < 4 || json.size() > 8 ||
+    const bool has_unclamp = json.is_object() && json.contains("unclampView");
+    if (!json.is_object() || json.size() < 4 || json.size() > 9 ||
         !json.contains("distance") || !json.contains("freeCameraEnabled") ||
         !json.contains("speed") || !json.contains("toggle") ||
         json.size() != 4U + static_cast<std::size_t>(has_lod) +
                            static_cast<std::size_t>(has_teleport) +
                            static_cast<std::size_t>(has_fov) +
-                           static_cast<std::size_t>(has_rotation))
+                           static_cast<std::size_t>(has_rotation) +
+                           static_cast<std::size_t>(has_unclamp))
       return false;
     const double distance = json.at("distance").get<double>();
     const float fov = json.value("fov", kDefaultFov);
@@ -796,6 +821,7 @@ bool LoadSettings(Context &context) noexcept {
     const bool streaming_source_follows_camera =
         json.value("lodFollowsCamera", false);
     const bool block_forced_rotation = json.value("blockForcedRotation", false);
+    const bool unclamp_view = json.value("unclampView", true);
     if (!SettingsValid(distance, fov, speed, toggle, teleport))
       return false;
     context.distance.store(distance, std::memory_order_release);
@@ -807,6 +833,7 @@ bool LoadSettings(Context &context) noexcept {
     context.enabled.store(enabled, std::memory_order_release);
     context.block_forced_rotation.store(block_forced_rotation,
                                         std::memory_order_release);
+    context.unclamp_view.store(unclamp_view, std::memory_order_release);
     context.streaming_source_follows_camera.store(
         streaming_source_follows_camera, std::memory_order_release);
     return true;
@@ -815,6 +842,22 @@ bool LoadSettings(Context &context) noexcept {
   }
 }
 
+// Worker task: the document is serialised and written off the game thread.
+void ANOMALY_CALL SaveSettingsTask(void *user, AnomalyGenerationHandleV1) noexcept {
+  auto *context = static_cast<Context *>(user);
+  if (context == nullptr) return;
+  const auto revision = context->settings_revision.load(std::memory_order_acquire);
+  try {
+    static_cast<void>(PersistSettings(*context));
+    context->persisted_settings_revision.store(revision, std::memory_order_release);
+  } catch (...) {
+  }
+  {
+    std::scoped_lock lock(context->save_mutex);
+    context->save_task = {};
+  }
+  context->save_in_flight.store(false, std::memory_order_release);
+}
 void SetFreeCameraEnabled(Context &context, const bool enabled) noexcept {
   const bool changed = context.configured_enabled.exchange(
                            enabled, std::memory_order_acq_rel) != enabled;
@@ -1106,6 +1149,18 @@ bool ApplyManualRotation(Context &context, double *rotation,
   return true;
 }
 
+// True when the camera this call belongs to is one of the narrowed first-person views.
+bool ViewIsRestricted(Context &context, const std::uintptr_t manager) noexcept {
+  if (native_layout.kCameraManagerViewPitchMaxOffset == 0) return true;
+  std::uintptr_t address{};
+  float value{};
+  if (manager == 0 ||
+      !AddAddress(manager, native_layout.kCameraManagerViewPitchMaxOffset, address) ||
+      !Read(context, address, value)) {
+    return true;
+  }
+  return std::isfinite(value) && value < kRestrictedViewPitchMax;
+}
 void ANOMALY_CALL ProcessViewRotationDetour(void *object, float delta_seconds,
                                            double *rotation, double *delta_rotation) noexcept {
   auto *context = g_active.load(std::memory_order_acquire);
@@ -1118,8 +1173,11 @@ void ANOMALY_CALL ProcessViewRotationDetour(void *object, float delta_seconds,
         context->process_rotation_hook, &lease).code == ANOMALY_STATUS_V1_OK;
     const bool local = object != nullptr && reinterpret_cast<std::uintptr_t>(object) ==
         context->rotation_manager.load(std::memory_order_acquire);
+    const bool restricted =
+        ViewIsRestricted(*context, reinterpret_cast<std::uintptr_t>(object));
     const bool block = leased && local && rotation != nullptr && delta_rotation != nullptr &&
-        context->block_forced_rotation.load(std::memory_order_acquire);
+        (context->block_forced_rotation.load(std::memory_order_acquire) ||
+         (context->unclamp_view.load(std::memory_order_acquire) && restricted));
     std::array<double, 3> manual{}, input{};
     if (block) {
       std::copy_n(rotation, 3, manual.begin());
@@ -1176,7 +1234,10 @@ void ANOMALY_CALL CameraViewPointDetour(void *object, double *location,
                         std::memory_order_acquire))) {
         // Late camera effects can still replace the POV after control rotation.
         // Publish the same manual orientation to rendering and the free camera.
-        if (leased && context->block_forced_rotation.load(std::memory_order_acquire) &&
+        if (leased &&
+            (context->block_forced_rotation.load(std::memory_order_acquire) ||
+             (context->unclamp_view.load(std::memory_order_acquire) &&
+              ViewIsRestricted(*context, reinterpret_cast<std::uintptr_t>(object)))) &&
             reinterpret_cast<std::uintptr_t>(object) ==
                 context->rotation_manager.load(std::memory_order_acquire) &&
             context->manual_rotation_valid.load(std::memory_order_acquire)) {
@@ -1448,13 +1509,15 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1 *host,
                                        ANOMALY_SIGNATURE_SERVICE_V1_VERSION);
   context->hook = Query<AnomalyHookServiceV1>(host, ANOMALY_HOOK_SERVICE_V1_ID,
                                               ANOMALY_HOOK_SERVICE_V1_VERSION);
+  context->scheduler = Query<AnomalySchedulerServiceV1>(
+      host, ANOMALY_SCHEDULER_SERVICE_V1_ID, ANOMALY_SCHEDULER_SERVICE_V1_VERSION);
   context->streaming_source = Query<AnomalyUe5StreamingSourceServiceV1>(
       host, ANOMALY_UE5_STREAMING_SOURCE_SERVICE_V1_ID,
       ANOMALY_UE5_STREAMING_SOURCE_SERVICE_V1_VERSION);
   if (!CoreReady(context->core) || !ConfigReady(context->config) ||
       !InputReady(context->input) ||
       !UiReady(context->ui) || !SignatureReady(context->signature) ||
-      !HookReady(context->hook)) {
+      !HookReady(context->hook) || !SchedulerReady(context->scheduler)) {
     delete context;
     return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
                   "required plugin services are unavailable");
@@ -1464,12 +1527,15 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1 *host,
       kSettingsSchemaVersion, Bytes(kSettingsSchema),
       &context->settings_schema);
   if (schema_status.code != ANOMALY_STATUS_V1_OK ||
-      context->settings_schema.id == 0 || !LoadSettings(*context)) {
+      context->settings_schema.id == 0) {
     ReleaseSettingsSchema(*context);
     delete context;
     return Status(ANOMALY_STATUS_V1_FAILED,
-                  "camera tools settings are invalid");
+                  "camera tools settings schema could not be registered");
   }
+  // Settings only tune the exposed controls, so a document this build cannot read must not
+  // block activation: the defaults stay in place instead.
+  static_cast<void>(LoadSettings(*context));
   *plugin_context = context;
   return anomaly::sdk::Ok();
 }
@@ -1644,6 +1710,17 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void *plugin_context, std::uint32_t) {
   context->input_key_original = 0;
   context->view_point_original = 0;
   context->camera_manager.store(0, std::memory_order_release);
+  {
+    AnomalyGenerationHandleV1 task{};
+    {
+      std::scoped_lock lock(context->save_mutex);
+      task = context->save_task;
+      context->save_task = {};
+    }
+    context->save_in_flight.store(false, std::memory_order_release);
+    if (task.id != 0 && SchedulerReady(context->scheduler))
+      static_cast<void>(context->scheduler->cancel(context->scheduler->user, task));
+  }
   context->player_input.store(0, std::memory_order_release);
   if (context->settings_revision.load(std::memory_order_acquire) !=
           context->persisted_settings_revision.load(
@@ -1685,8 +1762,21 @@ void ANOMALY_CALL Update(void *plugin_context, const double delta_seconds) {
       const auto changed_at =
           context->settings_changed_at.load(std::memory_order_acquire);
       if (now - changed_at >= kSettingsSaveDelayMilliseconds) {
-        context->settings_changed_at.store(now, std::memory_order_release);
-        static_cast<void>(PersistSettings(*context));
+        if (!context->save_in_flight.exchange(true, std::memory_order_acq_rel)) {
+          context->settings_changed_at.store(now, std::memory_order_release);
+          AnomalyGenerationHandleV1 task{};
+          if (SchedulerReady(context->scheduler) &&
+              context->scheduler
+                      ->schedule(context->scheduler->user, 0, SaveSettingsTask, context,
+                                 &task)
+                      .code == ANOMALY_STATUS_V1_OK &&
+              task.id != 0) {
+            std::scoped_lock lock(context->save_mutex);
+            context->save_task = task;
+          } else {
+            context->save_in_flight.store(false, std::memory_order_release);
+          }
+        }
       }
     }
   } catch (...) {
@@ -1721,6 +1811,18 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
       if (block_rotation != 0 && context->rotation_manager.load(std::memory_order_acquire) == 0) {
         const auto unavailable = context->localizer.Text(
             "status.forced_rotation_unavailable", "Forced rotation blocking is unavailable for the current camera.");
+        ui->text(ui->user, anomaly::sdk::StringView(unavailable));
+      }
+      int unclamp_view = context->unclamp_view.load(std::memory_order_acquire) ? 1 : 0;
+      const auto unclamp_label = context->localizer.Label(
+          "setting.unclamp_view", "Lift view pitch and yaw limits", "unclamp-view");
+      if (ui->checkbox(ui->user, anomaly::sdk::StringView(unclamp_label), &unclamp_view) != 0) {
+        context->unclamp_view.store(unclamp_view != 0, std::memory_order_release);
+        MarkSettingsDirty(*context);
+      }
+      if (unclamp_view != 0 && context->rotation_manager.load(std::memory_order_acquire) == 0) {
+        const auto unavailable = context->localizer.Text(
+            "status.unclamp_view_unavailable", "Lifting the view limits is unavailable for the current camera.");
         ui->text(ui->user, anomaly::sdk::StringView(unavailable));
       }
       ui->separator(ui->user);
@@ -1951,7 +2053,7 @@ AnomalyPluginEntryV1(AnomalyPluginDescriptorV1 *descriptor) {
                  anomaly::sdk::StringView("anomaly.camera-tools"),
                  anomaly::sdk::StringView("Camera Tools"),
                  anomaly::sdk::StringView("Anomaly"),
-                 anomaly::sdk::StringView("1.0.0"),
+                 anomaly::sdk::StringView("1.1.0"),
                  Load,
                  Start,
                  Stop,
