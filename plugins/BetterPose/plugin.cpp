@@ -1061,6 +1061,13 @@ struct Context final {
   // Unloading frees the whole motion track while holding the motion lock, and the game thread
   // takes that lock every tick. The panel asks for it; the game thread does it.
   std::atomic_bool motion_unload_request{};
+  // A selected Character Studio actor can be removed while it is still selected; its storage is
+  // then reused and the component reads as garbage. Check the identity a couple of times a second
+  // instead of trusting the pointer until the next target switch.
+  std::uintptr_t active_check_mesh{};
+  std::uintptr_t active_check_class{};
+  std::uint64_t active_check_ms{};
+  std::uint32_t active_check_failures{};
   // True while the manual pose should be written even with every angle at zero, which is
   // exactly the reference (A/T) pose case.
   std::atomic_bool pose_hold_base{};
@@ -3604,10 +3611,14 @@ AnomalyByteSpanV1 Bytes(const std::string_view value) noexcept {
   return {reinterpret_cast<const std::uint8_t *>(value.data()), value.size()};
 }
 
+// A component that has been removed still reads as committed memory, so the counts it reports
+// can be garbage. Everything downstream sizes buffers from them, so they are bounded here.
+constexpr std::uint32_t kMaxBoneCount = 8192;
+
 void EnsurePoseAngleCapacity(Context &context) noexcept {
   std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
-  const auto count = context.runtime.local_space_count;
-  if (context.bone_angles.size() < count)
+  const auto count = (std::min)(context.runtime.local_space_count, kMaxBoneCount);
+  if (count != 0 && context.bone_angles.size() < count)
     context.bone_angles.resize(count);
 }
 
@@ -5445,6 +5456,11 @@ bool ResolveLocalCharacter(Context &context) noexcept {
   context.runtime.character = character;
   context.runtime.mesh = mesh;
   context.runtime.external_target = external_target;
+  {
+    std::uintptr_t object_class{};
+    context.active_check_class =
+        Read(context, mesh + native_layout.kObjectClassOffset, object_class) ? object_class : 0;
+  }
   if (context.extra_mesh_owner != mesh &&
       context.mesh_scan_owner != mesh &&
       !context.mesh_scan_requested.load(std::memory_order_acquire) &&
@@ -5543,9 +5559,10 @@ bool ReadPoseArrays(Context &context) noexcept {
                       component_space_data, component_space_count) &&
       ReadArrayHeader(context, mesh + native_layout.kMeshLocalSpaceTransformsOffset,
                       local_space_data, local_space_count) &&
-      bone_space_data != 0 && bone_space_count != 0 &&
+      bone_space_data != 0 && bone_space_count != 0 && bone_space_count <= kMaxBoneCount &&
       component_space_data != 0 && component_space_count != 0 &&
-      local_space_data != 0 && local_space_count != 0 &&
+      component_space_count <= kMaxBoneCount && local_space_data != 0 &&
+      local_space_count != 0 && local_space_count <= kMaxBoneCount &&
       bone_space_count == component_space_count &&
       component_space_count == local_space_count;
   if (authoritative) {
@@ -5557,13 +5574,26 @@ bool ReadPoseArrays(Context &context) noexcept {
     context.runtime.local_space_count = local_space_count;
     return true;
   }
-  static_cast<void>(ReadArrayHeader(
-      context, mesh + native_layout.kMeshCachedBoneSpaceTransformsOffset,
-      context.runtime.bone_space_data, context.runtime.bone_space_count));
-  return ReadArrayHeader(
-      context, mesh + native_layout.kMeshCachedComponentSpaceTransformsOffset,
-      context.runtime.component_space_data,
-      context.runtime.component_space_count);
+  std::uint32_t bone_count{};
+  std::uint32_t component_count{};
+  const bool cached_ok =
+      ReadArrayHeader(context, mesh + native_layout.kMeshCachedBoneSpaceTransformsOffset,
+                      context.runtime.bone_space_data, bone_count) &&
+      ReadArrayHeader(context, mesh + native_layout.kMeshCachedComponentSpaceTransformsOffset,
+                      context.runtime.component_space_data, component_count) &&
+      bone_count != 0 && bone_count <= kMaxBoneCount && component_count == bone_count &&
+      context.runtime.bone_space_data != 0 && context.runtime.component_space_data != 0;
+  if (!cached_ok) {
+    // Report "unavailable" rather than a stale pointer with a garbage size.
+    context.runtime.bone_space_data = 0;
+    context.runtime.component_space_data = 0;
+    context.runtime.bone_space_count = 0;
+    context.runtime.component_space_count = 0;
+    return false;
+  }
+  context.runtime.bone_space_count = bone_count;
+  context.runtime.component_space_count = component_count;
+  return true;
 }
 
 bool RestorePause(Context &context) noexcept {
@@ -18035,6 +18065,38 @@ void StepKeyframes(Context &context, const double delta_seconds) noexcept {
 
 void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
   ApplyRequestedPoseTarget(context);
+  {
+    // Cheap liveness check on the bound component: a removed actor keeps its memory mapped, so
+    // the reads below still "succeed" while returning garbage.
+    const std::uintptr_t bound = context.runtime.mesh;
+    if (bound != 0) {
+      const std::uint64_t now = GetTickCount64();
+      const bool due = context.active_check_mesh != bound ||
+                       now - context.active_check_ms >= 500;
+      if (due) {
+        context.active_check_mesh = bound;
+        context.active_check_ms = now;
+        std::uintptr_t object_class{};
+        const bool class_readable =
+            Read(context, bound + native_layout.kObjectClassOffset, object_class) &&
+            object_class != 0;
+        if (!class_readable || object_class != context.active_check_class) {
+          ++context.active_check_failures;
+          LogDiagnostic(context, "betterpose dropped the bound component: it is gone or its "
+                                 "class changed");
+          context.runtime.mesh = 0;
+          context.runtime.mesh_asset = 0;
+          context.runtime.bone_space_data = 0;
+          context.runtime.component_space_data = 0;
+          context.runtime.local_space_data = 0;
+          context.runtime.bone_space_count = 0;
+          context.runtime.component_space_count = 0;
+          context.runtime.local_space_count = 0;
+          context.pose_target_scan_requested.store(true, std::memory_order_release);
+        }
+      }
+    }
+  }
   if (!RefreshRuntime(context)) {
     PublishSnapshot(context, "local player character is unavailable");
     return;
