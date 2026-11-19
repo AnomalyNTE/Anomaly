@@ -10517,11 +10517,25 @@ void StepInactiveEntityMotions(Context &context) noexcept {
     const bool identity_matches =
         (found->second.object_class == 0 || object_class == found->second.object_class) &&
         (found->second.object_asset == 0 || object_asset == found->second.object_asset);
-    if (identity_known && (!readable || !identity_matches)) {
+    const bool class_mismatch =
+        !readable ||
+        (found->second.object_class != 0 && object_class != found->second.object_class);
+    if (identity_known && class_mismatch) {
       LogDiagnostic(context, "betterpose dropped an inactive motion state: the component is gone "
                              "or was reused");
       context.entity_motion_states.erase(found);
       continue;
+    }
+    if (found->second.object_asset != 0 && object_asset != found->second.object_asset) {
+      // The motion and keyframe data stay; only what was derived from the old asset goes.
+      found->second.pose_base_locals.clear();
+      found->second.ref_locals.clear();
+      found->second.bone_names.clear();
+      found->second.bone_parents.clear();
+      found->second.ref_pose_attempted = false;
+      found->second.object_asset = object_asset;
+      LogDiagnostic(context, "betterpose inactive motion state kept across a skin change; the "
+                             "base will be re-taken on selection");
     }
     static_cast<void>(ApplyInactiveEntityMotion(context, mesh));
   }
@@ -18085,8 +18099,12 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
             Read(context, bound + native_layout.kObjectClassOffset, object_class) &&
             object_class != 0;
         const bool identity_known = context.active_check_class != 0;
-        if (identity_known && (!class_readable || object_class != context.active_check_class)) {
-          ++context.active_check_failures;
+        const bool mismatch =
+            identity_known && (!class_readable || object_class != context.active_check_class);
+        if (!mismatch) {
+          context.active_check_failures = 0;
+        } else if (++context.active_check_failures >= 2) {
+          // Two consecutive mismatches: a single failed read must not cost a rescan.
           LogDiagnostic(context, "betterpose dropped the bound component: it is gone or its "
                                  "class changed");
           context.runtime.mesh = 0;
@@ -18647,11 +18665,25 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
     const bool identity_matches =
         (found->second.object_class == 0 || object_class == found->second.object_class) &&
         (found->second.object_asset == 0 || object_asset == found->second.object_asset);
-    if (identity_known && (!readable || !identity_matches)) {
+    const bool class_mismatch =
+        !readable ||
+        (found->second.object_class != 0 && object_class != found->second.object_class);
+    if (identity_known && class_mismatch) {
       LogDiagnostic(context, "betterpose dropped a parked pose state: the component is gone or "
                              "was reused");
       context.entity_pose_states.erase(found);
       continue;
+    }
+    if (found->second.object_asset != 0 && object_asset != found->second.object_asset) {
+      // A skin swap replaces the asset under the same component. The angles and the library
+      // pose still describe what the user authored, but the base and the bone table belong to
+      // the old asset, so they are dropped and re-taken when this target is selected again.
+      found->second.base_locals.clear();
+      found->second.bone_parents.clear();
+      found->second.bone_names.clear();
+      found->second.object_asset = object_asset;
+      LogDiagnostic(context, "betterpose parked pose state kept across a skin change; the base "
+                             "will be re-taken on selection");
     }
     static_cast<void>(MaintainParkedEntityPose(context, parked, found->second));
   }
