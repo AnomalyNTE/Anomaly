@@ -148,6 +148,7 @@ Many functions that return variable-length data use a signature of the form `(..
 | `anomaly.nte.entities` | 1 | `nte-entity-snapshot` | [nte.entities](nte-services.md#anomalynteentities) |
 | `anomaly.nte.actors` | 1 | `nte-actor-snapshot` | [nte.actors](nte-services.md#anomalynteactors) |
 | `anomaly.nte.combat` | 1 | `nte-combat-read` | [nte.combat](nte-services.md#anomalyntecombat) |
+| `anomaly.nte.account` | 1 | `nte-account-read` | [nte.account](nte-services.md#anomalynteaccount) |
 | `anomaly.nte.skills` | 1 | `nte-skills-read` | [nte.skills](nte-services.md#anomalynteskills) |
 | `anomaly.nte.skill-invocation` | 1 | `nte-skill-invocation` | [nte.skill-invocation](nte-services.md#anomalynteskill-invocation) |
 | `anomaly.nte.metrics` | 1 | `nte-snapshot-metrics` | [nte.metrics](nte-services.md#anomalyntemetrics) |

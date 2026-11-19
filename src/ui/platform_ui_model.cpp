@@ -91,11 +91,7 @@ void SetCatalogState(InstalledPluginView& view, const PluginCatalogEntry& entry)
         view.audience = manifest.audience;
         if (view.source.empty()) view.source = entry.entry_file;
         if (view.package_directory.empty()) view.package_directory = entry.package_root;
-        view.dependency_ids.clear();
-        view.dependency_ids.reserve(manifest.dependencies.size());
-        for (const auto& dependency : manifest.dependencies) {
-            view.dependency_ids.push_back(dependency.id);
-        }
+        view.dependencies = manifest.dependencies;
     }
     if (entry.compatibility) {
         view.compatibility_result = entry.compatibility;
@@ -183,9 +179,11 @@ void AddAffected(
     if (!inserted && directly_requested) iterator->second.directly_requested = true;
 }
 
-bool HasDependency(const InstalledPluginView& plugin, std::string_view id) noexcept {
-    return std::find(plugin.dependency_ids.begin(), plugin.dependency_ids.end(), id) !=
-        plugin.dependency_ids.end();
+bool HasDependency(
+    const InstalledPluginView& plugin, std::string_view id, bool include_optional) noexcept {
+    return std::ranges::any_of(plugin.dependencies, [&](const PluginDependencyManifest& dependency) {
+        return dependency.id == id && (include_optional || !dependency.optional);
+    });
 }
 
 std::string StateSortKey(const InstalledPluginView& plugin) {
@@ -731,7 +729,7 @@ PlatformUiAffectedSetPreflight PreflightPluginMutation(
                     for (const auto& plugin : snapshot.installed_plugins) {
                         if (affected.contains(plugin.id)) continue;
                         for (const auto& item : affected) {
-                            if (HasDependency(plugin, item.first)) {
+                            if (HasDependency(plugin, item.first, true)) {
                                 add_plugin(
                                     plugin.id, false,
                                     "dependent generation must reload");
@@ -742,16 +740,17 @@ PlatformUiAffectedSetPreflight PreflightPluginMutation(
                     }
                 }
             } else {
-                // Starting a plugin requires its complete dependency closure.
+                // Starting a plugin only follows mandatory dependency edges.
                 std::unordered_set<std::string> visiting;
                 std::function<void(const InstalledPluginView&)> add_dependencies =
                     [&](const InstalledPluginView& plugin) {
                         if (!visiting.insert(plugin.id).second) return;
-                        for (const auto& dependency_id : plugin.dependency_ids) {
-                            const auto* dependency = snapshot.FindPlugin(dependency_id);
+                        for (const auto& requirement : plugin.dependencies) {
+                            if (requirement.optional) continue;
+                            const auto* dependency = snapshot.FindPlugin(requirement.id);
                             if (dependency == nullptr) {
                                 result.decision = PlatformUiPreflightDecision::Blocked;
-                                result.reason = "required dependency is missing: " + dependency_id;
+                                result.reason = "required dependency is missing: " + requirement.id;
                                 continue;
                             }
                             add_plugin(dependency->id, false, "required dependency");
@@ -767,14 +766,14 @@ PlatformUiAffectedSetPreflight PreflightPluginMutation(
                 add_dependencies(*target);
             }
         } else if (IsStopLike(result.mutation)) {
-            // Stopping a dependency also stops all installed dependents first.
+            // Stopping a provider also stops plugins that require it.
             bool changed = true;
             while (changed) {
                 changed = false;
                 for (const auto& plugin : snapshot.installed_plugins) {
                     if (affected.find(plugin.id) != affected.end()) continue;
                     for (const auto& item : affected) {
-                        if (HasDependency(plugin, item.first)) {
+                        if (HasDependency(plugin, item.first, false)) {
                             add_plugin(plugin.id, false, "dependent plugin must stop first");
                             changed = true;
                             break;

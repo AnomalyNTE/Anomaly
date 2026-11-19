@@ -5731,9 +5731,9 @@ private:
 
     void DrawDeveloperPluginOverview(const anomaly::InstalledPluginView& plugin) {
         std::string dependencies;
-        for (const auto& dependency : plugin.dependency_ids) {
+        for (const auto& dependency : plugin.dependencies) {
             if (!dependencies.empty()) dependencies += ", ";
-            dependencies += dependency;
+            dependencies += dependency.id;
         }
         if (dependencies.empty()) dependencies = Text(anomaly::MessageId::CommonNone);
         const std::string generation = std::to_string(plugin.generation);

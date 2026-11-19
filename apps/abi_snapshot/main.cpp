@@ -226,6 +226,8 @@ std::string BuildSnapshot() {
     AppendUnsigned(output, ANOMALY_UE5_WORLD_SERVICE_V1_VERSION);
     output.append(",\n    \"ANOMALY_NTE_BUILD_SERVICE_V1_VERSION\": ");
     AppendUnsigned(output, ANOMALY_NTE_BUILD_SERVICE_V1_VERSION);
+    output.append(",\n    \"ANOMALY_NTE_ACCOUNT_SERVICE_V1_VERSION\": ");
+    AppendUnsigned(output, ANOMALY_NTE_ACCOUNT_SERVICE_V1_VERSION);
     output.append(",\n    \"ANOMALY_NTE_SESSION_SERVICE_V1_VERSION\": ");
     AppendUnsigned(output, ANOMALY_NTE_SESSION_SERVICE_V1_VERSION);
     output.append(",\n    \"ANOMALY_NTE_PLAYER_SERVICE_V1_VERSION\": ");
@@ -2333,7 +2335,18 @@ std::string BuildSnapshot() {
          {"latest_event_sequence", offsetof(AnomalyNteCombatServiceV1, latest_event_sequence)},
          {"next_event", offsetof(AnomalyNteCombatServiceV1, next_event)},
          {"event_name_utf8", offsetof(AnomalyNteCombatServiceV1, event_name_utf8)},
-         {"participant_display_name_utf8", offsetof(AnomalyNteCombatServiceV1, participant_display_name_utf8)}},
+         {"participant_display_name_utf8", offsetof(AnomalyNteCombatServiceV1, participant_display_name_utf8)},
+         {"latest_applied_damage_sequence", offsetof(AnomalyNteCombatServiceV1, latest_applied_damage_sequence)},
+         {"next_applied_damage_event", offsetof(AnomalyNteCombatServiceV1, next_applied_damage_event)}},
+        false);
+    AppendStruct(output,
+        "AnomalyNteAccountServiceV1",
+        sizeof(AnomalyNteAccountServiceV1),
+        alignof(AnomalyNteAccountServiceV1),
+        {{"struct_size", offsetof(AnomalyNteAccountServiceV1, struct_size)},
+         {"service_version", offsetof(AnomalyNteAccountServiceV1, service_version)},
+         {"user", offsetof(AnomalyNteAccountServiceV1, user)},
+         {"uid_utf8", offsetof(AnomalyNteAccountServiceV1, uid_utf8)}},
         false);
     AppendStruct(
         output,
@@ -2587,6 +2600,8 @@ std::string BuildSnapshot() {
         ANOMALY_NTE_ACTORS_SERVICE_V1_VERSION, "AnomalyNteActorsServiceV1", false);
     AppendService(output, ANOMALY_NTE_COMBAT_SERVICE_V1_ID,
         ANOMALY_NTE_COMBAT_SERVICE_V1_VERSION, "AnomalyNteCombatServiceV1", false);
+    AppendService(output, ANOMALY_NTE_ACCOUNT_SERVICE_V1_ID,
+        ANOMALY_NTE_ACCOUNT_SERVICE_V1_VERSION, "AnomalyNteAccountServiceV1", false);
     AppendService(output, ANOMALY_NTE_SKILLS_SERVICE_V1_ID,
         ANOMALY_NTE_SKILLS_SERVICE_V1_VERSION, "AnomalyNteSkillsServiceV1", false);
     AppendService(output, ANOMALY_NTE_SKILL_INVOCATION_SERVICE_V1_ID,

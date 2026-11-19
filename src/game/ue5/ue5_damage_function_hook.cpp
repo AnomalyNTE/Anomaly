@@ -1,7 +1,10 @@
 #include "anomaly/ue5_damage_function_hook.hpp"
+#include "anomaly/thread_local_value.hpp"
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
+#include <intrin.h>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -20,13 +23,23 @@ public:
     using NativeFunction = void(__fastcall*)(
         void*, const void*, void*, void*, void*);
     using ExecFunction = void(__fastcall*)(void*, void*, void*);
+    using ApplyFunction = std::uintptr_t(__fastcall*)(std::uintptr_t, std::uintptr_t,
+        std::uintptr_t, float, std::uint8_t, std::uintptr_t, std::uintptr_t,
+        std::uint8_t, std::uintptr_t);
+    using FightResultFunction = std::uintptr_t(__fastcall*)(
+        std::uintptr_t, std::uintptr_t, std::uintptr_t);
+    using PendingFightHitFunction = std::uintptr_t(__fastcall*)(std::uintptr_t, std::uintptr_t);
+    using SetHealthFunction = std::uintptr_t(__fastcall*)(std::uintptr_t, float);
 
     Impl(
         std::unique_ptr<HookBackend> backend,
         Callback callback,
-        ExecCallback exec_callback)
+        ExecCallback exec_callback, ReadHealth read_health, AppliedDamage applied_damage,
+        ReplicatedDamage replicated_damage)
         : hooks_(std::move(backend)), callback_(std::move(callback)),
-          exec_callback_(std::move(exec_callback)) {
+          exec_callback_(std::move(exec_callback)), read_health_(std::move(read_health)),
+          applied_damage_(std::move(applied_damage)),
+          replicated_damage_(std::move(replicated_damage)) {
         if (!callback_) {
             throw std::invalid_argument("Ue5DamageFunctionHook requires a callback");
         }
@@ -89,13 +102,28 @@ public:
             }
             return false;
         }
+        if (targets.apply_damage != nullptr && read_health_ && applied_damage_ &&
+            hooks_.Create(std::string(kOwner), kGeneration, "apply-health-damage",
+                targets.apply_damage, reinterpret_cast<void*>(&ApplyThunk),
+                reinterpret_cast<void**>(&apply_original_))) {
+            apply_passthrough_.store(reinterpret_cast<ApplyFunction>(targets.apply_damage),
+                std::memory_order_release);
+            if (hooks_.Enable(kOwner, kGeneration, targets.apply_damage)) {
+                apply_target_ = targets.apply_damage;
+            } else {
+                static_cast<void>(hooks_.Remove(kOwner, kGeneration, targets.apply_damage));
+            }
+        }
+        const bool replicated_started = StartReplicated(targets);
         started_.store(true, std::memory_order_release);
+        applied_started_.store(apply_target_ != nullptr || replicated_started, std::memory_order_release);
         return true;
     }
 
     bool Stop(const std::chrono::milliseconds timeout) noexcept {
         std::scoped_lock stop_lock(stop_mutex_);
         static_cast<void>(started_.exchange(false, std::memory_order_acq_rel));
+        applied_started_.store(false, std::memory_order_release);
         if (!owner_registered_) return true;
         const auto bounded_timeout =
             (std::max)(timeout, std::chrono::milliseconds::zero());
@@ -126,16 +154,85 @@ public:
     [[nodiscard]] bool Attempted() const noexcept {
         return attempted_.load(std::memory_order_acquire);
     }
+    [[nodiscard]] bool AppliedDamageStarted() const noexcept {
+        return applied_started_.load(std::memory_order_acquire);
+    }
 
     [[nodiscard]] std::vector<HookRecordView> Snapshot() const {
         return hooks_.Snapshot();
     }
 
 private:
+    bool StartReplicated(const Ue5DamageFunctionTargets& targets) {
+        if (targets.replicated_fight_result == nullptr || targets.set_current_health == nullptr ||
+            targets.take_pending_fight_hit == nullptr || targets.pending_hit_return == 0 ||
+            targets.set_health_return == 0 ||
+            !read_health_ || !replicated_damage_) {
+            return false;
+        }
+        fight_result_target_ = targets.replicated_fight_result;
+        pending_hit_target_ = targets.take_pending_fight_hit;
+        set_health_target_ = targets.set_current_health;
+        pending_hit_return_ = targets.pending_hit_return;
+        set_health_return_ = targets.set_health_return;
+        struct HookEntry {
+            const char* label;
+            void* target;
+            void* detour;
+            void** original;
+        };
+        const std::array entries{
+            HookEntry{"take-pending-fight-hit", pending_hit_target_,
+                reinterpret_cast<void*>(&PendingFightHitThunk),
+                reinterpret_cast<void**>(&pending_hit_original_)},
+            HookEntry{"set-current-health", set_health_target_,
+                reinterpret_cast<void*>(&SetHealthThunk),
+                reinterpret_cast<void**>(&set_health_original_)},
+            HookEntry{"replicated-fight-result", fight_result_target_,
+                reinterpret_cast<void*>(&FightResultThunk),
+                reinterpret_cast<void**>(&fight_result_original_)}};
+        std::size_t created{};
+        while (created < entries.size()) {
+            const auto& entry = entries[created];
+            if (!hooks_.Create(std::string(kOwner), kGeneration, entry.label,
+                    entry.target, entry.detour, entry.original)) break;
+            ++created;
+        }
+        fight_result_passthrough_.store(reinterpret_cast<FightResultFunction>(fight_result_target_),
+            std::memory_order_release);
+        pending_hit_passthrough_.store(reinterpret_cast<PendingFightHitFunction>(pending_hit_target_),
+            std::memory_order_release);
+        set_health_passthrough_.store(reinterpret_cast<SetHealthFunction>(set_health_target_),
+            std::memory_order_release);
+        if (created == entries.size() && std::ranges::all_of(entries, [this](const HookEntry& entry) {
+                return hooks_.Enable(kOwner, kGeneration, entry.target);
+            })) {
+            return true;
+        }
+        while (created != 0) {
+            static_cast<void>(hooks_.Remove(kOwner, kGeneration, entries[--created].target));
+        }
+        return false;
+    }
+
     void ClearTarget() noexcept {
         original_ = nullptr;
         target_ = nullptr;
         passthrough_.store(nullptr, std::memory_order_release);
+        apply_original_ = nullptr;
+        apply_target_ = nullptr;
+        apply_passthrough_.store(nullptr, std::memory_order_release);
+        fight_result_original_ = nullptr;
+        fight_result_target_ = nullptr;
+        fight_result_passthrough_.store(nullptr, std::memory_order_release);
+        pending_hit_original_ = nullptr;
+        pending_hit_target_ = nullptr;
+        pending_hit_return_ = 0;
+        pending_hit_passthrough_.store(nullptr, std::memory_order_release);
+        set_health_original_ = nullptr;
+        set_health_target_ = nullptr;
+        set_health_return_ = 0;
+        set_health_passthrough_.store(nullptr, std::memory_order_release);
         for (std::size_t index{}; index < kUe5CombatExecFunctionCapacity; ++index) {
             exec_originals_[index] = nullptr;
             exec_functions_[index] = nullptr;
@@ -190,6 +287,176 @@ private:
         void* attacker,
         void* damage_causer) {
         Dispatch(delegate, damage_event, victim, attacker, damage_causer);
+    }
+
+    struct HealthSample {
+        HealthSample* parent{};
+        std::uintptr_t victim{};
+        double nested_delta{};
+        bool valid{true};
+    };
+
+    struct FightResultSample {
+        std::uintptr_t context{};
+        std::uintptr_t pending_hit{};
+        std::uintptr_t victim{};
+    };
+
+    static std::uintptr_t __fastcall FightResultThunk(const std::uintptr_t controller,
+        const std::uintptr_t context, const std::uintptr_t result_record) noexcept {
+        Impl* self{};
+        FightResultFunction original{};
+        PluginScope::CallbackLease lease;
+        {
+            std::scoped_lock process_lock(process_mutex_);
+            self = active_.load(std::memory_order_acquire);
+            if (self != nullptr) {
+                lease = self->hooks_.AcquireCallback(kOwner, kGeneration, self->fight_result_target_);
+            }
+            original = lease ? self->fight_result_original_
+                : fight_result_passthrough_.load(std::memory_order_acquire);
+        }
+        if (original == nullptr) return 0;
+        if (!lease) return original(controller, context, result_record);
+
+        FightResultSample sample{context};
+        auto* const parent = self->fight_result_sample_.Get();
+        self->fight_result_sample_.Set(&sample);
+        const auto result = original(controller, context, result_record);
+        self->fight_result_sample_.Set(parent);
+        return result;
+    }
+
+    static std::uintptr_t __fastcall PendingFightHitThunk(
+        const std::uintptr_t context, const std::uintptr_t victim) noexcept {
+        Impl* self{};
+        PendingFightHitFunction original{};
+        PluginScope::CallbackLease lease;
+        {
+            std::scoped_lock process_lock(process_mutex_);
+            self = active_.load(std::memory_order_acquire);
+            if (self != nullptr) {
+                lease = self->hooks_.AcquireCallback(kOwner, kGeneration, self->pending_hit_target_);
+            }
+            original = lease ? self->pending_hit_original_
+                : pending_hit_passthrough_.load(std::memory_order_acquire);
+        }
+        if (original == nullptr) return 0;
+        const auto hit = original(context, victim);
+        if (lease && reinterpret_cast<std::uintptr_t>(_ReturnAddress()) == self->pending_hit_return_) {
+            auto* const sample = self->fight_result_sample_.Get();
+            if (sample != nullptr && sample->context == context) {
+                sample->pending_hit = hit;
+                sample->victim = victim;
+            }
+        }
+        return hit;
+    }
+
+    static std::uintptr_t __fastcall SetHealthThunk(
+        const std::uintptr_t component, const float requested_hp) noexcept {
+        Impl* self{};
+        SetHealthFunction original{};
+        PluginScope::CallbackLease lease;
+        {
+            std::scoped_lock process_lock(process_mutex_);
+            self = active_.load(std::memory_order_acquire);
+            if (self != nullptr) {
+                lease = self->hooks_.AcquireCallback(kOwner, kGeneration, self->set_health_target_);
+            }
+            original = lease ? self->set_health_original_
+                : set_health_passthrough_.load(std::memory_order_acquire);
+        }
+        if (original == nullptr) return 0;
+        auto* const sample = lease ? self->fight_result_sample_.Get() : nullptr;
+        if (sample == nullptr || sample->pending_hit == 0 ||
+            reinterpret_cast<std::uintptr_t>(_ReturnAddress()) != self->set_health_return_) {
+            return original(component, requested_hp);
+        }
+
+        const auto hit = std::exchange(sample->pending_hit, 0);
+        const auto before = self->SampleHealth(0, component);
+        const auto result = original(component, requested_hp);
+        const auto after = before ? self->SampleHealth(0, component) : std::nullopt;
+        if (before && after) {
+            const double applied = RoundedHealthLoss(*before, *after);
+            if (applied > 0.0) {
+                try {
+                    self->replicated_damage_(component, sample->context, hit, sample->victim,
+                        static_cast<float>(applied));
+                } catch (...) {
+                }
+            }
+        }
+        return result;
+    }
+
+    [[nodiscard]] std::optional<float> SampleHealth(
+        const std::uintptr_t attributes, const std::uintptr_t target) const noexcept {
+        try {
+            return read_health_(attributes, target);
+        } catch (...) {
+            return std::nullopt;
+        }
+    }
+
+    static double RoundedHealthLoss(const float before, const float after) noexcept {
+        // Round the endpoints once to preserve whole-HP totals across fractional hits.
+        return std::round(static_cast<double>(before)) - std::round(static_cast<double>(after));
+    }
+
+    static std::uintptr_t __fastcall ApplyThunk(const std::uintptr_t attributes,
+        const std::uintptr_t victim, const std::uintptr_t hit_source, const float nominal,
+        const std::uint8_t force, const std::uintptr_t damage_event, const std::uintptr_t attacker,
+        const std::uint8_t transferred, const std::uintptr_t definition) noexcept {
+        Impl* self{};
+        ApplyFunction original{};
+        PluginScope::CallbackLease lease;
+        {
+            std::scoped_lock process_lock(process_mutex_);
+            self = active_.load(std::memory_order_acquire);
+            if (self != nullptr && self->apply_target_ != nullptr) {
+                original = self->apply_original_;
+                lease = self->hooks_.AcquireCallback(kOwner, kGeneration, self->apply_target_);
+            }
+            if (!lease) {
+                self = nullptr;
+                original = apply_passthrough_.load(std::memory_order_acquire);
+            }
+        }
+        if (original == nullptr) return 0;
+        const auto invoke = [&] {
+            return original(attributes, victim, hit_source, nominal, force, damage_event,
+                attacker, transferred, definition);
+        };
+        if (self == nullptr || nominal <= 0.0F || damage_event == 0) return invoke();
+        const auto before = self->SampleHealth(attributes, victim);
+        auto* const enclosing = self->health_sample_.Get();
+        if (!before && enclosing == nullptr) return invoke();
+        HealthSample sample{enclosing, victim};
+        self->health_sample_.Set(&sample);
+        const auto result = invoke();
+        self->health_sample_.Set(sample.parent);
+        const auto after = before ? self->SampleHealth(attributes, victim) : std::nullopt;
+        const double delta = before && after ? RoundedHealthLoss(*before, *after) : 0.0;
+        // Attribute reentrant hits to their own attacker, even if they target
+        // the same character before the outer application returns.
+        for (auto* parent = sample.parent; parent != nullptr; parent = parent->parent) {
+            if (parent->victim != victim) continue;
+            if (before && after) parent->nested_delta += delta;
+            else parent->valid = false;
+            break;
+        }
+        if (sample.valid && before && after) {
+            const double applied = delta - sample.nested_delta;
+            if (applied > 0.0 && attacker != 0) {
+                try {
+                    self->applied_damage_(damage_event, victim, attacker, static_cast<float>(applied));
+                } catch (...) {
+                }
+            }
+        }
+        return result;
     }
 
     static void DispatchExec(
@@ -258,6 +525,22 @@ private:
     HookManager hooks_;
     Callback callback_;
     ExecCallback exec_callback_;
+    ReadHealth read_health_;
+    AppliedDamage applied_damage_;
+    ReplicatedDamage replicated_damage_;
+    ThreadLocalScalar<HealthSample*> health_sample_;
+    ThreadLocalScalar<FightResultSample*> fight_result_sample_;
+    ApplyFunction apply_original_{};
+    void* apply_target_{};
+    FightResultFunction fight_result_original_{};
+    void* fight_result_target_{};
+    PendingFightHitFunction pending_hit_original_{};
+    void* pending_hit_target_{};
+    std::uintptr_t pending_hit_return_{};
+    SetHealthFunction set_health_original_{};
+    void* set_health_target_{};
+    std::uintptr_t set_health_return_{};
+    std::atomic_bool applied_started_{};
     NativeFunction original_{};
     void* target_{};
     std::array<ExecFunction, kUe5CombatExecFunctionCapacity> exec_originals_{};
@@ -270,6 +553,10 @@ private:
     std::mutex stop_mutex_;
     static std::atomic<Impl*> active_;
     static std::atomic<NativeFunction> passthrough_;
+    static std::atomic<ApplyFunction> apply_passthrough_;
+    static std::atomic<FightResultFunction> fight_result_passthrough_;
+    static std::atomic<PendingFightHitFunction> pending_hit_passthrough_;
+    static std::atomic<SetHealthFunction> set_health_passthrough_;
     static std::array<std::atomic<ExecFunction>, kUe5CombatExecFunctionCapacity>
         exec_passthroughs_;
     static std::mutex process_mutex_;
@@ -278,6 +565,14 @@ private:
 std::atomic<Ue5DamageFunctionHook::Impl*> Ue5DamageFunctionHook::Impl::active_{};
 std::atomic<Ue5DamageFunctionHook::Impl::NativeFunction>
     Ue5DamageFunctionHook::Impl::passthrough_{};
+std::atomic<Ue5DamageFunctionHook::Impl::ApplyFunction>
+    Ue5DamageFunctionHook::Impl::apply_passthrough_{};
+std::atomic<Ue5DamageFunctionHook::Impl::FightResultFunction>
+    Ue5DamageFunctionHook::Impl::fight_result_passthrough_{};
+std::atomic<Ue5DamageFunctionHook::Impl::PendingFightHitFunction>
+    Ue5DamageFunctionHook::Impl::pending_hit_passthrough_{};
+std::atomic<Ue5DamageFunctionHook::Impl::SetHealthFunction>
+    Ue5DamageFunctionHook::Impl::set_health_passthrough_{};
 std::array<
     std::atomic<Ue5DamageFunctionHook::Impl::ExecFunction>,
     kUe5CombatExecFunctionCapacity>
@@ -285,16 +580,20 @@ std::array<
 std::mutex Ue5DamageFunctionHook::Impl::process_mutex_;
 
 Ue5DamageFunctionHook::Ue5DamageFunctionHook(
-    Callback callback, ExecCallback exec_callback)
+    Callback callback, ExecCallback exec_callback, ReadHealth read_health,
+    AppliedDamage applied_damage, ReplicatedDamage replicated_damage)
     : Ue5DamageFunctionHook(
-          CreateMinHookBackend(), std::move(callback), std::move(exec_callback)) {}
+          CreateMinHookBackend(), std::move(callback), std::move(exec_callback),
+          std::move(read_health), std::move(applied_damage), std::move(replicated_damage)) {}
 
 Ue5DamageFunctionHook::Ue5DamageFunctionHook(
     std::unique_ptr<HookBackend> backend,
     Callback callback,
-    ExecCallback exec_callback)
+    ExecCallback exec_callback, ReadHealth read_health, AppliedDamage applied_damage,
+    ReplicatedDamage replicated_damage)
     : impl_(std::make_unique<Impl>(
-          std::move(backend), std::move(callback), std::move(exec_callback))) {}
+          std::move(backend), std::move(callback), std::move(exec_callback),
+          std::move(read_health), std::move(applied_damage), std::move(replicated_damage))) {}
 
 Ue5DamageFunctionHook::~Ue5DamageFunctionHook() {
     if (impl_ != nullptr && !impl_->Stop(std::chrono::milliseconds::zero())) {
@@ -317,6 +616,10 @@ bool Ue5DamageFunctionHook::Attempted() const noexcept {
 
 bool Ue5DamageFunctionHook::Started() const noexcept {
     return impl_->Started();
+}
+
+bool Ue5DamageFunctionHook::AppliedDamageStarted() const noexcept {
+    return impl_->AppliedDamageStarted();
 }
 
 std::vector<HookRecordView> Ue5DamageFunctionHook::Snapshot() const {

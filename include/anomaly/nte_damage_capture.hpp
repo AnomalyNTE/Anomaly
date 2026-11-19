@@ -70,6 +70,7 @@ struct NteCharacterDamageCapture {
     std::uintptr_t saved_skill_cdo{};
     std::int32_t active_spec_handle{};
     NteDamageCriticalState critical;
+    bool applied_health_loss{};
     NteDamageTags tags;
 };
 static_assert(std::is_trivially_copyable_v<NteCharacterDamageCapture>);

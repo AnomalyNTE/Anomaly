@@ -146,6 +146,13 @@ public:
         std::uintptr_t victim,
         std::uintptr_t attacker,
         std::uintptr_t damage_causer) noexcept;
+    [[nodiscard]] std::optional<float> ReadDamageHealth(
+        std::uintptr_t attributes, std::uintptr_t victim) const noexcept;
+    void OnAppliedDamage(std::uintptr_t damage_event, std::uintptr_t victim,
+        std::uintptr_t attacker, float amount) noexcept;
+    void OnReplicatedDamage(std::uintptr_t component, std::uintptr_t context,
+        std::uintptr_t pending_hit, std::uintptr_t victim, float amount) noexcept;
+    void SetAppliedDamageAvailable(bool available) noexcept;
     void OnCombatExecFunction(
         std::uintptr_t receiver,
         std::uintptr_t function,

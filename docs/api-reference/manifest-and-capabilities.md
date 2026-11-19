@@ -133,6 +133,7 @@ capability 约束**服务可见性与资源归属**（不是 native 代码沙箱
 | `anomaly.nte.entities` | `nte-entity-snapshot` |
 | `anomaly.nte.actors` | `nte-actor-snapshot` |
 | `anomaly.nte.combat` | `nte-combat-read` |
+| `anomaly.nte.account` | `nte-account-read` |
 | `anomaly.nte.skills` | `nte-skills-read` |
 | `anomaly.nte.skill-invocation` | `nte-skill-invocation` |
 
