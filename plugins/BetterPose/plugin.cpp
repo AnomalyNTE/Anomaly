@@ -1050,6 +1050,18 @@ struct Context final {
   // Auto-refresh state: the scan re-runs when the local character, its mesh asset or the
   // registry changes, and otherwise every few seconds to drop stale entries.
   std::uint64_t pose_target_scan_last_ms{};
+  // Bounded auto-retry for the case where the pose cannot be applied yet: the bone table or
+  // the base pose for this component is still missing, so a joint drag changes numbers but
+  // moves nothing until "Refresh pose" is pressed by hand.
+  // "Become A-pose": take the base from the asset's reference pose instead of whatever
+  // animation the character happened to be in.
+  std::atomic_bool pose_apose_request{};
+  // True while the manual pose should be written even with every angle at zero, which is
+  // exactly the reference (A/T) pose case.
+  std::atomic_bool pose_hold_base{};
+  // The engine can silently put the component back on its own mode after we switch it to
+  // Custom, which is why the status line kept reading 0. Re-assert it, rate limited.
+  std::uint64_t anim_mode_reassert_ms{};
   std::uintptr_t pose_target_scan_local_character{};
   std::uintptr_t pose_target_scan_local_mesh{};
   std::uintptr_t pose_target_scan_local_asset{};
@@ -8610,7 +8622,10 @@ void ApplyPoseOverridesDirect(Context &context,
   const bool calibration_reference =
       context.t_pose_calibration_active.load(std::memory_order_acquire) &&
       !context.motion_loaded.load(std::memory_order_acquire);
-  if (!any_override && !has_root_offset && !calibration_reference &&
+  const bool hold_base =
+      context.pose_hold_base.load(std::memory_order_acquire) &&
+      !context.motion_loaded.load(std::memory_order_acquire);
+  if (!any_override && !has_root_offset && !calibration_reference && !hold_base &&
       library_pose.empty()) {
     render_pose_bridge::ClearSnapshot(context, state.mesh);
     return;
@@ -9632,6 +9647,7 @@ nlohmann::json BlenderSampleMotion(Context &context, const double start,
   return {{"ok", true}, {"fps", fps}, {"length", duration}, {"frames", frames}};
 }
 
+bool ApplyReferencePoseBase(Context &context) noexcept;
 bool StartTPoseCalibration(Context &context) noexcept;
 bool ConfirmTPoseCalibration(Context &context) noexcept;
 void CancelTPoseCalibration(Context &context, std::string_view status) noexcept;
@@ -14039,8 +14055,9 @@ bool EnsurePoseAnimationMode(Context &context, const bool enabled) noexcept {
   };
   const SetAnimationModeParameters parameters{kAnimationModeCustom, 0};
   std::string detail;
-  if (CallVirtualUFunction(context, state.mesh, kFunctionSetAnimationModePath,
-                           &parameters, sizeof(parameters), detail)) {
+  const bool called = CallVirtualUFunction(context, state.mesh, kFunctionSetAnimationModePath,
+                                           &parameters, sizeof(parameters), detail);
+  if (called) {
     state.animation_mode_applied = true;
     return true;
   }
@@ -17973,8 +17990,21 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
   StepCameraFollowTarget(context);
 
   EnsureActiveCharacterProfile(context);
+  if (context.runtime.animation_mode_applied && context.runtime.mesh != 0 &&
+      context.runtime.animation_mode != kAnimationModeCustom) {
+    const std::uint64_t now = GetTickCount64();
+    if (now - context.anim_mode_reassert_ms >= 1000) {
+      context.anim_mode_reassert_ms = now;
+      context.runtime.animation_mode_applied = false;
+      LogDiagnostic(context, "betterpose animation mode drifted to " +
+                                 std::to_string(context.runtime.animation_mode) +
+                                 "; re-asserting custom");
+    }
+  }
   StepAutomaticCalibrationStatus(context);
   StepTPoseCalibrationRequest(context);
+  if (context.pose_apose_request.exchange(false, std::memory_order_acq_rel))
+    static_cast<void>(ApplyReferencePoseBase(context));
   // Before the expression and pose steps: the keyframe sample is written into
   // the same weights and angles they then apply this frame.
   if (!context.blender_active.load(std::memory_order_acquire))
@@ -18105,6 +18135,7 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
     static_cast<void>(EnsurePoseAnimationMode(context, false));
     static_cast<void>(EnsurePoseForcedLod(context, false));
     context.pose_override_enabled.store(false, std::memory_order_release);
+    context.pose_hold_base.store(false, std::memory_order_release);
     ResetPoseValues(context);
     {
       std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
@@ -18190,7 +18221,8 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
                return !context.library_pose_locals.empty();
              })() ||
              (master_enabled &&
-              (active_joints != 0 || has_root_offset || calibration_pose)));
+              (active_joints != 0 || has_root_offset || calibration_pose ||
+               context.pose_hold_base.load(std::memory_order_acquire))));
   const bool pose_available = context.runtime.bone_space_data != 0 &&
                               context.runtime.bone_space_count != 0 &&
                               context.runtime.component_space_data != 0 &&
@@ -20019,6 +20051,52 @@ std::array<double, 3> RotationOffsetAngles(const Quatd &base,
                                            const Quatd &target) noexcept {
   return QuatToRotator(QuatNormalize(
       QuatMultiply(target, QuatConjugate(base))));
+}
+
+// Rebases the manual pose on the mesh's reference pose, which is the A/T shape the asset
+// was authored in. Basing on the live pose (an animation frame) is what made a fresh drag
+// continue that animation instead of starting from A.
+bool ApplyReferencePoseBase(Context &context) noexcept {
+  RuntimeState &state = context.runtime;
+  if (state.mesh == 0) {
+    SetReflectionStatus(context, "A-pose unavailable: character is not ready");
+    return false;
+  }
+  if (context.bone_names.size() != state.local_space_count ||
+      context.bone_names_mesh != state.mesh) {
+    std::vector<std::string> names;
+    std::string detail;
+    if (!RefreshBoneNames(context, names, detail)) {
+      SetReflectionStatus(context, "A-pose failed: bone names unavailable");
+      return false;
+    }
+    context.bone_names = std::move(names);
+    context.bone_names_mesh = state.mesh;
+    context.bone_names_count = state.bone_space_count;
+    context.bone_names_attempted = true;
+    RefreshBoneHierarchy(context);
+  }
+  static_cast<void>(FindReferencePose(context));
+  if (context.ref_locals.size() != state.local_space_count) {
+    SetReflectionStatus(context, "A-pose failed: reference pose unavailable");
+    return false;
+  }
+  {
+    std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+    context.pose_base_locals = context.ref_locals;
+    context.pose_base_asset = state.mesh_asset;
+    context.pose_base_mesh = state.mesh;
+    context.pose_base_ready = true;
+    context.bone_angles.assign(state.local_space_count, {0.0, 0.0, 0.0});
+    context.library_pose_locals.clear();
+  }
+  for (std::size_t axis{}; axis != 3; ++axis)
+    context.requested_root_offset[axis].store(0.0, std::memory_order_release);
+  context.pose_override_enabled.store(true, std::memory_order_release);
+  context.pose_hold_base.store(true, std::memory_order_release);
+  context.pose_settings_dirty.store(true, std::memory_order_release);
+  SetReflectionStatus(context, "A-pose: base taken from the reference pose");
+  return true;
 }
 
 bool StartTPoseCalibration(Context &context) noexcept {
@@ -25531,6 +25609,11 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
   if (ui->button(ui->user, anomaly::sdk::StringView(load_bones_label), 80.0F,
                  0.0F) != 0)
     context->reflection_action_requested.store(6, std::memory_order_release);
+  ui->same_line(ui->user, 0.0F, 6.0F);
+  const std::string apose_label =
+      context->localizer.Label("pose.apose", "A-pose base", "pose-apose");
+  if (ui->button(ui->user, anomaly::sdk::StringView(apose_label), 90.0F, 0.0F) != 0)
+    context->pose_apose_request.store(true, std::memory_order_release);
   if (context->ahud != nullptr) {
     ui->same_line(ui->user, 0.0F, 6.0F);
     int overlay_enabled =
