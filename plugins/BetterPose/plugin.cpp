@@ -1047,12 +1047,9 @@ struct Context final {
   std::atomic_bool pose_target_scan_requested{true};
   bool pose_target_scan_running{};
   std::uint32_t pose_target_scan_cursor{};
-  // Auto-refresh state: the scan re-runs when the local character, its mesh asset or the
-  // registry changes, and otherwise every few seconds to drop stale entries.
+  // Timestamp of the last completed target scan; a new one never starts sooner than two
+  // seconds after it, so a flapping character pointer cannot queue scans back to back.
   std::uint64_t pose_target_scan_last_ms{};
-  // Bounded auto-retry for the case where the pose cannot be applied yet: the bone table or
-  // the base pose for this component is still missing, so a joint drag changes numbers but
-  // moves nothing until "Refresh pose" is pressed by hand.
   // "Become A-pose": take the base from the asset's reference pose instead of whatever
   // animation the character happened to be in.
   std::atomic_bool pose_apose_request{};
@@ -1062,6 +1059,11 @@ struct Context final {
   // The engine can silently put the component back on its own mode after we switch it to
   // Custom, which is why the status line kept reading 0. Re-assert it, rate limited.
   std::uint64_t anim_mode_reassert_ms{};
+  // Log the first drift of a component/skin only: a component that keeps reverting would
+  // otherwise write one line per second.
+  bool anim_mode_drift_logged{};
+  std::uintptr_t anim_mode_drift_mesh{};
+  std::uintptr_t anim_mode_drift_asset{};
   std::uintptr_t pose_target_scan_local_character{};
   std::uintptr_t pose_target_scan_local_mesh{};
   std::uintptr_t pose_target_scan_local_asset{};
@@ -16104,6 +16106,9 @@ void ExecuteReflectionAction(Context &context) noexcept {
                                 kFunctionSetPositionPath, &parameters,
                                 sizeof(parameters), detail);
     } else if (action == 4) {
+      // Refresh Anim / Refresh Pose are the manual escapes for a stale character, so they also
+      // fill the bone table when it is missing for this component.
+      MaybeRefreshBoneNames(context);
       if (context.runtime.character == 0) {
         detail = "character is unavailable";
       } else if (context.runtime.external_target) {
@@ -16114,6 +16119,7 @@ void ExecuteReflectionAction(Context &context) noexcept {
                                   detail);
       }
     } else if (action == 5) {
+      MaybeRefreshBoneNames(context);
       ok = ForcePoseCache(context, detail);
     } else if (action == 6) {
       std::vector<std::string> names;
@@ -17996,9 +18002,15 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
     if (now - context.anim_mode_reassert_ms >= 1000) {
       context.anim_mode_reassert_ms = now;
       context.runtime.animation_mode_applied = false;
-      LogDiagnostic(context, "betterpose animation mode drifted to " +
-                                 std::to_string(context.runtime.animation_mode) +
-                                 "; re-asserting custom");
+      if (context.anim_mode_drift_mesh != context.runtime.mesh ||
+          context.anim_mode_drift_asset != context.runtime.mesh_asset) {
+        context.anim_mode_drift_mesh = context.runtime.mesh;
+        context.anim_mode_drift_asset = context.runtime.mesh_asset;
+        context.anim_mode_drift_logged = true;
+        LogDiagnostic(context, "betterpose animation mode drifted to " +
+                                   std::to_string(context.runtime.animation_mode) +
+                                   "; re-asserting custom (further drift is silent)");
+      }
     }
   }
   StepAutomaticCalibrationStatus(context);
@@ -25604,16 +25616,18 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
     context->reflection_action_requested.store(4, std::memory_order_release);
   }
   ui->same_line(ui->user, 0.0F, 6.0F);
-  const std::string load_bones_label =
-      context->localizer.Text("action.load_bones", "Load Bones");
-  if (ui->button(ui->user, anomaly::sdk::StringView(load_bones_label), 80.0F,
-                 0.0F) != 0)
-    context->reflection_action_requested.store(6, std::memory_order_release);
-  ui->same_line(ui->user, 0.0F, 6.0F);
   const std::string apose_label =
       context->localizer.Label("pose.apose", "A-pose base", "pose-apose");
-  if (ui->button(ui->user, anomaly::sdk::StringView(apose_label), 90.0F, 0.0F) != 0)
+  if (ui->button(ui->user, anomaly::sdk::StringView(apose_label), 90.0F, 0.0F) != 0) {
+    // A loaded MMD motion or a playing keyframe track would keep writing the bones and fight
+    // the reference pose, so stop them the way Refresh Anim does before taking the base.
+    if (context->motion_loaded.load(std::memory_order_acquire))
+      UnloadMotion(*context);
+    if (context->t_pose_calibration_active.load(std::memory_order_acquire))
+      context->t_pose_calibration_request.store(3, std::memory_order_release);
+    context->keyframe_playing.store(false, std::memory_order_release);
     context->pose_apose_request.store(true, std::memory_order_release);
+  }
   if (context->ahud != nullptr) {
     ui->same_line(ui->user, 0.0F, 6.0F);
     int overlay_enabled =
@@ -29177,6 +29191,12 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
         ui->filter_match != nullptr;
 
     if (can_bone_list) {
+      // Manual fallback for the bone table: the plugin loads it automatically, but a failed
+      // attempt is remembered and not retried for the same component.
+      const std::string load_bones_label =
+          context->localizer.Text("action.load_bones", "Load Bones");
+      if (ui->button(ui->user, anomaly::sdk::StringView(load_bones_label), 90.0F, 0.0F) != 0)
+        context->reflection_action_requested.store(6, std::memory_order_release);
       const std::string filter_label =
           context->localizer.Text("pose.filter", "Bone filter");
       static_cast<void>(ui->input_text(
