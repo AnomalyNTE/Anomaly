@@ -12,6 +12,8 @@
     "kControllerPlayerInputOffset": 1088,
     "kCameraManagerViewPitchMinOffset": 13964,
     "kCameraManagerViewPitchMaxOffset": 13968,
+    "kCameraManagerViewYawMinOffset": 13972,
+    "kCameraManagerViewYawMaxOffset": 13976,
     "kCameraViewPointVtableOffset": 2128,
     "kCameraPovAccessorVtableOffset": 1952,
     "kCameraPovFovOffset": 48,

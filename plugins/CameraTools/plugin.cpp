@@ -44,10 +44,6 @@ constexpr std::uint32_t kRightKey = 'D';
 constexpr std::uint32_t kUpKey = VK_SPACE;
 constexpr std::uint32_t kDownKey = VK_SHIFT;
 constexpr std::uint32_t kBoostKey = VK_CONTROL;
-// A first-person camera narrows ViewPitchMax to a small cone (20 degrees in this build); a
-// camera that keeps a normal range is left with its own rotation.
-constexpr float kRestrictedViewPitchMax = 45.0F;
-
 constexpr std::string_view kSettingsSchema = R"json(
 {
   "type":"object",
@@ -1149,17 +1145,36 @@ bool ApplyManualRotation(Context &context, double *rotation,
   return true;
 }
 
-// True when the camera this call belongs to is one of the narrowed first-person views.
-bool ViewIsRestricted(Context &context, const std::uintptr_t manager) noexcept {
-  if (native_layout.kCameraManagerViewPitchMaxOffset == 0) return true;
+bool ReadBound(Context &context, const std::uintptr_t manager,
+               const std::uint32_t offset, float &value) noexcept {
   std::uintptr_t address{};
-  float value{};
-  if (manager == 0 ||
-      !AddAddress(manager, native_layout.kCameraManagerViewPitchMaxOffset, address) ||
-      !Read(context, address, value)) {
-    return true;
+  return offset != 0 && AddAddress(manager, offset, address) &&
+         Read(context, address, value) && std::isfinite(value) &&
+         std::fabs(value) <= 360.0F;
+}
+
+// The forced-rotation block rebuilds the view from the player's own input, which on its own
+// would also widen it. Unless the view limits are being lifted, the rebuilt view is clamped
+// back into the range the camera itself allows, so that switch only stops forced rotation.
+void ClampToCameraBounds(Context &context, const std::uintptr_t manager,
+                         double *rotation) noexcept {
+  float pitch_min{}, pitch_max{}, yaw_min{}, yaw_max{};
+  if (!ReadBound(context, manager, native_layout.kCameraManagerViewPitchMinOffset,
+                 pitch_min) ||
+      !ReadBound(context, manager, native_layout.kCameraManagerViewPitchMaxOffset,
+                 pitch_max) ||
+      !ReadBound(context, manager, native_layout.kCameraManagerViewYawMinOffset,
+                 yaw_min) ||
+      !ReadBound(context, manager, native_layout.kCameraManagerViewYawMaxOffset,
+                 yaw_max)) {
+    return;
   }
-  return std::isfinite(value) && value < kRestrictedViewPitchMax;
+  if (pitch_max > pitch_min)
+    rotation[0] = (std::clamp)(rotation[0], static_cast<double>(pitch_min),
+                              static_cast<double>(pitch_max));
+  if (yaw_max - yaw_min > 0.0F && yaw_max - yaw_min < 359.5F)
+    rotation[1] = (std::clamp)(rotation[1], static_cast<double>(yaw_min),
+                              static_cast<double>(yaw_max));
 }
 void ANOMALY_CALL ProcessViewRotationDetour(void *object, float delta_seconds,
                                            double *rotation, double *delta_rotation) noexcept {
@@ -1173,11 +1188,10 @@ void ANOMALY_CALL ProcessViewRotationDetour(void *object, float delta_seconds,
         context->process_rotation_hook, &lease).code == ANOMALY_STATUS_V1_OK;
     const bool local = object != nullptr && reinterpret_cast<std::uintptr_t>(object) ==
         context->rotation_manager.load(std::memory_order_acquire);
-    const bool restricted =
-        ViewIsRestricted(*context, reinterpret_cast<std::uintptr_t>(object));
+    const bool unclamp = context->unclamp_view.load(std::memory_order_acquire);
     const bool block = leased && local && rotation != nullptr && delta_rotation != nullptr &&
         (context->block_forced_rotation.load(std::memory_order_acquire) ||
-         (context->unclamp_view.load(std::memory_order_acquire) && restricted));
+         unclamp);
     std::array<double, 3> manual{}, input{};
     if (block) {
       std::copy_n(rotation, 3, manual.begin());
@@ -1189,6 +1203,9 @@ void ANOMALY_CALL ProcessViewRotationDetour(void *object, float delta_seconds,
     if (original != nullptr) original(object, delta_seconds, rotation, delta_rotation);
     if (block) {
       if (ApplyManualRotation(*context, manual.data(), input.data())) {
+        if (!unclamp)
+          ClampToCameraBounds(*context, reinterpret_cast<std::uintptr_t>(object),
+                              manual.data());
         std::copy(manual.begin(), manual.end(), rotation);
         std::copy(input.begin(), input.end(), delta_rotation);
       } else {
@@ -1236,8 +1253,7 @@ void ANOMALY_CALL CameraViewPointDetour(void *object, double *location,
         // Publish the same manual orientation to rendering and the free camera.
         if (leased &&
             (context->block_forced_rotation.load(std::memory_order_acquire) ||
-             (context->unclamp_view.load(std::memory_order_acquire) &&
-              ViewIsRestricted(*context, reinterpret_cast<std::uintptr_t>(object)))) &&
+             context->unclamp_view.load(std::memory_order_acquire)) &&
             reinterpret_cast<std::uintptr_t>(object) ==
                 context->rotation_manager.load(std::memory_order_acquire) &&
             context->manual_rotation_valid.load(std::memory_order_acquire)) {

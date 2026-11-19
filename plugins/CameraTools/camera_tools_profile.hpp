@@ -16,9 +16,11 @@ struct Layout {
     std::uint32_t kCameraPovFovOffset{};
     std::uint32_t kPlayerInputKeyVtableOffset{};
     std::uint32_t kInputKeyEventArgsKeyOffset{};
-    std::uint32_t kNamePoolBlocksOffset{};
     std::uint32_t kCameraManagerViewPitchMinOffset{};
     std::uint32_t kCameraManagerViewPitchMaxOffset{};
+    std::uint32_t kCameraManagerViewYawMinOffset{};
+    std::uint32_t kCameraManagerViewYawMaxOffset{};
+    std::uint32_t kNamePoolBlocksOffset{};
     std::uint32_t kNameBlockBits{};
     std::uint32_t kNameEntryStride{};
     std::uint32_t kNameLengthShift{};
@@ -47,9 +49,11 @@ inline bool LoadCompatibility(const AnomalyHostApiV1* host) noexcept {
         parsed.kCameraPovFovOffset = compatibility.Value("kCameraPovFovOffset", 16384);
         parsed.kPlayerInputKeyVtableOffset = compatibility.Value("kPlayerInputKeyVtableOffset", 16384);
         parsed.kInputKeyEventArgsKeyOffset = compatibility.Value("kInputKeyEventArgsKeyOffset", 16384);
-        parsed.kNamePoolBlocksOffset = compatibility.Value("kNamePoolBlocksOffset", 16384);
         parsed.kCameraManagerViewPitchMinOffset = compatibility.Value("kCameraManagerViewPitchMinOffset", 262144, 4);
         parsed.kCameraManagerViewPitchMaxOffset = compatibility.Value("kCameraManagerViewPitchMaxOffset", 262144, 4);
+        parsed.kCameraManagerViewYawMinOffset = compatibility.Value("kCameraManagerViewYawMinOffset", 262144, 4);
+        parsed.kCameraManagerViewYawMaxOffset = compatibility.Value("kCameraManagerViewYawMaxOffset", 262144, 4);
+        parsed.kNamePoolBlocksOffset = compatibility.Value("kNamePoolBlocksOffset", 16384);
         parsed.kNameBlockBits = compatibility.Value("kNameBlockBits", 16384);
         parsed.kNameEntryStride = compatibility.Value("kNameEntryStride", 16384);
         parsed.kNameLengthShift = compatibility.Value("kNameLengthShift", 16384);
