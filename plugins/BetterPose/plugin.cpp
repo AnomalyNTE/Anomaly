@@ -290,6 +290,11 @@ struct PlayerFreezeState {
 };
 
 struct EntityPoseState {
+  // Identity of the component this state was captured for. A Character Studio actor can be
+  // removed at any time; its memory is then reused, and writing a pose through the stored
+  // pointer would corrupt whatever now lives there.
+  std::uintptr_t object_class{};
+  std::uintptr_t object_asset{};
   std::vector<std::array<double, 3>> angles;
   std::vector<std::string> bone_names;
   std::map<std::string, std::array<double, 12>> library_pose_locals;
@@ -1053,6 +1058,9 @@ struct Context final {
   // "Become A-pose": take the base from the asset's reference pose instead of whatever
   // animation the character happened to be in.
   std::atomic_bool pose_apose_request{};
+  // Unloading frees the whole motion track while holding the motion lock, and the game thread
+  // takes that lock every tick. The panel asks for it; the game thread does it.
+  std::atomic_bool motion_unload_request{};
   // True while the manual pose should be written even with every angle at zero, which is
   // exactly the reference (A/T) pose case.
   std::atomic_bool pose_hold_base{};
@@ -1243,6 +1251,10 @@ struct Context final {
   // mapping. The selected body's copy is active in `motion`; switching targets
   // parks it here and restores the incoming body's independent clip.
   struct EntityMotionState {
+    // Same identity check as the parked pose states: a Character Studio actor can be removed
+    // while its motion state is still here, and the update writes poses into it.
+    std::uintptr_t object_class{};
+    std::uintptr_t object_asset{};
     RuntimeState runtime{};
     std::vector<std::string> bone_names;
     std::vector<std::int32_t> bone_parents;
@@ -4982,6 +4994,10 @@ void CaptureEntityPose(Context &context, const std::uintptr_t mesh) noexcept {
     for (std::size_t axis{}; axis != 3; ++axis)
       captured.root_offset[axis] =
           context.requested_root_offset[axis].load(std::memory_order_acquire);
+    static_cast<void>(Read(context, mesh + native_layout.kObjectClassOffset,
+                           captured.object_class));
+    static_cast<void>(Read(context, mesh + native_layout.kMeshSkeletalMeshOffset,
+                           captured.object_asset));
     captured.override_enabled =
         context.pose_override_enabled.load(std::memory_order_acquire);
     context.entity_pose_states[mesh] = std::move(captured);
@@ -5082,6 +5098,10 @@ void ParkCurrentEntityMotion(Context &context,
     return;
   try {
     Context::EntityMotionState &saved = context.entity_motion_states[mesh];
+    static_cast<void>(Read(context, mesh + native_layout.kObjectClassOffset,
+                           saved.object_class));
+    static_cast<void>(Read(context, mesh + native_layout.kMeshSkeletalMeshOffset,
+                           saved.object_asset));
     saved.runtime = context.runtime;
     // Local-target resolution clears transient pointers before a target switch.
     saved.runtime.character = context.runtime.bound_character;
@@ -6376,9 +6396,13 @@ void ProcessSkeletalMeshTick(Context *context, const std::size_t slot,
       // A summoned SkeletalMeshActor can replace its cached transform buffers
       // inside the original tick. Refresh the pointers after that tick so the
       // post-tick write reaches the buffer the renderer will consume.
-      if (active_target)
-        static_cast<void>(ReadPoseArrays(*context));
-      if (active_target &&
+      // The cached array pointers are only valid for the frame that read them. A failed read
+      // means the engine released or moved the buffers this frame, so writing through the old
+      // pointers would land in memory that is no longer ours.
+      const bool arrays_fresh = !active_target || ReadPoseArrays(*context);
+      if (active_target && !arrays_fresh) {
+        // Skip the pose write for this tick and retry after the next engine update.
+      } else if (active_target &&
           context->blender_active.load(std::memory_order_acquire) &&
           context->blender_frame.valid) {
         static_cast<void>(
@@ -10444,10 +10468,28 @@ bool ApplyInactiveEntityMotion(Context &context,
 }
 
 void StepInactiveEntityMotions(Context &context) noexcept {
-  for (auto &entry : context.entity_motion_states) {
-    if (entry.first != 0 && entry.first != context.runtime.mesh &&
-        entry.second.track.frame_count != 0)
-      static_cast<void>(ApplyInactiveEntityMotion(context, entry.first));
+  std::vector<std::uintptr_t> meshes;
+  meshes.reserve(context.entity_motion_states.size());
+  for (const auto &entry : context.entity_motion_states)
+    meshes.push_back(entry.first);
+  for (const std::uintptr_t mesh : meshes) {
+    const auto found = context.entity_motion_states.find(mesh);
+    if (found == context.entity_motion_states.end() || mesh == 0 ||
+        mesh == context.runtime.mesh || found->second.track.frame_count == 0)
+      continue;
+    std::uintptr_t object_class{};
+    std::uintptr_t object_asset{};
+    const bool readable =
+        Read(context, mesh + native_layout.kObjectClassOffset, object_class) &&
+        Read(context, mesh + native_layout.kMeshSkeletalMeshOffset, object_asset);
+    if (!readable || object_class != found->second.object_class ||
+        object_asset != found->second.object_asset) {
+      LogDiagnostic(context, "betterpose dropped an inactive motion state: the component is gone "
+                             "or was reused");
+      context.entity_motion_states.erase(found);
+      continue;
+    }
+    static_cast<void>(ApplyInactiveEntityMotion(context, mesh));
   }
 }
 
@@ -18002,6 +18044,10 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
   StepCameraFollowTarget(context);
 
   EnsureActiveCharacterProfile(context);
+  if (context.motion_unload_request.exchange(false, std::memory_order_acq_rel)) {
+    if (context.motion_loaded.load(std::memory_order_acquire))
+      UnloadMotion(context);
+  }
   if (context.runtime.animation_mode_applied && context.runtime.mesh != 0 &&
       context.runtime.animation_mode != kAnimationModeCustom) {
     const std::uint64_t now = GetTickCount64();
@@ -18026,7 +18072,7 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
   // Before the expression and pose steps: the keyframe sample is written into
   // the same weights and angles they then apply this frame.
   if (!context.blender_active.load(std::memory_order_acquire))
-    StepKeyframes(context, delta_seconds);
+  StepKeyframes(context, delta_seconds);
   StepExpressionFile(context);
   StepExpression(context);
   StepLibrary(context);
@@ -18513,11 +18559,30 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
   // Parked Character Studio meshes are not selected, so their tick is not
   // intercepted by the active-target hook.  Reapply their cached pose from
   // the game-thread update while their animation state is held paused.
-  for (auto &entry : context.entity_pose_states) {
-    if (entry.first != context.runtime.mesh &&
-        HasCachedPoseEffect(entry.second))
-      static_cast<void>(
-          MaintainParkedEntityPose(context, entry.first, entry.second));
+  std::vector<std::uintptr_t> parked_meshes;
+  parked_meshes.reserve(context.entity_pose_states.size());
+  for (const auto &entry : context.entity_pose_states)
+    parked_meshes.push_back(entry.first);
+  for (const std::uintptr_t parked : parked_meshes) {
+    const auto found = context.entity_pose_states.find(parked);
+    if (found == context.entity_pose_states.end() || parked == context.runtime.mesh ||
+        !HasCachedPoseEffect(found->second))
+      continue;
+    std::uintptr_t object_class{};
+    std::uintptr_t object_asset{};
+    const bool readable =
+        Read(context, parked + native_layout.kObjectClassOffset, object_class) &&
+        Read(context, parked + native_layout.kMeshSkeletalMeshOffset, object_asset);
+    // The spawned actor was removed and its storage reused: drop the state instead of writing
+    // a pose through a pointer that no longer belongs to it.
+    if (!readable || object_class != found->second.object_class ||
+        object_asset != found->second.object_asset) {
+      LogDiagnostic(context, "betterpose dropped a parked pose state: the component is gone or "
+                             "was reused");
+      context.entity_pose_states.erase(found);
+      continue;
+    }
+    static_cast<void>(MaintainParkedEntityPose(context, parked, found->second));
   }
   if (context.motion_loaded.load(std::memory_order_acquire)) {
     const double seconds =
@@ -24546,18 +24611,22 @@ void DrawKeyframePage(Context &context, const AnomalyUiServiceV1 *ui) {
              key_count != 0))
     context.keyframe_request.store(4, std::memory_order_release);
 
-  // Selected key.
+  // Selected key. The count above was read without the lock, and switching target can clear
+  // the track in between; indexing an emptied track reads through a null data pointer.
   const std::int32_t selected = context.keyframe_selected.load(std::memory_order_acquire);
-  const bool has_selection = selected >= 0 && static_cast<std::size_t>(selected) < key_count;
-  if (has_selection) {
-    kf::Ease ease{};
-    std::uint32_t key_frame{};
-    {
-      std::lock_guard<std::mutex> lock(context.keyframe_mutex);
+  kf::Ease ease{};
+  std::uint32_t key_frame{};
+  bool has_selection = false;
+  if (selected >= 0) {
+    std::lock_guard<std::mutex> lock(context.keyframe_mutex);
+    if (static_cast<std::size_t>(selected) < context.keyframe_track.Size()) {
       const auto &key = context.keyframe_track.Keys()[static_cast<std::size_t>(selected)];
       ease = key.ease;
       key_frame = key.frame;
+      has_selection = true;
     }
+  }
+  if (has_selection) {
     // The string must outlive the view: a view of a temporary dangles as soon
     // as this statement ends, and the panel then prints garbage ("?").
     const std::string frame_text = std::to_string(key_frame);
@@ -25613,7 +25682,7 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
     // stop first: a loaded MMD motion is unloaded, and the manual pose is
     // reset the same way the pose page's Reset does it (undoable there).
     if (context->motion_loaded.load(std::memory_order_acquire))
-      UnloadMotion(*context);
+      context->motion_unload_request.store(true, std::memory_order_release);
     if (context->t_pose_calibration_active.load(std::memory_order_acquire))
       context->t_pose_calibration_request.store(3,
                                                 std::memory_order_release);
@@ -25628,7 +25697,7 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
     // A loaded MMD motion or a playing keyframe track would keep writing the bones and fight
     // the reference pose, so stop them the way Refresh Anim does before taking the base.
     if (context->motion_loaded.load(std::memory_order_acquire))
-      UnloadMotion(*context);
+      context->motion_unload_request.store(true, std::memory_order_release);
     if (context->t_pose_calibration_active.load(std::memory_order_acquire))
       context->t_pose_calibration_request.store(3, std::memory_order_release);
     context->keyframe_playing.store(false, std::memory_order_release);
@@ -25967,7 +26036,7 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
         context->localizer.Text("motion.unload", "Unload");
     if (ui->button(ui->user, anomaly::sdk::StringView(motion_unload_label), 70.0F,
                    0.0F) != 0) {
-      UnloadMotion(*context);
+      context->motion_unload_request.store(true, std::memory_order_release);
       // Unloading hands the pose back to the game. Without this refresh the
       // character keeps the last driven frame, because nothing re-evaluates the
       // animation once the plugin stops writing the bone buffers.
