@@ -22340,47 +22340,22 @@ constexpr std::uint32_t kTimelineUnsaved = ANOMALY_RGBA_V1(255, 150, 60, 255);
 // The batched overlay composites in ImGui, which renders these packed colours a shade
 // darker than the HUD canvas did. Compensate once, here, so the whole widget stays
 // consistent and the factor is easy to tune.
-// Fills only: near-black panels read like the HUD canvas did once lifted towards mid grey.
-inline std::uint32_t BatchedFillColor(const std::uint32_t color) noexcept {
-  // Blend towards mid grey so near-black panels read like the HUD canvas did, and keep the
-  // original alpha. Coloured fills (the key diamonds) are left alone: mixing them towards
-  // grey would wash out the hue that says pose / expression / camera.
-  constexpr double kGrey = 138.0;
-  constexpr double kMix = 0.45;
-  const std::uint32_t red = color & 0xFFU;
-  const std::uint32_t green = (color >> 8U) & 0xFFU;
-  const std::uint32_t blue = (color >> 16U) & 0xFFU;
-  if ((std::max)(red, (std::max)(green, blue)) - (std::min)(red, (std::min)(green, blue)) > 24U)
-    return color;
-  const auto channel = [](const std::uint32_t value, const unsigned shift) {
-    const auto raw = static_cast<double>((value >> shift) & 0xFFU);
-    const auto mixed = raw * (1.0 - kMix) + kGrey * kMix;
-    return static_cast<std::uint32_t>(mixed > 255.0 ? 255.0 : mixed);
-  };
-  return channel(color, 0) | (channel(color, 8) << 8U) | (channel(color, 16) << 16U) |
-         (((color >> 24U) & 0xFFU) << 24U);
+// The HUD canvas path treats these packed colours as linear values and converts them to
+// sRGB, so the same constant renders brighter there. Applying the same transfer here makes
+// both paths look identical instead of guessing a brightness lift.
+inline std::uint8_t LinearToSrgbByte(const std::uint32_t raw) noexcept {
+  const double value = static_cast<double>(raw) / 255.0;
+  const double encoded = value <= 0.0031308 ? value * 12.92
+                                            : 1.055 * std::pow(value, 1.0 / 2.4) - 0.055;
+  const double scaled = encoded * 255.0 + 0.5;
+  return static_cast<std::uint8_t>(scaled <= 0.0 ? 0.0 : (scaled >= 255.0 ? 255.0 : scaled));
 }
 
-// Lines and labels: the packed colours are authored for the HUD canvas and composite a
-// shade darker here, so lift them towards white and force full opacity.
-inline std::uint32_t BatchedStrokeColor(const std::uint32_t color,
-                                       const double strength = 1.0) noexcept {
-  // Neutral strokes (ticks, borders, disabled labels) should read as bright as an active
-  // button's label, while the coloured key diamonds keep their hue so they still mean
-  // pose / expression / camera.
-  constexpr double kNeutralLift = 0.78;
-  constexpr double kColourLift = 0.25;
-  const std::uint32_t red = color & 0xFFU;
-  const std::uint32_t green = (color >> 8U) & 0xFFU;
-  const std::uint32_t blue = (color >> 16U) & 0xFFU;
-  const std::uint32_t high = (std::max)(red, (std::max)(green, blue));
-  const std::uint32_t low = (std::min)(red, (std::min)(green, blue));
-  const double lift = (high - low <= 24U ? kNeutralLift : kColourLift) * strength;
-  const auto channel = [lift](const std::uint32_t raw) {
-    const auto lifted = static_cast<double>(raw) * (1.0 - lift) + 255.0 * lift;
-    return static_cast<std::uint32_t>(lifted > 255.0 ? 255.0 : lifted);
-  };
-  return channel(red) | (channel(green) << 8U) | (channel(blue) << 16U) | 0xFF000000U;
+inline std::uint32_t BatchedOverlayColor(const std::uint32_t color) noexcept {
+  return static_cast<std::uint32_t>(LinearToSrgbByte(color & 0xFFU)) |
+         (static_cast<std::uint32_t>(LinearToSrgbByte((color >> 8U) & 0xFFU)) << 8U) |
+         (static_cast<std::uint32_t>(LinearToSrgbByte((color >> 16U) & 0xFFU)) << 16U) |
+         (color & 0xFF000000U);
 }
 
 // The canvas passes a scale, the overlay text API wants pixels. Buttons need this to
@@ -22397,7 +22372,7 @@ struct TimelineCanvas {
             const std::uint32_t color) const {
     if (batched)
       batch->push_back(UiPrimitive(ANOMALY_UI_SCREEN_PRIMITIVE_V1_FILLED_RECT,
-                                   BatchedFillColor(color), x, y, width, height, 0.0F));
+                                   BatchedOverlayColor(color), x, y, width, height, 0.0F));
     else
       frame->draw_rect(frame->user, x, y, width, height, color);
   }
@@ -22405,18 +22380,17 @@ struct TimelineCanvas {
             const std::uint32_t color, const float thickness) const {
     if (batched)
       batch->push_back(UiPrimitive(ANOMALY_UI_SCREEN_PRIMITIVE_V1_LINE,
-                                   BatchedStrokeColor(color), x1, y1, x2, y2, thickness));
+                                   BatchedOverlayColor(color), x1, y1, x2, y2, thickness));
     else
       frame->draw_line(frame->user, x1, y1, x2, y2, color, thickness);
   }
   void Text(const AnomalyStringViewV1 value, const float x, const float y,
-            const std::uint32_t color, const float scale,
-            const double lift_strength = 1.0) const {
+            const std::uint32_t color, const float scale) const {
     if (texts != nullptr) {
       Context::OverlayTextItem item;
       item.x = x;
       item.y = y;
-      item.color = BatchedStrokeColor(color, lift_strength);
+      item.color = BatchedOverlayColor(color);
       item.size = scale * kOverlayTextBasePx;
       item.text.assign(value.data, value.size);
       texts->push_back(std::move(item));
@@ -22456,8 +22430,7 @@ void TimelineButton(const TimelineCanvas &canvas, const better_pose::timeline::R
   canvas.Text(anomaly::sdk::StringView(label),
                    (r.left + r.right - width) * 0.5F,
                    (r.top + r.bottom - text_height) * 0.5F,
-                   enabled ? kTimelineText : kTimelineMuted, 0.85F,
-                   enabled ? 1.0 : 0.55);
+                   enabled ? kTimelineText : kTimelineMuted, 0.85F);
 }
 
 void TimelineLine(const TimelineCanvas &canvas, const float x1, const float y1,
@@ -22533,7 +22506,7 @@ KeyframeOverlayStats DrawKeyframeOverlay(
   const std::uint64_t batch_last =
       context.overlay_imgui_last_submit_ms.load(std::memory_order_acquire);
   const bool batch_ready =
-      batch_last != 0 && batch_now - batch_last < 250U &&
+      batch_last != 0 && batch_now - batch_last < 1500U &&
       context.overlay_text_available.load(std::memory_order_acquire);
   std::vector<AnomalyUiScreenPrimitiveV1> primitives;
   std::vector<Context::OverlayTextItem> texts;
@@ -22706,19 +22679,16 @@ KeyframeOverlayStats DrawKeyframeOverlay(
       context.keyframe_applied_frame >= 0.0 &&
       std::abs(context.keyframe_applied_frame - current_frame) < 0.5 &&
       current_key == key_count && key_count != 0;
+  // These two labels sit on the panel fill, so they go through the canvas like every other
+  // timeline label; drawing them straight on the HUD canvas left them under the batched fill.
   if (unsaved)
-    frame->draw_text(frame->user,
-                     anomaly::sdk::StringView(
-                         context.localizer.Text("keyframe.overlay.unsaved", "*unsaved")),
-                     layout.track.left,
-                     layout.panel.bottom - 18.0F, kTimelineUnsaved, 0.85F);
+    canvas.Text(anomaly::sdk::StringView(
+                    context.localizer.Text("keyframe.overlay.unsaved", "*unsaved")),
+                layout.track.left, layout.panel.bottom - 18.0F, kTimelineUnsaved, 0.85F);
   else
-    frame->draw_text(frame->user,
-                     anomaly::sdk::StringView(
-                         context.localizer.Text(
-                             "keyframe.track", "Keyframes")),
-                     layout.track.left,
-                     layout.panel.bottom - 18.0F, kTimelineMuted, 0.85F);
+    canvas.Text(anomaly::sdk::StringView(
+                    context.localizer.Text("keyframe.track", "Keyframes")),
+                layout.track.left, layout.panel.bottom - 18.0F, kTimelineMuted, 0.85F);
   std::string count_text;
   if (zoomed) {
     char text_buffer[96]{};
