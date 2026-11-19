@@ -8562,6 +8562,7 @@ bool CapturePoseBase(Context &context) noexcept {
 
 void ApplyPoseOverridesDirect(Context &context,
                               const bool write_auxiliary) noexcept {
+  try {
   RuntimeState &state = context.runtime;
   render_pose_bridge::ProductionScope production(context);
   if (!context.pose_override_enabled.load(std::memory_order_acquire) || state.mesh == 0) return;
@@ -8688,6 +8689,8 @@ void ApplyPoseOverridesDirect(Context &context,
   if (write_extras)
     WriteExtraMeshes(context, packed);
   static_cast<void>(ForcePoseMeshObjectUpdate(context));
+  } catch (...) {
+  }
 }
 
 bool ApplyBlenderPoseSmoothed(Context &context,
@@ -9660,6 +9663,7 @@ void RestoreMotionVisibility(Context &context) noexcept;
 
 void ApplyMotionPoseDirect(Context &context,
                            const bool publish_auxiliary) noexcept {
+  try {
   RuntimeState &state = context.runtime;
   const auto publish_limb_status = [&](const limb_cal::Status status) {
     for (std::size_t limb{}; limb != limb_cal::kLimbCount; ++limb)
@@ -10222,6 +10226,8 @@ void ApplyMotionPoseDirect(Context &context,
   if (publish_auxiliary)
     WriteExtraMeshes(context, packed);
   static_cast<void>(ForcePoseMeshObjectUpdate(context));
+  } catch (...) {
+  }
 }
 
 bool ApplyInactiveEntityMotion(Context &context,
