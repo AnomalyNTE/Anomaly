@@ -1053,7 +1053,6 @@ struct Context final {
   std::uintptr_t pose_target_scan_local_mesh{};
   std::uintptr_t pose_target_scan_local_asset{};
   std::uint32_t pose_target_scan_registry_count{};
-  std::uint64_t pose_target_scan_last_ms{};
 
   std::string reflection_status{"reflection idle"};
   std::array<char, 256> pose_status{};
@@ -11443,8 +11442,9 @@ void ApplyRequestedPoseTarget(Context &context) noexcept {
 }
 
 // Re-scans the entity list when it can no longer be trusted: the local character or its
-// mesh asset changed (character swap, skin swap), or enough time passed that spawned and
-// destroyed entities would leave the list stale.
+// mesh asset changed (character swap, skin swap). There is deliberately no timed sweep -
+// the object registry holds ~410k entries, so a periodic full walk costs about 0.35 s of
+// CPU; spawning entities are picked up by the refresh button or the next change instead.
 void AutoRefreshPoseTargets(Context &context) noexcept {
   if (context.pose_target_scan_requested.load(std::memory_order_acquire) ||
       context.pose_target_scan_running)
@@ -11460,9 +11460,6 @@ void AutoRefreshPoseTargets(Context &context) noexcept {
         asset != context.pose_target_scan_local_asset)
       due = true;
   }
-  if (!due && context.pose_target_scan_last_ms != 0 &&
-      GetTickCount64() - context.pose_target_scan_last_ms >= 15000)
-    due = true;
   if (due) {
     if (local_changed) {
       // The player entry is ours: update it in place so the new character is selectable
@@ -11557,7 +11554,6 @@ void StepPoseTargetScan(Context &context) noexcept {
   context.pose_target_scan_local_character = context.local_character;
   context.pose_target_scan_local_mesh = context.local_mesh;
   context.pose_target_scan_registry_count = context.object_registry.count;
-  context.pose_target_scan_last_ms = GetTickCount64();
   context.pose_target_scan_local_asset = 0;
   if (context.local_mesh != 0)
     static_cast<void>(Read(context,
