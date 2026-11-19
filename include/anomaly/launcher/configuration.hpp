@@ -54,6 +54,18 @@ inline constexpr std::array<int, 4> kLauncherPageSizes{10, 20, 50, 100};
     return nearest;
 }
 
+inline constexpr std::array<int, 5> kLauncherFrameRates{15, 30, 60, 120, 240};
+inline constexpr int kLauncherDefaultFrameRate = 120;
+
+// Older configurations could store any slider value. At a midpoint keep the lower cap.
+[[nodiscard]] inline constexpr int LauncherFrameRatePreset(const double requested) noexcept {
+    for (std::size_t i = 1; i < kLauncherFrameRates.size(); ++i) {
+        if (requested <= (kLauncherFrameRates[i - 1] + kLauncherFrameRates[i]) / 2.0)
+            return kLauncherFrameRates[i - 1];
+    }
+    return kLauncherFrameRates.back();
+}
+
 struct LauncherViewSettings final {
     // The grid is the default view, and it lists every mod at once unless pagination is asked
     // for: a page of covers is easy to scroll, and a pager over it only gets in the way.
@@ -64,6 +76,7 @@ struct LauncherViewSettings final {
     std::string browse_sort{"default"};
     std::string browse_category;
     bool browse_hide_mature{true};
+    int frame_rate_limit{kLauncherDefaultFrameRate};
 };
 
 // Whether the launcher looks for a newer release on its own. It is the user's answer to the one

@@ -1787,13 +1787,6 @@ void RenderEmbedded(IDXGISwapChain* swap_chain, UINT flags) {
 
     PerformanceTimer ui_timer(
         state->performance, EmbeddedPerformanceStage::RenderUi, sampled);
-    if (immediate_mode) {
-        ImGui_ImplDX11_NewFrame();
-    } else {
-        ImGui_ImplDX12_NewFrame();
-    }
-    // NewFrame creates the ImGui font atlas first, reserving descriptor slot
-    // zero before scoped texture uploads allocate from the shared heap.
     const auto prepare_lock_started = sampled ? std::chrono::steady_clock::now()
                                               : std::chrono::steady_clock::time_point{};
     {
@@ -1816,6 +1809,17 @@ void RenderEmbedded(IDXGISwapChain* swap_chain, UINT flags) {
     }
     const auto frame_begin_started = sampled ? std::chrono::steady_clock::now()
                                              : std::chrono::steady_clock::time_point{};
+    // Include staged plugin fonts before the first upload. DX12 reserves its
+    // font descriptor during backend initialization, before any texture requests.
+    if (immediate_mode) {
+        ImGui_ImplDX11_NewFrame();
+    } else {
+        ImGui_ImplDX12_NewFrame();
+    }
+    const ImFontAtlas* atlas = ImGui::GetIO().Fonts;
+    if (atlas->TexID != 0 && atlas->TexPixelsRGBA32 != nullptr) {
+        ReleasePlatformUiFontAtlas(PlatformUiFontRetention::Rebuildable);
+    }
     UpdateMenuCursor(*state, anomaly::HostUiMenusCaptureMouse());
     ImGui_ImplWin32_NewFrame();
     if (!state->input_installed) FeedPolledInput(*state);

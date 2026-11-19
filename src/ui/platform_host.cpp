@@ -9366,6 +9366,9 @@ void RunPlatform(
         }
 
         ImGui_ImplDX11_NewFrame();
+        if (io.Fonts->TexID != 0 && io.Fonts->TexPixelsRGBA32 != nullptr) {
+            ReleasePlatformUiFontAtlas(PlatformUiFontRetention::Rebuildable);
+        }
         ImGui_ImplWin32_NewFrame();
         {
             std::scoped_lock lock(*plugin_mutex);

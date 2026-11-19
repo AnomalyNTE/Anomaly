@@ -42,6 +42,12 @@ The launcher resolves its layout for the palette it wears: `config/themes/<palet
 
 The launcher's interface language is chosen on its own **Settings** page (Automatic / Simplified Chinese / English) and written to the `language` field of `<launcher>\AnomalyLauncher.json`; it takes effect at once, without a restart. The in-game interface follows its own language setting, so the two are independent.
 
+## Launcher frame rate
+
+Under **Settings → Performance**, select 15, 30, 60, 120, or 240 FPS from the drop-down. The default is 120 FPS. The selection takes effect immediately and is saved in `AnomalyLauncher.json` under `view.frameRateLimit`. Values saved by the former slider use the closest preset, with ties going to the lower rate.
+
+The limit applies during interaction. The launcher reuses the last frame when the picture is unchanged. After half a second without input it checks for visual changes eight times per second. Minimizing the window suspends drawing.
+
 ## Three ways to fill a background image
 
 `background.mode` in the layout file decides how the image covers the interface:

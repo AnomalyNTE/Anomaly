@@ -1126,6 +1126,13 @@ public:
         }
     }
 
+    void SetFrameRateLimit(const int limit) {
+        std::scoped_lock lock(state_mutex_);
+        configuration_.view.frame_rate_limit = limit;
+        state_.view.frame_rate_limit = limit;
+        settings_dirty_ = true;
+    }
+
     void SetModsGroupByFolder(const bool by_folder) {
         std::scoped_lock lock(state_mutex_);
         configuration_.view.mods_by_folder = by_folder;
@@ -1883,7 +1890,7 @@ struct Graphics final {
     // own: the swap chain is bound to a composition visual, and that visual is the
     // window's content. The indirection is what lets the back buffer's alpha reach
     // the desktop, which is what its rounded corners are cut out of.
-    ComPtr<IDXGISwapChain> swap_chain;
+    ComPtr<IDXGISwapChain1> swap_chain;
     ComPtr<IDCompositionDevice> composition_device;
     ComPtr<IDCompositionTarget> composition_target;
     ComPtr<IDCompositionVisual> composition_visual;
@@ -1904,9 +1911,80 @@ struct Graphics final {
     std::vector<ComPtr<ID3D11ShaderResourceView>> theme_stickers;
     std::vector<ImVec2> theme_sticker_sizes;
     std::uint64_t theme_version{};
+    bool redraw_required{true};
 };
 
 Graphics* g_graphics{};
+
+// List order is paint order. A changing page can reuse everything underneath its first
+// changed list, including the precise backdrop that its glass controls will sample.
+struct LauncherDrawing final {
+    std::vector<std::vector<std::byte>> lists;
+    std::vector<std::byte> scratch;
+    int saved_lists{};
+    ImRect previous_overlay{};
+
+    int Compare(const ImDrawData& data, const bool force) {
+        const int count = data.CmdListsCount;
+        const int previous = static_cast<int>(lists.size());
+        int first_change = force ? 0 : (std::min)(previous, count);
+        lists.resize(count);
+        for (int i = 0; i < count; ++i) {
+            scratch.clear();
+            const bool reusable = anomaly::glass::AppendDrawListSnapshot(*data.CmdLists[i], scratch);
+            if (!reusable || scratch != lists[i]) {
+                first_change = (std::min)(first_change, i);
+                if (!reusable) scratch.clear();
+                lists[i].swap(scratch);
+            }
+        }
+        if (first_change < saved_lists) saved_lists = 0;
+        if (!force && previous == count && first_change == count) return -1;
+        return first_change;
+    }
+
+    static void BuildRange(ImDrawData& batch, const ImDrawData& data, const int first, const int end) {
+        batch.Valid = true;
+        batch.DisplayPos = data.DisplayPos;
+        batch.DisplaySize = data.DisplaySize;
+        batch.FramebufferScale = data.FramebufferScale;
+        batch.OwnerViewport = data.OwnerViewport;
+        for (int i = first; i < end; ++i) batch.AddDrawList(data.CmdLists[i]);
+    }
+
+    std::optional<RECT> Render(Graphics& graphics, const ImDrawData& data, const int first_change) {
+        graphics.context->OMSetRenderTargets(1, graphics.render_target.GetAddressOf(), nullptr);
+        const bool restore = saved_lists > 0 &&
+            (saved_lists == first_change || first_change == data.CmdListsCount);
+        if (!restore) {
+            // The composition swap chain uses premultiplied alpha, including the rounded corners.
+            const float transparent_clear[4]{};
+            graphics.context->ClearRenderTargetView(graphics.render_target.Get(), transparent_clear);
+            if (first_change > 0) {
+                ImDrawData underlay;
+                BuildRange(underlay, data, 0, first_change);
+                ImGui_ImplDX11_RenderDrawData(&underlay);
+                saved_lists = anomaly::glass::SaveDesktopLayer(graphics.render_target.Get()) ? first_change : 0;
+            }
+        }
+        ImDrawData overlay;
+        BuildRange(overlay, data, restore ? saved_lists : first_change, data.CmdListsCount);
+        const ImRect bounds = anomaly::glass::BoundDesktopCaptures(overlay);
+        std::optional<RECT> damage;
+        if (restore) {
+            ImRect changed = previous_overlay;
+            changed.Add(bounds);
+            if (changed.IsInverted()) changed = ImRect(0, 0, data.DisplaySize.x, data.DisplaySize.y);
+            damage = RECT{static_cast<LONG>(std::floor(changed.Min.x)), static_cast<LONG>(std::floor(changed.Min.y)),
+                static_cast<LONG>(std::ceil(changed.Max.x)), static_cast<LONG>(std::ceil(changed.Max.y))};
+            anomaly::glass::RestoreDesktopLayer(graphics.render_target.Get(), *damage);
+        }
+        previous_overlay = bounds;
+        if (overlay.CmdListsCount > 0) ImGui_ImplDX11_RenderDrawData(&overlay);
+        return damage;
+    }
+};
+
 float g_launcher_dpi_scale{1.0f};
 bool g_launcher_dpi_changed{};
 bool g_launcher_hotkey_capture{};
@@ -2003,6 +2081,7 @@ void ApplyLauncherDpiScale() noexcept {
 }
 
 bool CreateRenderTarget(Graphics& graphics) {
+    graphics.redraw_required = true;
     ComPtr<ID3D11Texture2D> back_buffer;
     if (FAILED(graphics.swap_chain->GetBuffer(0, IID_PPV_ARGS(&back_buffer)))) return false;
     return SUCCEEDED(graphics.device->CreateRenderTargetView(
@@ -2065,7 +2144,7 @@ bool CreateGraphics(HWND window, Graphics& graphics) {
         return false;
     }
     if (FAILED(graphics.composition_device->Commit())) return false;
-    if (FAILED(swap_chain.As(&graphics.swap_chain))) return false;
+    graphics.swap_chain = std::move(swap_chain);
     return CreateRenderTarget(graphics);
 }
 
@@ -2096,6 +2175,7 @@ ComPtr<ID3D11ShaderResourceView> CreateTextureFromPixels(
     if (FAILED(graphics.device->CreateShaderResourceView(texture.Get(), nullptr, &view))) {
         return {};
     }
+    graphics.redraw_required = true;
     return view;
 }
 
@@ -2170,6 +2250,7 @@ void UploadLauncherTheme(
     Graphics& graphics, const std::shared_ptr<const LauncherTheme>& theme) {
     if (theme == nullptr || theme->version == graphics.theme_version) return;
     graphics.theme_version = theme->version;
+    graphics.redraw_required = true;
     graphics.theme_background.Reset();
     graphics.theme_background_width = 0;
     graphics.theme_background_height = 0;
@@ -8265,6 +8346,10 @@ void DrawSettingsMode(
     int transparency = static_cast<int>(std::lround((1.0f - std::clamp(
         held_opacity.value_or(applied_opacity),
         anomaly::kPlatformUiLayoutSurfaceOpacityMinimum, 1.0f)) * 100.0f));
+    // The thumb and percentage can change on every input tick. Give this row its own
+    // draw list so dragging it reuses the settings behind it, including their glass.
+    ImGui::BeginChild("BackgroundVisibilityControl", ImVec2(controls_width, ImGui::GetFrameHeight()),
+        ImGuiChildFlags_NavFlattened, ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar);
     ImGui::SetNextItemWidth(controls_width);
     if (anomaly::glass::SliderInt("##launcher-background-visible", &transparency, 0, 100, "%d%%")) {
         held_opacity = 1.0f - static_cast<float>(transparency) / 100.0f;
@@ -8278,6 +8363,7 @@ void DrawSettingsMode(
         held_version = theme_version;
         controller.SetLauncherSurfaceOpacity(*held_opacity);
     }
+    ImGui::EndChild();
 
     // Language: the same three choices the in-game settings offer, but this one dresses the
     // launcher alone and applies on the next frame.
@@ -8312,6 +8398,26 @@ void DrawSettingsMode(
     if (anomaly::glass::SegmentedControl(
             "launcher-language", language_labels, language_index, language_options)) {
         controller.SetLanguage(languages[static_cast<std::size_t>(language_index)]);
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    ImGui::TextDisabled("%s", Text(translator, anomaly::MessageId::LauncherSectionPerformance));
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(Text(translator, anomaly::MessageId::LauncherSettingFrameRateLimit));
+    const float rate_width = Scale(200.0f);
+    ImGui::SameLine(right_edge - rate_width - Scale(10.0f));
+    ImGui::SetNextItemWidth(rate_width);
+    const std::string rate_preview = std::to_string(snapshot.view.frame_rate_limit) + " FPS";
+    if (anomaly::glass::BeginCombo("##launcher-frame-rate", rate_preview.c_str())) {
+        for (const int rate : anomaly::launcher::kLauncherFrameRates) {
+            const bool selected_rate = rate == snapshot.view.frame_rate_limit;
+            const std::string label = std::to_string(rate) + " FPS";
+            if (ImGui::Selectable(label.c_str(), selected_rate)) controller.SetFrameRateLimit(rate);
+            if (selected_rate) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
     }
 
     // The mods page options. The grid is the view it opens with, and pagination is off until
@@ -8527,7 +8633,7 @@ void DrawLauncherTitleBar(Graphics& graphics) {
     ImGui::PopStyleVar(2);
 }
 
-void DrawLauncher(
+int DrawLauncher(
     HWND window, Graphics& graphics, LauncherController& controller, LauncherMode& mode) {
     // Runs every frame whatever page is showing: a game that starts after this window is up has to appear
     // in the list without the user pressing anything, and the poll throttles itself to one scan every couple
@@ -8623,6 +8729,30 @@ void DrawLauncher(
     DrawUpdatePrompt(controller, snapshot, translator);
     ImGui::End();
     ImGui::PopStyleVar();
+    return snapshot.view.frame_rate_limit;
+}
+
+bool IsLauncherInteraction(const UINT message) noexcept {
+    return (message >= WM_MOUSEFIRST && message <= WM_MOUSELAST) ||
+        (message >= WM_KEYFIRST && message <= WM_KEYLAST) ||
+        message == WM_MOUSELEAVE || message == WM_SETFOCUS || message == WM_KILLFOCUS ||
+        message == WM_SIZE || message == WM_DPICHANGED || message == WM_PAINT;
+}
+
+// Both a frame deadline and new window messages can wake the UI thread. Process input
+// immediately even at the idle cadence, then recheck the active limit before drawing.
+void WaitForLauncherFrame(HANDLE timer, const std::chrono::steady_clock::duration remaining) {
+    using namespace std::chrono;
+    if (timer != nullptr) {
+        LARGE_INTEGER due{};
+        due.QuadPart = -ceil<duration<long long, std::ratio<1, 10000000>>>(remaining).count();
+        if (SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE)) {
+            MsgWaitForMultipleObjectsEx(1, &timer, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            return;
+        }
+    }
+    MsgWaitForMultipleObjectsEx(0, nullptr, static_cast<DWORD>(ceil<milliseconds>(remaining).count()),
+        QS_ALLINPUT, MWMO_INPUTAVAILABLE);
 }
 
 }  // namespace
@@ -8775,9 +8905,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
 
     bool running = true;
     bool window_shown = false;
+    using Clock = std::chrono::steady_clock;
+    const HANDLE frame_timer = CreateWaitableTimerExW(nullptr, nullptr,
+        CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_MODIFY_STATE | SYNCHRONIZE);
+    auto previous_frame = Clock::now();
+    constexpr auto interaction_tail = std::chrono::milliseconds(500);
+    auto active_until = previous_frame + interaction_tail;
+    int frame_rate_limit = anomaly::launcher::kLauncherDefaultFrameRate;
+    LauncherDrawing drawing;
     while (running) {
         MSG message{};
         while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+            if (IsLauncherInteraction(message.message)) active_until = Clock::now() + interaction_tail;
             TranslateMessage(&message);
             DispatchMessageW(&message);
             if (message.message == WM_QUIT) running = false;
@@ -8785,23 +8924,42 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
         if (!running) break;
         if (g_launcher_dpi_changed) ApplyLauncherDpiScale();
         if (IsIconic(window)) {
-            Sleep(16);
+            MsgWaitForMultipleObjectsEx(0, nullptr, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
             continue;
         }
+        const auto now = Clock::now();
+        const auto period = now < active_until
+            ? std::chrono::nanoseconds(1'000'000'000 / frame_rate_limit)
+            : std::chrono::milliseconds(125);
+        const auto due = previous_frame + period;
+        if (window_shown && now < due) {
+            WaitForLauncherFrame(frame_timer, due - now);
+            continue;
+        }
+        // Anchor successive frames to the deadline so timer jitter does not
+        // accumulate. Start a fresh cadence after a missed frame or restore.
+        previous_frame = window_shown && now - due < period ? due : now;
         ImGui_ImplDX11_NewFrame();
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
-        DrawLauncher(window, graphics, controller, mode);
+        frame_rate_limit = DrawLauncher(window, graphics, controller, mode);
+        if (ImGui::IsAnyMouseDown()) active_until = now + interaction_tail;
         ImGui::Render();
-        // What the shell leaves untouched has to be fully transparent -- and under premultiplied
-        // alpha that means colour zero as well, or the rounded corners would composite as a tinted
-        // margin.
-        graphics.context->OMSetRenderTargets(1, graphics.render_target.GetAddressOf(), nullptr);
-        const float transparent_clear[4]{0.0f, 0.0f, 0.0f, 0.0f};
-        graphics.context->ClearRenderTargetView(graphics.render_target.Get(), transparent_clear);
-        anomaly::glass::PrepareDrawData(ImGui::GetDrawData());
-        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
-        graphics.swap_chain->Present(1, 0);
+        ImDrawData* const data = ImGui::GetDrawData();
+        anomaly::glass::PrepareDrawData(data, /*retain_desktop_layer=*/true);
+        // DirectComposition retains the last present. Keep ticking input, animations and worker
+        // results at the configured cadence, and submit only when their visible output changes.
+        const int first_change = drawing.Compare(*data, graphics.redraw_required);
+        if (first_change >= 0) {
+            auto damage = drawing.Render(graphics, *data, first_change);
+            DXGI_PRESENT_PARAMETERS update{};
+            if (damage) {
+                update.DirtyRectsCount = 1;
+                update.pDirtyRects = &*damage;
+            }
+            const HRESULT presented = graphics.swap_chain->Present1(0, 0, &update);
+            graphics.redraw_required = presented != S_OK;
+        }
         if (!window_shown) {
             // The window stays hidden until a themed frame has been presented. It has no
             // redirection bitmap, so until the composition visual holds a frame the
@@ -8818,6 +8976,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
         }
     }
 
+    if (frame_timer != nullptr) CloseHandle(frame_timer);
     anomaly::glass::ShutdownRenderer();
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();

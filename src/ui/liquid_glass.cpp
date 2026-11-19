@@ -11,6 +11,7 @@
 #include <d3dcommon.h>
 
 #include <algorithm>
+#include <array>
 #include <cfloat>
 #include <cmath>
 #include <cstring>
@@ -73,7 +74,7 @@ struct Renderer final {
     ComPtr<ID3D11SamplerState> sampler;
     ComPtr<ID3D11BlendState> opaque;
     ComPtr<ID3D11BlendState> blend;
-    ComPtr<ID3D11RasterizerState> unclipped;
+    ComPtr<ID3D11RasterizerState> pass_rasterizer;
     ComPtr<ID3D11DepthStencilState> depth_off;
     ComPtr<ID3D11Texture2D> backdrop;
     ComPtr<ID3D11ShaderResourceView> backdrop_view;
@@ -85,6 +86,10 @@ struct Renderer final {
     RenderTarget quarter;
     RenderTarget scratch;
     int captured_frame{-1};
+    std::array<ComPtr<ID3D11Texture2D>, 4> desktop_layer;
+    std::array<ComPtr<ID3D11ShaderResourceView>, 3> desktop_views;
+    bool desktop_sharp{};
+    bool desktop_blur{};
 };
 
 std::unique_ptr<Renderer> g_renderer;
@@ -107,15 +112,99 @@ struct Command final {
     bool blur{true};
     bool deep{false};
     GlassConstants constants;
+    ImRect sampled_region;
+    ImRect blurred_region;
+    bool bounded_copy{};
 };
 
-void D3d12Capture(Command& command) noexcept;
+// The same schedule drives both backends and the calculation of each filter's input pixels.
+enum BackdropLevel : std::size_t { Sharp, Half, HalfScratch, Quarter, QuarterScratch, LevelCount };
+struct BlurPass final {
+    BackdropLevel source;
+    BackdropLevel target;
+    float dx, dy, spread;  // zero spread selects the 2x2 downsample
+};
+constexpr BlurPass kBlurPasses[]{
+    {Sharp, Half, 0, 0, 0}, {Half, HalfScratch, 1, 0, 1}, {HalfScratch, Half, 0, 1, 1},
+    {Half, Quarter, 0, 0, 0},
+    {Quarter, QuarterScratch, 1, 0, 1.2f}, {QuarterScratch, Quarter, 0, 1, 1.2f},
+    {Quarter, QuarterScratch, 1, 0, 1.8f}, {QuarterScratch, Quarter, 0, 1, 1.8f},
+    {Quarter, QuarterScratch, 1, 0, 2.6f}, {QuarterScratch, Quarter, 0, 1, 2.6f},
+    {Quarter, QuarterScratch, 1, 0, 3.8f}, {QuarterScratch, Quarter, 0, 1, 3.8f},
+};
+struct Extent final { UINT width, height; };
+struct CapturePlan final {
+    RECT copy{};
+    std::array<RECT, std::size(kBlurPasses)> passes{};
+    std::size_t count{};
+};
+
+bool HasPixels(const RECT& r) noexcept { return r.left < r.right && r.top < r.bottom; }
+
+// Project the destination's pixel edges into the source texture. Keep the viewport and
+// UVs at their original sizes, including for odd dimensions. Only the scissor changes.
+RECT PixelBounds(const ImRect& area, const Extent from, const Extent to,
+    const float border_x = 0.0f, const float border_y = 0.0f) noexcept {
+    if (area.Min.x >= area.Max.x || area.Min.y >= area.Max.y) return {};
+    const float sx = static_cast<float>(to.width) / static_cast<float>(from.width);
+    const float sy = static_cast<float>(to.height) / static_cast<float>(from.height);
+    const auto pixel = [](const float value, const UINT limit) {
+        return static_cast<LONG>(std::clamp(value, 0.0f, static_cast<float>(limit)));
+    };
+    return {pixel(std::floor(area.Min.x * sx - border_x), to.width),
+        pixel(std::floor(area.Min.y * sy - border_y), to.height),
+        pixel(std::ceil(area.Max.x * sx + border_x), to.width),
+        pixel(std::ceil(area.Max.y * sy + border_y), to.height)};
+}
+
+CapturePlan PlanCapture(const Command& command, const Extent full, const Extent half,
+    const Extent quarter) noexcept {
+    CapturePlan plan;
+    const Extent sizes[LevelCount]{full, half, half, quarter, quarter};
+    plan.count = command.blur ? (command.deep ? std::size(kBlurPasses) : 8) : 0;
+    if (!command.bounded_copy) {
+        plan.copy = {0, 0, static_cast<LONG>(full.width), static_cast<LONG>(full.height)};
+        for (std::size_t i = 0; i < plan.count; ++i) {
+            const Extent target = sizes[kBlurPasses[i].target];
+            plan.passes[i] = {0, 0, static_cast<LONG>(target.width), static_cast<LONG>(target.height)};
+        }
+        return plan;
+    }
+    RECT needed[LevelCount]{};
+    needed[Sharp] = PixelBounds(command.sampled_region, full, full);
+    if (plan.count) {
+        // The surface shader samples each level with a bilinear sampler.
+        needed[Half] = PixelBounds(command.blurred_region, full, half, 1, 1);
+        needed[Quarter] = PixelBounds(command.blurred_region, full, quarter, 1, 1);
+    }
+    for (std::size_t i = plan.count; i-- > 0;) {
+        const BlurPass& pass = kBlurPasses[i];
+        const RECT region = needed[pass.target];
+        plan.passes[i] = region;
+        needed[pass.target] = {}; // An earlier write to this ping-pong level has different readers.
+        if (!HasPixels(region)) continue;
+        // ps_down samples +/-1 texel on both axes. ps_blur's outermost sample is
+        // 3.23077 * spread on one axis. Include the footprint of linear filtering.
+        constexpr float outer_tap = 3.231f;
+        const float x = pass.spread ? outer_tap * pass.spread * pass.dx : 1.0f;
+        const float y = pass.spread ? outer_tap * pass.spread * pass.dy : 1.0f;
+        const RECT reads = PixelBounds(ImRect(static_cast<float>(region.left), static_cast<float>(region.top),
+            static_cast<float>(region.right), static_cast<float>(region.bottom)),
+            sizes[pass.target], sizes[pass.source], x + 1.0f, y + 1.0f);
+        UnionRect(&needed[pass.source], &needed[pass.source], &reads);
+    }
+    plan.copy = needed[Sharp];
+    return plan;
+}
+
+void D3d12Capture(const Command& command) noexcept;
 void D3d12Surface(const Command& command, const ImDrawCmd& draw_command) noexcept;
 
 // Callback payloads live here until the frame that recorded them has been
 // rendered; the next frame's first command recycles the storage. A deque keeps
 // the addresses stable while it grows.
 std::deque<Command> g_commands;
+std::size_t g_command_count{};
 int g_commands_frame{-1};
 
 struct WindowSurface final {
@@ -129,10 +218,12 @@ std::vector<std::unique_ptr<ImDrawList>> g_underlays;
 Command& NewCommand() {
     const int frame = ImGui::GetFrameCount();
     if (frame != g_commands_frame) {
-        g_commands.clear();
+        g_command_count = 0;
         g_commands_frame = frame;
     }
-    Command& command = g_commands.emplace_back();
+    if (g_command_count == g_commands.size()) g_commands.emplace_back();
+    Command& command = g_commands[g_command_count++];
+    command = {};
     command.frame = frame;
     return command;
 }
@@ -211,14 +302,13 @@ void Upload(ID3D11DeviceContext* context, ID3D11Buffer* buffer, const T& value) 
 }
 
 void CaptureCallback(const ImDrawList*, const ImDrawCmd* draw_command) {
-    const auto* const recorded = static_cast<const Command*>(draw_command->UserCallbackData);
-    if (recorded == nullptr) return;
+    const auto* command = static_cast<const Command*>(draw_command->UserCallbackData);
+    if (command == nullptr) return;
     if (g_d3d12 != nullptr) {
-        D3d12Capture(*const_cast<Command*>(recorded));
+        D3d12Capture(*command);
         return;
     }
     Renderer* const renderer = g_renderer.get();
-    const Command* const command = recorded;
     if (renderer == nullptr) return;
     ID3D11DeviceContext* const context = renderer->context.Get();
     ComPtr<ID3D11RenderTargetView> output;
@@ -233,9 +323,25 @@ void CaptureCallback(const ImDrawList*, const ImDrawCmd* draw_command) {
     texture->GetDesc(&description);
     if (description.SampleDesc.Count != 1 || !EnsureTargets(*renderer, description)) return;
 
+    const CapturePlan plan = PlanCapture(*command, {description.Width, description.Height},
+        {renderer->half.width, renderer->half.height}, {renderer->quarter.width, renderer->quarter.height});
+    if (!HasPixels(plan.copy)) return;
     ID3D11ShaderResourceView* const unbound[3]{};
     context->PSSetShaderResources(0, 3, unbound);
-    context->CopyResource(renderer->backdrop.Get(), texture.Get());
+    const RECT& r = plan.copy;
+    if (r.left == 0 && r.top == 0 && r.right == static_cast<LONG>(description.Width) &&
+        r.bottom == static_cast<LONG>(description.Height)) {
+        context->CopyResource(renderer->backdrop.Get(), texture.Get());
+    } else {
+        const D3D11_BOX box{static_cast<UINT>(r.left), static_cast<UINT>(r.top), 0,
+            static_cast<UINT>(r.right), static_cast<UINT>(r.bottom), 1};
+        context->CopySubresourceRegion(renderer->backdrop.Get(), 0, box.left, box.top, 0, texture.Get(), 0, &box);
+    }
+    renderer->desktop_sharp = false;
+    if (!command->blur) {
+        renderer->captured_frame = command->frame;
+        return;
+    }
 
     context->IASetInputLayout(nullptr);
     context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -244,73 +350,37 @@ void CaptureCallback(const ImDrawList*, const ImDrawCmd* draw_command) {
     const float blend_factor[4]{};
     context->OMSetBlendState(renderer->opaque.Get(), blend_factor, 0xffffffffU);
     context->OMSetDepthStencilState(renderer->depth_off.Get(), 0);
-    context->RSSetState(renderer->unclipped.Get());
+    context->RSSetState(renderer->pass_rasterizer.Get());
     context->PSSetConstantBuffers(0, 1, renderer->pass_constants.GetAddressOf());
-    const auto pass = [&](RenderTarget& target, ID3D11ShaderResourceView* source,
-                          const UINT source_width, const UINT source_height,
-                          ID3D11PixelShader* shader, const float direction_x,
-                          const float direction_y, const float spread) {
+    const RenderTarget* const levels[LevelCount]{nullptr, &renderer->half, &renderer->half_scratch,
+        &renderer->quarter, &renderer->scratch};
+    for (std::size_t i = 0; i < plan.count; ++i) {
+        if (!HasPixels(plan.passes[i])) continue;
+        const BlurPass& pass = kBlurPasses[i];
+        const RenderTarget* source = levels[pass.source];
+        const RenderTarget& target = *levels[pass.target];
+        ID3D11ShaderResourceView* srv = source ? source->resource.Get() : renderer->backdrop_view.Get();
         context->PSSetShaderResources(0, 3, unbound);
         context->OMSetRenderTargets(1, target.view.GetAddressOf(), nullptr);
         const D3D11_VIEWPORT viewport{0.0f, 0.0f, static_cast<float>(target.width),
             static_cast<float>(target.height), 0.0f, 1.0f};
         context->RSSetViewports(1, &viewport);
         PassConstants constants;
-        constants.texel[0] = 1.0f / static_cast<float>(source_width);
-        constants.texel[1] = 1.0f / static_cast<float>(source_height);
-        constants.texel[2] = direction_x;
-        constants.texel[3] = direction_y;
-        constants.pass[0] = spread;
+        constants.texel[0] = 1.0f / static_cast<float>(source ? source->width : description.Width);
+        constants.texel[1] = 1.0f / static_cast<float>(source ? source->height : description.Height);
+        constants.texel[2] = pass.dx;
+        constants.texel[3] = pass.dy;
+        constants.pass[0] = pass.spread;
         Upload(context, renderer->pass_constants.Get(), constants);
-        context->PSSetShader(shader, nullptr, 0);
-        context->PSSetShaderResources(0, 1, &source);
+        context->PSSetShader(pass.spread ? renderer->blur.Get() : renderer->downsample.Get(), nullptr, 0);
+        context->PSSetShaderResources(0, 1, &srv);
+        context->RSSetScissorRects(1, &plan.passes[i]);
         context->Draw(3, 0);
-    };
-    if (!command->blur) {
-        context->OMSetRenderTargets(1, output.GetAddressOf(), depth.Get());
-        renderer->captured_frame = command->frame;
-        return;
-    }
-    // Light blur: half resolution, one small Gaussian. Heavy blur: quarter
-    // resolution, two wider ones. The face of a surface mixes between them and
-    // its rim refracts the sharp copy.
-    pass(renderer->half, renderer->backdrop_view.Get(), renderer->backdrop_width,
-        renderer->backdrop_height, renderer->downsample.Get(), 0.0f, 0.0f, 0.0f);
-    const UINT half_width = renderer->half.width;
-    const UINT half_height = renderer->half.height;
-    pass(renderer->half_scratch, renderer->half.resource.Get(), half_width, half_height,
-        renderer->blur.Get(), 1.0f, 0.0f, 1.0f);
-    pass(renderer->half, renderer->half_scratch.resource.Get(), half_width, half_height,
-        renderer->blur.Get(), 0.0f, 1.0f, 1.0f);
-    pass(renderer->quarter, renderer->half.resource.Get(), half_width, half_height,
-        renderer->downsample.Get(), 0.0f, 0.0f, 0.0f);
-    const UINT width = renderer->quarter.width;
-    const UINT height = renderer->quarter.height;
-    pass(renderer->scratch, renderer->quarter.resource.Get(), width, height,
-        renderer->blur.Get(), 1.0f, 0.0f, 1.2f);
-    pass(renderer->quarter, renderer->scratch.resource.Get(), width, height,
-        renderer->blur.Get(), 0.0f, 1.0f, 1.2f);
-    pass(renderer->scratch, renderer->quarter.resource.Get(), width, height,
-        renderer->blur.Get(), 1.0f, 0.0f, 1.8f);
-    pass(renderer->quarter, renderer->scratch.resource.Get(), width, height,
-        renderer->blur.Get(), 0.0f, 1.0f, 1.8f);
-    // A host with a picture directly behind a pane -- a plugin window floating
-    // over the game -- asks for the deep backdrop: two more runs over the heavy
-    // level, still ending in the quarter target the face samples. Only that
-    // capture pays for them; every other surface keeps the shipped chain.
-    if (command->deep) {
-        pass(renderer->scratch, renderer->quarter.resource.Get(), width, height,
-            renderer->blur.Get(), 1.0f, 0.0f, 2.6f);
-        pass(renderer->quarter, renderer->scratch.resource.Get(), width, height,
-            renderer->blur.Get(), 0.0f, 1.0f, 2.6f);
-        pass(renderer->scratch, renderer->quarter.resource.Get(), width, height,
-            renderer->blur.Get(), 1.0f, 0.0f, 3.8f);
-        pass(renderer->quarter, renderer->scratch.resource.Get(), width, height,
-            renderer->blur.Get(), 0.0f, 1.0f, 3.8f);
     }
     context->PSSetShaderResources(0, 3, unbound);
     context->OMSetRenderTargets(1, output.GetAddressOf(), depth.Get());
     renderer->captured_frame = command->frame;
+    renderer->desktop_blur = false;
 }
 
 void SurfaceCallback(const ImDrawList*, const ImDrawCmd* draw_command) {
@@ -350,10 +420,12 @@ void SurfaceCallback(const ImDrawList*, const ImDrawCmd* draw_command) {
     context->PSSetShader(renderer->glass.Get(), nullptr, 0);
     context->VSSetConstantBuffers(0, 1, renderer->glass_constants.GetAddressOf());
     context->PSSetConstantBuffers(0, 1, renderer->glass_constants.GetAddressOf());
-    ID3D11ShaderResourceView* const resources[3]{
-        backdrop_ready ? renderer->backdrop_view.Get() : nullptr,
-        backdrop_ready ? renderer->quarter.resource.Get() : nullptr,
-        backdrop_ready ? renderer->half.resource.Get() : nullptr};
+    ID3D11ShaderResourceView* resources[3]{};
+    if (backdrop_ready) {
+        resources[0] = renderer->desktop_sharp ? renderer->desktop_views[0].Get() : renderer->backdrop_view.Get();
+        resources[1] = renderer->desktop_blur ? renderer->desktop_views[2].Get() : renderer->quarter.resource.Get();
+        resources[2] = renderer->desktop_blur ? renderer->desktop_views[1].Get() : renderer->half.resource.Get();
+    }
     context->PSSetShaderResources(0, 3, resources);
     context->PSSetSamplers(0, 1, renderer->sampler.GetAddressOf());
     const float blend_factor[4]{};
@@ -406,14 +478,10 @@ struct D3d12Level final {
 // the whole frame: several captures happen in one frame, all of them re-blur the
 // same five levels in order, and rewriting a slot per pass would hand the last
 // pass's source to every earlier pass in the queue.
-constexpr std::size_t kGlassCaptureSlot = 0;
-constexpr std::size_t kGlassHalfSlot = 1;
-constexpr std::size_t kGlassHalfScratchSlot = 2;
-constexpr std::size_t kGlassQuarterSlot = 3;
-constexpr std::size_t kGlassQuarterScratchSlot = 4;
+// The first slots follow BackdropLevel so every pass can bind its source directly.
 // The material's own backdrop: the sharp capture, its heavy blur and its light
 // blur, the same three the D3D11 host binds.
-constexpr std::size_t kGlassSurfaceFirst = 5;
+constexpr std::size_t kGlassSurfaceFirst = LevelCount;
 constexpr std::size_t kGlassDescriptorCount = kGlassSurfaceFirst + 3;
 
 struct D3d12Renderer final {
@@ -439,11 +507,6 @@ struct D3d12Renderer final {
     D3d12Level half_scratch;
     D3d12Level quarter;
     D3d12Level quarter_scratch;
-    ComPtr<ID3D12Resource> constants;
-    std::uint8_t* constants_mapped{};
-    D3D12_GPU_VIRTUAL_ADDRESS constants_gpu{};
-    std::size_t constants_cursor{};
-    std::size_t constants_capacity{};
     UINT width{};
     UINT height{};
     DXGI_FORMAT format{DXGI_FORMAT_UNKNOWN};
@@ -573,59 +636,30 @@ struct D3d12Renderer final {
         const D3D12_SHADER_RESOURCE_VIEW_DESC view = OpaqueTextureView(format);
         renderer.device->CreateShaderResourceView(texture, &view, SrvHandle(renderer, slot));
     };
-    store(kGlassCaptureSlot, renderer.capture.Get());
-    store(kGlassHalfSlot, renderer.half.texture.Get());
-    store(kGlassHalfScratchSlot, renderer.half_scratch.texture.Get());
-    store(kGlassQuarterSlot, renderer.quarter.texture.Get());
-    store(kGlassQuarterScratchSlot, renderer.quarter_scratch.texture.Get());
+    store(Sharp, renderer.capture.Get());
+    store(Half, renderer.half.texture.Get());
+    store(HalfScratch, renderer.half_scratch.texture.Get());
+    store(Quarter, renderer.quarter.texture.Get());
+    store(QuarterScratch, renderer.quarter_scratch.texture.Get());
     store(kGlassSurfaceFirst, renderer.capture.Get());
     store(kGlassSurfaceFirst + 1, renderer.quarter.texture.Get());
     store(kGlassSurfaceFirst + 2, renderer.half.texture.Get());
     return true;
 }
 
-// Upload memory for one draw's constants. The GPU is several frames behind the
-// command list being recorded, so the ring is advanced across frames instead of
-// being rewound at the start of each one: a frame that reread the same slots
-// would overwrite constants a queued frame is still reading, and every surface
-// would draw with another surface's rectangle. The ring is far larger than a
-// frame's use, so a wrap only lands on slots that are long finished.
-[[nodiscard]] bool PushConstants(D3d12Renderer& renderer, const void* const data,
-    const std::size_t size, D3D12_GPU_VIRTUAL_ADDRESS* const gpu) noexcept {
-    const std::size_t aligned = (size + 255U) & ~static_cast<std::size_t>(255U);
-    if (renderer.constants_mapped == nullptr || aligned > renderer.constants_capacity) return false;
-    if (renderer.constants_cursor + aligned > renderer.constants_capacity) {
-        renderer.constants_cursor = 0;
-    }
-    std::memcpy(renderer.constants_mapped + renderer.constants_cursor, data, size);
-    *gpu = renderer.constants_gpu + renderer.constants_cursor;
-    renderer.constants_cursor += aligned;
-    return true;
-}
-
-// One pass of the chain: sample the level in `source_slot` and draw it into
-// `target`. The descriptor is written once per size change, so a pass only says
-// which level it reads.
-void RunPass(D3d12Renderer& renderer, const std::size_t source_slot, D3d12Level& target,
-    const UINT source_width, const UINT source_height,
-    ID3D12PipelineState* const pipeline, const float direction_x, const float direction_y,
-    const float spread) noexcept {
+// Each filter pass binds its source's fixed descriptor and draws the required target pixels.
+void RunPass(D3d12Renderer& renderer, const BlurPass& pass, D3d12Level& target,
+    const Extent source, const RECT& region) noexcept {
     ID3D12GraphicsCommandList* const list = renderer.list;
-    if (list == nullptr) return;
-    ID3D12DescriptorHeap* const heaps[]{renderer.srv_heap.Get()};
-    list->SetDescriptorHeaps(1, heaps);
     PassConstants constants;
-    constants.texel[0] = 1.0F / static_cast<float>(source_width);
-    constants.texel[1] = 1.0F / static_cast<float>(source_height);
-    constants.texel[2] = direction_x;
-    constants.texel[3] = direction_y;
-    constants.pass[0] = spread;
-    D3D12_GPU_VIRTUAL_ADDRESS gpu{};
-    if (!PushConstants(renderer, &constants, sizeof(constants), &gpu)) return;
-    list->SetGraphicsRootSignature(renderer.root_signature.Get());
-    list->SetPipelineState(pipeline);
-    list->SetGraphicsRootConstantBufferView(0, gpu);
-    list->SetGraphicsRootDescriptorTable(1, PassTable(renderer, source_slot));
+    constants.texel[0] = 1.0F / static_cast<float>(source.width);
+    constants.texel[1] = 1.0F / static_cast<float>(source.height);
+    constants.texel[2] = pass.dx;
+    constants.texel[3] = pass.dy;
+    constants.pass[0] = pass.spread;
+    list->SetPipelineState(pass.spread ? renderer.blur.Get() : renderer.downsample.Get());
+    list->SetGraphicsRoot32BitConstants(0, sizeof(constants) / sizeof(UINT), &constants, 0);
+    list->SetGraphicsRootDescriptorTable(1, PassTable(renderer, pass.source));
 
     const D3D12_RESOURCE_BARRIER barriers[]{
         MakeBarrier(target.texture.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
@@ -635,10 +669,7 @@ void RunPass(D3d12Renderer& renderer, const std::size_t source_slot, D3d12Level&
     const D3D12_VIEWPORT viewport{0.0F, 0.0F, static_cast<float>(target.width),
         static_cast<float>(target.height), 0.0F, 1.0F};
     list->RSSetViewports(1, &viewport);
-    const D3D12_RECT scissor{0, 0, static_cast<LONG>(target.width),
-        static_cast<LONG>(target.height)};
-    list->RSSetScissorRects(1, &scissor);
-    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    list->RSSetScissorRects(1, &region);
     list->DrawInstanced(3, 1, 0, 0);
     const D3D12_RESOURCE_BARRIER back[]{
         MakeBarrier(target.texture.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
@@ -657,7 +688,7 @@ void RestoreHostHeap(D3d12Renderer& renderer) noexcept {
     renderer.list->SetDescriptorHeaps(1, heaps);
 }
 
-void D3d12Capture(Command& command) noexcept {
+void D3d12Capture(const Command& command) noexcept {
     D3d12Renderer* const renderer = g_d3d12.get();
     if (renderer == nullptr || renderer->list == nullptr || renderer->back_buffer == nullptr) return;
     const D3D12_RESOURCE_DESC description = renderer->back_buffer->GetDesc();
@@ -666,69 +697,45 @@ void D3d12Capture(Command& command) noexcept {
             static_cast<UINT>(description.Height), description.Format)) {
         return;
     }
+    const Extent full{renderer->width, renderer->height};
+    const CapturePlan plan = PlanCapture(command, full, {renderer->half.width, renderer->half.height},
+        {renderer->quarter.width, renderer->quarter.height});
+    if (!HasPixels(plan.copy)) return;
     ID3D12GraphicsCommandList* const list = renderer->list;
-    {
-        const D3D12_RESOURCE_BARRIER barriers[]{
-            MakeBarrier(renderer->back_buffer, D3D12_RESOURCE_STATE_RENDER_TARGET,
-                D3D12_RESOURCE_STATE_COPY_SOURCE)};
-        list->ResourceBarrier(1, barriers);
+    D3D12_RESOURCE_BARRIER barriers[]{
+        MakeBarrier(renderer->back_buffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE),
+        MakeBarrier(renderer->capture.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST)};
+    list->ResourceBarrier(2, barriers);
+    const RECT& r = plan.copy;
+    if (r.left == 0 && r.top == 0 && r.right == static_cast<LONG>(full.width) &&
+        r.bottom == static_cast<LONG>(full.height)) {
+        list->CopyResource(renderer->capture.Get(), renderer->back_buffer);
+    } else {
+        const D3D12_BOX box{static_cast<UINT>(r.left), static_cast<UINT>(r.top), 0,
+            static_cast<UINT>(r.right), static_cast<UINT>(r.bottom), 1};
+        const D3D12_TEXTURE_COPY_LOCATION src{renderer->back_buffer, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, {}};
+        const D3D12_TEXTURE_COPY_LOCATION dst{renderer->capture.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, {}};
+        list->CopyTextureRegion(&dst, box.left, box.top, 0, &src, &box);
     }
-    {
-        const D3D12_RESOURCE_BARRIER barriers[]{
-            MakeBarrier(renderer->capture.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_COPY_DEST)};
-        list->ResourceBarrier(1, barriers);
-    }
-    list->CopyResource(renderer->capture.Get(), renderer->back_buffer);
-    {
-        const D3D12_RESOURCE_BARRIER barriers[]{
-            MakeBarrier(renderer->capture.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)};
-        list->ResourceBarrier(1, barriers);
-    }
-    {
-        const D3D12_RESOURCE_BARRIER barriers[]{
-            MakeBarrier(renderer->back_buffer, D3D12_RESOURCE_STATE_COPY_SOURCE,
-                D3D12_RESOURCE_STATE_RENDER_TARGET)};
-        list->ResourceBarrier(1, barriers);
-    }
+    for (auto& barrier : barriers) std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
+    list->ResourceBarrier(2, barriers);
     renderer->captured_frame = command.frame;
     if (!command.blur) {
         list->OMSetRenderTargets(1, &renderer->frame_rtv, FALSE, nullptr);
         return;
     }
-    // The shipped chain, pass for pass: light blur at half resolution, heavy at
-    // quarter resolution with two wider Gaussian runs, plus the deep runs below
-    // when the pane sits directly on a picture.
-    RunPass(*renderer, kGlassCaptureSlot, renderer->half,
-        renderer->width, renderer->height, renderer->downsample.Get(), 0.0F, 0.0F, 0.0F);
-    RunPass(*renderer, kGlassHalfSlot, renderer->half_scratch,
-        renderer->half.width, renderer->half.height, renderer->blur.Get(), 1.0F, 0.0F, 1.0F);
-    RunPass(*renderer, kGlassHalfScratchSlot, renderer->half,
-        renderer->half.width, renderer->half.height, renderer->blur.Get(), 0.0F, 1.0F, 1.0F);
-    RunPass(*renderer, kGlassHalfSlot, renderer->quarter,
-        renderer->half.width, renderer->half.height, renderer->downsample.Get(), 0.0F, 0.0F, 0.0F);
-    RunPass(*renderer, kGlassQuarterSlot, renderer->quarter_scratch,
-        renderer->quarter.width, renderer->quarter.height, renderer->blur.Get(), 1.0F, 0.0F, 1.2F);
-    RunPass(*renderer, kGlassQuarterScratchSlot, renderer->quarter,
-        renderer->quarter.width, renderer->quarter.height, renderer->blur.Get(), 0.0F, 1.0F, 1.2F);
-    RunPass(*renderer, kGlassQuarterSlot, renderer->quarter_scratch,
-        renderer->quarter.width, renderer->quarter.height, renderer->blur.Get(), 1.0F, 0.0F, 1.8F);
-    RunPass(*renderer, kGlassQuarterScratchSlot, renderer->quarter,
-        renderer->quarter.width, renderer->quarter.height, renderer->blur.Get(), 0.0F, 1.0F, 1.8F);
-    if (command.deep) {
-        RunPass(*renderer, kGlassQuarterSlot, renderer->quarter_scratch,
-            renderer->quarter.width, renderer->quarter.height, renderer->blur.Get(), 1.0F, 0.0F,
-            2.6F);
-        RunPass(*renderer, kGlassQuarterScratchSlot, renderer->quarter,
-            renderer->quarter.width, renderer->quarter.height, renderer->blur.Get(), 0.0F, 1.0F,
-            2.6F);
-        RunPass(*renderer, kGlassQuarterSlot, renderer->quarter_scratch,
-            renderer->quarter.width, renderer->quarter.height, renderer->blur.Get(), 1.0F, 0.0F,
-            3.8F);
-        RunPass(*renderer, kGlassQuarterScratchSlot, renderer->quarter,
-            renderer->quarter.width, renderer->quarter.height, renderer->blur.Get(), 0.0F, 1.0F,
-            3.8F);
+    ID3D12DescriptorHeap* const heaps[]{renderer->srv_heap.Get()};
+    list->SetDescriptorHeaps(1, heaps);
+    list->SetGraphicsRootSignature(renderer->root_signature.Get());
+    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    D3d12Level* const levels[LevelCount]{nullptr, &renderer->half, &renderer->half_scratch,
+        &renderer->quarter, &renderer->quarter_scratch};
+    for (std::size_t i = 0; i < plan.count; ++i) {
+        if (!HasPixels(plan.passes[i])) continue;
+        const BlurPass& pass = kBlurPasses[i];
+        const D3d12Level* source = levels[pass.source];
+        RunPass(*renderer, pass, *levels[pass.target], source ? Extent{source->width, source->height} : full,
+            plan.passes[i]);
     }
     list->OMSetRenderTargets(1, &renderer->frame_rtv, FALSE, nullptr);
     const D3D12_VIEWPORT viewport{0.0F, 0.0F, static_cast<float>(renderer->width),
@@ -755,8 +762,6 @@ void D3d12Surface(const Command& command, const ImDrawCmd& draw_command) noexcep
         constants.tint[3] = 1.0F;
         constants.light[3] = 1.0F;
     }
-    D3D12_GPU_VIRTUAL_ADDRESS gpu{};
-    if (!PushConstants(*renderer, &constants, sizeof(constants), &gpu)) return;
     D3D12_RECT scissor{0, 0, static_cast<LONG>(renderer->width),
         static_cast<LONG>(renderer->height)};
     if (command.clip) {
@@ -770,7 +775,7 @@ void D3d12Surface(const Command& command, const ImDrawCmd& draw_command) noexcep
     list->SetDescriptorHeaps(1, heaps);
     list->SetGraphicsRootSignature(renderer->root_signature.Get());
     list->SetPipelineState(renderer->glass.Get());
-    list->SetGraphicsRootConstantBufferView(0, gpu);
+    list->SetGraphicsRoot32BitConstants(0, sizeof(constants) / sizeof(UINT), &constants, 0);
     list->SetGraphicsRootDescriptorTable(1, renderer->surface_table);
     list->OMSetRenderTargets(1, &renderer->frame_rtv, FALSE, nullptr);
     const D3D12_VIEWPORT viewport{0.0F, 0.0F, static_cast<float>(renderer->width),
@@ -1038,7 +1043,8 @@ bool InitializeRenderer(ID3D11Device* device, ID3D11DeviceContext* context,
         raster.FillMode = D3D11_FILL_SOLID;
         raster.CullMode = D3D11_CULL_NONE;
         raster.DepthClipEnable = TRUE;
-        if (FAILED(device->CreateRasterizerState(&raster, &renderer->unclipped))) return false;
+        raster.ScissorEnable = TRUE;
+        if (FAILED(device->CreateRasterizerState(&raster, &renderer->pass_rasterizer))) return false;
 
         D3D11_DEPTH_STENCIL_DESC depth{};
         depth.DepthEnable = FALSE;
@@ -1062,13 +1068,11 @@ bool InitializeRendererD3D12(ID3D12Device* const device, const DXGI_FORMAT forma
         renderer->device = device;
         renderer->format = format;
         g_palette_tint = palette_tint;
-        // Root signature: one constant buffer, one table of three textures and a
-        // static sampler. The table is what keeps the material off the host's own
-        // descriptor heap.
+        // Inline uniforms are owned by the recorded command list. Blur passes set only
+        // their first two float4s, and each surface supplies its full material.
         D3D12_ROOT_PARAMETER parameters[2]{};
-        parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-        parameters[0].Descriptor.ShaderRegister = 0;
-        parameters[0].Descriptor.RegisterSpace = 0;
+        parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        parameters[0].Constants.Num32BitValues = sizeof(GlassConstants) / sizeof(UINT);
         parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
         D3D12_DESCRIPTOR_RANGE texture_range{};
         texture_range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
@@ -1204,28 +1208,6 @@ bool InitializeRendererD3D12(ID3D12Device* const device, const DXGI_FORMAT forma
         renderer->srv_base = renderer->srv_heap->GetGPUDescriptorHandleForHeapStart();
         renderer->surface_table.ptr = renderer->srv_base.ptr +
             static_cast<UINT64>(renderer->srv_stride) * kGlassSurfaceFirst;
-        D3D12_HEAP_PROPERTIES upload{};
-        upload.Type = D3D12_HEAP_TYPE_UPLOAD;
-        upload.CreationNodeMask = 1;
-        upload.VisibleNodeMask = 1;
-        D3D12_RESOURCE_DESC buffer{};
-        buffer.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        buffer.Width = 1024U * 1024U;
-        buffer.Height = 1;
-        buffer.DepthOrArraySize = 1;
-        buffer.MipLevels = 1;
-        buffer.SampleDesc.Count = 1;
-        buffer.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-        if (FAILED(device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &buffer,
-                D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-                IID_PPV_ARGS(&renderer->constants)))) {
-            return false;
-        }
-        void* mapped{};
-        if (FAILED(renderer->constants->Map(0, nullptr, &mapped))) return false;
-        renderer->constants_mapped = static_cast<std::uint8_t*>(mapped);
-        renderer->constants_gpu = renderer->constants->GetGPUVirtualAddress();
-        renderer->constants_capacity = static_cast<std::size_t>(buffer.Width);
         g_d3d12 = std::move(renderer);
         return true;
     } catch (...) {
@@ -1243,7 +1225,6 @@ void BeginD3D12Frame(ID3D12GraphicsCommandList* const list,
     renderer->back_buffer = back_buffer;
     renderer->frame_rtv = frame_rtv;
     renderer->host_heap = host_heap;
-    // The constants ring is deliberately not rewound here: see PushConstants.
     renderer->captured_frame = -1;
 }
 void ShutdownRenderer() noexcept {
@@ -1405,18 +1386,56 @@ void RegisterWindowSurface(const SurfaceOptions& options) noexcept {
     }
 }
 
-void PrepareDrawData(ImDrawData* data) noexcept {
+namespace {
+
+void BoundFrameCaptures(const ImDrawData& data) noexcept {
+    // Both glass backends use framebuffer pixels. Other viewport transforms retain full captures.
+    if (data.DisplayPos.x != 0 || data.DisplayPos.y != 0 ||
+        data.FramebufferScale.x != 1 || data.FramebufferScale.y != 1) return;
+    const ImRect screen(ImVec2(0, 0), data.DisplaySize);
+    const ImRect empty(FLT_MAX, FLT_MAX, -FLT_MAX, -FLT_MAX);
+    ImRect sharp = empty, blurred = empty;
+    for (int i = data.CmdLists.Size - 1; i >= 0; --i) {
+        const auto& draws = data.CmdLists[i]->CmdBuffer;
+        for (int j = draws.Size - 1; j >= 0; --j) {
+            const ImDrawCmd& draw = draws[j];
+            if (draw.UserCallback == CaptureCallback) {
+                auto& capture = *static_cast<Command*>(draw.UserCallbackData);
+                capture.bounded_copy = true;
+                capture.sampled_region = sharp;
+                sharp = empty;
+                // A thumb replaces just the sharp copy. Later frosted controls can still
+                // read the half and quarter textures produced by the preceding blur.
+                if (capture.blur) {
+                    capture.blurred_region = blurred;
+                    blurred = empty;
+                }
+            } else if (draw.UserCallback == SurfaceCallback) {
+                const auto& c = static_cast<const Command*>(draw.UserCallbackData)->constants;
+                // Magnification pulls towards a point inside the lens bounds, including for
+                // ring sectors. Add the feather, refracted RGB taps and their linear footprint.
+                const float reach = (std::max)(1.0f, c.edge[2]) * 0.5f + 1.0f +
+                    std::abs(c.optics[0]) * c.shape[1] * (1.0f + std::abs(c.optics[1]));
+                ImRect lens(c.rect[0] - reach, c.rect[1] - reach, c.rect[2] + reach, c.rect[3] + reach);
+                lens.ClipWith(screen);
+                if (lens.GetWidth() <= 0 || lens.GetHeight() <= 0) continue;
+                sharp.Add(lens);
+                if (c.optics[2] > 0.0f) blurred.Add(lens);
+            } else if (draw.UserCallback && draw.UserCallback != ImDrawCallback_ResetRenderState) {
+                sharp = blurred = screen;
+            }
+        }
+    }
+}
+
+} // namespace
+
+void PrepareDrawData(ImDrawData* data, const bool retain_desktop_layer) noexcept {
     if (data == nullptr || ImGui::GetCurrentContext() == nullptr || !Active()) return;
     try {
         ImGuiContext& context = *GImGui;
         const int frame = ImGui::GetFrameCount();
-        struct Pending final {
-            ImDrawList* target{};
-            ImVec2 min{};
-            ImVec2 max{};
-            SurfaceOptions options;
-        };
-        std::vector<Pending> pending;
+        std::size_t used = 0;
         for (ImGuiWindow* const window : context.Windows) {
             if (window == nullptr || !window->Active || window->Hidden ||
                 window->DrawList == nullptr) {
@@ -1426,37 +1445,20 @@ void PrepareDrawData(ImDrawData* data) noexcept {
                 (window->Flags & ImGuiWindowFlags_Popup) == 0) {
                 continue;
             }
-            Pending entry;
-            entry.target = window->DrawList;
-            entry.min = window->Pos;
-            entry.max = ImVec2(window->Pos.x + window->Size.x, window->Pos.y + window->Size.y);
+            SurfaceOptions options;
             const auto registered = g_window_surfaces.find(window->ID);
             if (registered != g_window_surfaces.end() && registered->second.frame == frame) {
-                entry.options = registered->second.options;
+                options = registered->second.options;
             } else if ((window->Flags & (ImGuiWindowFlags_Popup | ImGuiWindowFlags_Tooltip)) != 0) {
-                entry.options.variant = Variant::Regular;
-                entry.options.rounding = (window->Flags & ImGuiWindowFlags_Tooltip) != 0
+                options.rounding = (window->Flags & ImGuiWindowFlags_Tooltip) != 0
                     ? context.Style.PopupRounding * 0.75f : context.Style.PopupRounding;
-                entry.options.scale = ImGui::GetIO().FontGlobalScale > 0.0f
+                options.scale = ImGui::GetIO().FontGlobalScale > 0.0f
                     ? ImGui::GetIO().FontGlobalScale : 1.0f;
-                entry.options.clip = false;
-                entry.options.shadow = true;
+                options.clip = false;
             } else {
                 continue;
             }
-            pending.push_back(entry);
-        }
-        std::erase_if(g_window_surfaces,
-            [frame](const auto& entry) { return entry.second.frame < frame - 1; });
-        std::size_t used = 0;
-        for (const Pending& entry : pending) {
-            int index = -1;
-            for (int list = 0; list < data->CmdLists.Size; ++list) {
-                if (data->CmdLists[list] == entry.target) {
-                    index = list;
-                    break;
-                }
-            }
+            const int index = data->CmdLists.find_index(window->DrawList);
             if (index < 0) continue;
             if (used == g_underlays.size()) {
                 g_underlays.push_back(
@@ -1466,16 +1468,130 @@ void PrepareDrawData(ImDrawData* data) noexcept {
             underlay->_ResetForNewFrame();
             underlay->PushClipRectFullScreen();
             underlay->PushTextureID(ImGui::GetIO().Fonts->TexID);
-            CaptureBackdrop(underlay, true, entry.options.deep_backdrop);
-            DrawSurface(underlay, entry.min, entry.max, entry.options);
+            CaptureBackdrop(underlay, true, options.deep_backdrop);
+            DrawSurface(underlay, window->Pos, window->Rect().Max, options);
             underlay->_PopUnusedDrawCmd();
             data->CmdLists.insert(data->CmdLists.Data + index, underlay);
             data->CmdListsCount = data->CmdLists.Size;
             data->TotalVtxCount += underlay->VtxBuffer.Size;
             data->TotalIdxCount += underlay->IdxBuffer.Size;
         }
+        std::erase_if(g_window_surfaces,
+            [frame](const auto& entry) { return entry.second.frame < frame - 1; });
+        if (!retain_desktop_layer && g_commands_frame == frame) BoundFrameCaptures(*data);
     } catch (...) {
     }
+}
+
+bool AppendDrawListSnapshot(const ImDrawList& list, std::vector<std::byte>& bytes) {
+    const auto append = [&bytes](auto values) {
+        const auto data = std::as_bytes(values);
+        if (!data.empty()) bytes.insert(bytes.end(), data.begin(), data.end());
+    };
+    const int sizes[]{list.VtxBuffer.Size, list.IdxBuffer.Size, list.CmdBuffer.Size};
+    append(std::span{sizes});
+    append(std::span{list.VtxBuffer.Data, static_cast<std::size_t>(list.VtxBuffer.Size)});
+    append(std::span{list.IdxBuffer.Data, static_cast<std::size_t>(list.IdxBuffer.Size)});
+    for (const ImDrawCmd& draw : list.CmdBuffer) {
+        // ImGui zero-initializes the command header. It contains the clip, texture, offsets,
+        // element count and callback identity, ending just before its transient data pointer.
+        append(std::as_bytes(std::span{&draw, 1}).first(offsetof(ImDrawCmd, UserCallbackData)));
+        if (draw.UserCallback == nullptr || draw.UserCallback == ImDrawCallback_ResetRenderState) continue;
+        if (draw.UserCallback != CaptureCallback && draw.UserCallback != SurfaceCallback) return false;
+        const auto& command = *static_cast<const Command*>(draw.UserCallbackData);
+        if (draw.UserCallback == CaptureCallback) {
+            const bool flags[]{command.blur, command.deep};
+            append(std::span{flags});
+        } else {
+            append(std::span{&command.clip, 1});
+            append(std::span{&command.constants, 1});
+        }
+    }
+    return true;
+}
+
+bool SaveDesktopLayer(ID3D11RenderTargetView* target) noexcept {
+    Renderer* const renderer = g_renderer.get();
+    if (!renderer || !target || renderer->captured_frame != ImGui::GetFrameCount()) return false;
+    ComPtr<ID3D11Resource> color;
+    target->GetResource(&color);
+    const std::array<ID3D11Resource*, 4> inputs{
+        color.Get(), renderer->backdrop.Get(), renderer->half.texture.Get(), renderer->quarter.texture.Get()};
+    for (std::size_t i = 0; i < inputs.size(); ++i) {
+        D3D11_TEXTURE2D_DESC desc{};
+        static_cast<ID3D11Texture2D*>(inputs[i])->GetDesc(&desc);
+        auto& saved = renderer->desktop_layer[i];
+        D3D11_TEXTURE2D_DESC previous{};
+        if (saved) saved->GetDesc(&previous);
+        if (previous.Width != desc.Width || previous.Height != desc.Height || previous.Format != desc.Format) {
+            desc.BindFlags = i == 0 ? 0 : D3D11_BIND_SHADER_RESOURCE;
+            desc.MiscFlags = 0;
+            saved.Reset();
+            if (FAILED(renderer->device->CreateTexture2D(&desc, nullptr, &saved))) return false;
+            if (i != 0 && FAILED(renderer->device->CreateShaderResourceView(
+                    saved.Get(), nullptr, renderer->desktop_views[i - 1].ReleaseAndGetAddressOf()))) {
+                saved.Reset();
+                return false;
+            }
+        }
+        renderer->context->CopyResource(saved.Get(), inputs[i]);
+    }
+    return true;
+}
+
+void RestoreDesktopLayer(ID3D11RenderTargetView* target, const RECT& area) noexcept {
+    Renderer& renderer = *g_renderer;
+    ComPtr<ID3D11Resource> color;
+    target->GetResource(&color);
+    const D3D11_BOX box{static_cast<UINT>(area.left), static_cast<UINT>(area.top), 0,
+        static_cast<UINT>(area.right), static_cast<UINT>(area.bottom), 1};
+    renderer.context->CopySubresourceRegion(color.Get(), 0, box.left, box.top, 0,
+        renderer.desktop_layer[0].Get(), 0, &box);
+    renderer.desktop_sharp = true;
+    renderer.desktop_blur = true;
+    renderer.captured_frame = ImGui::GetFrameCount();
+}
+
+ImRect BoundDesktopCaptures(const ImDrawData& data) noexcept {
+    const ImRect screen(data.DisplayPos, ImVec2(data.DisplayPos.x + data.DisplaySize.x,
+        data.DisplayPos.y + data.DisplaySize.y));
+    ImRect bounds(FLT_MAX, FLT_MAX, -FLT_MAX, -FLT_MAX);
+    Command* capture = nullptr;
+    for (const ImDrawList* list : data.CmdLists) {
+        for (const ImDrawCmd& draw : list->CmdBuffer) {
+            if (draw.UserCallback == CaptureCallback) {
+                auto& next = *static_cast<Command*>(draw.UserCallbackData);
+                next.bounded_copy = !next.blur;
+                next.sampled_region = ImRect(FLT_MAX, FLT_MAX, -FLT_MAX, -FLT_MAX);
+                capture = next.blur ? nullptr : &next;
+                if (next.blur) bounds = screen;
+            } else if (draw.UserCallback == SurfaceCallback) {
+                const auto& c = static_cast<const Command*>(draw.UserCallbackData)->constants;
+                if (c.sector[3] > 0.0f) {
+                    if (capture) capture->bounded_copy = false;
+                    capture = nullptr;
+                    bounds = screen;
+                    continue;
+                }
+                // A rectangular lens magnifies toward its own centre. Only refraction and
+                // chromatic separation can sample beyond the quad. Include the linear filter footprint.
+                const float reach = c.shape[2] + std::abs(c.optics[0]) * c.shape[1] *
+                    (1.0f + std::abs(c.optics[1])) + 1.0f;
+                const ImRect lens(c.rect[0] - reach, c.rect[1] - reach,
+                    c.rect[2] + reach, c.rect[3] + reach);
+                if (capture) capture->sampled_region.Add(lens);
+                bounds.Add(lens);
+            } else if (draw.UserCallback == nullptr) {
+                if (draw.ElemCount) bounds.Add(ImRect(draw.ClipRect));
+            } else if (draw.UserCallback != ImDrawCallback_ResetRenderState) {
+                if (capture) capture->bounded_copy = false;
+                capture = nullptr;
+                bounds = screen;
+            }
+        }
+    }
+    bounds.ClipWith(screen);
+    return bounds;
 }
 
 void DrawThumb(ImDrawList* list, const ImVec2 min, const ImVec2 max, const float rounding,
@@ -1882,8 +1998,10 @@ bool SliderScalar(const char* label, const ImGuiDataType data_type, void* value,
 
     // The value column is as wide as the widest value the slider can show.
     char text[64];
-    const char* const text_end =
-        text + ImGui::DataTypeFormatString(text, IM_ARRAYSIZE(text), data_type, value, format);
+    const auto format_value = [&] {
+        return text + ImGui::DataTypeFormatString(text, IM_ARRAYSIZE(text), data_type, value, format);
+    };
+    const char* text_end = format_value();
     float value_width = ImGui::CalcTextSize(text, text_end).x;
     for (const void* bound : {minimum, maximum}) {
         char bound_text[64];
@@ -1902,7 +2020,10 @@ bool SliderScalar(const char* label, const ImGuiDataType data_type, void* value,
     const bool changed = ImGui::SliderBehavior(
         track, id, data_type, value, minimum, maximum, format, flags, &grab);
     ImGui::PopStyleVar();
-    if (changed) ImGui::MarkItemEdited(id);
+    if (changed) {
+        ImGui::MarkItemEdited(id);
+        text_end = format_value();  // Draw the new value in the same frame as the thumb.
+    }
 
     ImDrawList* const list = window->DrawList;
     const auto& theme = ue5mem::PlatformUiTheme();
