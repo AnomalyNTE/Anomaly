@@ -303,6 +303,8 @@ NteOverlaySnapshot::NteOverlaySnapshot(Data data)
       account(std::move(data.account)),
       report_id(std::move(data.report_id)),
       encounter_id(std::move(data.encounter_id)),
+      encounter_name(std::move(data.encounter_name)),
+      summons_only(data.summons_only),
       primary_target(std::move(data.primary_target)),
       websocket_port(data.websocket_port),
       connected_clients(data.connected_clients),
@@ -346,6 +348,8 @@ std::string SerializeOverlaySnapshot(const NteOverlaySnapshot& snapshot) {
                      {"source", account::SourceName(snapshot.account.source)}}},
         {"report_id", snapshot.report_id},
         {"encounter_id", snapshot.encounter_id},
+        {"encounter_name", snapshot.encounter_name},
+        {"summons_only", snapshot.summons_only},
         {"encounter", {{"state", StateName(snapshot.combat.state)},
                        {"duration_seconds", snapshot.combat.duration_seconds},
                        {"confirmed_controlled_count",
@@ -447,10 +451,15 @@ std::optional<NteOverlaySnapshot> ParseOverlaySnapshot(
                 const auto parsed = account::FromUidText(uid->get<std::string>());
                 if (!parsed) throw std::runtime_error("account uid is invalid");
                 result.account = *parsed;
+                if (value->value("source", std::string{}) == "runtime") {
+                    result.account.source = account::Source::Runtime;
+                }
             }
         }
         result.report_id = document.at("report_id").get<std::string>();
         result.encounter_id = document.at("encounter_id").get<std::string>();
+        result.encounter_name = document.value("encounter_name", std::string{});
+        result.summons_only = document.value("summons_only", false);
         const Json& encounter = document.at("encounter");
         result.combat.state = ParseState(encounter.at("state").get<std::string>());
         result.combat.duration_seconds = encounter.at("duration_seconds").get<double>();

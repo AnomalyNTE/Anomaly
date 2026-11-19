@@ -1786,15 +1786,14 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
     target_compile_options(anomaly_nte_combat_model PRIVATE /W4 /permissive- /EHsc /utf-8)
     target_link_libraries(anomaly_nte_combat_model PUBLIC anomaly_nte_combat_protocol)
 
-    add_library(anomaly_nte_combat_uid STATIC
-        ${ANOMALY_NTE_COMBAT_DIR}/src/native_layout.cpp
-        ${ANOMALY_NTE_COMBAT_DIR}/src/uid_detector.cpp)
-    target_include_directories(anomaly_nte_combat_uid PUBLIC
+    add_library(anomaly_nte_combat_native STATIC
+        ${ANOMALY_NTE_COMBAT_DIR}/src/native_layout.cpp)
+    target_include_directories(anomaly_nte_combat_native PUBLIC
         "${CMAKE_SOURCE_DIR}/${ANOMALY_NTE_COMBAT_DIR}/src")
-    target_compile_definitions(anomaly_nte_combat_uid PRIVATE
+    target_compile_definitions(anomaly_nte_combat_native PRIVATE
         UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-    target_compile_options(anomaly_nte_combat_uid PRIVATE /W4 /permissive- /EHsc /utf-8)
-    target_link_libraries(anomaly_nte_combat_uid PUBLIC
+    target_compile_options(anomaly_nte_combat_native PRIVATE /W4 /permissive- /EHsc /utf-8)
+    target_link_libraries(anomaly_nte_combat_native PUBLIC
         anomaly_nte_combat_engine Anomaly::sdk)
 
     # Overlay 是独立 GUI 进程：Direct2D/DirectWrite/WIC 自绘，不受宿主 ImGui 能力限制。
@@ -1818,7 +1817,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         BUNDLED_TARGETS anomaly_nte_combat_overlay
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteCombatTracker")
     target_link_libraries(anomaly_builtin_nte_combat_tracker PRIVATE
-        anomaly_nte_combat_model anomaly_nte_combat_uid)
+        anomaly_nte_combat_model anomaly_nte_combat_native)
 
     if(ANOMALY_BUILD_TEST_FIXTURES)
         # 离线夹具：采集引擎/日志仓库 与 界面模型/协议/ABI 两组各自在没有游戏进程时验证。
@@ -1844,7 +1843,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
             "anomaly_nte_combat_engine;Anomaly::sdk;nlohmann_json::nlohmann_json")
         anomaly_nte_combat_test_fixture(anomaly_nte_combat_surface_fixture
             nte_surface nte_surface_tests.cpp
-            "anomaly_nte_combat_model;anomaly_nte_combat_uid;Anomaly::sdk;nlohmann_json::nlohmann_json;anomaly_plugin_profile;ue5mem_memory")
+            "anomaly_nte_combat_model;anomaly_nte_combat_native;Anomaly::sdk;nlohmann_json::nlohmann_json;anomaly_plugin_profile;ue5mem_memory")
     endif()
 
     anomaly_add_plugin(anomaly_builtin_nte_free_fly

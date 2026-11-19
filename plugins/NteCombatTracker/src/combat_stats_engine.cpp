@@ -119,7 +119,22 @@ void CombatStatsEngine::ObserveCombatant(const Combatant& combatant, TimePoint) 
         Reset();
     }
     combatant_ = combatant;
-    if (combatant.character.id != 0) controlled_characters_.insert(combatant.character);
+    if (!summons_only_ && combatant.character.id != 0) {
+        controlled_characters_.insert(combatant.character);
+    }
+}
+
+void CombatStatsEngine::SetSummonsOnly(const bool enabled) {
+    if (summons_only_ == enabled) return;
+    Reset();
+    summons_only_ = enabled;
+}
+
+void CombatStatsEngine::ObserveSummons(const std::span<const Handle> summons) {
+    controlled_characters_.clear();
+    for (const auto handle : summons) {
+        if (handle.id != 0 && handle != combatant_.character) controlled_characters_.insert(handle);
+    }
 }
 
 bool CombatStatsEngine::IsRelevant(
@@ -127,7 +142,8 @@ bool CombatStatsEngine::IsRelevant(
     const Handle attacker,
     const Handle victim) const {
     return world == combatant_.world &&
-        (controlled_characters_.contains(attacker) || controlled_characters_.contains(victim));
+        (controlled_characters_.contains(attacker) ||
+            (!summons_only_ && controlled_characters_.contains(victim)));
 }
 
 CombatStatsEngine::PlayerAggregate& CombatStatsEngine::ConfirmControlledActor(
@@ -140,7 +156,8 @@ CombatStatsEngine::PlayerAggregate& CombatStatsEngine::ConfirmControlledActor(
     // The attribute keys off the object path; the identity key and label may
     // legitimately hold a display name, so they cannot be reused for it.
     const bool resolved = IsResolvedParticipant(attribute_path);
-    const std::string identity = resolved ? PathIdentity(attribute_path) : HandleIdentity(handle);
+    const std::string identity = resolved && !summons_only_
+        ? PathIdentity(attribute_path) : HandleIdentity(handle);
     if (resolved) {
         const auto previous_key = confirmed_actor_keys_.find(handle);
         if (previous_key != confirmed_actor_keys_.end() && previous_key->second != identity) {
@@ -228,8 +245,55 @@ bool CombatStatsEngine::AcceptDamage(const DamageEvent& event, const TimePoint n
     return AcceptEvent(event, now);
 }
 
+void CombatStatsEngine::UpdateEventDisplayName(const std::uint64_t id,
+    const std::string& technical_name, const std::string& display_name) {
+    const auto identity = DamageSourceIdentity(id, technical_name);
+    if (auto row = outgoing_sources_.find(identity); row != outgoing_sources_.end()) {
+        row->second.label = display_name;
+    }
+    for (auto& [key, row] : incoming_sources_) {
+        if (key.source_identity != identity) continue;
+        row.source_name = display_name;
+        row.label = row.participant_name + " / " + row.source_name;
+    }
+    for (auto& event : recent_events_) {
+        if (event.name_id == id) event.source_display_name = display_name;
+    }
+    for (auto& [key, row] : confirmed_controlled_actors_) {
+        if (row.maximum_source_id != id) continue;
+        row.maximum_source_display_name = display_name;
+        row.maximum_source_name_origin = "sdk";
+    }
+}
+
+void CombatStatsEngine::UpdateParticipantDisplayName(
+    const Handle handle, const std::string& display_name) {
+    if (auto row = outgoing_targets_.find(handle); row != outgoing_targets_.end()) {
+        row->second.label = display_name;
+    }
+    for (auto& [key, row] : incoming_sources_) {
+        if (key.participant != handle) continue;
+        row.participant_name = display_name;
+        row.label = row.participant_name + " / " + row.source_name;
+    }
+    for (auto& event : recent_events_) {
+        if (event.attacker == handle) event.attacker_display_name = display_name;
+        if (event.victim == handle) event.victim_display_name = display_name;
+    }
+    if (const auto key = confirmed_actor_keys_.find(handle); key != confirmed_actor_keys_.end()) {
+        auto row = confirmed_controlled_actors_.find(key->second);
+        if (row != confirmed_controlled_actors_.end()) {
+            row->second.label = display_name;
+            row->second.display_name = display_name;
+            row->second.name_origin = "sdk";
+        }
+    }
+}
+
 bool CombatStatsEngine::AcceptEvent(const CombatEvent& event, const TimePoint now) {
     if (event.world != combatant_.world) return false;
+    if (summons_only_ && (event.kind != CombatEventKind::Damage ||
+        !IsRelevant(event.world, event.attacker, event.victim))) return false;
     if (event.name_id != 0 &&
         (event.source_name_origin == "sdk" ||
          event.source_name_origin == "resource")) {
@@ -276,7 +340,7 @@ bool CombatStatsEngine::AcceptEvent(const CombatEvent& event, const TimePoint no
         engaged_actors_.contains(event.victim);
     if (!encounter_related) return false;
     const bool outgoing = controlled_characters_.contains(event.attacker);
-    const bool incoming = controlled_characters_.contains(event.victim);
+    const bool incoming = !summons_only_ && controlled_characters_.contains(event.victim);
     if (event.kind == CombatEventKind::Damage) {
         auto& flag_count = damage_flag_histogram_[event.flags];
         quality_.overflow = SaturatingIncrement(flag_count) || quality_.overflow;
@@ -387,15 +451,22 @@ bool CombatStatsEngine::AcceptEvent(const CombatEvent& event, const TimePoint no
                 quality_.overflow = SaturatingAdd(incoming_damage_, amount) || quality_.overflow;
                 quality_.overflow = SaturatingIncrement(incoming_positive_hits_) || quality_.overflow;
             }
-            if (!healing) AddBoundedAggregate(
-                incoming_sources_, SourceKey{DamageSourceIdentity(
-                    event.name_id, event.source_name), event.attacker},
-                (event.attacker_display_name.empty()
-                    ? event.attacker_name : event.attacker_display_name) + " / " +
-                (event.source_display_name.empty()
-                    ? event.source_name : event.source_display_name),
-                amount, other_incoming_source_, quality_.aggregate_truncated,
-                quality_.overflow);
+            if (!healing) {
+                const SourceKey key{DamageSourceIdentity(
+                    event.name_id, event.source_name), event.attacker};
+                const auto& participant = event.attacker_display_name.empty()
+                    ? event.attacker_name : event.attacker_display_name;
+                const auto& source = event.source_display_name.empty()
+                    ? event.source_name : event.source_display_name;
+                AddBoundedAggregate(incoming_sources_, key, participant + " / " + source,
+                    amount, other_incoming_source_, quality_.aggregate_truncated,
+                    quality_.overflow);
+                if (auto found = incoming_sources_.find(key);
+                    found != incoming_sources_.end() && found->second.positive_hits == 1) {
+                    found->second.participant_name = participant;
+                    found->second.source_name = source;
+                }
+            }
             if (incoming_player != nullptr) {
                 if (healing) {
                     quality_.overflow = SaturatingAdd(incoming_player->healing_received, amount) || quality_.overflow;

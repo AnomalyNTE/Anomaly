@@ -7,11 +7,11 @@
 #include "display_name_origin.hpp"
 #include "log_worker.hpp"
 #include "native_layout.hpp"
-#include "uid_detector.hpp"
 #include "overlay_publish_policy.hpp"
 #include "overlay_protocol.hpp"
 #include "overlay_control.hpp"
 #include "plugin_version.hpp"
+#include "plugins/SummonLab/combat_roster_ipc.hpp"
 
 #include <nlohmann/json.hpp>
 #include "sdk_compat.hpp"
@@ -22,10 +22,13 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdio>
+#include <cstring>
 #include <chrono>
 #include <ctime>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -36,6 +39,7 @@
 #include <span>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -56,13 +60,35 @@ constexpr std::size_t kMaximumResolvedNameBytes = 4096;
 constexpr std::size_t kMaximumNameCacheEntries = 4096;
 constexpr std::size_t kMaximumServiceGapIntervals = 64;
 constexpr std::size_t kMaximumPathBytes = 32768;
-// 显示名在宿主侧是延后补全的，未命中后隔这么多事件再试，避免每帧重复查询。
-constexpr std::uint64_t kParticipantNameRetrySequenceSpan = 64;
+constexpr std::string_view kObsConfigId = "obs-capture";
+constexpr std::string_view kObsConfigSchema =
+    R"({"type":"object","required":["enabled"],"additionalProperties":false,"properties":{"enabled":{"type":"boolean"},"summonsOnly":{"type":"boolean"},"battleName":{"type":"string","maxLength":120}}})";
+constexpr std::size_t kBattleNameCapacity = 121;
+constexpr auto kSummonRosterPollInterval = std::chrono::milliseconds(100);
+constexpr auto kNameRetryInterval = std::chrono::milliseconds(150);
+constexpr std::size_t kNameRetryBudget = 16;
 
 struct NameCacheEntry {
     std::string value;
-    std::uint32_t attempts{};
-    std::uint64_t retry_after_sequence{};
+    TimePoint retry_after{};
+    bool queued{};
+};
+
+struct PendingEventName {
+    AnomalyNteCombatEventV1 event;
+    std::string technical_name;
+};
+
+struct CapturePreferences {
+    bool summons_only{};
+    std::string battle_name;
+    bool operator==(const CapturePreferences&) const = default;
+};
+
+struct SummonRoster {
+    Handle world;
+    std::uint64_t latest_applied_sequence{};
+    std::vector<Handle> actors;
 };
 
 // 开发者在诊断页观察到的 name_id → 显示名记录。名称由宿主 ABI 提供，
@@ -87,11 +113,17 @@ struct RenderState {
     std::string overlay_error;
     nte::settings::OverlaySettings overlay_settings;
     bool overlay_enabled{true};
+    bool obs_capture{};
+    bool obs_save_failed{};
+    CapturePreferences capture_preferences;
+    bool summon_roster_ready{};
+    bool applied_damage_ready{};
     std::string settings_status;
     std::string settings_error;
     bool developer_available{};
     nte::developer::Snapshot developer;
-    nte::account::UidDetectorDiagnostics uid_detector;
+    std::string active_uid;
+    std::string observed_uid;
     std::string skill_capture_status;
     std::uint64_t skill_frame_sequence{};
     std::uint64_t event_cursor_sequence{};
@@ -110,6 +142,7 @@ struct LogSession {
     Handle world;
     std::string report_id;
     std::string encounter_id;
+    std::string encounter_name;
     TimePoint report_started{};
     std::int64_t report_started_utc_ms{};
     std::int64_t encounter_started_utc_ms{};
@@ -135,13 +168,17 @@ struct Context {
     std::unique_ptr<nte::damage_log::DamageLogWorker> log_worker;
     std::filesystem::path log_root;
     std::optional<std::filesystem::path> export_root;
-    std::unique_ptr<nte::account::UidDetector> uid_detector;
     nte::account::AccountIdentity account;
     LogSession log_session;
     std::string completed_report_id;
     std::string completed_encounter_id;
+    std::string completed_encounter_name;
     std::unordered_map<Handle, NameCacheEntry, nte::combat_stats::HandleHash>
         participant_names;
+    std::deque<Handle> pending_participant_names;
+    std::deque<PendingEventName> pending_event_names;
+    std::unordered_set<std::uint64_t> pending_event_name_ids;
+    TimePoint next_name_retry{};
     std::mutex mutex;
     RenderState render;
     Handle observed_world;
@@ -172,6 +209,11 @@ struct Context {
     bool overlay_launch_attempted{};
     bool overlay_restart_pending{};
     bool toggle_overlay_requested{};
+    bool clear_combat_requested{};
+    std::optional<bool> requested_summons_only;
+    std::optional<std::string> requested_battle_name;
+    std::array<char, kBattleNameCapacity> battle_name_input{};
+    std::optional<bool> requested_obs_capture;
     bool open_log_root_requested{};
     bool apply_export_root_requested{};
     bool export_id_names_requested{};
@@ -191,6 +233,16 @@ struct Context {
     std::string settings_status;
     std::string settings_error;
     AnomalyWebSocketServerInfoV1 overlay_server_info{sizeof(AnomalyWebSocketServerInfoV1)};
+    const AnomalyConfigServiceV1* obs_config{};
+    const AnomalySchedulerServiceV1* scheduler{};
+    std::atomic<bool> obs_capture{};
+    std::atomic<bool> obs_saved{};
+    std::atomic<bool> obs_save_failed{};
+    std::mutex obs_save_mutex;
+    CapturePreferences capture_preferences;
+    CapturePreferences saved_capture_preferences;
+    std::atomic<std::shared_ptr<const SummonRoster>> summon_roster;
+    TimePoint next_summon_roster_poll{};
     std::string overlay_error;
     std::string control_status;
     std::string id_name_export_status;
@@ -422,13 +474,13 @@ nte::combat_stats::DisplayNameOrigin ParticipantNameOrigin(
 std::string ResolveParticipantCached(
     const AnomalyNteCombatServiceV1* service,
     const AnomalyGenerationHandleV1 participant,
-    const std::uint64_t sequence) {
+    const TimePoint now) {
     const Handle handle = ConvertHandle(participant);
     if (handle.id == 0) return "Unknown participant";
     auto found = g_context.participant_names.find(handle);
     if (found != g_context.participant_names.end()) {
         if (!found->second.value.empty()) return found->second.value;
-        if (found->second.attempts >= 3 || sequence < found->second.retry_after_sequence) {
+        if (now < found->second.retry_after) {
             return ResolveParticipantPath(service, participant);
         }
     } else if (g_context.participant_names.size() >= kMaximumNameCacheEntries) {
@@ -439,11 +491,57 @@ std::string ResolveParticipantCached(
     const std::string display = ResolveParticipantDisplay(service, participant);
     if (!display.empty()) {
         found->second.value = display;
+        g_context.engine.UpdateParticipantDisplayName(handle, display);
         return display;
     }
-    ++found->second.attempts;
-    found->second.retry_after_sequence = sequence + kParticipantNameRetrySequenceSpan;
+    found->second.retry_after = now + kNameRetryInterval;
     return ResolveParticipantPath(service, participant);
+}
+
+void QueueParticipantNameRetry(const Handle handle) {
+    auto entry = g_context.participant_names.find(handle);
+    if (entry == g_context.participant_names.end() ||
+        !entry->second.value.empty() || entry->second.queued) return;
+    g_context.pending_participant_names.push_back(handle);
+    entry->second.queued = true;
+}
+
+void RefreshCombatNames(const AnomalyNteCombatServiceV1* service, const TimePoint now) {
+    if (now < g_context.next_name_retry) return;
+    g_context.next_name_retry = now + kNameRetryInterval;
+    auto& events = g_context.pending_event_names;
+    const auto event_budget = (std::min)(events.size(), kNameRetryBudget);
+    for (std::size_t index{}; index < event_budget; ++index) {
+        auto pending = std::move(events.front());
+        events.pop_front();
+        const auto display = ResolveEventDisplayName(service, pending.event);
+        if (display.empty()) {
+            events.push_back(std::move(pending));
+            continue;
+        }
+        g_context.engine.UpdateEventDisplayName(
+            pending.event.name_id, pending.technical_name, display);
+        g_context.pending_event_name_ids.erase(pending.event.name_id);
+    }
+    auto& participants = g_context.pending_participant_names;
+    const auto participant_budget = (std::min)(participants.size(), kNameRetryBudget);
+    for (std::size_t index{}; index < participant_budget; ++index) {
+        const Handle handle = participants.front();
+        participants.pop_front();
+        auto& entry = g_context.participant_names.at(handle);
+        entry.queued = false;
+        if (!entry.value.empty()) continue;
+        static_cast<void>(ResolveParticipantCached(service, {handle.id, handle.generation}, now));
+        QueueParticipantNameRetry(handle);
+    }
+}
+
+void ClearCombatNameCaches() {
+    g_context.participant_names.clear();
+    g_context.pending_participant_names.clear();
+    g_context.pending_event_names.clear();
+    g_context.pending_event_name_ids.clear();
+    g_context.next_name_retry = {};
 }
 
 std::string ResolveAbilityPath(
@@ -748,7 +846,7 @@ void RestartLogWorkerStorage() {
 void RollbackLogOpenFailure(const std::string& error) {
     RestartLogWorkerStorage();
     g_context.log_session = {};
-    g_context.participant_names.clear();
+    ClearCombatNameCaches();
     g_context.control_status = "log_open_failed";
     g_context.settings_error = error.empty() ? "Log initialization failed" : error;
 }
@@ -762,7 +860,7 @@ void RestartLogWorkerAfterFailure(const std::string& error) {
     g_context.log_session = {};
     g_context.engine.MarkPartial(false);
     g_context.engine.CompleteEncounter();
-    g_context.participant_names.clear();
+    ClearCombatNameCaches();
     g_context.control_status = "log_transaction_failed";
     g_context.settings_error = error.empty() ? "Log transaction failed" : error;
 }
@@ -777,6 +875,7 @@ bool OpenEncounterLog(
     g_context.control_status.clear();
     g_context.completed_report_id.clear();
     g_context.completed_encounter_id.clear();
+    g_context.completed_encounter_name.clear();
     auto& session = g_context.log_session;
     session.report_id = nte::damage_log::GenerateUuidV4();
     if (session.report_id.empty()) return false;
@@ -789,6 +888,9 @@ bool OpenEncounterLog(
         return false;
     }
     session.encounter_started_utc_ms = utc_ms;
+    if (g_context.capture_preferences.summons_only) {
+        session.encounter_name = g_context.capture_preferences.battle_name;
+    }
     session.encounter_started_offset_us = ReportOffsetMicroseconds(now);
     session.dropped_events = 0;
     session.dropped_first_sequence = 0;
@@ -820,7 +922,8 @@ bool OpenEncounterLog(
         return false;
     }
     if (!g_context.log_worker->Submit(nte::damage_log::EncounterOpen{
-            session.encounter_id, utc_ms, session.encounter_started_offset_us})) {
+            session.encounter_id, utc_ms, session.encounter_started_offset_us,
+            session.encounter_name, g_context.capture_preferences.summons_only})) {
         g_context.pending_dropped_events += session.dropped_events;
         if (g_context.pending_dropped_first_sequence == 0 ||
             (session.dropped_first_sequence != 0 &&
@@ -899,6 +1002,7 @@ bool FinishEncounterLog(
     close.encounter_hps = snapshot.encounter_hps;
     close.encounter_received_hps = snapshot.encounter_received_hps;
     close.cutoff_sequence = session.cutoff_sequence;
+    close.name = session.encounter_name;
     const std::string report_id = session.report_id;
     const std::string encounter_id = session.encounter_id;
     if (!g_context.log_worker->Submit(std::move(close))) {
@@ -924,8 +1028,9 @@ bool FinishEncounterLog(
     }
     g_context.completed_report_id = report_id;
     g_context.completed_encounter_id = encounter_id;
+    g_context.completed_encounter_name = session.encounter_name;
     session = {};
-    g_context.participant_names.clear();
+    ClearCombatNameCaches();
     ResetPendingCaptureGaps();
     return true;
 }
@@ -965,7 +1070,7 @@ bool FinishReportLog(const char* reason, const std::int64_t utc_ms) {
         return false;
     }
     session = {};
-    g_context.participant_names.clear();
+    ClearCombatNameCaches();
     ResetPendingCaptureGaps();
     return true;
 }
@@ -1011,6 +1116,13 @@ NteOverlaySnapshot MakeOverlaySnapshot(
     data.account = g_context.account;
     data.report_id = report_id;
     data.encounter_id = encounter_id;
+    data.summons_only = g_context.capture_preferences.summons_only;
+    if (!encounter_id.empty()) {
+        data.encounter_name = encounter_id == g_context.completed_encounter_id
+            ? g_context.completed_encounter_name : g_context.log_session.encounter_name;
+    } else if (data.summons_only) {
+        data.encounter_name = g_context.capture_preferences.battle_name;
+    }
     if (!stats.outgoing_targets.empty()) {
         data.primary_target = stats.outgoing_targets.front().label;
     }
@@ -1093,6 +1205,7 @@ bool LaunchOverlay(
         std::to_wstring(port) + L" --host-pid " +
         std::to_wstring(GetCurrentProcessId());
     if (restart) command += L" --restart";
+    if (g_context.obs_capture.load()) command += L" --obs-capture";
     std::vector<wchar_t> mutable_command(command.begin(), command.end());
     mutable_command.push_back(L'\0');
     STARTUPINFOW startup{};
@@ -1111,6 +1224,123 @@ bool LaunchOverlay(
 HWND OverlayWindow() {
     return FindWindowW(nte::combat_stats::overlay::kWindowClassName,
         nte::combat_stats::overlay::kWindowTitle);
+}
+
+AnomalyByteSpanV1 ConfigBytes(const std::string_view text) {
+    return {reinterpret_cast<const std::uint8_t*>(text.data()), text.size()};
+}
+
+void LoadTrackerPreferences() {
+    bool enabled{};
+    CapturePreferences capture;
+    const auto* config = g_context.obs_config;
+    if (config != nullptr) {
+        std::array<std::uint8_t, 1024> bytes{};
+        std::size_t size = bytes.size();
+        std::uint32_t version{};
+        const auto status = config->read(config->user, anomaly::sdk::StringView(kObsConfigId),
+            &version, {bytes.data(), bytes.size()}, &size);
+        if (status.code == ANOMALY_STATUS_V1_OK && version == 1 && size <= bytes.size()) {
+            const auto document = nlohmann::json::parse(bytes.begin(), bytes.begin() + size,
+                nullptr, false);
+            if (document.is_object()) {
+                enabled = document.value("enabled", false);
+                capture.summons_only = document.value("summonsOnly", false);
+                capture.battle_name = document.value("battleName", std::string{});
+                if (capture.battle_name.size() >= kBattleNameCapacity) capture.battle_name.clear();
+            }
+        }
+    }
+    g_context.obs_capture.store(enabled);
+    g_context.obs_saved.store(enabled);
+    g_context.obs_save_failed.store(false);
+    g_context.capture_preferences = capture;
+    g_context.saved_capture_preferences = capture;
+    std::ranges::copy(capture.battle_name, g_context.battle_name_input.begin());
+    g_context.engine.SetSummonsOnly(capture.summons_only);
+}
+
+void ANOMALY_CALL SaveTrackerPreferences(void*, AnomalyGenerationHandleV1) noexcept {
+    std::scoped_lock lock(g_context.obs_save_mutex);
+    const bool enabled = g_context.obs_capture.load();
+    try {
+        CapturePreferences capture;
+        {
+            std::scoped_lock state_lock(g_context.mutex);
+            capture = g_context.capture_preferences;
+        }
+        if (enabled == g_context.obs_saved.load() &&
+            capture == g_context.saved_capture_preferences) {
+            g_context.obs_save_failed.store(false);
+            return;
+        }
+        const auto* config = g_context.obs_config;
+        const auto document = nlohmann::json{{"enabled", enabled},
+            {"summonsOnly", capture.summons_only}, {"battleName", capture.battle_name}}.dump();
+        if (config != nullptr && config->write_atomic(config->user,
+                anomaly::sdk::StringView(kObsConfigId), 1, ConfigBytes(document)).code ==
+                ANOMALY_STATUS_V1_OK) {
+            g_context.obs_saved.store(enabled);
+            g_context.saved_capture_preferences = std::move(capture);
+            g_context.obs_save_failed.store(false);
+            return;
+        }
+    } catch (...) {
+    }
+    g_context.obs_save_failed.store(true);
+}
+
+void QueueTrackerPreferenceSave() {
+    AnomalyGenerationHandleV1 task{};
+    const auto* scheduler = g_context.scheduler;
+    if (scheduler == nullptr || scheduler->schedule(
+            scheduler->user, 0, SaveTrackerPreferences, nullptr, &task).code !=
+            ANOMALY_STATUS_V1_OK) {
+        g_context.obs_save_failed.store(true);
+    }
+}
+
+void ANOMALY_CALL OnSummonRoster(void*, AnomalyGenerationHandleV1,
+    const AnomalyStatusV1 status, const AnomalyByteSpanV1 response) noexcept {
+    summon_lab::combat_roster::ReplyHeader header{};
+    constexpr auto handle_size = sizeof(AnomalyGenerationHandleV1);
+    if (status.code == ANOMALY_STATUS_V1_OK && response.size >= sizeof(header) &&
+        (response.size - sizeof(header)) % handle_size == 0) {
+        try {
+            std::memcpy(&header, response.data, sizeof(header));
+            auto roster = std::make_shared<SummonRoster>();
+            roster->world = ConvertHandle(header.world);
+            roster->latest_applied_sequence = header.latest_applied_sequence;
+            roster->actors.reserve((response.size - sizeof(header)) / handle_size);
+            for (std::size_t offset = sizeof(header); offset < response.size; offset += handle_size) {
+                AnomalyGenerationHandleV1 handle{};
+                std::memcpy(&handle, response.data + offset, handle_size);
+                if (handle.id != 0) roster->actors.push_back(ConvertHandle(handle));
+            }
+            g_context.summon_roster.store(std::move(roster));
+            return;
+        } catch (...) {
+        }
+    }
+    g_context.summon_roster.store(nullptr);
+}
+
+void RequestSummonRoster(const anomaly::sdk::Host& host, const TimePoint now) {
+    using namespace summon_lab::combat_roster;
+    if (now < g_context.next_summon_roster_poll) return;
+    g_context.next_summon_roster_poll = now + kSummonRosterPollInterval;
+    const auto ipc = host.Query<AnomalyIpcServiceV1>(ANOMALY_IPC_SERVICE_V1_ID);
+    const AnomalyIpcEndpointSelectorV1 selector{
+        sizeof(selector), anomaly::sdk::StringView(kEndpoint), kVersion, 0, kRequest, kResponse, {}};
+    AnomalyGenerationHandleV1 task{};
+    if (!ipc || ipc->struct_size < sizeof(AnomalyIpcServiceV1) || !ipc->invoke_async) {
+        g_context.summon_roster.store(nullptr);
+        return;
+    }
+    const auto status = ipc->invoke_async(ipc->user, &selector, {}, OnSummonRoster, nullptr, &task);
+    if (!anomaly::sdk::Succeeded(status) && status.reserved != ANOMALY_IPC_ERROR_V1_QUEUE_FULL) {
+        g_context.summon_roster.store(nullptr);
+    }
 }
 
 void NotifyOverlaySettingsChanged() {
@@ -1411,11 +1641,10 @@ void ResetState() {
     g_context.engine.Reset();
     g_context.cursor.Clear();
     g_context.log_session = {};
-    g_context.uid_detector.reset();
     g_context.native = {};
     g_context.character_attributes_disabled = false;
     g_context.account = nte::account::Unknown();
-    g_context.participant_names.clear();
+    ClearCombatNameCaches();
     g_context.observed_world = {};
     ResetPendingCaptureGaps();
     g_context.producer_instance_id.clear();
@@ -1425,6 +1654,13 @@ void ResetState() {
     g_context.overlay_launch_attempted = false;
     g_context.overlay_restart_pending = false;
     g_context.toggle_overlay_requested = false;
+    g_context.clear_combat_requested = false;
+    g_context.requested_summons_only.reset();
+    g_context.requested_battle_name.reset();
+    g_context.battle_name_input.fill('\0');
+    g_context.summon_roster.store(nullptr);
+    g_context.next_summon_roster_poll = {};
+    g_context.requested_obs_capture.reset();
     g_context.open_log_root_requested = false;
     g_context.apply_export_root_requested = false;
     g_context.export_id_names_requested = false;
@@ -1475,34 +1711,43 @@ void Update(void* context, double) {
     const auto combat = host.Query<AnomalyNteCombatServiceV1>(
         ANOMALY_NTE_COMBAT_SERVICE_V1_ID, ANOMALY_NTE_COMBAT_SERVICE_V1_VERSION);
 
-    if (g_context.uid_detector) {
-        const auto detected = g_context.uid_detector->Update();
-        const auto diagnostics = g_context.uid_detector->diagnostics();
-        g_context.developer_access.ObserveAccount(
-            diagnostics.current_observation_valid ? detected : std::nullopt);
-        ApplyDeveloperModeAccess();
-        if (nte::account::ShouldTransition(g_context.account, detected)) {
-            bool closed = true;
-            if (!g_context.log_session.encounter_id.empty()) {
-                closed = FinishEncounterLog("uid_changed", MakeOverlaySnapshot(
-                    g_context.engine.BuildSnapshot(now),
-                    CaptureStatusCode(g_context.render.snapshot.get()),
-                    g_context.render.snapshot
-                        ? g_context.render.snapshot->latest_event_sequence : 0,
-                    g_context.log_session.report_id,
-                    g_context.log_session.encounter_id, utc_ms, false,
-                    g_context.overlay_snapshot_sequence), now, utc_ms);
-            }
-            if (closed) closed = FinishReportLog("uid_changed", utc_ms);
-            if (closed) {
-                g_context.account = *detected;
-                g_context.completed_report_id.clear();
-                g_context.completed_encounter_id.clear();
-                g_context.engine.Reset();
-                g_context.cursor.RequestReset();
-                ResetPendingCaptureGaps();
-                g_context.control_status = "uid_changed";
-            }
+    const auto account = host.Query<AnomalyNteAccountServiceV1>(
+        ANOMALY_NTE_ACCOUNT_SERVICE_V1_ID, ANOMALY_NTE_ACCOUNT_SERVICE_V1_VERSION);
+    std::optional<nte::account::AccountIdentity> detected;
+    if (account && account->struct_size >= sizeof(AnomalyNteAccountServiceV1) &&
+        account->uid_utf8 != nullptr) {
+        std::array<char, 21> uid{};
+        std::size_t size = uid.size();
+        if (account->uid_utf8(account->user, uid.data(), &size).code == ANOMALY_STATUS_V1_OK &&
+            size > 1 && size <= uid.size() && uid[size - 1] == '\0') {
+            detected = nte::account::FromUidText(std::string_view(uid.data(), size - 1));
+            if (detected) detected->source = nte::account::Source::Runtime;
+        }
+    }
+    g_context.developer_access.ObserveAccount(detected);
+    ApplyDeveloperModeAccess();
+    if (nte::account::ShouldTransition(g_context.account, detected)) {
+        bool closed = true;
+        if (!g_context.log_session.encounter_id.empty()) {
+            closed = FinishEncounterLog("uid_changed", MakeOverlaySnapshot(
+                g_context.engine.BuildSnapshot(now),
+                CaptureStatusCode(g_context.render.snapshot.get()),
+                g_context.render.snapshot
+                    ? g_context.render.snapshot->latest_event_sequence : 0,
+                g_context.log_session.report_id,
+                g_context.log_session.encounter_id, utc_ms, false,
+                g_context.overlay_snapshot_sequence), now, utc_ms);
+        }
+        if (closed) closed = FinishReportLog("uid_changed", utc_ms);
+        if (closed) {
+            g_context.account = *detected;
+            g_context.completed_report_id.clear();
+            g_context.completed_encounter_id.clear();
+            g_context.engine.Reset();
+            ClearCombatNameCaches();
+            g_context.cursor.RequestReset();
+            ResetPendingCaptureGaps();
+            g_context.control_status = "uid_changed";
         }
     }
 
@@ -1515,12 +1760,21 @@ void Update(void* context, double) {
         preflight_available = preflight_status.code == ANOMALY_STATUS_V1_OK &&
             (preflight.flags & ANOMALY_NTE_COMBATANT_V1_VALID) != 0 &&
             (preflight.flags & ANOMALY_NTE_COMBATANT_V1_STALE) == 0;
+        if (preflight_available && g_context.capture_preferences.summons_only) {
+            const auto roster = g_context.summon_roster.load();
+            preflight_available = g_context.render.applied_damage_ready &&
+                roster && roster->world == ConvertHandle(preflight.world);
+        }
     }
     UpdateServiceGap(preflight_available, now);
 
-    const bool manual_end_requested = g_context.manual_end_event != nullptr &&
+    const bool overlay_clear_requested = g_context.manual_end_event != nullptr &&
         WaitForSingleObject(g_context.manual_end_event, 0) == WAIT_OBJECT_0;
+    bool clear_combat_requested{};
     bool toggle_overlay_requested{};
+    std::optional<bool> requested_summons_only;
+    std::optional<std::string> requested_battle_name;
+    std::optional<bool> requested_obs_capture;
     bool open_log_root_requested{};
     bool apply_export_root_requested{};
     bool export_id_names_requested{};
@@ -1535,6 +1789,10 @@ void Update(void* context, double) {
         std::scoped_lock lock(g_context.mutex);
         toggle_overlay_requested = std::exchange(
             g_context.toggle_overlay_requested, false);
+        clear_combat_requested = std::exchange(g_context.clear_combat_requested, false);
+        requested_summons_only = std::exchange(g_context.requested_summons_only, std::nullopt);
+        requested_battle_name = std::exchange(g_context.requested_battle_name, std::nullopt);
+        requested_obs_capture = std::exchange(g_context.requested_obs_capture, std::nullopt);
         open_log_root_requested = std::exchange(
             g_context.open_log_root_requested, false);
         apply_export_root_requested = std::exchange(
@@ -1611,6 +1869,16 @@ void Update(void* context, double) {
         }
     }
 
+    if (requested_obs_capture) {
+        g_context.obs_capture.store(*requested_obs_capture);
+        const UINT message = RegisterWindowMessageW(
+            nte::combat_stats::overlay::kObsCaptureMessageName);
+        const HWND window = OverlayWindow();
+        if (window != nullptr && message != 0) {
+            PostMessageW(window, message, *requested_obs_capture, 0);
+        }
+        QueueTrackerPreferenceSave();
+    }
     if (toggle_overlay_requested) {
         const auto action = nte::combat_stats::ResolveOverlayToggleAction(
             g_context.overlay_policy.enabled(),
@@ -1740,11 +2008,13 @@ void Update(void* context, double) {
         g_context.next_settings_refresh = now + std::chrono::seconds(1);
     }
 
-    if (manual_end_requested) {
+    const bool change_mode = requested_summons_only &&
+        *requested_summons_only != g_context.capture_preferences.summons_only;
+    if (overlay_clear_requested || clear_combat_requested || change_mode) {
         bool may_reset = true;
         if (!g_context.log_session.encounter_id.empty()) {
             may_reset = FinishEncounterLog(
-                "manual_end",
+                change_mode ? "capture_mode_changed" : "manual_end",
                 MakeOverlaySnapshot(
                 g_context.engine.BuildSnapshot(now),
                 CaptureStatusCode(g_context.render.snapshot.get()),
@@ -1754,14 +2024,37 @@ void Update(void* context, double) {
                 g_context.log_session.encounter_id, utc_ms, false,
                 g_context.overlay_snapshot_sequence), now, utc_ms);
         }
-        g_context.control_status = may_reset
-            ? "manual_end_completed" : "manual_end_failed";
+        g_context.control_status = may_reset ? "manual_end_completed" : "manual_end_failed";
         if (may_reset) {
-            g_context.engine.Reset();
+            ClearCombatNameCaches();
             g_context.cursor.RequestReset();
             ResetPendingCaptureGaps();
+            if (change_mode) {
+                {
+                    std::scoped_lock lock(g_context.mutex);
+                    g_context.capture_preferences.summons_only = *requested_summons_only;
+                }
+                g_context.engine.SetSummonsOnly(*requested_summons_only);
+                g_context.next_summon_roster_poll = {};
+                g_context.summon_roster.store(nullptr);
+                QueueTrackerPreferenceSave();
+            } else {
+                g_context.engine.Reset();
+            }
         }
     }
+    if (requested_battle_name && *requested_battle_name != g_context.capture_preferences.battle_name) {
+        {
+            std::scoped_lock lock(g_context.mutex);
+            g_context.capture_preferences.battle_name = *requested_battle_name;
+        }
+        if (g_context.capture_preferences.summons_only) {
+            g_context.log_session.encounter_name = *requested_battle_name;
+        }
+        QueueTrackerPreferenceSave();
+    }
+    const bool summons_only = g_context.capture_preferences.summons_only;
+    if (summons_only) RequestSummonRoster(host, now);
 
     std::uint32_t service_status = ANOMALY_STATUS_V1_UNAVAILABLE;
     std::uint64_t latest{};
@@ -1769,9 +2062,18 @@ void Update(void* context, double) {
     bool sampled_overflow{};
     bool cursor_gap{};
     bool capture_available{};
+    bool summon_roster_ready{};
+    bool applied_damage_ready{};
     if (combat_methods_available) {
-        latest = combat->latest_event_sequence(combat->user);
-        const auto cursor_decision = g_context.cursor.BeginFrame(latest);
+        if (summons_only) {
+            applied_damage_ready = nte::sdk_compat::AppliedDamageStreamAvailable(combat.get()) &&
+                anomaly::sdk::Succeeded(combat->latest_applied_damage_sequence(combat->user, &latest));
+        } else {
+            latest = combat->latest_event_sequence(combat->user);
+        }
+        auto drain_through = latest;
+        const auto cursor_decision = g_context.cursor.BeginFrame(
+            !summons_only || applied_damage_ready ? std::optional{latest} : std::nullopt);
         cursor_gap = cursor_decision.cursor_gap;
         if (cursor_decision.reset_applied) {
             bool reset_engine = true;
@@ -1792,8 +2094,14 @@ void Update(void* context, double) {
         const AnomalyStatusV1 status = combat->current_combatant(
             combat->user, &combatant);
         service_status = status.code;
-        const bool valid_combatant = status.code == ANOMALY_STATUS_V1_OK &&
-            (combatant.flags & ANOMALY_NTE_COMBATANT_V1_VALID) != 0 &&
+        const bool combatant_available = status.code == ANOMALY_STATUS_V1_OK &&
+            (combatant.flags & ANOMALY_NTE_COMBATANT_V1_VALID) != 0;
+        const auto roster = summons_only ? g_context.summon_roster.load() : nullptr;
+        // A cached combatant sample still identifies the current world between
+        // sampling ticks. The roster's status is independent of HP freshness.
+        summon_roster_ready = combatant_available && roster &&
+            roster->world == ConvertHandle(combatant.world);
+        const bool valid_combatant = combatant_available &&
             (combatant.flags & ANOMALY_NTE_COMBATANT_V1_STALE) == 0;
         capture_available = valid_combatant;
         if (!valid_combatant) {
@@ -1804,11 +2112,12 @@ void Update(void* context, double) {
             if (g_context.observed_world.id != 0 &&
                 observed_world != g_context.observed_world) {
                 ResetPendingCaptureGaps();
+                ClearCombatNameCaches();
             }
             g_context.observed_world = observed_world;
             if (g_context.developer_mode && combatant.target.id != 0) {
                 const auto target_path = ResolveParticipantCached(
-                    combat.get(), combatant.target, combatant.sequence);
+                    combat.get(), combatant.target, now);
                 g_context.developer_diagnostics.SetCurrentTarget(
                     MakeParticipantIdentity(combatant.target, target_path));
             } else {
@@ -1828,10 +2137,19 @@ void Update(void* context, double) {
             g_context.engine.ObserveCombatant({
                 observed_world, ConvertHandle(combatant.character),
                 combatant.hp, combatant.max_hp, combatant.shield}, now);
+            if (summons_only) {
+                capture_available = summon_roster_ready && applied_damage_ready;
+                if (capture_available) {
+                    g_context.engine.ObserveSummons(roster->actors);
+                    drain_through = (std::min)(latest, roster->latest_applied_sequence);
+                } else {
+                    service_status = ANOMALY_STATUS_V1_UNAVAILABLE;
+                }
+            }
             if ((combatant.flags & ANOMALY_NTE_COMBATANT_V1_PARTIAL) != 0) {
                 sampled_partial = true;
             }
-            if (combat->statistics != nullptr) {
+            if (!summons_only && combat->statistics != nullptr) {
                 for (const std::uint32_t direction : {
                          ANOMALY_NTE_COMBAT_DIRECTION_V1_AS_ATTACKER,
                          ANOMALY_NTE_COMBAT_DIRECTION_V1_AS_VICTIM}) {
@@ -1853,11 +2171,12 @@ void Update(void* context, double) {
             }
         }
 
-        if (valid_combatant) {
+        if (capture_available) {
             for (std::size_t count{}; count < kMaximumDrainPerUpdate; ++count) {
-                if (g_context.cursor.value() == latest) break;
+                if (g_context.cursor.value() >= drain_through) break;
                 AnomalyNteCombatEventV1 event{sizeof(event)};
-                const AnomalyStatusV1 event_status = combat->next_event(
+                const auto read_event = summons_only ? combat->next_applied_damage_event : combat->next_event;
+                const AnomalyStatusV1 event_status = read_event(
                     combat->user, g_context.cursor.value(), &event);
                 if (event_status.code == ANOMALY_STATUS_V1_OK) {
                     if (!nte::sdk_compat::CombatEventV18Available(&event)) {
@@ -1866,6 +2185,7 @@ void Update(void* context, double) {
                         g_context.engine.MarkPartial(false);
                         break;
                     }
+                    if (event.sequence > drain_through) break;
                     const auto accept = g_context.cursor.AcceptNext(event.sequence);
                     if (!accept.accepted) {
                         service_status = ANOMALY_STATUS_V1_FAILED;
@@ -1885,6 +2205,12 @@ void Update(void* context, double) {
                         RecordMissingRange(accept.missing_first, accept.missing_last);
                         cursor_gap = true;
                         sampled_overflow = true;
+                    }
+                    if (summons_only &&
+                        (event.kind != ANOMALY_NTE_COMBAT_EVENT_V1_DAMAGE ||
+                            !g_context.engine.IsRelevant(ConvertHandle(event.world),
+                                ConvertHandle(event.source), ConvertHandle(event.target)))) {
+                        continue;
                     }
                     nte::combat_stats::CombatEvent normalized;
                     switch (event.kind) {
@@ -1928,40 +2254,23 @@ void Update(void* context, double) {
                     }
                     normalized.received_utc_ms = utc_ms;
                     normalized.received_offset_us = ReportOffsetMicroseconds(now);
-                    // 事件名三级回退：宿主显示名 → 来源标识 → name_id 占位符。
-                    // 显示名由宿主在 Game 更新中延后补全，未就绪时保留记录并让后续事件重试。
-                    {
-                        const std::string display =
-                            ResolveEventDisplayName(combat.get(), event);
-                        if (!display.empty()) {
-                            normalized.source_display_name = display;
-                            normalized.source_name = display;
-                            normalized.source_name_origin = std::string(
-                                nte::combat_stats::DisplayNameOriginName(
-                                    nte::combat_stats::DisplayNameOrigin::Sdk));
-                        } else if (event.name_id == 0) {
-                            normalized.source_name = "Unknown event";
-                            normalized.source_display_name = normalized.source_name;
-                            normalized.source_name_origin = std::string(
-                                nte::combat_stats::DisplayNameOriginName(
-                                    nte::combat_stats::DisplayNameOrigin::Unknown));
-                        } else {
-                            const std::string source_path =
-                                ResolveSource(combat.get(), event.name_id);
-                            const bool has_path = source_path != "Unknown source";
-                            normalized.source_name = has_path
-                                ? source_path
-                                : "#" + std::to_string(event.name_id);
-                            normalized.source_display_name = normalized.source_name;
-                            normalized.source_name_origin = std::string(
-                                nte::combat_stats::DisplayNameOriginName(
-                                    nte::combat_stats::DisplayNameOrigin::Technical));
+                    const auto display = ResolveEventDisplayName(combat.get(), event);
+                    if (event.name_id != 0) {
+                        normalized.source_name = ResolveSource(combat.get(), event.name_id);
+                        if (normalized.source_name == "Unknown source") {
+                            normalized.source_name = "#" + std::to_string(event.name_id);
                         }
+                    } else {
+                        normalized.source_name = "Unknown event";
                     }
-                    normalized.attacker_name = ResolveParticipantCached(
-                        combat.get(), event.source, event.sequence);
-                    normalized.victim_name = ResolveParticipantCached(
-                        combat.get(), event.target, event.sequence);
+                    normalized.source_display_name = display.empty()
+                        ? normalized.source_name : display;
+                    normalized.source_name_origin = nte::combat_stats::DisplayNameOriginName(
+                        !display.empty() ? nte::combat_stats::DisplayNameOrigin::Sdk
+                        : event.name_id != 0 ? nte::combat_stats::DisplayNameOrigin::Technical
+                                            : nte::combat_stats::DisplayNameOrigin::Unknown);
+                    normalized.attacker_name = ResolveParticipantCached(combat.get(), event.source, now);
+                    normalized.victim_name = ResolveParticipantCached(combat.get(), event.target, now);
                     // The attribute lookup needs the object path, not the display
                     // name; keep both so one does not starve the other.
                     normalized.attacker_path = ResolveParticipantPath(
@@ -2002,6 +2311,20 @@ void Update(void* context, double) {
                         continue;
                     }
                     const bool accepted = g_context.engine.AcceptEvent(normalized, now);
+                    if (accepted) {
+                        QueueParticipantNameRetry(normalized.attacker);
+                        QueueParticipantNameRetry(normalized.victim);
+                        if (!display.empty()) {
+                            if (g_context.pending_event_name_ids.contains(event.name_id)) {
+                                g_context.engine.UpdateEventDisplayName(
+                                    event.name_id, normalized.source_name, display);
+                            }
+                        } else if (event.name_id != 0 &&
+                            g_context.pending_event_names.size() < kMaximumNameCacheEntries &&
+                            g_context.pending_event_name_ids.insert(event.name_id).second) {
+                            g_context.pending_event_names.push_back({event, normalized.source_name});
+                        }
+                    }
                     g_context.developer_diagnostics.RecordCombatEvent(
                         MakeCombatEventRecord(normalized, player_related, accepted));
                     if (normalized.kind == nte::combat_stats::CombatEventKind::Damage) {
@@ -2046,7 +2369,7 @@ void Update(void* context, double) {
                 }
                 if (event_status.code == ANOMALY_STATUS_V1_NOT_FOUND) {
                     const std::uint64_t missing_after = g_context.cursor.value();
-                    if (g_context.cursor.RecoverFromNotFound(latest)) {
+                    if (g_context.cursor.RecoverFromNotFound(drain_through)) {
                         if (missing_after !=
                             (std::numeric_limits<std::uint64_t>::max)()) {
                             if (g_context.log_session.encounter_id.empty()) {
@@ -2074,6 +2397,8 @@ void Update(void* context, double) {
         static_cast<void>(g_context.cursor.BeginFrame(std::nullopt));
         g_context.developer_diagnostics.SetCurrentTarget(std::nullopt);
     }
+
+    if (capture_available) RefreshCombatNames(combat.get(), now);
 
     CollectMapDiagnostics(host,
         capture_available ? g_context.observed_world : Handle{});
@@ -2135,17 +2460,18 @@ void Update(void* context, double) {
     next.overlay_error = g_context.overlay_error;
     next.overlay_settings = g_context.overlay_settings;
     next.overlay_enabled = g_context.overlay_policy.enabled();
+    next.obs_capture = g_context.obs_capture.load();
+    next.obs_save_failed = g_context.obs_save_failed.load();
+    next.capture_preferences = g_context.capture_preferences;
+    next.summon_roster_ready = summon_roster_ready;
+    next.applied_damage_ready = applied_damage_ready;
     next.settings_status = g_context.settings_status;
     next.settings_error = g_context.settings_error;
     next.character_attribute_error = g_context.character_attribute_error;
     next.developer_available = g_context.developer_access.available();
     next.developer = g_context.developer_diagnostics.BuildSnapshot();
-    if (g_context.uid_detector) {
-        next.uid_detector = g_context.uid_detector->diagnostics();
-        if (g_context.account.known()) {
-            next.uid_detector.active_account_uid = g_context.account.uid;
-        }
-    }
+    next.active_uid = g_context.account.uid;
+    if (detected) next.observed_uid = detected->uid;
     next.skill_capture_status = g_context.skill_capture_status;
     next.skill_frame_sequence = g_context.last_skill_frame_sequence;
     next.event_cursor_sequence = g_context.cursor.value();
@@ -2203,22 +2529,6 @@ void TextFormat(const AnomalyUiServiceV1* ui, const char* format, Args... args) 
     Text(ui, buffer.data());
 }
 
-const char* UidPhaseName(const nte::account::UidDetectorPhase phase) noexcept {
-    switch (phase) {
-    case nte::account::UidDetectorPhase::WaitingForServices:
-        return "awaiting service";
-    case nte::account::UidDetectorPhase::WaitingForBindings:
-        return "awaiting signatures";
-    case nte::account::UidDetectorPhase::Scanning:
-        return "scanning objects";
-    case nte::account::UidDetectorPhase::WidgetPending:
-        return "awaiting UID widget";
-    case nte::account::UidDetectorPhase::Detected:
-        return "resolved";
-    }
-    return "unknown";
-}
-
 const char* SkillChangeName(const nte::developer::SkillChangeKind kind) noexcept {
     switch (kind) {
     case nte::developer::SkillChangeKind::Added: return "added";
@@ -2240,27 +2550,12 @@ void QueueDebugClear(const bool damage, const bool skills, const bool all) {
 
 void DrawDeveloperPage(
     const AnomalyUiServiceV1* ui, const RenderState& render) {
-    const auto& uid = render.uid_detector;
     TextLocalized(ui, "developer.account.heading", "Account and UID detection");
+    const auto unresolved = g_context.localizer.Text("developer.account.unavailable", "Unavailable");
     TextLocalized(ui, "developer.account.active_uid", "Active account UID: {0}",
-        uid.active_account_uid.empty() ? "unresolved" : uid.active_account_uid.c_str());
-    TextLocalized(ui, "developer.account.detected_uid", "Detected UID: {0} / phase: {1}",
-        uid.detected_uid.empty() ? "unresolved" : uid.detected_uid.c_str(),
-        UidPhaseName(uid.phase));
-    TextLocalized(ui, "developer.account.missing", "Missing services: {0} / missing signatures: {1}",
-        uid.missing_services.empty() ? "none" : uid.missing_services.c_str(),
-        uid.missing_bindings.empty() ? "none" : uid.missing_bindings.c_str());
-    TextLocalized(ui, "developer.account.objects", "Objects generation={0} count={1} / scan={2}/{3} / widgets={4}",
-        FormatUnsigned(uid.object_generation), FormatUnsigned(uid.object_count),
-        FormatUnsigned(uid.scan_cursor), FormatUnsigned(uid.scan_start),
-        FormatUnsigned(uid.tracked_widgets));
-    TextLocalized(ui, "developer.account.reads", "Reads ok={0} failed={1} / last failure phase: {2} / {3}",
-        FormatUnsigned(uid.successful_reads), FormatUnsigned(uid.failed_reads),
-        UidPhaseName(uid.last_failure_phase),
-        uid.last_failure.empty() ? "none" : uid.last_failure.c_str());
-    TextLocalized(ui, "developer.account.retry", "Retry status: {0} / next={1}",
-        uid.retry_status.empty() ? "none" : uid.retry_status.c_str(),
-        FormatUnsigned(uid.next_retry_tick));
+        render.active_uid.empty() ? unresolved.c_str() : render.active_uid.c_str());
+    TextLocalized(ui, "developer.account.runtime_uid", "Runtime account UID: {0}",
+        render.observed_uid.empty() ? unresolved.c_str() : render.observed_uid.c_str());
 
     if (ui->separator != nullptr) ui->separator(ui->user);
     TextLocalized(ui, "developer.capture.heading", "Capture status");
@@ -2484,11 +2779,13 @@ void Draw(void*, const AnomalyUiServiceV1* ui) {
     RenderState render;
     std::array<char, kMaximumPathBytes> path_input{};
     std::array<char, kMaximumPathBytes> export_path_input{};
+    std::array<char, kBattleNameCapacity> battle_name_input{};
     {
         std::scoped_lock lock(g_context.mutex);
         render = g_context.render;
         path_input = g_context.log_root_input;
         export_path_input = g_context.export_root_input;
+        battle_name_input = g_context.battle_name_input;
     }
     int open = 1;
     const std::string window_title =
@@ -2499,6 +2796,14 @@ void Draw(void*, const AnomalyUiServiceV1* ui) {
     const auto DrawSettings = [&]() {
     TextLocalized(ui, "settings.overlay.heading", "Overlay settings");
     if (ui->button != nullptr) {
+        if (ui->button(ui->user,
+                ScopedLabel("settings.combat.clear", "Clear current combat").View(), 0.0F, 0.0F)) {
+            std::scoped_lock lock(g_context.mutex);
+            g_context.clear_combat_requested = true;
+        }
+        if (render.snapshot && render.snapshot->control_status == "manual_end_failed") {
+            TextLocalized(ui, "overlay.end.err_log", "Could not clear combat: the combat log could not be saved.");
+        }
         const std::string_view key = !render.overlay_error.empty()
             ? "settings.overlay.retry"
             : (render.overlay_enabled ? "settings.overlay.close" : "settings.overlay.open");
@@ -2508,6 +2813,20 @@ void Draw(void*, const AnomalyUiServiceV1* ui) {
         if (ui->button(ui->user, ScopedLabel(key, fallback).View(), 0.0F, 0.0F)) {
             std::scoped_lock lock(g_context.mutex);
             g_context.toggle_overlay_requested = true;
+        }
+        const auto obs_button = render.obs_capture
+            ? ScopedLabel("settings.obs.disable", "Disable OBS capture")
+            : ScopedLabel("settings.obs.enable", "Enable OBS capture");
+        if (ui->button(ui->user, obs_button.View(), 0.0F, 0.0F)) {
+            std::scoped_lock lock(g_context.mutex);
+            g_context.requested_obs_capture = !render.obs_capture;
+        }
+        if (render.obs_capture) {
+            TextLocalized(ui, "settings.obs.window",
+                "In OBS Window Capture, select NTE Combat Tracker and use Windows Graphics Capture.");
+        }
+        if (render.obs_save_failed) {
+            TextLocalized(ui, "settings.obs.save_failed", "Could not save tracker preferences.");
         }
     }
 
@@ -2526,15 +2845,45 @@ void Draw(void*, const AnomalyUiServiceV1* ui) {
         checkbox("settings.checkbox.collapse", "Collapse", settings.collapsed);
         checkbox("settings.checkbox.topmost", "Always on top", settings.topmost);
         checkbox("settings.checkbox.hide_idle", "Hide when idle", settings.hide_idle);
-        if (render.developer_available) {
-            int developer_checked = render.developer.enabled ? 1 : 0;
-            if (ui->checkbox(ui->user,
-                    ScopedLabel("settings.checkbox.developer", "Developer mode").View(),
-                    &developer_checked)) {
-                render.developer.enabled = developer_checked != 0;
-                std::scoped_lock lock(g_context.mutex);
-                g_context.requested_developer_mode = render.developer.enabled;
-            }
+
+        int summons_only = render.capture_preferences.summons_only ? 1 : 0;
+        if (ui->checkbox(ui->user,
+                ScopedLabel("settings.combat.summons_only", "Only track Summon Lab damage").View(),
+                &summons_only)) {
+            std::scoped_lock lock(g_context.mutex);
+            g_context.requested_summons_only = summons_only != 0;
+        }
+    }
+    if (render.capture_preferences.summons_only) {
+        if (!render.applied_damage_ready) {
+            TextLocalized(ui, "settings.combat.applied_damage_unavailable", "Actual HP loss capture is unavailable.");
+        } else if (render.summon_roster_ready) {
+            TextLocalized(ui, "settings.combat.summon_lab_connected", "Summon Lab roster connected.");
+        } else {
+            TextLocalized(ui, "settings.combat.waiting_summon_lab", "Waiting for the Summon Lab roster.");
+        }
+        if (nte::sdk_compat::HasField<AnomalyUiServiceV1,
+                decltype(AnomalyUiServiceV1::input_text)>(
+                ui, offsetof(AnomalyUiServiceV1, input_text)) && ui->input_text != nullptr &&
+            ui->input_text(ui->user, ScopedLabel("settings.combat.name", "Battle name").View(),
+                battle_name_input.data(), battle_name_input.size(), 0)) {
+            const std::string_view name(battle_name_input.data());
+            const auto first = name.find_first_not_of(" \t");
+            const auto last = name.find_last_not_of(" \t");
+            std::scoped_lock lock(g_context.mutex);
+            g_context.battle_name_input = battle_name_input;
+            g_context.requested_battle_name = first == std::string_view::npos
+                ? std::string{} : std::string(name.substr(first, last - first + 1));
+        }
+    }
+    if (ui->checkbox != nullptr && render.developer_available) {
+        int developer_checked = render.developer.enabled ? 1 : 0;
+        if (ui->checkbox(ui->user,
+                ScopedLabel("settings.checkbox.developer", "Developer mode").View(),
+                &developer_checked)) {
+            render.developer.enabled = developer_checked != 0;
+            std::scoped_lock lock(g_context.mutex);
+            g_context.requested_developer_mode = render.developer.enabled;
         }
     }
     if (ui->slider_float != nullptr) {
@@ -2622,6 +2971,11 @@ void Draw(void*, const AnomalyUiServiceV1* ui) {
     }
     };
 
+    if (!render.developer_available || !render.developer.enabled) {
+        DrawSettings();
+        return;
+    }
+
     const bool tabs_available = nte::sdk_compat::HasField<AnomalyUiServiceV1,
             decltype(AnomalyUiServiceV1::end_tab_bar)>(
             ui, offsetof(AnomalyUiServiceV1, end_tab_bar)) &&
@@ -2629,9 +2983,7 @@ void Draw(void*, const AnomalyUiServiceV1* ui) {
         ui->end_tab_item != nullptr && ui->end_tab_bar != nullptr;
     if (!tabs_available) {
         DrawSettings();
-        if (render.developer_available && render.developer.enabled) {
-            TextLocalized(ui, "settings.developer.unavailable", "The current Anomaly UI service has no tabs; the developer page is unavailable.");
-        }
+        TextLocalized(ui, "settings.developer.unavailable", "The current Anomaly UI service has no tabs; the developer page is unavailable.");
         return;
     }
     if (!ui->begin_tab_bar(ui->user,
@@ -2646,7 +2998,7 @@ void Draw(void*, const AnomalyUiServiceV1* ui) {
         DrawSettings();
         ui->end_tab_item(ui->user);
     }
-    if (render.developer_available && render.developer.enabled && ui->begin_tab_item(
+    if (ui->begin_tab_item(
             ui->user, ScopedLabel("settings.tab.developer", "Developer").View(), nullptr,
             ANOMALY_UI_TAB_ITEM_V1_NONE, 1)) {
         DrawDeveloperPage(ui, render);
@@ -2696,6 +3048,20 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
     g_context.websocket = websocket.get();
     g_context.localizer = anomaly::sdk::Localizer(host);
     g_context.locale = ResolveLocale(&services);
+    const auto config = services.Query<AnomalyConfigServiceV1>(ANOMALY_CONFIG_SERVICE_V1_ID);
+    const auto scheduler = services.Query<AnomalySchedulerServiceV1>(
+        ANOMALY_SCHEDULER_SERVICE_V1_ID);
+    AnomalyGenerationHandleV1 schema{};
+    if (config && config->struct_size >= sizeof(AnomalyConfigServiceV1) &&
+        config->register_schema && config->read && config->write_atomic &&
+        anomaly::sdk::Succeeded(config->register_schema(config->user,
+            anomaly::sdk::StringView(kObsConfigId), 1, ConfigBytes(kObsConfigSchema), &schema))) {
+        g_context.obs_config = config.get();
+    }
+    if (scheduler && scheduler->struct_size >= sizeof(AnomalySchedulerServiceV1) &&
+        scheduler->schedule) {
+        g_context.scheduler = scheduler.get();
+    }
     ResetState();
     *context = &g_context;
     return anomaly::sdk::Ok();
@@ -2771,6 +3137,7 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* context) {
         g_context.log_worker.reset();
     }
     ResetState();
+    LoadTrackerPreferences();
     g_context.native = nte::native::Load(g_context.host);
     if (!g_context.native.complete && g_context.core != nullptr &&
         g_context.core->log != nullptr) {
@@ -2779,8 +3146,6 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* context) {
         g_context.core->log(g_context.core->user, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
             anomaly::sdk::StringView(message));
     }
-    g_context.uid_detector = std::make_unique<nte::account::UidDetector>(
-        g_context.host, g_context.native);
     CloseControlHandles();
     g_context.manual_end_event = CreateEventW(nullptr, FALSE, FALSE,
         nte::combat_stats::overlay::kManualEndEventName);
@@ -2828,6 +3193,18 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* context) {
 }
 
 AnomalyStatusV1 ANOMALY_CALL Stop(void*, std::uint32_t) {
+    {
+        std::scoped_lock lock(g_context.mutex);
+        if (g_context.requested_obs_capture) {
+            g_context.obs_capture.store(*g_context.requested_obs_capture);
+        }
+        if (g_context.requested_battle_name) {
+            g_context.capture_preferences.battle_name = *g_context.requested_battle_name;
+            if (g_context.capture_preferences.summons_only) {
+                g_context.log_session.encounter_name = *g_context.requested_battle_name;
+            }
+        }
+    }
     if (g_context.plugin_stopping_event != nullptr) {
         SetEvent(g_context.plugin_stopping_event);
     }
@@ -2854,6 +3231,13 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void*, std::uint32_t) {
             g_context.overlay_snapshot_sequence), now, utc_ms);
     }
     FinishReportLog("plugin_stop", utc_ms);
+    {
+        std::scoped_lock lock(g_context.mutex);
+        if (g_context.requested_summons_only) {
+            g_context.capture_preferences.summons_only = *g_context.requested_summons_only;
+        }
+    }
+    SaveTrackerPreferences(nullptr, {});
     if (g_context.log_worker) {
         g_context.log_worker->Stop();
         g_context.log_worker.reset();
@@ -2880,6 +3264,8 @@ void ANOMALY_CALL Unload(void*) {
     g_context.ui = nullptr;
     g_context.core = nullptr;
     g_context.websocket = nullptr;
+    g_context.obs_config = nullptr;
+    g_context.scheduler = nullptr;
 }
 
 }  // namespace

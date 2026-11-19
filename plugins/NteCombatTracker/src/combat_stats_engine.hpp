@@ -5,6 +5,7 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <optional>
@@ -311,9 +312,14 @@ public:
     void SetAttributeResolver(AttributeResolver resolver);
 
     void ObserveCombatant(const Combatant& combatant, TimePoint now);
+    void SetSummonsOnly(bool enabled);
+    void ObserveSummons(std::span<const Handle> summons);
     [[nodiscard]] bool IsRelevant(Handle world, Handle attacker, Handle victim) const;
     bool AcceptDamage(const DamageEvent& event, TimePoint now);
     bool AcceptEvent(const CombatEvent& event, TimePoint now);
+    void UpdateEventDisplayName(std::uint64_t id, const std::string& technical_name,
+        const std::string& display_name);
+    void UpdateParticipantDisplayName(Handle handle, const std::string& display_name);
     void Advance(TimePoint now);
     void CompleteEncounter() noexcept;
     void Reset();
@@ -323,6 +329,11 @@ public:
     [[nodiscard]] Snapshot BuildSnapshot(TimePoint now) const;
 
 private:
+    struct IncomingSourceAggregate : AggregateRow {
+        std::string participant_name;
+        std::string source_name;
+    };
+
     struct PlayerAggregate {
         Handle handle;
         std::string object_path;
@@ -370,6 +381,7 @@ private:
     EncounterState state_{EncounterState::Idle};
     AttributeResolver attribute_resolver_;
     Combatant combatant_;
+    bool summons_only_{};
     std::unordered_set<Handle, HandleHash> controlled_characters_;
     std::unordered_set<Handle, HandleHash> engaged_actors_;
     TimePoint encounter_started_{};
@@ -394,7 +406,7 @@ private:
     std::vector<TimedDamage> rolling_outgoing_;
     std::unordered_map<std::string, AggregateRow> outgoing_sources_;
     std::unordered_map<Handle, AggregateRow, HandleHash> outgoing_targets_;
-    std::unordered_map<SourceKey, AggregateRow, SourceKeyHash> incoming_sources_;
+    std::unordered_map<SourceKey, IncomingSourceAggregate, SourceKeyHash> incoming_sources_;
     std::unordered_map<std::string, PlayerAggregate> confirmed_controlled_actors_;
     std::unordered_map<Handle, std::string, HandleHash> confirmed_actor_keys_;
     AggregateRow other_outgoing_source_;

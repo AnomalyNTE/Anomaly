@@ -38,6 +38,11 @@
       "minVersion": 1
     },
     {
+      "id": "anomaly.ipc",
+      "minVersion": 1,
+      "optional": true
+    },
+    {
       "id": "anomaly.profile",
       "minVersion": 1
     },
@@ -60,6 +65,11 @@
     {
       "id": "anomaly.nte.session",
       "minVersion": 1
+    },
+    {
+      "id": "anomaly.nte.combat",
+      "minVersion": 1,
+      "optional": true
     },
     {
       "id": "anomaly.nte.player",
@@ -94,6 +104,7 @@
     "ue5-objects",
     "ue5-names",
     "nte-session-snapshot",
+    "nte-combat-read",
     "nte-player-snapshot",
     "memory-read",
     "memory-write",
@@ -102,6 +113,7 @@
     "ue5-assets",
     "scheduler",
     "storage",
-    "configuration"
+    "configuration",
+    "ipc"
   ]
 }

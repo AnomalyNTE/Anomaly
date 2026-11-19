@@ -6,7 +6,7 @@
 
 namespace nte::account {
 
-enum class Source { Unavailable, UiRoleId };
+enum class Source { Unavailable, UiRoleId, Runtime };
 
 struct AccountIdentity {
     std::string uid;

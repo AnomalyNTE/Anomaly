@@ -12,5 +12,7 @@ inline constexpr wchar_t kReloadSettingsMessageName[] =
     L"NteCombatStats.ReloadOverlaySettings.v1";
 inline constexpr wchar_t kCloseOverlayMessageName[] =
     L"NteCombatStats.CloseOverlay.v1";
+inline constexpr wchar_t kObsCaptureMessageName[] =
+    L"NteCombatStats.ObsCapture.v1";
 
 }  // namespace nte::combat_stats::overlay

@@ -1123,6 +1123,8 @@ bool DamageLogRepository::EndEncounter(
     std::ostringstream line;
     line << "{\"schema_version\":3,\"metric_version\":1"
          << ",\"encounter_id\":" << Quoted(encounter.encounter_id)
+         << ",\"name\":" << Quoted(encounter.name)
+         << ",\"summons_only\":" << (opened.summons_only ? "true" : "false")
          << ",\"started_utc_ms\":" << opened.started_utc_ms
          << ",\"closed_utc_ms\":" << encounter.closed_utc_ms
          << ",\"duration_seconds\":" << JsonNumber(duration)
@@ -1292,6 +1294,8 @@ bool DamageLogRepository::CloseReport(const ReportClose& close, std::string& err
         std::ostringstream aborted;
         aborted << "{\"schema_version\":3,\"metric_version\":1"
                 << ",\"encounter_id\":" << Quoted(opened.encounter_id)
+                << ",\"name\":" << Quoted(opened.name)
+                << ",\"summons_only\":" << (opened.summons_only ? "true" : "false")
                 << ",\"started_utc_ms\":" << opened.started_utc_ms
                 << ",\"closed_utc_ms\":" << close.closed_utc_ms
                 << ",\"duration_seconds\":" << JsonNumber(duration)

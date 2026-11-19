@@ -31,6 +31,8 @@ struct EncounterOpen {
     std::string encounter_id;
     std::int64_t started_utc_ms{};
     std::uint64_t started_offset_us{};
+    std::string name;
+    bool summons_only{};
 };
 
 struct LoggedCombatEvent {
@@ -71,6 +73,7 @@ struct EncounterClose {
     double encounter_hps{};
     double encounter_received_hps{};
     std::uint64_t cutoff_sequence{};
+    std::string name;
 };
 
 struct ReportClose {

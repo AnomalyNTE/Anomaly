@@ -26,6 +26,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <ctime>
 #include <filesystem>
 #include <format>
@@ -71,6 +72,7 @@ constexpr UINT kTrayId = 1;
 constexpr std::size_t kMaximumMessage = nte::combat_stats::kMaximumOverlayMessageBytes;
 UINT g_reload_settings_message{};
 UINT g_close_overlay_message{};
+UINT g_obs_capture_message{};
 
 enum MenuId : UINT {
     MenuToggleLock = 100,
@@ -144,6 +146,8 @@ struct App {
     std::chrono::steady_clock::time_point last_snapshot{};
     std::atomic_bool lifetime_guarded{};
     bool connected{};
+    bool obs_capture{};
+    bool summons_view{};
     bool dragging{};
     POINT drag_origin{};
     RECT window_origin{};
@@ -316,7 +320,10 @@ void RemoveTrayIcon() {
 
 void ApplyWindowMode() {
     LONG_PTR extended = GetWindowLongPtrW(g_app.window, GWL_EXSTYLE);
-    extended |= WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+    extended &= ~(WS_EX_TOOLWINDOW | WS_EX_APPWINDOW);
+    extended |= WS_EX_LAYERED | WS_EX_NOACTIVATE;
+    // OBS excludes tool windows when it enumerates Window Capture sources.
+    extended |= g_app.obs_capture ? WS_EX_APPWINDOW : WS_EX_TOOLWINDOW;
     if (g_app.settings.locked) extended |= WS_EX_TRANSPARENT;
     else extended &= ~WS_EX_TRANSPARENT;
     SetWindowLongPtrW(g_app.window, GWL_EXSTYLE, extended);
@@ -551,6 +558,10 @@ void RenderOverlay() {
             x = next;
         }
     };
+    g_app.summons_view =
+        (g_app.page == ViewPage::Live && snapshot && snapshot->summons_only) ||
+        (g_app.page == ViewPage::HistoryDetail && history_detail && history_detail->summary.summons_only);
+    const DataTab active_tab = g_app.summons_view ? DataTab::Outgoing : g_app.settings.active_tab;
     const auto title_layout = nte::combat_stats::overlay::CalculateTitleBarLayout(
         layout.width, scale, layout.title_height);
     const D2D1_RECT_F history_rect = to_d2d_rect(title_layout.history);
@@ -558,21 +569,25 @@ void RenderOverlay() {
     add_target(history_rect, UiAction::ToggleHistory);
     const D2D1_RECT_F manual_rect = to_d2d_rect(title_layout.manual_end);
     const bool manual_enabled = g_app.page == ViewPage::Live && snapshot &&
-        snapshot->combat.state == EncounterState::Active;
+        (snapshot->combat.state == EncounterState::Active ||
+            snapshot->combat.state == EncounterState::Completed);
     if (manual_enabled) {
         target->FillRectangle(manual_rect, hover.Get());
         add_target(manual_rect, UiAction::ManualEnd);
     }
     DrawTextLine(target.Get(), scaled_small.Get(), manual_enabled ? text.Get() : muted.Get(),
-        localizer.Text("overlay.button.end", "End"), manual_rect);
+        localizer.Text("overlay.button.end", "Clear"), manual_rect);
     std::wstring title = g_app.page == ViewPage::Live
         ? localizer.Text("overlay.title.live", "Current encounter")
         : localizer.Text("overlay.title.history", "Encounter history");
+    bool named_battle{};
     std::wstring time = L"00:00";
     std::wstring target_name;
     if (g_app.page == ViewPage::HistoryDetail && history_detail) {
         const int seconds = static_cast<int>(history_detail->summary.duration_seconds);
         time = std::format(L"{:02}:{:02}", seconds / 60, seconds % 60);
+        named_battle = !history_detail->summary.name.empty();
+        if (named_battle) title = Utf16(history_detail->summary.name);
         target_name = Utf16(history_detail->summary.end_reason);
         if (!history_detail->summary.complete) {
             target_name += L" ⚠ " + localizer.Text("overlay.badge.incomplete", "data incomplete");
@@ -585,6 +600,8 @@ void RenderOverlay() {
             target_name += L" ⚠ " + Utf16(history_error);
         }
     } else if (snapshot) {
+        named_battle = !snapshot->encounter_name.empty();
+        if (named_battle) title = Utf16(snapshot->encounter_name);
         const int seconds = static_cast<int>(snapshot->combat.duration_seconds);
         time = std::format(L"{:02}:{:02}", seconds / 60, seconds % 60);
         target_name = snapshot->primary_target.empty()
@@ -595,8 +612,8 @@ void RenderOverlay() {
             snapshot->combat.quality.cursor_gap ||
             snapshot->combat.quality.aggregate_truncated) target_name += L" ⚠";
         const bool healing_tab =
-            g_app.settings.active_tab == DataTab::HealingDone ||
-            g_app.settings.active_tab == DataTab::HealingReceived;
+            active_tab == DataTab::HealingDone ||
+            active_tab == DataTab::HealingReceived;
         if (healing_tab && snapshot->healing_capture_status != "available") {
             target_name += L" | " +
                 localizer.Text("overlay.badge.healing_unavailable", "healing capture unavailable");
@@ -609,10 +626,14 @@ void RenderOverlay() {
     }
     DrawTextLine(target.Get(), scaled_bold.Get(), accent.Get(), time,
         to_d2d_rect(title_layout.time));
-    DrawTextLine(target.Get(), scaled_bold.Get(), text.Get(), title,
-        to_d2d_rect(title_layout.title));
-    DrawTextLine(target.Get(), scaled_regular.Get(), muted.Get(), target_name,
-        to_d2d_rect(title_layout.target));
+    auto title_rect = title_layout.title;
+    if (named_battle && g_app.action_status.empty()) {
+        title_rect.right = title_layout.target.right;
+    } else {
+        DrawTextLine(target.Get(), scaled_regular.Get(), muted.Get(), target_name,
+            to_d2d_rect(title_layout.target));
+    }
+    DrawTextLine(target.Get(), scaled_bold.Get(), text.Get(), title, to_d2d_rect(title_rect));
     const D2D1_RECT_F collapse_rect = to_d2d_rect(title_layout.collapse);
     const float collapse_center_x = (collapse_rect.left + collapse_rect.right) / 2.0F;
     const float collapse_center_y = (collapse_rect.top + collapse_rect.bottom) / 2.0F;
@@ -639,7 +660,7 @@ void RenderOverlay() {
         const float row_height = layout.row_height;
         const float header_height = layout.header_height;
         float top = layout.title_height;
-        const bool show_tabs = g_app.page != ViewPage::HistoryList;
+        const bool show_tabs = g_app.page != ViewPage::HistoryList && !g_app.summons_view;
         const float content_bottom = layout.height - tab_height;
         const auto footer_layout = nte::combat_stats::overlay::CalculateFooterLayout(
             layout.width, layout.height, scale, tab_height,
@@ -652,16 +673,16 @@ void RenderOverlay() {
             const D2D1_RECT_F healing_done = to_d2d_rect(footer_layout.healing_done_tab);
             const D2D1_RECT_F healing_received = to_d2d_rect(footer_layout.healing_received_tab);
             DrawTextLine(target.Get(), scaled_tab.Get(),
-                g_app.settings.active_tab == DataTab::Outgoing ? accent.Get() : text.Get(),
+                active_tab == DataTab::Outgoing ? accent.Get() : text.Get(),
                 localizer.Text("overlay.tab.outgoing", "Damage"), outgoing);
             DrawTextLine(target.Get(), scaled_tab.Get(),
-                g_app.settings.active_tab == DataTab::Incoming ? accent.Get() : text.Get(),
+                active_tab == DataTab::Incoming ? accent.Get() : text.Get(),
                 localizer.Text("overlay.tab.incoming", "Taken"), incoming);
             DrawTextLine(target.Get(), scaled_tab.Get(),
-                g_app.settings.active_tab == DataTab::HealingDone ? accent.Get() : text.Get(),
+                active_tab == DataTab::HealingDone ? accent.Get() : text.Get(),
                 localizer.Text("overlay.tab.healing_done", "Healing"), healing_done);
             DrawTextLine(target.Get(), scaled_tab.Get(),
-                g_app.settings.active_tab == DataTab::HealingReceived ? accent.Get() : text.Get(),
+                active_tab == DataTab::HealingReceived ? accent.Get() : text.Get(),
                 localizer.Text("overlay.tab.healing_received", "Healed"), healing_received);
             for (const auto& tab : {outgoing, incoming, healing_done, healing_received}) {
                 target->DrawLine(D2D1::Point2F(tab.right, tab.top),
@@ -672,25 +693,27 @@ void RenderOverlay() {
             add_target(healing_done, UiAction::HealingDoneTab);
             add_target(healing_received, UiAction::HealingReceivedTab);
         }
-        nte::combat_stats::overlay::FooterData footer_data;
-        if (snapshot) {
-            footer_data.live_players = snapshot->combat.players.size();
-            footer_data.live_dps = snapshot->combat.encounter_dps;
+        if (!g_app.summons_view) {
+            nte::combat_stats::overlay::FooterData footer_data;
+            if (snapshot) {
+                footer_data.live_players = snapshot->combat.players.size();
+                footer_data.live_dps = snapshot->combat.encounter_dps;
+            }
+            footer_data.history_count = HistoryEncounterCount(history);
+            if (history_detail) {
+                footer_data.history_players = history_detail->players.size();
+                footer_data.history_dps = history_detail->summary.encounter_dps;
+            }
+            const auto footer_page = g_app.page == ViewPage::HistoryList
+                ? nte::combat_stats::overlay::FooterPage::HistoryList
+                : (g_app.page == ViewPage::HistoryDetail
+                    ? nte::combat_stats::overlay::FooterPage::HistoryDetail
+                    : nte::combat_stats::overlay::FooterPage::Live);
+            const std::wstring footer_status =
+                nte::combat_stats::overlay::FooterSummary(footer_page, footer_data);
+            DrawTextLine(target.Get(), scaled_footer.Get(), text.Get(), footer_status,
+                to_d2d_rect(footer_layout.summary));
         }
-        footer_data.history_count = HistoryEncounterCount(history);
-        if (history_detail) {
-            footer_data.history_players = history_detail->players.size();
-            footer_data.history_dps = history_detail->summary.encounter_dps;
-        }
-        const auto footer_page = g_app.page == ViewPage::HistoryList
-            ? nte::combat_stats::overlay::FooterPage::HistoryList
-            : (g_app.page == ViewPage::HistoryDetail
-                ? nte::combat_stats::overlay::FooterPage::HistoryDetail
-                : nte::combat_stats::overlay::FooterPage::Live);
-        const std::wstring footer_status =
-            nte::combat_stats::overlay::FooterSummary(footer_page, footer_data);
-        DrawTextLine(target.Get(), scaled_footer.Get(), text.Get(), footer_status,
-            to_d2d_rect(footer_layout.summary));
 
         if (g_app.page == ViewPage::HistoryList) {
             draw_cells({localizer.Text("overlay.col.account_time", "Account / Time"), localizer.Text("overlay.col.duration", "Duration"), localizer.Text("overlay.col.outgoing", "Damage"), localizer.Text("overlay.col.taken", "Taken"), localizer.Text("overlay.col.dps", "DPS"), localizer.Text("overlay.col.end_reason", "End reason"), localizer.Text("overlay.col.quality", "Quality")},
@@ -734,7 +757,8 @@ void RenderOverlay() {
                         scaled_regular.Get(), accent.Get());
                 } else if (item.encounter) {
                     const auto& encounter = *item.encounter;
-                    draw_cells({L"    " + TimeText(encounter.started_utc_ms),
+                    draw_cells({encounter.name.empty() ? TimeText(encounter.started_utc_ms)
+                            : Utf16(encounter.name),
                         std::format(L"{:.1f}s", encounter.duration_seconds),
                         CompactNumber(static_cast<double>(encounter.outgoing_damage)),
                         CompactNumber(static_cast<double>(encounter.incoming_damage)),
@@ -790,14 +814,14 @@ void RenderOverlay() {
             std::vector<std::wstring> outgoing_headers;
             std::vector<float> outgoing_weights;
             if (g_app.drill == DrillLevel::Players) {
-                if (g_app.settings.active_tab == DataTab::Outgoing) {
+                if (active_tab == DataTab::Outgoing) {
                     players = SortPlayers(players, g_app.settings.sort_column,
                         g_app.settings.descending);
-                } else if (g_app.settings.active_tab == DataTab::HealingDone ||
-                           g_app.settings.active_tab == DataTab::HealingReceived) {
+                } else if (active_tab == DataTab::HealingDone ||
+                           active_tab == DataTab::HealingReceived) {
                     players = nte::combat_stats::overlay::SortHealingPlayers(
                         players,
-                        g_app.settings.active_tab == DataTab::HealingDone
+                        active_tab == DataTab::HealingDone
                             ? nte::combat_stats::overlay::HealingDirection::Done
                             : nte::combat_stats::overlay::HealingDirection::Received);
                 } else {
@@ -815,16 +839,16 @@ void RenderOverlay() {
                     outgoing_headers.emplace_back(localizer.Text(column.key, Narrow(column.fallback)));
                     outgoing_weights.push_back(column.weight);
                 }
-                draw_cells(g_app.settings.active_tab == DataTab::Outgoing
+                draw_cells(active_tab == DataTab::Outgoing
                         ? outgoing_headers
-                        : (g_app.settings.active_tab == DataTab::HealingDone ||
-                           g_app.settings.active_tab == DataTab::HealingReceived)
+                        : (active_tab == DataTab::HealingDone ||
+                           active_tab == DataTab::HealingReceived)
                             ? std::vector<std::wstring>{localizer.Text("overlay.col.character", "Character"), localizer.Text("overlay.col.healing", "Healing"), localizer.Text("overlay.col.hps", "HPS"), localizer.Text("overlay.col.share", "Share"), localizer.Text("overlay.col.count", "Count"), localizer.Text("overlay.col.average", "Avg"), localizer.Text("overlay.col.max", "Max")}
                             : std::vector<std::wstring>{localizer.Text("overlay.col.character", "Character"), localizer.Text("overlay.col.taken", "Taken"), localizer.Text("overlay.col.share", "Share"), localizer.Text("overlay.col.count", "Count"), localizer.Text("overlay.col.average", "Avg"), localizer.Text("overlay.col.max", "Max")},
-                    g_app.settings.active_tab == DataTab::Outgoing
+                    active_tab == DataTab::Outgoing
                         ? outgoing_weights
-                        : (g_app.settings.active_tab == DataTab::HealingDone ||
-                           g_app.settings.active_tab == DataTab::HealingReceived)
+                        : (active_tab == DataTab::HealingDone ||
+                           active_tab == DataTab::HealingReceived)
                             ? std::vector<float>{1.8F, 1.0F, 0.8F, 0.8F, 0.7F, 0.9F, 0.9F}
                             : std::vector<float>{2.0F, 1.1F, 0.9F, 1.0F, 0.9F, 1.1F},
                     D2D1::RectF(0, top, layout.width, top + header_height),
@@ -840,10 +864,10 @@ void RenderOverlay() {
                     events = CanonicalPlayerEvents(std::move(events), *selected);
                 }
                 const bool healing =
-                    g_app.settings.active_tab == DataTab::HealingDone ||
-                    g_app.settings.active_tab == DataTab::HealingReceived;
-                const auto direction = g_app.settings.active_tab == DataTab::Outgoing ||
-                        g_app.settings.active_tab == DataTab::HealingDone
+                    active_tab == DataTab::HealingDone ||
+                    active_tab == DataTab::HealingReceived;
+                const auto direction = active_tab == DataTab::Outgoing ||
+                        active_tab == DataTab::HealingDone
                     ? nte::combat_stats::overlay::DetailDirection::Outgoing
                     : nte::combat_stats::overlay::DetailDirection::Incoming;
                 const auto event_kind = healing
@@ -901,9 +925,9 @@ void RenderOverlay() {
             if (g_app.drill == DrillLevel::Players) {
                 for (const auto& player : g_app.displayed_players) {
                     const std::int64_t amount =
-                        g_app.settings.active_tab == DataTab::Outgoing ? player.damage :
-                        g_app.settings.active_tab == DataTab::Incoming ? player.incoming_damage :
-                        g_app.settings.active_tab == DataTab::HealingDone ? player.healing_done :
+                        active_tab == DataTab::Outgoing ? player.damage :
+                        active_tab == DataTab::Incoming ? player.incoming_damage :
+                        active_tab == DataTab::HealingDone ? player.healing_done :
                         player.healing_received;
                     maximum_player_damage = (std::max)(maximum_player_damage,
                         amount);
@@ -920,9 +944,9 @@ void RenderOverlay() {
                     player_color = nte::combat_stats::overlay::ResolvePlayerDisplayColor(
                         player, g_app.attribute_colors);
                     const std::int64_t damage =
-                        g_app.settings.active_tab == DataTab::Outgoing ? player.damage :
-                        g_app.settings.active_tab == DataTab::Incoming ? player.incoming_damage :
-                        g_app.settings.active_tab == DataTab::HealingDone ? player.healing_done :
+                        active_tab == DataTab::Outgoing ? player.damage :
+                        active_tab == DataTab::Incoming ? player.incoming_damage :
+                        active_tab == DataTab::HealingDone ? player.healing_done :
                         player.healing_received;
                     const float fraction = static_cast<float>(
                         nte::combat_stats::overlay::PlayerBarFraction(
@@ -938,11 +962,11 @@ void RenderOverlay() {
                 if (g_app.hovered_target == target_index) target->FillRectangle(rect, hover.Get());
                 if (g_app.drill == DrillLevel::Players) {
                     const auto& player = g_app.displayed_players[index];
-                    const bool outgoing = g_app.settings.active_tab == DataTab::Outgoing;
+                    const bool outgoing = active_tab == DataTab::Outgoing;
                     const bool healing_done =
-                        g_app.settings.active_tab == DataTab::HealingDone;
+                        active_tab == DataTab::HealingDone;
                     const bool healing_received =
-                        g_app.settings.active_tab == DataTab::HealingReceived;
+                        active_tab == DataTab::HealingReceived;
                     const bool healing = healing_done || healing_received;
                     const double average = outgoing
                         ? (player.positive_hits == 0 ? 0.0 :
@@ -1037,8 +1061,8 @@ void RenderOverlay() {
                             std::max(0.0, relative)),
                         CompactNumber(static_cast<double>(event.final_value)),
                         std::format(L"{}/{}", event.basic_value, event.value),
-                        flags, Utf16((g_app.settings.active_tab == DataTab::Outgoing ||
-                                     g_app.settings.active_tab == DataTab::HealingDone)
+                        flags, Utf16((active_tab == DataTab::Outgoing ||
+                                     active_tab == DataTab::HealingDone)
                             ? (event.victim_display_name.empty()
                                 ? event.victim_name : event.victim_display_name)
                             : (event.attacker_display_name.empty()
@@ -1090,7 +1114,7 @@ void RenderOverlay() {
     HBITMAP dib = CreateDIBSection(screen, &info, DIB_RGB_COLORS, &dib_pixels, nullptr, 0);
     if (dib && dib_pixels) {
         for (UINT row = 0; row < height; ++row) {
-            memcpy(static_cast<BYTE*>(dib_pixels) + row * width * 4,
+            std::memcpy(static_cast<BYTE*>(dib_pixels) + row * width * 4,
                 pixels + row * stride, width * 4);
         }
         const HGDIOBJ old = SelectObject(memory, dib);
@@ -1217,7 +1241,10 @@ void ReceiveSnapshots(const std::stop_token stop) {
                     parsed->capture_available == g_app.snapshot->capture_available &&
                     parsed->capture_status == g_app.snapshot->capture_status &&
                     parsed->latest_event_sequence ==
-                        g_app.snapshot->latest_event_sequence) {
+                        g_app.snapshot->latest_event_sequence &&
+                    parsed->summons_only == g_app.snapshot->summons_only &&
+                    parsed->encounter_name == g_app.snapshot->encounter_name &&
+                    parsed->control_status == g_app.snapshot->control_status) {
                     redraw = false;
                 }
                 g_app.snapshot.emplace(std::move(*parsed));
@@ -1692,9 +1719,9 @@ void HandleUiAction(const HitTarget& target) {
     switch (target.action) {
     case UiAction::ManualEnd:
         if (g_app.manual_end_event != nullptr && SetEvent(g_app.manual_end_event)) {
-            g_app.action_status = Narrow(localizer.Text("overlay.end.running", "Ending the current encounter..."));
+            g_app.action_status = Narrow(localizer.Text("overlay.end.running", "Clearing current combat..."));
         } else {
-            g_app.action_status = Narrow(localizer.Text("overlay.end.err_channel", "Manual end failed: the plugin control channel is unavailable"));
+            g_app.action_status = Narrow(localizer.Text("overlay.end.err_channel", "Could not clear combat: the plugin control channel is unavailable."));
         }
         break;
     case UiAction::ToggleHistory:
@@ -1876,7 +1903,7 @@ void ReloadSettingsFromDisk() {
             if (g_app.snapshot) state = g_app.snapshot->combat.state;
         }
         if (nte::combat_stats::overlay::ShouldHideOverlay(
-                g_app.settings.hide_idle, state)) {
+                g_app.settings.hide_idle && !g_app.obs_capture, state)) {
             ShowWindow(g_app.window, SW_HIDE);
         }
         else if (!g_app.settings.hide_idle) {
@@ -1891,6 +1918,14 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wparam, LPARA
     if (message == g_app.taskbar_created) { AddTrayIcon(); return 0; }
     if (message == g_reload_settings_message) { ReloadSettingsFromDisk(); return 0; }
     if (message == g_close_overlay_message) { DestroyWindow(window); return 0; }
+    if (message == g_obs_capture_message) {
+        const bool enabled = wparam != 0;
+        if (g_app.obs_capture == enabled) return 0;
+        g_app.obs_capture = enabled;
+        ApplyWindowMode();
+        PostMessageW(window, kSnapshotMessage, 0, 0);
+        return 0;
+    }
     if (message == kRestartMessage) { DestroyWindow(window); return 0; }
     switch (message) {
     case WM_NCCALCSIZE:
@@ -1917,7 +1952,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wparam, LPARA
         {
             std::scoped_lock lock(g_app.snapshot_mutex);
             hide = nte::combat_stats::overlay::ShouldHideOverlay(
-                g_app.settings.hide_idle,
+                g_app.settings.hide_idle && !g_app.obs_capture,
                 g_app.snapshot ? std::optional{g_app.snapshot->combat.state} :
                     std::nullopt);
             active = g_app.snapshot &&
@@ -1926,9 +1961,9 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wparam, LPARA
             if (g_app.snapshot) control_status = g_app.snapshot->control_status;
         }
         if (control_status == "manual_end_completed") {
-            g_app.action_status = Narrow(localizer.Text("overlay.end.done", "The encounter was ended and written to history"));
+            g_app.action_status.clear();
         } else if (control_status == "manual_end_failed") {
-            g_app.action_status = Narrow(localizer.Text("overlay.end.err_log", "Manual end failed: the combat log was not written completely"));
+            g_app.action_status = Narrow(localizer.Text("overlay.end.err_log", "Could not clear combat: the combat log could not be saved."));
         } else if (has_snapshot &&
                    g_app.export_in_progress == false &&
 
@@ -2132,7 +2167,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wparam, LPARA
             y < header_layout.title_height + header_layout.header_height) {
             const float fraction = static_cast<float>(GET_X_LPARAM(lparam)) /
                 static_cast<float>(std::max(1L, rect.right));
-            if (g_app.settings.active_tab != DataTab::Outgoing) return 0;
+            if (!g_app.summons_view && g_app.settings.active_tab != DataTab::Outgoing) return 0;
             const auto& columns = nte::combat_stats::overlay::OutgoingSummaryColumns();
             float total_weight{};
             for (const auto& column : columns) total_weight += column.weight;
@@ -2251,20 +2286,20 @@ DWORD ParseHostProcessId() {
     return result;
 }
 
-bool RestartRequested() {
+bool HasLaunchFlag(const wchar_t* flag) {
     int count{};
     wchar_t** arguments = CommandLineToArgvW(GetCommandLineW(), &count);
-    bool restart{};
+    bool found{};
     if (arguments) {
         for (int i = 1; i < count; ++i) {
-            if (wcscmp(arguments[i], L"--restart") == 0) {
-                restart = true;
+            if (wcscmp(arguments[i], flag) == 0) {
+                found = true;
                 break;
             }
         }
         LocalFree(arguments);
     }
-    return restart;
+    return found;
 }
 
 bool TerminateMatchingOverlay(const HWND window) {
@@ -2294,7 +2329,7 @@ bool TerminateMatchingOverlay(const HWND window) {
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-    const bool restart = RestartRequested();
+    const bool restart = HasLaunchFlag(L"--restart");
     HANDLE mutex = CreateMutexW(nullptr, FALSE, kMutexName);
     if (!mutex) return 1;
     const bool already_running = GetLastError() == ERROR_ALREADY_EXISTS;
@@ -2337,6 +2372,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         nte::combat_stats::overlay::kReloadSettingsMessageName);
     g_close_overlay_message = RegisterWindowMessageW(
         nte::combat_stats::overlay::kCloseOverlayMessageName);
+    g_obs_capture_message = RegisterWindowMessageW(
+        nte::combat_stats::overlay::kObsCaptureMessageName);
+    g_app.obs_capture = HasLaunchFlag(L"--obs-capture");
     static_cast<void>(LoadSettings());
     if (!InitializeRendering()) { CoUninitialize(); CloseHandle(mutex); return 2; }
 

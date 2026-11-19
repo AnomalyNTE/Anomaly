@@ -2,11 +2,9 @@
 
 #include <anomaly/sdk/cpp.hpp>
 
-#include <array>
 #include <cstddef>
 #include <exception>
 #include <string_view>
-#include <utility>
 
 namespace nte::native {
 namespace {
@@ -35,9 +33,6 @@ constexpr std::uint32_t kMaximumOffset = 65536;
         out.object_item_stride = profile.Value("kObjectItemStride", kMaximumOffset);
         out.object_item_serial_offset =
             profile.Value("kObjectItemSerialOffset", kMaximumOffset, 4);
-        out.text_field_offset = profile.Value("kTextFieldOffset", kMaximumOffset, 8);
-        out.set_text_vtable_offset =
-            profile.Value("kSetTextVtableOffset", kMaximumOffset, 8);
         out.gobjects_addend = -static_cast<std::int32_t>(
             profile.Value("kGObjectsAddendMagnitude", kMaximumOffset));
         out.instanced_struct_data =
@@ -134,24 +129,9 @@ Snapshot Load(const AnomalyHostApiV1* host) noexcept {
         }
         snapshot.layout = ParseLayout(profile.Document(), snapshot.error);
         if (!snapshot.error.empty()) return snapshot;
-        snapshot.bindings.set_text = profile.Address("kSetTextPattern");
-        snapshot.bindings.free_string = profile.Address("kFreeStringPattern");
-        snapshot.bindings.text_to_string = profile.Address("kTextToStringPattern");
         snapshot.bindings.gobjects_accessor = profile.Address("kGObjectsPattern");
-        const std::array<std::pair<std::string_view, std::uintptr_t>, 4> required{{
-            {"kSetTextPattern", snapshot.bindings.set_text},
-            {"kFreeStringPattern", snapshot.bindings.free_string},
-            {"kTextToStringPattern", snapshot.bindings.text_to_string},
-            {"kGObjectsPattern", snapshot.bindings.gobjects_accessor},
-        }};
-        std::string missing;
-        for (const auto& [name, address] : required) {
-            if (address != 0) continue;
-            if (!missing.empty()) missing += ", ";
-            missing.append(name);
-        }
-        if (!missing.empty()) {
-            snapshot.error = "compatibility profile did not resolve: " + missing;
+        if (snapshot.bindings.gobjects_accessor == 0) {
+            snapshot.error = "compatibility profile did not resolve: kGObjectsPattern";
             return snapshot;
         }
         snapshot.complete = true;

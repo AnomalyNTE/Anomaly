@@ -175,13 +175,16 @@ std::string SerializeCombatExport(
         {"producer", {{"name", "NTE Combat Tracker"},
                       {"version", producer_version},
                       {"exported_utc_ms", Decimal(exported_utc_ms)}}},
-        {"capture", {{"event_scope", "player_and_engaged_actors"},
-                     {"boundary_policy", "player_damage_inactivity_10s"},
+        {"capture", {{"event_scope", summary.summons_only
+                          ? "summon_outgoing_damage" : "player_and_engaged_actors"},
+                     {"boundary_policy", summary.summons_only
+                          ? "summon_damage_inactivity_10s" : "player_damage_inactivity_10s"},
                      {"healing_capture_status", "unavailable"}}},
         {"report", {{"report_id", summary.report_id},
                     {"game_build", summary.game_build}}},
         {"encounter", {
             {"encounter_id", summary.encounter_id},
+            {"name", summary.name},
             {"started_utc_ms", Decimal(summary.started_utc_ms)},
             {"closed_utc_ms", Decimal(summary.closed_utc_ms)},
             {"duration_seconds", summary.duration_seconds},

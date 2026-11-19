@@ -14,6 +14,7 @@
 #include "battle_graph.hpp"
 #include "native_layout.hpp"
 #include "clone_contract.hpp"
+#include "combat_roster_ipc.hpp"
 #include "blueprint_names.hpp"
 #include "presets.hpp"
 #include "blueprint_editor_state.hpp"
@@ -338,12 +339,14 @@ struct Context {
 
     std::mutex mutex;
     std::vector<Record> records;
+    std::deque<AnomalyGenerationHandleV1> retired_combat_handles;
     std::uint64_t next_record_id{1};
 
     std::deque<PendingOp> pending;
     std::shared_ptr<SummonBatch> summon_batch;
 
     bool session_world_ready{};
+    AnomalyGenerationHandleV1 combat_roster_world{};
     std::uint64_t session_event_cursor{};
     std::uint32_t frame_counter{};
 
@@ -836,7 +839,12 @@ void UpdateSessionState() {
             ANOMALY_STATUS_V1_OK && snapshot.state == ANOMALY_NTE_SESSION_V1_WORLD_READY;
         std::scoped_lock lock(g_context.mutex);
         clear_state = g_context.session_world_ready && !ready;
+        if (ready && g_context.combat_roster_world.id != 0 &&
+            g_context.combat_roster_world.generation != snapshot.world.generation) {
+            clear_state = true;
+        }
         g_context.session_world_ready = ready;
+        g_context.combat_roster_world = ready ? snapshot.world : AnomalyGenerationHandleV1{};
     }
 
     if (g_context.session->next_event != nullptr &&
@@ -1604,6 +1612,7 @@ void ClearSummonedState() {
     g_context.health_event_lookup_pending = g_context.health_observer.id != 0;
     std::scoped_lock lock(g_context.mutex);
     g_context.records = {};
+    g_context.retired_combat_handles.clear();
     g_context.selected_record_id = 0;
     g_context.management_page = 0;
     g_context.management_blueprint.clear();
@@ -4296,6 +4305,13 @@ void ForgetRecord(std::uint64_t record_id) {
             if (g_context.records[i].id != record_id) continue;
             handle = g_context.records[i].handle;
             registration = g_context.records[i].registration;
+            if (handle.id != 0) {
+                // Include recently removed instances so the combat ring can
+                // still attribute their final hits after this record is gone.
+                auto& retired = g_context.retired_combat_handles;
+                if (retired.size() == 512) retired.pop_front();
+                retired.push_back(handle);
+            }
             g_context.records.erase(g_context.records.begin() + i);
             if (g_context.selected_record_id == record_id) {
                 g_context.selected_record_id = 0;
@@ -4925,10 +4941,12 @@ void ResetState() {
     g_pending_local_births.clear();
     std::scoped_lock lock(g_context.mutex);
     g_context.records = {};
+    g_context.retired_combat_handles.clear();
     g_context.next_record_id = 1;
     g_context.pending = {};
     g_context.summon_batch.reset();
     g_context.session_world_ready = false;
+    g_context.combat_roster_world = {};
     g_context.session_event_cursor = 0;
     g_context.frame_counter = 0;
 
@@ -5061,6 +5079,59 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
     return anomaly::sdk::Ok();
 }
 
+AnomalyStatusV1 ANOMALY_CALL ReadCombatRoster(
+    void*, const AnomalyIpcRequestContextV1*, AnomalyByteSpanV1,
+    AnomalyMutableByteSpanV1 response, std::size_t* size) {
+    AnomalyNteSessionSnapshotV1 session{sizeof(session)};
+    if (!g_context.session || !g_context.session->snapshot ||
+        !anomaly::sdk::Succeeded(g_context.session->snapshot(g_context.session->user, &session)) ||
+        session.state != ANOMALY_NTE_SESSION_V1_WORLD_READY) {
+        return {ANOMALY_STATUS_V1_UNAVAILABLE, 0, {}};
+    }
+    const auto combat = anomaly::sdk::Host(g_context.host).Query<AnomalyNteCombatServiceV1>(
+        ANOMALY_NTE_COMBAT_SERVICE_V1_ID, ANOMALY_NTE_COMBAT_SERVICE_V1_VERSION);
+    std::uint64_t latest_applied{};
+    if (combat && combat->struct_size >=
+            offsetof(AnomalyNteCombatServiceV1, latest_applied_damage_sequence) +
+                sizeof(combat->latest_applied_damage_sequence) && combat->latest_applied_damage_sequence) {
+        static_cast<void>(combat->latest_applied_damage_sequence(combat->user, &latest_applied));
+    }
+    const summon_lab::combat_roster::ReplyHeader header{session.world, latest_applied};
+    std::scoped_lock lock(g_context.mutex, g_local_birth_mutex);
+    if (!g_context.session_world_ready || session.world.id != g_context.combat_roster_world.id ||
+        session.world.generation != g_context.combat_roster_world.generation) {
+        return {ANOMALY_STATUS_V1_UNAVAILABLE, 0, {}};
+    }
+    *size = sizeof(header) + (g_context.records.size() + g_context.retired_combat_handles.size() +
+        g_local_births.size()) * sizeof(AnomalyGenerationHandleV1);
+    if (*size > response.size) return {ANOMALY_STATUS_V1_BUFFER_TOO_SMALL, 0, {}};
+    std::memcpy(response.data, &header, sizeof(header));
+    auto* next = response.data + sizeof(header);
+    const auto append = [&](const AnomalyGenerationHandleV1 handle) {
+        std::memcpy(next, &handle, sizeof(handle));
+        next += sizeof(handle);
+    };
+    for (const auto& record : g_context.records) append(record.handle);
+    for (const auto& handle : g_context.retired_combat_handles) append(handle);
+    // Local birth bindings also cover actors restored after a package reload.
+    for (const auto& birth : g_local_births) append(birth.actor_handle);
+    return anomaly::sdk::Ok();
+}
+
+void RegisterCombatRoster(const anomaly::sdk::Host& host) {
+    using namespace summon_lab::combat_roster;
+    const auto ipc = host.Query<AnomalyIpcServiceV1>(ANOMALY_IPC_SERVICE_V1_ID);
+    if (!ipc || ipc->struct_size < sizeof(AnomalyIpcServiceV1) || !ipc->register_endpoint) return;
+    const AnomalyIpcEndpointDescriptorV1 endpoint{
+        sizeof(endpoint), anomaly::sdk::StringView(kEndpoint), kVersion, 0,
+        kRequest, kResponse, {}, ANOMALY_IPC_MODE_V1_ASYNC_REQUEST,
+        ANOMALY_IPC_AFFINITY_V1_GAME, 1000, ANOMALY_IPC_REENTRANCY_V1_REJECT,
+        0, kMaximumReplyBytes, 0, 1};
+    AnomalyGenerationHandleV1 handle{};
+    static_cast<void>(ipc->register_endpoint(
+        ipc->user, &endpoint, ReadCombatRoster, nullptr, &handle));
+}
+
 AnomalyStatusV1 ANOMALY_CALL Start(void* context) {
     if (context != &g_context) return {ANOMALY_STATUS_V1_INVALID_ARGUMENT, 0, {}};
     ResetState();
@@ -5149,6 +5220,7 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* context) {
         if (LoadCatalogPolicy()) LoadCatalogCache();
     } catch (...) { SetScanStatus("catalog.scan.failed", "Catalog refresh failed"); }
     ConsumeSpawnRequest();
+    RegisterCombatRoster(query);
 
     return anomaly::sdk::Ok();
 }

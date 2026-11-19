@@ -53,6 +53,8 @@ struct HistoricalEncounter {
     Quality quality;
     CriticalDataStatus critical_data_status{CriticalDataStatus::Unavailable};
     std::vector<DamageFlagCount> damage_flag_histogram;
+    std::string name;
+    bool summons_only{};
 };
 
 struct AccountHistoryGroup {

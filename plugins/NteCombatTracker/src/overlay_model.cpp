@@ -173,13 +173,13 @@ TitleBarLayout CalculateTitleBarLayout(
 ViewRect CalculateCellTextRect(
     const ViewRect cell,
     const float scale,
-    const float leading_content_inset) noexcept {
+    const float content_inset) noexcept {
     const auto metrics = OverlayReferenceMetrics();
     const float safe_scale = std::clamp(scale, 0.5F, 4.0F);
-    const float padding = metrics.cell_horizontal_padding * safe_scale;
-    const float left = cell.left + padding + std::max(0.0F, leading_content_inset);
-    const float right = std::max(left, cell.right - padding);
-    return {left, cell.top, right, cell.bottom};
+    const float padding = std::min(
+        metrics.cell_horizontal_padding * safe_scale + std::max(0.0F, content_inset),
+        std::max(0.0F, (cell.right - cell.left) / 2.0F));
+    return {cell.left + padding, cell.top, cell.right - padding, cell.bottom};
 }
 
 ViewRect CalculatePlayerGlyphRect(
