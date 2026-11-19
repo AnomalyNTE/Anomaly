@@ -1047,6 +1047,14 @@ struct Context final {
   std::atomic_bool pose_target_scan_requested{true};
   bool pose_target_scan_running{};
   std::uint32_t pose_target_scan_cursor{};
+  // Auto-refresh state: the scan re-runs when the local character, its mesh asset or the
+  // registry changes, and otherwise every few seconds to drop stale entries.
+  std::uintptr_t pose_target_scan_local_character{};
+  std::uintptr_t pose_target_scan_local_mesh{};
+  std::uintptr_t pose_target_scan_local_asset{};
+  std::uint32_t pose_target_scan_registry_count{};
+  std::uint64_t pose_target_scan_last_ms{};
+
   std::string reflection_status{"reflection idle"};
   std::array<char, 256> pose_status{};
   std::vector<std::string> bone_names;
@@ -11434,6 +11442,47 @@ void ApplyRequestedPoseTarget(Context &context) noexcept {
   context.pose_target_scan_requested.store(true, std::memory_order_release);
 }
 
+// Re-scans the entity list when it can no longer be trusted: the local character or its
+// mesh asset changed (character swap, skin swap), or enough time passed that spawned and
+// destroyed entities would leave the list stale.
+void AutoRefreshPoseTargets(Context &context) noexcept {
+  if (context.pose_target_scan_requested.load(std::memory_order_acquire) ||
+      context.pose_target_scan_running)
+    return;
+  const bool local_changed =
+      context.pose_target_scan_local_character != context.local_character ||
+      context.pose_target_scan_local_mesh != context.local_mesh;
+  bool due = local_changed;
+  if (!due && context.local_mesh != 0) {
+    std::uintptr_t asset{};
+    if (Read(context, context.local_mesh + native_layout.kMeshSkeletalMeshOffset, asset) &&
+        asset != 0 && context.pose_target_scan_local_asset != 0 &&
+        asset != context.pose_target_scan_local_asset)
+      due = true;
+  }
+  if (!due && context.pose_target_scan_last_ms != 0 &&
+      GetTickCount64() - context.pose_target_scan_last_ms >= 15000)
+    due = true;
+  if (due) {
+    if (local_changed) {
+      // The player entry is ours: update it in place so the new character is selectable
+      // immediately. The full scan still runs for the other entities.
+      const bool has_player =
+          !context.pose_targets.empty() && context.pose_targets.front().label == "Player";
+      if (context.local_character != 0 && context.local_mesh != 0) {
+        const PoseTarget player{context.local_character, context.local_mesh, "Player"};
+        if (has_player)
+          context.pose_targets.front() = player;
+        else
+          context.pose_targets.insert(context.pose_targets.begin(), player);
+      } else if (has_player) {
+        context.pose_targets.erase(context.pose_targets.begin());
+      }
+    }
+    context.pose_target_scan_requested.store(true, std::memory_order_release);
+  }
+}
+
 void StepPoseTargetScan(Context &context) noexcept {
   if (!context.pose_target_scan_requested.load(std::memory_order_acquire))
     return;
@@ -11505,6 +11554,15 @@ void StepPoseTargetScan(Context &context) noexcept {
   context.pose_target_scan_running = false;
   context.pose_target_scan_requested.store(false, std::memory_order_release);
   context.pose_targets = std::move(context.pose_target_scan_results);
+  context.pose_target_scan_local_character = context.local_character;
+  context.pose_target_scan_local_mesh = context.local_mesh;
+  context.pose_target_scan_registry_count = context.object_registry.count;
+  context.pose_target_scan_last_ms = GetTickCount64();
+  context.pose_target_scan_local_asset = 0;
+  if (context.local_mesh != 0)
+    static_cast<void>(Read(context,
+        context.local_mesh + native_layout.kMeshSkeletalMeshOffset,
+        context.pose_target_scan_local_asset));
   if (context.selected_pose_target_mesh != 0 &&
       std::none_of(context.pose_targets.begin(), context.pose_targets.end(),
                    [&](const PoseTarget &target) {
@@ -17893,6 +17951,7 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
     PublishSnapshot(context, "local player character is unavailable");
     return;
   }
+  AutoRefreshPoseTargets(context);
   StepPoseTargetScan(context);
   StepCameraFollowTarget(context);
 
