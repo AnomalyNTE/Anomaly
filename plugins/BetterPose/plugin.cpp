@@ -17234,6 +17234,13 @@ void HandleRequest(Context &context) {
     std::lock_guard<std::mutex> lock(context.keyframe_mutex);
     if (selected < 0)
       return;
+    // A drag sends one move per frame, so overwriting on collision destroyed every key the
+    // dragged one passed over. Refuse to land on an occupied frame instead; the drag slides
+    // past it and keeps its own data.
+    const std::size_t occupied = context.keyframe_track.Find(target);
+    if (occupied != context.keyframe_track.Size() &&
+        occupied != static_cast<std::size_t>(selected))
+      return;
     const std::size_t moved = context.keyframe_track.Move(static_cast<std::size_t>(selected), target);
     if (moved < context.keyframe_track.Size()) {
       ++context.keyframe_revision;
@@ -17877,7 +17884,9 @@ void StepKeyframes(Context &context, const double delta_seconds) noexcept {
     // Selection follows the playhead: a paused playhead that lands on a key
     // selects it; one that leaves the selected key (scrub, step, play) drops
     // it, so the timeline's DEL and the panel always mean the key under it.
-    if (moved || playing) {
+    const bool dragging_key =
+        context.keyframe_overlay_dragging_key.load(std::memory_order_acquire);
+    if ((moved || playing) && !dragging_key) {
       const auto rounded = static_cast<std::uint32_t>(std::lround((std::max)(0.0, frame)));
       std::lock_guard<std::mutex> lock(context.keyframe_mutex);
       const std::size_t at = context.keyframe_track.Find(rounded);
@@ -17890,7 +17899,8 @@ void StepKeyframes(Context &context, const double delta_seconds) noexcept {
                context.keyframe_track.Keys()[static_cast<std::size_t>(selected)].frame != rounded)
         context.keyframe_selected.store(-1, std::memory_order_release);
     }
-    if (context.keyframe_auto_record.load(std::memory_order_acquire) && user_editing) {
+    if (context.keyframe_auto_record.load(std::memory_order_acquire) && user_editing &&
+        !dragging_key) {
       const auto current_state = better_pose::keyframes::TrackState{{
           keyframe_impl::CaptureKey(context,
                                     static_cast<std::uint32_t>(std::lround(frame)))}};
@@ -22317,8 +22327,9 @@ constexpr std::uint32_t kTimelineText = ANOMALY_RGBA_V1(240, 242, 248, 255);
 constexpr std::uint32_t kTimelineMuted = ANOMALY_RGBA_V1(120, 126, 140, 255);
 constexpr std::uint32_t kTimelinePlayhead = ANOMALY_RGBA_V1(255, 214, 64, 255);
 constexpr std::uint32_t kTimelinePose = ANOMALY_RGBA_V1(75, 170, 255, 255);
+constexpr std::uint32_t kTimelineEmptyPose = ANOMALY_RGBA_V1(75, 170, 255, 120);
 constexpr std::uint32_t kTimelineExpression = ANOMALY_RGBA_V1(240, 105, 175, 255);
-constexpr std::uint32_t kTimelineCamera = ANOMALY_RGBA_V1(100, 220, 140, 255);
+constexpr std::uint32_t kTimelineCamera = ANOMALY_RGBA_V1(252, 208, 64, 255);
 constexpr std::uint32_t kTimelineRecord = ANOMALY_RGBA_V1(255, 150, 60, 255);
 constexpr std::uint32_t kTimelineDelete = ANOMALY_RGBA_V1(240, 80, 80, 255);
 constexpr std::uint32_t kTimelineUnsaved = ANOMALY_RGBA_V1(255, 150, 60, 255);
@@ -22326,6 +22337,56 @@ constexpr std::uint32_t kTimelineUnsaved = ANOMALY_RGBA_V1(255, 150, 60, 255);
 // A rectangle outline from four lines.
 // Geometry joins the overlay's single batched submission; labels are collected for the
 // UI thread to replay through overlay_text, which composites above that geometry.
+// The batched overlay composites in ImGui, which renders these packed colours a shade
+// darker than the HUD canvas did. Compensate once, here, so the whole widget stays
+// consistent and the factor is easy to tune.
+// Fills only: near-black panels read like the HUD canvas did once lifted towards mid grey.
+inline std::uint32_t BatchedFillColor(const std::uint32_t color) noexcept {
+  // Blend towards mid grey so near-black panels read like the HUD canvas did, and keep the
+  // original alpha. Coloured fills (the key diamonds) are left alone: mixing them towards
+  // grey would wash out the hue that says pose / expression / camera.
+  constexpr double kGrey = 138.0;
+  constexpr double kMix = 0.45;
+  const std::uint32_t red = color & 0xFFU;
+  const std::uint32_t green = (color >> 8U) & 0xFFU;
+  const std::uint32_t blue = (color >> 16U) & 0xFFU;
+  if ((std::max)(red, (std::max)(green, blue)) - (std::min)(red, (std::min)(green, blue)) > 24U)
+    return color;
+  const auto channel = [](const std::uint32_t value, const unsigned shift) {
+    const auto raw = static_cast<double>((value >> shift) & 0xFFU);
+    const auto mixed = raw * (1.0 - kMix) + kGrey * kMix;
+    return static_cast<std::uint32_t>(mixed > 255.0 ? 255.0 : mixed);
+  };
+  return channel(color, 0) | (channel(color, 8) << 8U) | (channel(color, 16) << 16U) |
+         (((color >> 24U) & 0xFFU) << 24U);
+}
+
+// Lines and labels: the packed colours are authored for the HUD canvas and composite a
+// shade darker here, so lift them towards white and force full opacity.
+inline std::uint32_t BatchedStrokeColor(const std::uint32_t color,
+                                       const double strength = 1.0) noexcept {
+  // Neutral strokes (ticks, borders, disabled labels) should read as bright as an active
+  // button's label, while the coloured key diamonds keep their hue so they still mean
+  // pose / expression / camera.
+  constexpr double kNeutralLift = 0.78;
+  constexpr double kColourLift = 0.25;
+  const std::uint32_t red = color & 0xFFU;
+  const std::uint32_t green = (color >> 8U) & 0xFFU;
+  const std::uint32_t blue = (color >> 16U) & 0xFFU;
+  const std::uint32_t high = (std::max)(red, (std::max)(green, blue));
+  const std::uint32_t low = (std::min)(red, (std::min)(green, blue));
+  const double lift = (high - low <= 24U ? kNeutralLift : kColourLift) * strength;
+  const auto channel = [lift](const std::uint32_t raw) {
+    const auto lifted = static_cast<double>(raw) * (1.0 - lift) + 255.0 * lift;
+    return static_cast<std::uint32_t>(lifted > 255.0 ? 255.0 : lifted);
+  };
+  return channel(red) | (channel(green) << 8U) | (channel(blue) << 16U) | 0xFF000000U;
+}
+
+// The canvas passes a scale, the overlay text API wants pixels. Buttons need this to
+// centre their label on the box the label is actually drawn in.
+constexpr float kOverlayTextBasePx = 22.0F;
+
 struct TimelineCanvas {
   const AnomalyUe5AhudFrameV1 *frame{};
   std::vector<AnomalyUiScreenPrimitiveV1> *batch{};
@@ -22335,27 +22396,28 @@ struct TimelineCanvas {
   void Rect(const float x, const float y, const float width, const float height,
             const std::uint32_t color) const {
     if (batched)
-      batch->push_back(UiPrimitive(ANOMALY_UI_SCREEN_PRIMITIVE_V1_FILLED_RECT, color, x, y,
-                                   width, height, 0.0F));
+      batch->push_back(UiPrimitive(ANOMALY_UI_SCREEN_PRIMITIVE_V1_FILLED_RECT,
+                                   BatchedFillColor(color), x, y, width, height, 0.0F));
     else
       frame->draw_rect(frame->user, x, y, width, height, color);
   }
   void Line(const float x1, const float y1, const float x2, const float y2,
             const std::uint32_t color, const float thickness) const {
     if (batched)
-      batch->push_back(
-          UiPrimitive(ANOMALY_UI_SCREEN_PRIMITIVE_V1_LINE, color, x1, y1, x2, y2, thickness));
+      batch->push_back(UiPrimitive(ANOMALY_UI_SCREEN_PRIMITIVE_V1_LINE,
+                                   BatchedStrokeColor(color), x1, y1, x2, y2, thickness));
     else
       frame->draw_line(frame->user, x1, y1, x2, y2, color, thickness);
   }
   void Text(const AnomalyStringViewV1 value, const float x, const float y,
-            const std::uint32_t color, const float scale) const {
+            const std::uint32_t color, const float scale,
+            const double lift_strength = 1.0) const {
     if (texts != nullptr) {
       Context::OverlayTextItem item;
       item.x = x;
       item.y = y;
-      item.color = color;
-      item.size = scale * 20.0F;
+      item.color = BatchedStrokeColor(color, lift_strength);
+      item.size = scale * kOverlayTextBasePx;
       item.text.assign(value.data, value.size);
       texts->push_back(std::move(item));
       return;
@@ -22390,9 +22452,12 @@ void TimelineButton(const TimelineCanvas &canvas, const better_pose::timeline::R
     width = static_cast<float>(label.size()) * 7.0F;
     height = 14.0F;
   }
+  const float text_height = canvas.batched ? 0.85F * kOverlayTextBasePx : height;
   canvas.Text(anomaly::sdk::StringView(label),
-                   (r.left + r.right - width) * 0.5F, (r.top + r.bottom - height) * 0.5F,
-                   enabled ? kTimelineText : kTimelineMuted, 0.85F);
+                   (r.left + r.right - width) * 0.5F,
+                   (r.top + r.bottom - text_height) * 0.5F,
+                   enabled ? kTimelineText : kTimelineMuted, 0.85F,
+                   enabled ? 1.0 : 0.55);
 }
 
 void TimelineLine(const TimelineCanvas &canvas, const float x1, const float y1,
@@ -22401,12 +22466,37 @@ void TimelineLine(const TimelineCanvas &canvas, const float x1, const float y1,
   canvas.Line(x1, y1, x2, y2, color, thickness);
 }
 
+// Key marks are deliberately narrow: a tall thin diamond stays readable when keys sit
+// close together on the track.
+constexpr float kDiamondHalfWidth = 0.6F;
+
+void TimelineDiamondOutline(const TimelineCanvas &canvas, const float x, const float y,
+                            const std::uint32_t color, const float size) noexcept {
+  const float half = size * kDiamondHalfWidth;
+  canvas.Line(x - half, y, x, y - size, color, 1.5F);
+  canvas.Line(x, y - size, x + half, y, color, 1.5F);
+  canvas.Line(x + half, y, x, y + size, color, 1.5F);
+  canvas.Line(x, y + size, x - half, y, color, 1.5F);
+}
+
 void TimelineDiamond(const TimelineCanvas &canvas, const float x, const float y,
                      const std::uint32_t color, const float size = 6.0F) noexcept {
-  canvas.Line(x - size, y, x, y - size, color, 1.5F);
-  canvas.Line(x, y - size, x + size, y, color, 1.5F);
-  canvas.Line(x + size, y, x, y + size, color, 1.5F);
-  canvas.Line(x, y + size, x - size, y, color, 1.5F);
+  if (canvas.batched) {
+    // The batched primitive set has no filled polygon, so fill with 1 px scanlines the way
+    // the joint circles are filled. Every row still rides in the single batched call.
+    const int half = static_cast<int>(size);
+    for (int row = -half; row <= half; ++row) {
+      const int distance = row < 0 ? -row : row;
+      const float taper = 1.0F - static_cast<float>(distance) / static_cast<float>(half + 1);
+      const float width = size * kDiamondHalfWidth * taper;
+      if (width <= 0.25F) continue;
+      canvas.Rect(x - width, y + static_cast<float>(row), width * 2.0F, 1.0F, color);
+    }
+    // Outline in the same hue, lifted by the stroke rule, so the mark keeps a crisp edge.
+    TimelineDiamondOutline(canvas, x, y, color, size);
+    return;
+  }
+  TimelineDiamondOutline(canvas, x, y, color, size);
 }
 
 struct KeyframeOverlayStats {
@@ -22568,13 +22658,21 @@ KeyframeOverlayStats DrawKeyframeOverlay(
     const bool selected_key =
         has_selected_key && static_cast<std::size_t>(selected) == i;
     if (selected_key)
-      TimelineDiamond(canvas, key.x, key_y, kTimelineText, 10.0F);
-    if (key.pose) TimelineDiamond(canvas, key.x, key_y, kTimelinePose);
+      TimelineDiamond(canvas, key.x, key_y, kTimelineText, 14.0F);
+    if (key.pose) {
+      TimelineDiamond(canvas, key.x, key_y, kTimelinePose, 9.5F);
+    } else if (key.expression || key.camera) {
+      // No pose recorded here, but the key still exists: show the empty slot so the track
+      // does not look like it has a gap.
+      TimelineDiamondOutline(canvas, key.x, key_y, kTimelineEmptyPose, 9.5F);
+    }
     if (key.expression)
-      TimelineDiamond(canvas, key.x + 2.0F, key_y,
-                      kTimelineExpression, 4.0F);
+      TimelineDiamond(canvas, key.x + 3.5F, key_y,
+                      kTimelineExpression, 6.5F);
     if (key.camera)
-      TimelineDiamond(canvas, key.x - 2.0F, key_y, kTimelineCamera, 3.0F);
+      // Yellow and nearly the size of an expression mark, offset onto the left half so the
+      // two read apart at a glance.
+      TimelineDiamond(canvas, key.x - 3.5F, key_y, kTimelineCamera, 5.0F);
   }
   if (layout.playhead_visible) {
     TimelineLine(canvas, layout.playhead_x, layout.track.top - 8.0F, layout.playhead_x,
@@ -25300,12 +25398,14 @@ void DrawPendingOverlayPrimitives(
     primitives.insert(primitives.end(), context.overlay_screen_primitives.begin(),
                       context.overlay_screen_primitives.end());
   }
+  // Any UI frame proves the batched path is usable, so stamp before content is known: a
+  // "successful non-empty submission" signal deadlocks, because the timeline only queues
+  // geometry once batching is already considered live.
+  context.overlay_imgui_last_submit_ms.store(GetTickCount64(), std::memory_order_release);
   if (primitives.empty())
     return;
-  if (ui->draw_screen_primitives(ui->user, primitives.data(),
-                                 primitives.size()) != 0)
-    context.overlay_imgui_last_submit_ms.store(GetTickCount64(),
-                                               std::memory_order_release);
+  static_cast<void>(ui->draw_screen_primitives(ui->user, primitives.data(),
+                                               primitives.size()));
 }
 
 void ANOMALY_CALL DrawOverlay(void *plugin_context,
