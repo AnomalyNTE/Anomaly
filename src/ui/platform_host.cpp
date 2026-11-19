@@ -3518,9 +3518,11 @@ private:
         const auto index_base = static_cast<ImDrawIdx>(list->_VtxCurrentIdx);
         const ImVec4 top = ImGui::ColorConvertU32ToFloat4(top_color);
         const ImVec4 bottom = ImGui::ColorConvertU32ToFloat4(bottom_color);
+        const float width = (std::max)(1.0f, max.x - min.x);
         for (int i = 0; i < point_count; ++i) {
             const ImVec2 point = list->_Path[i];
-            const float t = ImClamp((point.y - min.y) / height, 0.0f, 1.0f);
+            const float t = ImClamp(((point.x - min.x) / width) * 0.42f +
+                ((point.y - min.y) / height) * 0.58f, 0.0f, 1.0f);
             const ImVec4 color(top.x + (bottom.x - top.x) * t,
                 top.y + (bottom.y - top.y) * t,
                 top.z + (bottom.z - top.z) * t,
@@ -5045,26 +5047,27 @@ private:
             }
         }
 
+        const float rounding = Scaled(12.0f) * (std::min)(1.0f, s * 0.75f);
         const bool dark_surface = anomaly::glass::DarkAppearance();
-        const float drop_rounding = (std::min)(size.y * 0.34f, Scaled(30.0f));
-        draw_list->AddRectFilled(Offset(origin, 0.0f, Scaled(2.0f)),
-            Offset(maximum, 0.0f, Scaled(2.0f)),
-            dark_surface ? IM_COL32(0, 0, 0, 46) : IM_COL32(24, 34, 52, 20),
-            drop_rounding);
         ImU32 face_top = 0;
         ImU32 face_bottom = 0;
         if (dark_surface) {
-            face_top = IM_COL32(255, 255, 255, hovered ? 34 : 28);
-            face_bottom = IM_COL32(255, 255, 255, 8);
+            face_top = IM_COL32(255, 255, 255, hovered ? 32 : 26);
+            face_bottom = IM_COL32(255, 255, 255, 12);
         } else {
             const ImVec4 accent = ThemeColor(theme.accent);
-            const int top_alpha = hovered ? 246 : 238;
-            face_top = IM_COL32(253, 254, 255, top_alpha);
-            face_bottom = IM_COL32(static_cast<int>(244.0f - accent.x * 12.0f),
-                static_cast<int>(247.0f - accent.y * 10.0f),
-                static_cast<int>(253.0f - accent.z * 4.0f), top_alpha - 20);
+            const int top_alpha = hovered ? 244 : 236;
+            face_top = IM_COL32(252, 253, 255, top_alpha);
+            face_bottom = IM_COL32(static_cast<int>(248.0f - accent.x * 10.0f),
+                static_cast<int>(250.0f - accent.y * 8.0f),
+                static_cast<int>(255.0f - accent.z * 2.0f), top_alpha - 12);
         }
-        DrawSoftSurface(draw_list, origin, maximum, drop_rounding, face_top, face_bottom);
+        DrawSoftSurface(draw_list, origin, maximum, rounding, face_top, face_bottom);
+        draw_list->AddRect(origin, maximum,
+            ImGui::ColorConvertFloat4ToU32(ThemeColorWithAlpha(theme.border,
+                hovered ? 0.22f : 0.10f)),
+            rounding, 0, 1.0f);
+
         const float icon_size = Scaled(30.0f) * icon_scale;
         DrawGenericPluginIcon(Offset(origin, pad, pad * 0.9f), icon_size);
 
@@ -5403,22 +5406,25 @@ private:
             static_cast<float>(page_count - 1));
         DrawPluginPager(page_count, pager_origin, area.x, pager_height, pager_position);
         if (!plugin_zoom_id_.empty()) {
+            // Releasing the press keeps the overlay drawn while the card shrinks
+            // back into its slot; the id is only dropped once the shrink ends.
+            const bool closing = !ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
+                ImGui::IsKeyPressed(ImGuiKey_Escape, false);
             plugin_zoom_grow_ = anomaly::glass::Animate(
-                ImGui::GetID("##plugin-zoom-grow"), 1.0f, 22.0f);
+                ImGui::GetID("##plugin-zoom-grow"), closing ? 0.0f : 1.0f,
+                closing ? 11.0f : 9.0f);
             const auto* zoomed = model_.Snapshot().FindPlugin(plugin_zoom_id_);
             if (zoomed != nullptr) {
                 DrawPluginZoomOverlay(*zoomed, plugin_zoom_grow_);
-            } else {
-                plugin_zoom_id_.clear();
             }
-            if (!ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
-                ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+            if (zoomed == nullptr || (closing && plugin_zoom_grow_ <= 0.01f)) {
                 plugin_zoom_id_.clear();
                 plugin_press_started_at_ = 0.0;
+                plugin_zoom_grow_ = 0.0f;
             }
         } else {
             plugin_zoom_grow_ = anomaly::glass::Animate(
-                ImGui::GetID("##plugin-zoom-grow"), 0.0f, 30.0f);
+                ImGui::GetID("##plugin-zoom-grow"), 0.0f, 11.0f);
         }
         EndShellBodyChild();
     }
