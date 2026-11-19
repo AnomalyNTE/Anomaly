@@ -1049,6 +1049,7 @@ struct Context final {
   std::uint32_t pose_target_scan_cursor{};
   // Auto-refresh state: the scan re-runs when the local character, its mesh asset or the
   // registry changes, and otherwise every few seconds to drop stale entries.
+  std::uint64_t pose_target_scan_last_ms{};
   std::uintptr_t pose_target_scan_local_character{};
   std::uintptr_t pose_target_scan_local_mesh{};
   std::uintptr_t pose_target_scan_local_asset{};
@@ -11452,7 +11453,16 @@ void AutoRefreshPoseTargets(Context &context) noexcept {
   const bool local_changed =
       context.pose_target_scan_local_character != context.local_character ||
       context.pose_target_scan_local_mesh != context.local_mesh;
+  // A character swap clears these pointers for a frame or two; a scan started then records
+  // "0" as the state it covered and every later frame looks like another change, which
+  // rescans the whole (~410k object) registry in a loop. Only scan known values, and never
+  // more often than a couple of seconds apart.
+  if (context.local_character == 0 || context.local_mesh == 0)
+    return;
   bool due = local_changed;
+  if (due && context.pose_target_scan_last_ms != 0 &&
+      GetTickCount64() - context.pose_target_scan_last_ms < 2000)
+    due = false;
   if (!due && context.local_mesh != 0) {
     std::uintptr_t asset{};
     if (Read(context, context.local_mesh + native_layout.kMeshSkeletalMeshOffset, asset) &&
@@ -11551,6 +11561,7 @@ void StepPoseTargetScan(Context &context) noexcept {
   context.pose_target_scan_running = false;
   context.pose_target_scan_requested.store(false, std::memory_order_release);
   context.pose_targets = std::move(context.pose_target_scan_results);
+  context.pose_target_scan_last_ms = GetTickCount64();
   context.pose_target_scan_local_character = context.local_character;
   context.pose_target_scan_local_mesh = context.local_mesh;
   context.pose_target_scan_registry_count = context.object_registry.count;
