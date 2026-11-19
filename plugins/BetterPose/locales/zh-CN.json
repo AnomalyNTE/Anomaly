@@ -2,6 +2,8 @@
   "schemaVersion": 1,
   "locale": "zh-CN",
   "messages": {
+    "pose.apose": "变成 A 字形",
+    "keyframe.no_pose_snapshot": "完整姿势尚未就绪，请先加载骨骼及其基准姿势",
     "plugin.description": "调整本地玩家和 Character Studio 模型的骨骼网格动画速率、暂停状态，并应用关节姿态与身体偏移。",
     "window.title": "更好的动作",
     "target.title": "姿态目标",

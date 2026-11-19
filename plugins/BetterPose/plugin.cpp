@@ -22,11 +22,13 @@ using Microsoft::WRL::ComPtr;
 #include <nlohmann/json.hpp>
 #include "better_pose_profile.hpp"
 #include "accessory_dynamics.hpp"
+#include "accessory_storage.hpp"
 #include "secondary_rules.hpp"
 #include "edit_history.hpp"
 #include "pose_history.hpp"
 #include "orbit_camera.hpp"
 #include "keyframe_track.hpp"
+#include "keyframe_document.hpp"
 #include "rotation_gizmo.hpp"
 #include "timeline_overlay.hpp"
 #include "library.hpp"
@@ -289,7 +291,10 @@ struct PlayerFreezeState {
 
 struct EntityPoseState {
   std::vector<std::array<double, 3>> angles;
+  std::vector<std::string> bone_names;
+  std::map<std::string, std::array<double, 12>> library_pose_locals;
   std::vector<std::array<double, 12>> base_locals;
+  std::uintptr_t base_asset{};
   std::vector<std::int32_t> bone_parents;
   std::array<double, 3> root_offset{};
   bool override_enabled{};
@@ -705,6 +710,19 @@ struct Context final {
   std::chrono::steady_clock::time_point overlay_perf_last_callback{};
   std::mutex overlay_screen_primitives_mutex;
   std::vector<AnomalyUiScreenPrimitiveV1> overlay_screen_primitives;
+  // The on-screen timeline is drawn from the per-frame UI callback: geometry through one
+  // batched submission (ImGui background list) and labels through overlay_text (foreground
+  // list), so the panel fill cannot cover them. Per-primitive canvas calls were the cost.
+  struct OverlayTextItem {
+    float x{}, y{};
+    std::uint32_t color{};
+    float size{};
+    std::string text;
+  };
+  std::mutex keyframe_overlay_primitives_mutex;
+  std::vector<AnomalyUiScreenPrimitiveV1> keyframe_overlay_primitives;
+  std::vector<OverlayTextItem> keyframe_overlay_texts;
+  std::atomic_bool overlay_text_available{};
   std::atomic<std::uint64_t> overlay_imgui_last_submit_ms{};
   std::mutex overlay_mutex;
   std::vector<std::array<float, 2>> overlay_screen_joints;
@@ -952,6 +970,20 @@ struct Context final {
   std::atomic<std::uint32_t> shared_entity_pose_targets{};
   std::atomic_bool shared_entity_pose_active{};
   AnomalyGenerationHandleV1 settings_schema{};
+  struct RenderBridgeState {
+    struct alignas(16) Transform { std::array<double, 12> raw{}; };
+    static_assert(sizeof(Transform) == sizeof(better_pose_profile::TransformContract));
+    struct Sample {
+      std::uintptr_t mesh{}, asset{}, mesh_object{};
+      std::uint32_t count{};
+      std::shared_ptr<const std::vector<Transform>> render_pose;
+    };
+    std::mutex mutex;
+    std::map<std::uintptr_t, Sample> samples;
+    std::atomic<std::uint32_t> producer_thread{};
+    std::atomic_bool enabled{};
+    AnomalyGenerationHandleV1 update_handle{};
+  } render_bridge;
   std::vector<std::array<double, 3>> bone_angles;
   // Blender arrives over a local HTTP request, so delivery can miss a render
   // tick. Keep the newest target and smoothly evaluate it every skeletal tick
@@ -1015,6 +1047,28 @@ struct Context final {
   std::atomic_bool pose_target_scan_requested{true};
   bool pose_target_scan_running{};
   std::uint32_t pose_target_scan_cursor{};
+  // Timestamp of the last completed target scan; a new one never starts sooner than two
+  // seconds after it, so a flapping character pointer cannot queue scans back to back.
+  std::uint64_t pose_target_scan_last_ms{};
+  // "Become A-pose": take the base from the asset's reference pose instead of whatever
+  // animation the character happened to be in.
+  std::atomic_bool pose_apose_request{};
+  // True while the manual pose should be written even with every angle at zero, which is
+  // exactly the reference (A/T) pose case.
+  std::atomic_bool pose_hold_base{};
+  // The engine can silently put the component back on its own mode after we switch it to
+  // Custom, which is why the status line kept reading 0. Re-assert it, rate limited.
+  std::uint64_t anim_mode_reassert_ms{};
+  // Log the first drift of a component/skin only: a component that keeps reverting would
+  // otherwise write one line per second.
+  bool anim_mode_drift_logged{};
+  std::uintptr_t anim_mode_drift_mesh{};
+  std::uintptr_t anim_mode_drift_asset{};
+  std::uintptr_t pose_target_scan_local_character{};
+  std::uintptr_t pose_target_scan_local_mesh{};
+  std::uintptr_t pose_target_scan_local_asset{};
+  std::uint32_t pose_target_scan_registry_count{};
+
   std::string reflection_status{"reflection idle"};
   std::array<char, 256> pose_status{};
   std::vector<std::string> bone_names;
@@ -1195,6 +1249,8 @@ struct Context final {
     std::uint32_t bone_parents_count{};
     bool bone_parents_ready{};
     std::vector<std::array<double, 12>> pose_base_locals;
+    std::uintptr_t pose_base_asset{};
+    std::map<std::string, std::array<double, 12>> library_pose_locals;
     std::vector<std::array<double, 12>> ref_locals;
     std::map<std::string, std::array<double, 12>> manual_motion_reference;
     bool ref_pose_attempted{};
@@ -4898,11 +4954,17 @@ void CaptureEntityPose(Context &context, const std::uintptr_t mesh) noexcept {
     {
       std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
       captured.angles = context.bone_angles;
-      if (context.pose_base_ready && context.pose_base_mesh == mesh)
+      captured.library_pose_locals = context.library_pose_locals;
+      if (context.bone_names_mesh == mesh) captured.bone_names = context.bone_names;
+      if (context.pose_base_ready && context.pose_base_mesh == mesh) {
         captured.base_locals = context.pose_base_locals;
+        captured.base_asset = context.pose_base_asset;
+      }
       if (captured.base_locals.empty() &&
-          context.ref_locals.size() == context.runtime.local_space_count)
+          context.ref_locals.size() == context.runtime.local_space_count) {
         captured.base_locals = context.ref_locals;
+        captured.base_asset = context.runtime.mesh_asset;
+      }
     }
     if (context.bone_parents_ready && context.bone_parents_mesh == mesh)
       captured.bone_parents = context.bone_parents;
@@ -4933,6 +4995,8 @@ bool HasCachedPoseEffect(const EntityPoseState &saved) noexcept {
   if (saved.base_locals.empty() ||
       saved.bone_parents.size() != saved.base_locals.size())
     return false;
+  if (!saved.library_pose_locals.empty() && saved.bone_names.size() == saved.base_locals.size())
+    return true;
   if (saved.root_offset[0] != 0.0 || saved.root_offset[1] != 0.0 ||
       saved.root_offset[2] != 0.0)
     return true;
@@ -4977,8 +5041,10 @@ bool RestoreEntityPose(Context &context, const std::uintptr_t mesh) noexcept {
     {
       std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
       context.bone_angles = saved.angles;
+      context.library_pose_locals = saved.library_pose_locals;
       if (!saved.base_locals.empty()) {
         context.pose_base_locals = saved.base_locals;
+        context.pose_base_asset = saved.base_asset;
         context.pose_base_mesh = mesh;
         context.pose_base_ready = true;
       }
@@ -5017,6 +5083,9 @@ void ParkCurrentEntityMotion(Context &context,
   try {
     Context::EntityMotionState &saved = context.entity_motion_states[mesh];
     saved.runtime = context.runtime;
+    // Local-target resolution clears transient pointers before a target switch.
+    saved.runtime.character = context.runtime.bound_character;
+    saved.runtime.mesh = mesh;
     saved.bone_names = std::move(context.bone_names);
     saved.bone_parents = std::move(context.bone_parents);
     saved.bone_parents_count = context.bone_parents_count;
@@ -5024,6 +5093,8 @@ void ParkCurrentEntityMotion(Context &context,
     {
       std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
       saved.pose_base_locals = std::move(context.pose_base_locals);
+      saved.pose_base_asset = context.pose_base_asset;
+      saved.library_pose_locals = std::move(context.library_pose_locals);
       saved.ref_locals = std::move(context.ref_locals);
       saved.manual_motion_reference =
           std::move(context.manual_motion_reference);
@@ -5076,6 +5147,8 @@ bool RestoreEntityMotion(Context &context,
     {
       std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
       context.pose_base_locals = std::move(saved.pose_base_locals);
+      context.pose_base_asset = saved.pose_base_asset;
+      context.library_pose_locals = std::move(saved.library_pose_locals);
       context.pose_base_mesh = mesh;
       context.pose_base_ready =
           !context.pose_base_locals.empty();
@@ -5107,6 +5180,11 @@ bool RestoreEntityMotion(Context &context,
     context.motion_morph_map_path.clear();
     const bool loaded = context.motion.frame_count != 0;
     context.motion_loaded.store(loaded, std::memory_order_release);
+    // Retain the skeleton's asset identity and animation override ownership on reselection.
+    context.runtime.mesh_asset = saved.runtime.mesh_asset;
+    context.runtime.saved_multi_threaded_update = saved.runtime.saved_multi_threaded_update;
+    context.runtime.multi_threaded_update_instance = saved.runtime.multi_threaded_update_instance;
+    context.runtime.original_multi_threaded_update_flags = saved.runtime.original_multi_threaded_update_flags;
     context.entity_motion_states.erase(found);
     LogDiagnostic(context, "betterpose motion slot restored mesh=" + Hex(mesh) +
                            " frames=" + std::to_string(context.motion.frame_count) +
@@ -5122,6 +5200,7 @@ better_pose::history::PoseState CapturePoseState(Context &context) {
   {
     std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
     state.angles = context.bone_angles;
+    state.library_pose_locals = context.library_pose_locals;
   }
   for (std::size_t axis{}; axis != 3; ++axis)
     state.root_offset[axis] = context.requested_root_offset[axis].load(std::memory_order_acquire);
@@ -5136,6 +5215,7 @@ void RestorePoseState(Context &context, const better_pose::history::PoseState &s
     const std::size_t size = (std::max)(context.bone_angles.size(), state.angles.size());
     context.bone_angles.assign(size, {0.0, 0.0, 0.0});
     std::copy(state.angles.begin(), state.angles.end(), context.bone_angles.begin());
+    context.library_pose_locals = state.library_pose_locals;
   }
   for (std::size_t axis{}; axis != 3; ++axis)
     context.requested_root_offset[axis].store(state.root_offset[axis], std::memory_order_release);
@@ -5398,20 +5478,26 @@ bool ReadPoseArrays(Context &context) noexcept {
   const bool asset_readable =
       Read(context, mesh + native_layout.kMeshSkeletalMeshOffset, asset) && asset != 0;
   if (asset_readable) {
+    // RuntimeState follows its component through binding and inactive evaluation.
     if (context.runtime.mesh_asset != 0 && asset != context.runtime.mesh_asset) {
       context.extra_build_pending = true;
-      context.pose_base_ready = false;   // the base pose belonged to the previous mesh asset
+      // A skin swap also invalidates the pose caches: their baseline came from the previous asset,
+      // and the reference pose of the old asset leaves undriven bones (and the head chain) at the
+      // old bind.
+      context.pose_base_ready = false;
       {
         std::lock_guard<std::mutex> guard(context.pose_angles_mutex);
         context.pose_base_locals.clear();
       }
-      // The reference pose is read from the mesh too: keeping the previous skin's copy leaves the
-      // undriven bones (and the head chain's baseline) sitting at the old bind.
       context.ref_locals.clear();
       context.ref_pose_attempted = false;
       context.mesh_scan_owner = 0;
       context.bone_names_mesh = 0;
       context.bone_names.clear();
+      context.bone_names_attempted = false;
+      context.bone_parents.clear();
+      context.bone_parents_mesh = 0;
+      context.bone_parents_ready = false;
       context.mesh_scan_requested.store(true, std::memory_order_release);
       {
         // Bone-name mappings belong to the current asset's bone table.
@@ -6332,6 +6418,12 @@ void ProcessSkeletalMeshTick(Context *context, const std::size_t slot,
         // The one allowed native hook may belong to a summoned entity while
         // the Player is selected. Finalize the selected body from this same
         // post-tick callback so both component classes remain driven.
+        //
+        // Gating this on "does this component belong to us" was tried twice (actor
+        // ownership, then the scanned accessory list) and both times the selected body
+        // stopped being driven on a modded character: the drag stopped following and the
+        // skeleton overlay vanished. Whatever component ticks here is part of how this
+        // character's body stays driven, so the write stays unconditional.
         if (!context->blender_active.load(std::memory_order_acquire) ||
             context->blender_frame.valid) {
           static_cast<void>(ReadPoseArrays(*context));
@@ -8439,16 +8531,18 @@ void ApplyPoseOverridesViaUFunction(Context &context) noexcept {
 
 bool CapturePoseBase(Context &context) noexcept {
   const auto mesh = context.runtime.mesh;
-  const auto data = context.runtime.local_space_data;
-  const auto count = context.runtime.local_space_count;
-  if (mesh == 0 || data == 0 || count == 0)
-    return false;
+  if (mesh == 0) return false;
   std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
-  // The component can survive a skin change; the cached base must also match its asset.
+  // A known baseline remains authoritative even when the engine releases temporary arrays.
   if (context.pose_base_ready && context.pose_base_mesh == mesh &&
-      context.pose_base_asset == context.runtime.mesh_asset &&
-      context.pose_base_locals.size() == count)
+      context.pose_base_asset == context.runtime.mesh_asset && !context.pose_base_locals.empty() &&
+      (context.runtime.component_space_count == 0 ||
+       context.pose_base_locals.size() == context.runtime.component_space_count))
     return true;
+  std::uintptr_t data{};
+  std::uint32_t count{};
+  if (!ReadArrayHeader(context, mesh + native_layout.kMeshLocalSpaceTransformsOffset, data, count) ||
+      data == 0 || count == 0 || count > 8192) return false;
   std::vector<std::array<double, 12>> base(count);
   for (std::uint32_t bone{}; bone != count; ++bone) {
     std::uintptr_t address{};
@@ -8464,17 +8558,16 @@ bool CapturePoseBase(Context &context) noexcept {
   return true;
 }
 
+#include "render_pose_bridge.hpp"
+
 void ApplyPoseOverridesDirect(Context &context,
                               const bool write_auxiliary) noexcept {
+  try {
   RuntimeState &state = context.runtime;
-  if (!context.pose_override_enabled.load(std::memory_order_acquire) ||
-      state.mesh == 0 || state.local_space_data == 0 ||
-      state.local_space_count == 0 || state.component_space_data == 0 ||
-      state.component_space_count != state.local_space_count)
-    return;
-  if (!CapturePoseBase(context))
-    return;
-  const std::uint32_t count = state.local_space_count;
+  render_pose_bridge::ProductionScope production(context);
+  if (!context.pose_override_enabled.load(std::memory_order_acquire) || state.mesh == 0) return;
+  if (!CapturePoseBase(context)) return;
+  const std::uint32_t count = static_cast<std::uint32_t>(context.pose_base_locals.size());
   std::vector<std::array<double, 12>> base_locals;
   std::vector<std::array<double, 3>> angles;
   std::map<std::string, std::array<double, 12>> library_pose;
@@ -8532,9 +8625,14 @@ void ApplyPoseOverridesDirect(Context &context,
   const bool calibration_reference =
       context.t_pose_calibration_active.load(std::memory_order_acquire) &&
       !context.motion_loaded.load(std::memory_order_acquire);
-  if (!any_override && !has_root_offset && !calibration_reference &&
-      library_pose.empty())
+  const bool hold_base =
+      context.pose_hold_base.load(std::memory_order_acquire) &&
+      !context.motion_loaded.load(std::memory_order_acquire);
+  if (!any_override && !has_root_offset && !calibration_reference && !hold_base &&
+      library_pose.empty()) {
+    render_pose_bridge::ClearSnapshot(context, state.mesh);
     return;
+  }
 
   if (context.bone_parents.size() != count)
     return;
@@ -8559,14 +8657,19 @@ void ApplyPoseOverridesDirect(Context &context,
   // The legacy state member bone_space_data names buffer 0, not local transforms.
   const auto *bytes = reinterpret_cast<const std::uint8_t *>(packed.data());
   const auto byte_count = packed.size() * sizeof(PackedTransform);
-  static_cast<void>(WriteBytes(
-      context, state.local_space_data,
-      reinterpret_cast<const std::uint8_t *>(local_packed.data()),
-      local_packed.size() * sizeof(PackedTransform)));
-  static_cast<void>(WriteBytes(context, state.component_space_data, bytes,
-                               byte_count));
-  static_cast<void>(WriteBytes(context, state.bone_space_data, bytes,
-                               byte_count));
+  // CPU buffers are best effort. Only current, matching arrays may be written; final rendering
+  // consumes the independent snapshot rather than a last-known temporary array.
+  const auto write_current = [&](const std::uint32_t offset, const std::uint8_t *data) {
+    std::uintptr_t address{};
+    std::uint32_t length{};
+    return ReadArrayHeader(context, state.mesh + offset, address, length) && address != 0 &&
+        length == count && WriteBytes(context, address, data, byte_count);
+  };
+  static_cast<void>(write_current(native_layout.kMeshLocalSpaceTransformsOffset,
+      reinterpret_cast<const std::uint8_t *>(local_packed.data())));
+  static_cast<void>(write_current(native_layout.kMeshComponentSpaceBuffer1Offset, bytes));
+  static_cast<void>(write_current(native_layout.kMeshComponentSpaceBuffer0Offset, bytes));
+  production.published = render_pose_bridge::Publish(context, packed);
   // Blender live preview already pauses the main animation and writes the
   // body after the skeletal tick. Re-running every accessory Kawaii/collision
   // solver here made the game lose frames during editing; native accessory
@@ -8586,6 +8689,8 @@ void ApplyPoseOverridesDirect(Context &context,
   if (write_extras)
     WriteExtraMeshes(context, packed);
   static_cast<void>(ForcePoseMeshObjectUpdate(context));
+  } catch (...) {
+  }
 }
 
 bool ApplyBlenderPoseSmoothed(Context &context,
@@ -8659,7 +8764,10 @@ bool ApplyCachedEntityPose(Context &context,
   std::vector<Transformd> locals(count);
   bool any_override = false;
   for (std::uint32_t bone{}; bone != count; ++bone) {
-    const auto &raw = saved.base_locals[bone];
+    const auto from_library = bone < saved.bone_names.size()
+        ? saved.library_pose_locals.find(saved.bone_names[bone]) : saved.library_pose_locals.end();
+    const auto &raw = from_library == saved.library_pose_locals.end()
+        ? saved.base_locals[bone] : from_library->second;
     locals[bone].rotation = Quatd{raw[0], raw[1], raw[2], raw[3]};
     locals[bone].translation = Vec3d{raw[4], raw[5], raw[6]};
     locals[bone].scale = Vec3d{raw[8], raw[9], raw[10]};
@@ -8674,7 +8782,7 @@ bool ApplyCachedEntityPose(Context &context,
   const bool has_root_offset =
       saved.root_offset[0] != 0.0 || saved.root_offset[1] != 0.0 ||
       saved.root_offset[2] != 0.0;
-  if (!any_override && !has_root_offset)
+  if (!any_override && !has_root_offset && saved.library_pose_locals.empty())
     return false;
 
   std::vector<Transformd> components(count);
@@ -9544,6 +9652,7 @@ nlohmann::json BlenderSampleMotion(Context &context, const double start,
   return {{"ok", true}, {"fps", fps}, {"length", duration}, {"frames", frames}};
 }
 
+bool ApplyReferencePoseBase(Context &context) noexcept;
 bool StartTPoseCalibration(Context &context) noexcept;
 bool ConfirmTPoseCalibration(Context &context) noexcept;
 void CancelTPoseCalibration(Context &context, std::string_view status) noexcept;
@@ -9554,6 +9663,7 @@ void RestoreMotionVisibility(Context &context) noexcept;
 
 void ApplyMotionPoseDirect(Context &context,
                            const bool publish_auxiliary) noexcept {
+  try {
   RuntimeState &state = context.runtime;
   const auto publish_limb_status = [&](const limb_cal::Status status) {
     for (std::size_t limb{}; limb != limb_cal::kLimbCount; ++limb)
@@ -10116,6 +10226,8 @@ void ApplyMotionPoseDirect(Context &context,
   if (publish_auxiliary)
     WriteExtraMeshes(context, packed);
   static_cast<void>(ForcePoseMeshObjectUpdate(context));
+  } catch (...) {
+  }
 }
 
 bool ApplyInactiveEntityMotion(Context &context,
@@ -10149,6 +10261,7 @@ bool ApplyInactiveEntityMotion(Context &context,
       saved_manual_reference = std::move(context.manual_motion_reference);
     }
     const auto saved_base_mesh = context.pose_base_mesh;
+    const auto saved_base_asset = context.pose_base_asset;
     const auto saved_base_ready = context.pose_base_ready;
     const auto saved_ref_pose_attempted = context.ref_pose_attempted;
     const auto saved_ref_pose_character = context.ref_pose_character;
@@ -10196,6 +10309,7 @@ bool ApplyInactiveEntityMotion(Context &context,
         context.bone_angles = std::move(saved_angles);
         context.pose_base_locals = std::move(saved_base_locals);
         context.pose_base_mesh = saved_base_mesh;
+        context.pose_base_asset = saved_base_asset;
         context.pose_base_ready = saved_base_ready;
         context.ref_locals = std::move(saved_ref_locals);
         context.manual_motion_reference = std::move(saved_manual_reference);
@@ -10230,10 +10344,28 @@ bool ApplyInactiveEntityMotion(Context &context,
       work.external_target = true;
       work.g_world_address = saved_runtime.g_world_address;
       context.runtime = std::move(work);
+      const auto previous_asset = context.runtime.mesh_asset;
       if (!ReadAnimationState(context) || !ReadPoseArrays(context)) {
         restore_selected();
         return false;
       }
+      if (previous_asset != 0 && previous_asset != context.runtime.mesh_asset) {
+        // The parked caches are installed after ReadPoseArrays: clear their owning copy too.
+        entity.bone_names.clear();
+        entity.bone_parents.clear();
+        entity.bone_parents_count = 0;
+        entity.bone_parents_ready = false;
+        entity.pose_base_locals.clear();
+        entity.pose_base_asset = 0;
+        entity.ref_locals.clear();
+        entity.ref_pose_attempted = false;
+        entity.track.indices_ready = false;
+      }
+      static_cast<void>(ApplyMultiThreadedUpdate(context, true));
+      // Preserve restoration ownership before any subsequent allocation or sampling.
+      entity.runtime.saved_multi_threaded_update = context.runtime.saved_multi_threaded_update;
+      entity.runtime.multi_threaded_update_instance = context.runtime.multi_threaded_update_instance;
+      entity.runtime.original_multi_threaded_update_flags = context.runtime.original_multi_threaded_update_flags;
       EnsurePoseAngleCapacity(context);
 
       context.bone_names.swap(entity.bone_names);
@@ -10252,6 +10384,7 @@ bool ApplyInactiveEntityMotion(Context &context,
       {
         std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
         context.pose_base_locals.swap(entity.pose_base_locals);
+        std::swap(context.pose_base_asset, entity.pose_base_asset);
         context.ref_locals.swap(entity.ref_locals);
         context.manual_motion_reference.swap(entity.manual_motion_reference);
         context.pose_base_mesh = mesh;
@@ -10285,6 +10418,7 @@ bool ApplyInactiveEntityMotion(Context &context,
       {
         std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
         context.pose_base_locals.swap(entity.pose_base_locals);
+        std::swap(context.pose_base_asset, entity.pose_base_asset);
         context.ref_locals.swap(entity.ref_locals);
         context.manual_motion_reference.swap(entity.manual_motion_reference);
       }
@@ -11332,6 +11466,54 @@ void ApplyRequestedPoseTarget(Context &context) noexcept {
   context.pose_target_scan_requested.store(true, std::memory_order_release);
 }
 
+// Re-scans the entity list when it can no longer be trusted: the local character or its
+// mesh asset changed (character swap, skin swap). There is deliberately no timed sweep -
+// the object registry holds ~410k entries, so a periodic full walk costs about 0.35 s of
+// CPU; spawning entities are picked up by the refresh button or the next change instead.
+void AutoRefreshPoseTargets(Context &context) noexcept {
+  if (context.pose_target_scan_requested.load(std::memory_order_acquire) ||
+      context.pose_target_scan_running)
+    return;
+  const bool local_changed =
+      context.pose_target_scan_local_character != context.local_character ||
+      context.pose_target_scan_local_mesh != context.local_mesh;
+  // A character swap clears these pointers for a frame or two; a scan started then records
+  // "0" as the state it covered and every later frame looks like another change, which
+  // rescans the whole (~410k object) registry in a loop. Only scan known values, and never
+  // more often than a couple of seconds apart.
+  if (context.local_character == 0 || context.local_mesh == 0)
+    return;
+  bool due = local_changed;
+  if (due && context.pose_target_scan_last_ms != 0 &&
+      GetTickCount64() - context.pose_target_scan_last_ms < 2000)
+    due = false;
+  if (!due && context.local_mesh != 0) {
+    std::uintptr_t asset{};
+    if (Read(context, context.local_mesh + native_layout.kMeshSkeletalMeshOffset, asset) &&
+        asset != 0 && context.pose_target_scan_local_asset != 0 &&
+        asset != context.pose_target_scan_local_asset)
+      due = true;
+  }
+  if (due) {
+    if (local_changed) {
+      // The player entry is ours: update it in place so the new character is selectable
+      // immediately. The full scan still runs for the other entities.
+      const bool has_player =
+          !context.pose_targets.empty() && context.pose_targets.front().label == "Player";
+      if (context.local_character != 0 && context.local_mesh != 0) {
+        const PoseTarget player{context.local_character, context.local_mesh, "Player"};
+        if (has_player)
+          context.pose_targets.front() = player;
+        else
+          context.pose_targets.insert(context.pose_targets.begin(), player);
+      } else if (has_player) {
+        context.pose_targets.erase(context.pose_targets.begin());
+      }
+    }
+    context.pose_target_scan_requested.store(true, std::memory_order_release);
+  }
+}
+
 void StepPoseTargetScan(Context &context) noexcept {
   if (!context.pose_target_scan_requested.load(std::memory_order_acquire))
     return;
@@ -11403,6 +11585,15 @@ void StepPoseTargetScan(Context &context) noexcept {
   context.pose_target_scan_running = false;
   context.pose_target_scan_requested.store(false, std::memory_order_release);
   context.pose_targets = std::move(context.pose_target_scan_results);
+  context.pose_target_scan_last_ms = GetTickCount64();
+  context.pose_target_scan_local_character = context.local_character;
+  context.pose_target_scan_local_mesh = context.local_mesh;
+  context.pose_target_scan_registry_count = context.object_registry.count;
+  context.pose_target_scan_local_asset = 0;
+  if (context.local_mesh != 0)
+    static_cast<void>(Read(context,
+        context.local_mesh + native_layout.kMeshSkeletalMeshOffset,
+        context.pose_target_scan_local_asset));
   if (context.selected_pose_target_mesh != 0 &&
       std::none_of(context.pose_targets.begin(), context.pose_targets.end(),
                    [&](const PoseTarget &target) {
@@ -13338,25 +13529,29 @@ void WriteExtraMeshes(Context &context,
       // for the previous mesh is then wrong (modular hair stops following), so treat a different
       // asset as a rebuild trigger too.
       std::uintptr_t live_asset{};
-      if (!Read(context, extra.object + native_layout.kMeshSkeletalMeshOffset, live_asset) ||
-          live_asset == 0 || (extra.asset != 0 && live_asset != extra.asset)) {
-        context.extra_build_pending = true;
+      const bool asset_readable = Read(
+          context, extra.object + native_layout.kMeshSkeletalMeshOffset, live_asset);
+      const auto asset_state = better_pose::accessory_storage::Asset(asset_readable, live_asset, extra.asset);
+      if (asset_state != better_pose::accessory_storage::Decision::Ready) {
+        // Missing storage is temporary, not a new mapping. Keep Kawaii retry/configuration state.
+        if (asset_state == better_pose::accessory_storage::Decision::Rebuild)
+          context.extra_build_pending = true;
         continue;
       }
       std::uintptr_t component_data{};
       std::uint32_t component_count{};
       std::uintptr_t bone_data{};
       std::uint32_t bone_data_count{};
-      const bool live =
+      const bool arrays_readable =
           ReadArrayHeader(context, extra.object + native_layout.kMeshComponentSpaceBuffer1Offset,
                           component_data, component_count) &&
           ReadArrayHeader(context, extra.object + native_layout.kMeshComponentSpaceBuffer0Offset,
-                          bone_data, bone_data_count) &&
-          component_data != 0 && bone_data != 0 &&
-          component_count >= extra.bone_count && bone_data_count >= extra.bone_count;
-      if (!live) {
-        // The mesh no longer has the shape this entry was built for: rebuild instead of writing.
-        context.extra_build_pending = true;
+                          bone_data, bone_data_count);
+      const auto storage_state = better_pose::accessory_storage::Buffers(
+          arrays_readable, component_data, component_count, bone_data, bone_data_count, extra.bone_count);
+      if (storage_state != better_pose::accessory_storage::Decision::Ready) {
+        if (storage_state == better_pose::accessory_storage::Decision::Rebuild)
+          context.extra_build_pending = true;
         continue;
       }
       extra.component_space_data = component_data;
@@ -13868,8 +14063,9 @@ bool EnsurePoseAnimationMode(Context &context, const bool enabled) noexcept {
   };
   const SetAnimationModeParameters parameters{kAnimationModeCustom, 0};
   std::string detail;
-  if (CallVirtualUFunction(context, state.mesh, kFunctionSetAnimationModePath,
-                           &parameters, sizeof(parameters), detail)) {
+  const bool called = CallVirtualUFunction(context, state.mesh, kFunctionSetAnimationModePath,
+                                           &parameters, sizeof(parameters), detail);
+  if (called) {
     state.animation_mode_applied = true;
     return true;
   }
@@ -15916,6 +16112,9 @@ void ExecuteReflectionAction(Context &context) noexcept {
                                 kFunctionSetPositionPath, &parameters,
                                 sizeof(parameters), detail);
     } else if (action == 4) {
+      // Refresh Anim / Refresh Pose are the manual escapes for a stale character, so they also
+      // fill the bone table when it is missing for this component.
+      MaybeRefreshBoneNames(context);
       if (context.runtime.character == 0) {
         detail = "character is unavailable";
       } else if (context.runtime.external_target) {
@@ -15926,6 +16125,7 @@ void ExecuteReflectionAction(Context &context) noexcept {
                                   detail);
       }
     } else if (action == 5) {
+      MaybeRefreshBoneNames(context);
       ok = ForcePoseCache(context, detail);
     } else if (action == 6) {
       std::vector<std::string> names;
@@ -16564,27 +16764,44 @@ void SetStatus(Context &context, const std::string_view key, const std::string_v
 }
 
 // The pose, expression and camera as they are now, as one key.
+std::vector<kf::LocalBone> ReferencePose(Context &context) {
+  if (!CapturePoseBase(context)) return {};
+  std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+  if (context.pose_base_locals.empty() || context.bone_names.size() != context.pose_base_locals.size())
+    return {};
+  std::vector<kf::LocalBone> reference;
+  reference.reserve(context.bone_names.size());
+  for (std::size_t i{}; i != context.bone_names.size(); ++i) {
+    if (context.bone_names[i].empty()) return {};
+    reference.push_back({context.bone_names[i], context.pose_base_locals[i]});
+  }
+  return reference;
+}
+
 kf::Key CaptureKey(Context &context, const std::uint32_t frame) {
   kf::Key key;
   key.frame = frame;
   if (context.keyframe_record_pose.load(std::memory_order_acquire)) {
-    key.has_pose = true;
+    const auto reference = ReferencePose(context);
+    std::vector<kf::LocalBone> library;
+    std::vector<kf::BoneKey> offsets;
     {
       std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
-      for (std::size_t index{}; index != context.bone_angles.size(); ++index) {
+      library.reserve(context.library_pose_locals.size());
+      for (const auto &[name, local] : context.library_pose_locals) library.push_back({name, local});
+      for (std::size_t index{}; index < context.bone_angles.size() && index < context.bone_names.size(); ++index) {
         const auto &angle = context.bone_angles[index];
-        if (angle[0] == 0.0 && angle[1] == 0.0 && angle[2] == 0.0)
-          continue;
-        // Without the skeleton's names a key could not be replayed by name;
-        // the bone list is loaded before any joint can be edited, so a bone
-        // with an offset and no name is not one the user posed.
-        if (index >= context.bone_names.size() || context.bone_names[index].empty())
-          continue;
-        key.bones.push_back({context.bone_names[index], angle[0], angle[1], angle[2]});
+        if (angle[0] != 0.0 || angle[1] != 0.0 || angle[2] != 0.0)
+          offsets.push_back({context.bone_names[index], angle[0], angle[1], angle[2]});
       }
     }
-    for (std::size_t axis{}; axis != 3; ++axis)
-      key.root_offset[axis] = context.requested_root_offset[axis].load(std::memory_order_acquire);
+    key.local_pose = kf::ComposeLocalPose(reference, library, offsets);
+    if (!key.local_pose.empty()) {
+      key.has_pose = key.has_local_pose = true;
+      key.bones = kf::GenerateOffsetFallback(key.local_pose, reference);
+      for (std::size_t axis{}; axis != 3; ++axis)
+        key.root_offset[axis] = context.requested_root_offset[axis].load(std::memory_order_acquire);
+    }
   }
   if (context.keyframe_record_expression.load(std::memory_order_acquire)) {
     key.has_expression = true;
@@ -16613,23 +16830,32 @@ kf::Key CaptureKey(Context &context, const std::uint32_t frame) {
 void ApplySample(Context &context, const kf::Sampled &sample,
                  const bool apply_expression = true,
                  const bool apply_camera = true) {
-  if (sample.has_pose) {
+  if (sample.has_pose && sample.pose_valid) {
     {
       std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
       const std::size_t size = (std::max)(context.bone_angles.size(), context.bone_names.size());
       context.bone_angles.assign(size, {0.0, 0.0, 0.0});
-      for (const auto &bone : sample.bones) {
-        const auto it = std::find(context.bone_names.begin(), context.bone_names.end(), bone.name);
-        if (it == context.bone_names.end())
-          continue;
-        context.bone_angles[static_cast<std::size_t>(it - context.bone_names.begin())] = {
-            bone.pitch, bone.yaw, bone.roll};
+      context.library_pose_locals.clear();
+      if (sample.has_local_pose) {
+        for (const auto &bone : sample.local_pose)
+          context.library_pose_locals.emplace(bone.name, bone.transform);
+      } else {
+        for (const auto &bone : sample.bones) {
+          const auto it = std::find(context.bone_names.begin(), context.bone_names.end(), bone.name);
+          if (it == context.bone_names.end()) continue;
+          context.bone_angles[static_cast<std::size_t>(it - context.bone_names.begin())] = {
+              bone.pitch, bone.yaw, bone.roll};
+        }
       }
     }
     for (std::size_t axis{}; axis != 3; ++axis)
       context.requested_root_offset[axis].store(sample.root_offset[axis],
                                                 std::memory_order_release);
     context.pose_override_enabled.store(true, std::memory_order_release);
+  }
+  if (sample.has_pose && !sample.pose_valid) {
+    context.pose_override_enabled.store(false, std::memory_order_release);
+    render_pose_bridge::ClearSnapshot(context, context.runtime.mesh);
   }
   if (apply_expression && sample.has_expression) {
     std::lock_guard<std::mutex> lock(context.morph_mutex);
@@ -16704,38 +16930,9 @@ void RestoreTrack(Context &context, const kf::TrackState &state) {
 //                 "camera": { "focus": [x,y,z], "yaw", "pitch", "distance",
 //                             "fov" } } ] }
 std::string BuildDocument(Context &context) {
-  nlohmann::json root;
-  root["format"] = "betterpose-keyframes";
-  root["version"] = 1;
-  root["fps"] = kf::kFramesPerSecond;
-  root["length"] = context.keyframe_length.load(std::memory_order_acquire);
-  auto keys = nlohmann::json::array();
   std::lock_guard<std::mutex> lock(context.keyframe_mutex);
-  for (const auto &key : context.keyframe_track.Keys()) {
-    nlohmann::json item;
-    item["frame"] = key.frame;
-    item["ease"] = key.ease == kf::Ease::InOut ? "inout" : "linear";
-    if (key.has_pose) {
-      auto bones = nlohmann::json::array();
-      for (const auto &bone : key.bones)
-        bones.push_back(
-            {{"name", bone.name}, {"pitch", bone.pitch}, {"yaw", bone.yaw}, {"roll", bone.roll}});
-      item["pose"] = {{"bones", std::move(bones)}, {"rootOffset", key.root_offset}};
-    }
-    if (key.has_expression) {
-      auto morphs = nlohmann::json::array();
-      for (const auto &morph : key.morphs)
-        morphs.push_back({{"name", morph.name}, {"weight", morph.weight}});
-      item["expression"] = std::move(morphs);
-    }
-    if (key.has_camera)
-      item["camera"] = {{"focus", key.camera.focus},     {"yaw", key.camera.yaw},
-                        {"pitch", key.camera.pitch},     {"distance", key.camera.distance},
-                        {"fov", key.camera.fov}};
-    keys.push_back(std::move(item));
-  }
-  root["keys"] = std::move(keys);
-  return root.dump(2);
+  return better_pose::keyframe_document::Build(context.keyframe_track.Keys(),
+      context.keyframe_length.load(std::memory_order_acquire));
 }
 
 // Blender's file carries the same sparse keys as the in-game timeline, but adds
@@ -16810,106 +17007,11 @@ std::string BuildBlenderDocument(Context &context) {
   return root.dump(2);
 }
 
-bool Finite3(const nlohmann::json &value, std::array<double, 3> &out) {
-  if (!value.is_array() || value.size() != 3)
-    return false;
-  for (std::size_t axis{}; axis != 3; ++axis) {
-    if (!value[axis].is_number())
-      return false;
-    out[axis] = value[axis].get<double>();
-    if (!std::isfinite(out[axis]))
-      return false;
-  }
-  return true;
-}
-
 // Returns false when the document is not a keyframe file. Unreadable keys
 // inside one are skipped rather than failing the whole file.
 bool ParseDocument(const std::string &document, std::vector<kf::Key> &keys,
                    std::uint32_t &length, std::size_t &skipped) {
-  const auto root = nlohmann::json::parse(document, nullptr, false);
-  if (!root.is_object())
-    return false;
-  if (root.value("format", std::string()) != "betterpose-keyframes" ||
-      !root.contains("keys") || !root["keys"].is_array())
-    return false;
-  length = 0;
-  if (root.contains("length") && root["length"].is_number_unsigned())
-    length = (std::min)(root["length"].get<std::uint32_t>(), kf::kMaximumFrame);
-  // A file authored at another rate is retimed to ours.
-  double scale = 1.0;
-  if (root.contains("fps") && root["fps"].is_number()) {
-    const double fps = root["fps"].get<double>();
-    if (std::isfinite(fps) && fps > 0.0)
-      scale = kf::kFramesPerSecond / fps;
-  }
-  length = static_cast<std::uint32_t>(std::lround(static_cast<double>(length) * scale));
-  skipped = 0;
-  for (const auto &item : root["keys"]) {
-    if (keys.size() >= kf::kMaximumKeys)
-      break;
-    if (!item.is_object() || !item.contains("frame") || !item["frame"].is_number()) {
-      ++skipped;
-      continue;
-    }
-    const double raw_frame = item["frame"].get<double>() * scale;
-    if (!std::isfinite(raw_frame) || raw_frame < 0.0) {
-      ++skipped;
-      continue;
-    }
-    kf::Key key;
-    key.frame = static_cast<std::uint32_t>(
-        (std::min)(std::llround(raw_frame), static_cast<long long>(kf::kMaximumFrame)));
-    key.ease = item.value("ease", std::string("inout")) == "linear" ? kf::Ease::Linear
-                                                                     : kf::Ease::InOut;
-    if (item.contains("pose") && item["pose"].is_object()) {
-      const auto &pose = item["pose"];
-      key.has_pose = true;
-      if (pose.contains("bones") && pose["bones"].is_array())
-        for (const auto &bone : pose["bones"]) {
-          if (!bone.is_object() || !bone.contains("name") || !bone["name"].is_string())
-            continue;
-          const double p = bone.value("pitch", 0.0), y = bone.value("yaw", 0.0),
-                       r = bone.value("roll", 0.0);
-          if (!std::isfinite(p) || !std::isfinite(y) || !std::isfinite(r))
-            continue;
-          key.bones.push_back({bone["name"].get<std::string>(), kf::WrapDegrees(p),
-                               kf::WrapDegrees(y), kf::WrapDegrees(r)});
-        }
-      if (pose.contains("rootOffset"))
-        static_cast<void>(Finite3(pose["rootOffset"], key.root_offset));
-    }
-    if (item.contains("expression") && item["expression"].is_array()) {
-      key.has_expression = true;
-      for (const auto &morph : item["expression"]) {
-        if (!morph.is_object() || !morph.contains("name") || !morph["name"].is_string() ||
-            !morph.contains("weight") || !morph["weight"].is_number())
-          continue;
-        const float weight = morph["weight"].get<float>();
-        if (std::isfinite(weight))
-          key.morphs.push_back({morph["name"].get<std::string>(), std::clamp(weight, 0.0F, 1.0F)});
-      }
-    }
-    if (item.contains("camera") && item["camera"].is_object()) {
-      const auto &camera = item["camera"];
-      kf::CameraKey shot;
-      const double yaw = camera.value("yaw", 0.0), pitch = camera.value("pitch", 0.0),
-                   distance = camera.value("distance", 300.0);
-      const float fov = camera.value("fov", 0.0F);
-      if (camera.contains("focus") && Finite3(camera["focus"], shot.focus) &&
-          std::isfinite(yaw) && std::isfinite(pitch) && std::isfinite(distance) &&
-          std::isfinite(fov)) {
-        shot.yaw = yaw;
-        shot.pitch = pitch;
-        shot.distance = distance;
-        shot.fov = fov;
-        key.has_camera = true;
-        key.camera = shot;
-      }
-    }
-    keys.push_back(std::move(key));
-  }
-  return true;
+  return better_pose::keyframe_document::Parse(document, keys, length, skipped);
 }
 
 void ExportFile(Context &context) {
@@ -17026,12 +17128,14 @@ void ImportFile(Context &context) {
   }
   // Bones this character does not have, for the status line.
   std::vector<std::string> missing;
-  for (const auto &key : keys)
-    for (const auto &bone : key.bones)
-      if (std::find(context.bone_names.begin(), context.bone_names.end(), bone.name) ==
-              context.bone_names.end() &&
-          std::find(missing.begin(), missing.end(), bone.name) == missing.end())
-        missing.push_back(bone.name);
+  const auto note_missing = [&](const std::string &name) {
+    if (std::find(context.bone_names.begin(), context.bone_names.end(), name) == context.bone_names.end() &&
+        std::find(missing.begin(), missing.end(), name) == missing.end()) missing.push_back(name);
+  };
+  for (const auto &key : keys) {
+    for (const auto &bone : key.bones) note_missing(bone.name);
+    for (const auto &bone : key.local_pose) note_missing(bone.name);
+  }
   {
     std::lock_guard<std::mutex> lock(context.keyframe_mutex);
     context.keyframe_track.Clear();
@@ -17071,6 +17175,10 @@ void HandleRequest(Context &context) {
       return;
     }
     kf::Key key = CaptureKey(context, playhead);
+    if (want_pose && !key.has_local_pose) {
+      SetStatus(context, "keyframe.no_pose_snapshot", "The complete pose is not ready; load its bones and reference pose first");
+      return;
+    }
     // The camera cannot be captured with the pose camera off. Re-keying must
     // not silently drop a shot the frame already had because of that, so the
     // old shot is kept and the user is told.
@@ -17165,6 +17273,13 @@ void HandleRequest(Context &context) {
         ? static_cast<std::uint32_t>(std::lround(requested)) : playhead;
     std::lock_guard<std::mutex> lock(context.keyframe_mutex);
     if (selected < 0)
+      return;
+    // A drag sends one move per frame, so overwriting on collision destroyed every key the
+    // dragged one passed over. Refuse to land on an occupied frame instead; the drag slides
+    // past it and keeps its own data.
+    const std::size_t occupied = context.keyframe_track.Find(target);
+    if (occupied != context.keyframe_track.Size() &&
+        occupied != static_cast<std::size_t>(selected))
       return;
     const std::size_t moved = context.keyframe_track.Move(static_cast<std::size_t>(selected), target);
     if (moved < context.keyframe_track.Size()) {
@@ -17274,6 +17389,7 @@ bool ApplyInactiveEntityKeyframe(Context &context,
       saved_library_pose = std::move(context.library_pose_locals);
     }
     const auto saved_base_mesh = context.pose_base_mesh;
+    const auto saved_base_asset = context.pose_base_asset;
     const auto saved_base_ready = context.pose_base_ready;
     const auto saved_ref_pose_attempted = context.ref_pose_attempted;
     const auto saved_ref_pose_character = context.ref_pose_character;
@@ -17308,6 +17424,7 @@ bool ApplyInactiveEntityKeyframe(Context &context,
         context.manual_motion_reference = std::move(saved_manual_reference);
         context.library_pose_locals = std::move(saved_library_pose);
         context.pose_base_mesh = saved_base_mesh;
+        context.pose_base_asset = saved_base_asset;
         context.pose_base_ready = saved_base_ready;
       }
       context.ref_pose_attempted = saved_ref_pose_attempted;
@@ -17328,10 +17445,32 @@ bool ApplyInactiveEntityKeyframe(Context &context,
       work.external_target = true;
       work.g_world_address = saved_runtime.g_world_address;
       context.runtime = std::move(work);
-      if (!ReadAnimationState(context) || !ReadPoseArrays(context)) {
+      const auto previous_asset = context.runtime.mesh_asset;
+      if (!ReadAnimationState(context)) {
+        render_pose_bridge::ClearSnapshot(context, mesh);
         restore_selected();
         return false;
       }
+      // Temporary CPU arrays may be absent while the same-asset baseline remains valid.
+      // The pose producer and render-boundary checks validate that baseline and live input.
+      static_cast<void>(ReadPoseArrays(context));
+      if (previous_asset != 0 && previous_asset != context.runtime.mesh_asset) {
+        // The parked caches are installed after ReadPoseArrays: clear their owning copy too.
+        entity.bone_names.clear();
+        entity.bone_parents.clear();
+        entity.bone_parents_count = 0;
+        entity.bone_parents_ready = false;
+        entity.pose_base_locals.clear();
+        entity.pose_base_asset = 0;
+        entity.ref_locals.clear();
+        entity.ref_pose_attempted = false;
+        entity.track.indices_ready = false;
+      }
+      static_cast<void>(ApplyMultiThreadedUpdate(context, true));
+      // Preserve restoration ownership before any subsequent allocation or sampling.
+      entity.runtime.saved_multi_threaded_update = context.runtime.saved_multi_threaded_update;
+      entity.runtime.multi_threaded_update_instance = context.runtime.multi_threaded_update_instance;
+      entity.runtime.original_multi_threaded_update_flags = context.runtime.original_multi_threaded_update_flags;
       EnsurePoseAngleCapacity(context);
 
       context.bone_names.swap(entity.bone_names);
@@ -17351,8 +17490,9 @@ bool ApplyInactiveEntityKeyframe(Context &context,
         std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
         context.bone_angles.assign(context.bone_names.size(),
                                    {0.0, 0.0, 0.0});
-        context.library_pose_locals.clear();
         context.pose_base_locals.swap(entity.pose_base_locals);
+        context.library_pose_locals.swap(entity.library_pose_locals);
+        std::swap(context.pose_base_asset, entity.pose_base_asset);
         context.ref_locals.swap(entity.ref_locals);
         context.manual_motion_reference.swap(entity.manual_motion_reference);
         context.pose_base_mesh = mesh;
@@ -17376,7 +17516,7 @@ bool ApplyInactiveEntityKeyframe(Context &context,
           Write(context, mesh + native_layout.kMeshForcedLodModelOffset, std::int32_t{0}));
       const double frame =
           context.keyframe_frame.load(std::memory_order_acquire);
-      const auto sample = entity.keyframe_track.Sample(frame);
+      const auto sample = entity.keyframe_track.Sample(frame, keyframe_impl::ReferencePose(context));
       keyframe_impl::ApplySample(context, sample, false, false);
       ApplyPoseOverridesDirect(context, false);
 
@@ -17385,6 +17525,8 @@ bool ApplyInactiveEntityKeyframe(Context &context,
       {
         std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
         context.pose_base_locals.swap(entity.pose_base_locals);
+        context.library_pose_locals.swap(entity.library_pose_locals);
+        std::swap(context.pose_base_asset, entity.pose_base_asset);
         context.ref_locals.swap(entity.ref_locals);
         context.manual_motion_reference.swap(entity.manual_motion_reference);
       }
@@ -17397,10 +17539,12 @@ bool ApplyInactiveEntityKeyframe(Context &context,
       entity.runtime = std::move(updated_runtime);
       return true;
     } catch (...) {
+      render_pose_bridge::ClearSnapshot(context, mesh);
       restore_selected();
       return false;
     }
   } catch (...) {
+    render_pose_bridge::ClearSnapshot(context, mesh);
     return false;
   }
 }
@@ -17780,7 +17924,9 @@ void StepKeyframes(Context &context, const double delta_seconds) noexcept {
     // Selection follows the playhead: a paused playhead that lands on a key
     // selects it; one that leaves the selected key (scrub, step, play) drops
     // it, so the timeline's DEL and the panel always mean the key under it.
-    if (moved || playing) {
+    const bool dragging_key =
+        context.keyframe_overlay_dragging_key.load(std::memory_order_acquire);
+    if ((moved || playing) && !dragging_key) {
       const auto rounded = static_cast<std::uint32_t>(std::lround((std::max)(0.0, frame)));
       std::lock_guard<std::mutex> lock(context.keyframe_mutex);
       const std::size_t at = context.keyframe_track.Find(rounded);
@@ -17793,20 +17939,23 @@ void StepKeyframes(Context &context, const double delta_seconds) noexcept {
                context.keyframe_track.Keys()[static_cast<std::size_t>(selected)].frame != rounded)
         context.keyframe_selected.store(-1, std::memory_order_release);
     }
-    if (context.keyframe_auto_record.load(std::memory_order_acquire) && user_editing) {
+    if (context.keyframe_auto_record.load(std::memory_order_acquire) && user_editing &&
+        !dragging_key) {
       const auto current_state = better_pose::keyframes::TrackState{{
           keyframe_impl::CaptureKey(context,
                                     static_cast<std::uint32_t>(std::lround(frame)))}};
       const bool user_changed = !context.keyframe_auto_user_state_valid ||
           !current_state.SameAs(context.keyframe_auto_user_state);
-      if (user_changed && context.keyframe_auto_user_state_valid) {
+      const bool pose_ready = !context.keyframe_record_pose.load(std::memory_order_acquire) ||
+          current_state.keys.front().has_local_pose;
+      if (pose_ready && user_changed && context.keyframe_auto_user_state_valid) {
         // The user changed the live pose/expression/camera on the current
         // frame. Write that frame immediately; playback and timeline drags
         // never enter this branch, so they cannot generate keys.
         context.keyframe_request.store(1, std::memory_order_release);
       }
       context.keyframe_auto_user_state = current_state;
-      context.keyframe_auto_user_state_valid = true;
+      context.keyframe_auto_user_state_valid = pose_ready;
     } else if (playing || moved || pose_locked) {
       context.keyframe_auto_user_state_valid = false;
     }
@@ -17829,10 +17978,11 @@ void StepKeyframes(Context &context, const double delta_seconds) noexcept {
       context.keyframe_applied_revision = revision;
       return;
     }
+    const auto reference = keyframe_impl::ReferencePose(context);
     better_pose::keyframes::Sampled sample;
     {
       std::lock_guard<std::mutex> lock(context.keyframe_mutex);
-      sample = context.keyframe_track.Sample(frame);
+      sample = context.keyframe_track.Sample(frame, reference);
     }
     keyframe_impl::ApplySample(context, sample);
     context.keyframe_applied_frame = frame;
@@ -17847,12 +17997,32 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
     PublishSnapshot(context, "local player character is unavailable");
     return;
   }
+  AutoRefreshPoseTargets(context);
   StepPoseTargetScan(context);
   StepCameraFollowTarget(context);
 
   EnsureActiveCharacterProfile(context);
+  if (context.runtime.animation_mode_applied && context.runtime.mesh != 0 &&
+      context.runtime.animation_mode != kAnimationModeCustom) {
+    const std::uint64_t now = GetTickCount64();
+    if (now - context.anim_mode_reassert_ms >= 1000) {
+      context.anim_mode_reassert_ms = now;
+      context.runtime.animation_mode_applied = false;
+      if (context.anim_mode_drift_mesh != context.runtime.mesh ||
+          context.anim_mode_drift_asset != context.runtime.mesh_asset) {
+        context.anim_mode_drift_mesh = context.runtime.mesh;
+        context.anim_mode_drift_asset = context.runtime.mesh_asset;
+        context.anim_mode_drift_logged = true;
+        LogDiagnostic(context, "betterpose animation mode drifted to " +
+                                   std::to_string(context.runtime.animation_mode) +
+                                   "; re-asserting custom (further drift is silent)");
+      }
+    }
+  }
   StepAutomaticCalibrationStatus(context);
   StepTPoseCalibrationRequest(context);
+  if (context.pose_apose_request.exchange(false, std::memory_order_acq_rel))
+    static_cast<void>(ApplyReferencePoseBase(context));
   // Before the expression and pose steps: the keyframe sample is written into
   // the same weights and angles they then apply this frame.
   if (!context.blender_active.load(std::memory_order_acquire))
@@ -17983,6 +18153,7 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
     static_cast<void>(EnsurePoseAnimationMode(context, false));
     static_cast<void>(EnsurePoseForcedLod(context, false));
     context.pose_override_enabled.store(false, std::memory_order_release);
+    context.pose_hold_base.store(false, std::memory_order_release);
     ResetPoseValues(context);
     {
       std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
@@ -18068,7 +18239,8 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
                return !context.library_pose_locals.empty();
              })() ||
              (master_enabled &&
-              (active_joints != 0 || has_root_offset || calibration_pose)));
+              (active_joints != 0 || has_root_offset || calibration_pose ||
+               context.pose_hold_base.load(std::memory_order_acquire))));
   const bool pose_available = context.runtime.bone_space_data != 0 &&
                               context.runtime.bone_space_count != 0 &&
                               context.runtime.component_space_data != 0 &&
@@ -18539,6 +18711,17 @@ void SyncEntityAnimationState(Context &context) noexcept {
 }
 
 void RestoreParkedEntityAnimations(Context &context) noexcept {
+  for (const auto &entry : context.entity_motion_states) {
+    const auto &saved = entry.second.runtime;
+    if (!saved.saved_multi_threaded_update || saved.multi_threaded_update_instance == 0)
+      continue;
+    std::uintptr_t instance{};
+    if (Read(context, entry.first + native_layout.kMeshAnimScriptInstanceOffset, instance) &&
+        instance == saved.multi_threaded_update_instance)
+      static_cast<void>(Write(context,
+          instance + native_layout.kAnimInstanceUseMultiThreadedUpdateOffset,
+          saved.original_multi_threaded_update_flags));
+  }
   for (const auto &entry : context.entity_pose_states) {
     const std::uintptr_t mesh = entry.first;
     const EntityPoseState &saved = entry.second;
@@ -19886,6 +20069,52 @@ std::array<double, 3> RotationOffsetAngles(const Quatd &base,
                                            const Quatd &target) noexcept {
   return QuatToRotator(QuatNormalize(
       QuatMultiply(target, QuatConjugate(base))));
+}
+
+// Rebases the manual pose on the mesh's reference pose, which is the A/T shape the asset
+// was authored in. Basing on the live pose (an animation frame) is what made a fresh drag
+// continue that animation instead of starting from A.
+bool ApplyReferencePoseBase(Context &context) noexcept {
+  RuntimeState &state = context.runtime;
+  if (state.mesh == 0) {
+    SetReflectionStatus(context, "A-pose unavailable: character is not ready");
+    return false;
+  }
+  if (context.bone_names.size() != state.local_space_count ||
+      context.bone_names_mesh != state.mesh) {
+    std::vector<std::string> names;
+    std::string detail;
+    if (!RefreshBoneNames(context, names, detail)) {
+      SetReflectionStatus(context, "A-pose failed: bone names unavailable");
+      return false;
+    }
+    context.bone_names = std::move(names);
+    context.bone_names_mesh = state.mesh;
+    context.bone_names_count = state.bone_space_count;
+    context.bone_names_attempted = true;
+    RefreshBoneHierarchy(context);
+  }
+  static_cast<void>(FindReferencePose(context));
+  if (context.ref_locals.size() != state.local_space_count) {
+    SetReflectionStatus(context, "A-pose failed: reference pose unavailable");
+    return false;
+  }
+  {
+    std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+    context.pose_base_locals = context.ref_locals;
+    context.pose_base_asset = state.mesh_asset;
+    context.pose_base_mesh = state.mesh;
+    context.pose_base_ready = true;
+    context.bone_angles.assign(state.local_space_count, {0.0, 0.0, 0.0});
+    context.library_pose_locals.clear();
+  }
+  for (std::size_t axis{}; axis != 3; ++axis)
+    context.requested_root_offset[axis].store(0.0, std::memory_order_release);
+  context.pose_override_enabled.store(true, std::memory_order_release);
+  context.pose_hold_base.store(true, std::memory_order_release);
+  context.pose_settings_dirty.store(true, std::memory_order_release);
+  SetReflectionStatus(context, "A-pose: base taken from the reference pose");
+  return true;
 }
 
 bool StartTPoseCalibration(Context &context) noexcept {
@@ -22205,55 +22434,149 @@ constexpr std::uint32_t kTimelineText = ANOMALY_RGBA_V1(240, 242, 248, 255);
 constexpr std::uint32_t kTimelineMuted = ANOMALY_RGBA_V1(120, 126, 140, 255);
 constexpr std::uint32_t kTimelinePlayhead = ANOMALY_RGBA_V1(255, 214, 64, 255);
 constexpr std::uint32_t kTimelinePose = ANOMALY_RGBA_V1(75, 170, 255, 255);
+constexpr std::uint32_t kTimelineEmptyPose = ANOMALY_RGBA_V1(75, 170, 255, 120);
 constexpr std::uint32_t kTimelineExpression = ANOMALY_RGBA_V1(240, 105, 175, 255);
-constexpr std::uint32_t kTimelineCamera = ANOMALY_RGBA_V1(100, 220, 140, 255);
+constexpr std::uint32_t kTimelineCamera = ANOMALY_RGBA_V1(252, 208, 64, 255);
 constexpr std::uint32_t kTimelineRecord = ANOMALY_RGBA_V1(255, 150, 60, 255);
 constexpr std::uint32_t kTimelineDelete = ANOMALY_RGBA_V1(240, 80, 80, 255);
 constexpr std::uint32_t kTimelineUnsaved = ANOMALY_RGBA_V1(255, 150, 60, 255);
 
 // A rectangle outline from four lines.
-void TimelineFrame(const AnomalyUe5AhudFrameV1 *frame, const better_pose::timeline::Rect &r,
+// Geometry joins the overlay's single batched submission; labels are collected for the
+// UI thread to replay through overlay_text, which composites above that geometry.
+// The batched overlay composites in ImGui, which renders these packed colours a shade
+// darker than the HUD canvas did. Compensate once, here, so the whole widget stays
+// consistent and the factor is easy to tune.
+// The HUD canvas path treats these packed colours as linear values and converts them to
+// sRGB, so the same constant renders brighter there. Applying the same transfer here makes
+// both paths look identical instead of guessing a brightness lift.
+inline std::uint8_t LinearToSrgbByte(const std::uint32_t raw) noexcept {
+  const double value = static_cast<double>(raw) / 255.0;
+  const double encoded = value <= 0.0031308 ? value * 12.92
+                                            : 1.055 * std::pow(value, 1.0 / 2.4) - 0.055;
+  const double scaled = encoded * 255.0 + 0.5;
+  return static_cast<std::uint8_t>(scaled <= 0.0 ? 0.0 : (scaled >= 255.0 ? 255.0 : scaled));
+}
+
+inline std::uint32_t BatchedOverlayColor(const std::uint32_t color) noexcept {
+  return static_cast<std::uint32_t>(LinearToSrgbByte(color & 0xFFU)) |
+         (static_cast<std::uint32_t>(LinearToSrgbByte((color >> 8U) & 0xFFU)) << 8U) |
+         (static_cast<std::uint32_t>(LinearToSrgbByte((color >> 16U) & 0xFFU)) << 16U) |
+         (color & 0xFF000000U);
+}
+
+// The canvas passes a scale, the overlay text API wants pixels. Buttons need this to
+// centre their label on the box the label is actually drawn in.
+constexpr float kOverlayTextBasePx = 22.0F;
+
+struct TimelineCanvas {
+  const AnomalyUe5AhudFrameV1 *frame{};
+  std::vector<AnomalyUiScreenPrimitiveV1> *batch{};
+  bool batched{};
+  std::vector<Context::OverlayTextItem> *texts{};
+
+  void Rect(const float x, const float y, const float width, const float height,
+            const std::uint32_t color) const {
+    if (batched)
+      batch->push_back(UiPrimitive(ANOMALY_UI_SCREEN_PRIMITIVE_V1_FILLED_RECT,
+                                   BatchedOverlayColor(color), x, y, width, height, 0.0F));
+    else
+      frame->draw_rect(frame->user, x, y, width, height, color);
+  }
+  void Line(const float x1, const float y1, const float x2, const float y2,
+            const std::uint32_t color, const float thickness) const {
+    if (batched)
+      batch->push_back(UiPrimitive(ANOMALY_UI_SCREEN_PRIMITIVE_V1_LINE,
+                                   BatchedOverlayColor(color), x1, y1, x2, y2, thickness));
+    else
+      frame->draw_line(frame->user, x1, y1, x2, y2, color, thickness);
+  }
+  void Text(const AnomalyStringViewV1 value, const float x, const float y,
+            const std::uint32_t color, const float scale) const {
+    if (texts != nullptr) {
+      Context::OverlayTextItem item;
+      item.x = x;
+      item.y = y;
+      item.color = BatchedOverlayColor(color);
+      item.size = scale * kOverlayTextBasePx;
+      item.text.assign(value.data, value.size);
+      texts->push_back(std::move(item));
+      return;
+    }
+    frame->draw_text(frame->user, value, x, y, color, scale);
+  }
+};
+
+void TimelineFrame(const TimelineCanvas &canvas, const better_pose::timeline::Rect &r,
                    const std::uint32_t color, const float thickness) noexcept {
-  frame->draw_line(frame->user, r.left, r.top, r.right, r.top, color, thickness);
-  frame->draw_line(frame->user, r.right, r.top, r.right, r.bottom, color, thickness);
-  frame->draw_line(frame->user, r.right, r.bottom, r.left, r.bottom, color, thickness);
-  frame->draw_line(frame->user, r.left, r.bottom, r.left, r.top, color, thickness);
+  canvas.Line(r.left, r.top, r.right, r.top, color, thickness);
+  canvas.Line(r.right, r.top, r.right, r.bottom, color, thickness);
+  canvas.Line(r.right, r.bottom, r.left, r.bottom, color, thickness);
+  canvas.Line(r.left, r.bottom, r.left, r.top, color, thickness);
 }
 
 // A canvas button: dark fill, outline in `accent` when usable (grey when not),
 // a lighter fill under the cursor, and the label centred in white.
-void TimelineButton(const AnomalyUe5AhudFrameV1 *frame, const better_pose::timeline::Rect &r,
+void TimelineButton(const TimelineCanvas &canvas, const better_pose::timeline::Rect &r,
                     const std::string_view label, const std::uint32_t accent, const bool enabled,
                     const bool hot) noexcept {
-  frame->draw_rect(frame->user, r.left, r.top, r.right - r.left, r.bottom - r.top,
+  canvas.Rect(r.left, r.top, r.right - r.left, r.bottom - r.top,
                    enabled && hot ? kTimelineButtonHot : kTimelineButton);
-  TimelineFrame(frame, r, enabled ? accent : kTimelineEdge, enabled ? 1.5F : 1.0F);
+  TimelineFrame(canvas, r, enabled ? accent : kTimelineEdge, enabled ? 1.5F : 1.0F);
   float width = 0.0F;
   float height = 0.0F;
-  const bool measured = frame->measure_text != nullptr &&
-                        frame->measure_text(frame->user, anomaly::sdk::StringView(label), 0.85F,
-                                            &width, &height) != 0;
+  const bool measured = canvas.frame->measure_text != nullptr &&
+                        canvas.frame->measure_text(
+                            canvas.frame->user, anomaly::sdk::StringView(label), 0.85F,
+                            &width, &height) != 0;
   if (!measured) {
     width = static_cast<float>(label.size()) * 7.0F;
     height = 14.0F;
   }
-  frame->draw_text(frame->user, anomaly::sdk::StringView(label),
-                   (r.left + r.right - width) * 0.5F, (r.top + r.bottom - height) * 0.5F,
+  const float text_height = canvas.batched ? 0.85F * kOverlayTextBasePx : height;
+  canvas.Text(anomaly::sdk::StringView(label),
+                   (r.left + r.right - width) * 0.5F,
+                   (r.top + r.bottom - text_height) * 0.5F,
                    enabled ? kTimelineText : kTimelineMuted, 0.85F);
 }
 
-void TimelineLine(const AnomalyUe5AhudFrameV1 *frame, const float x1, const float y1,
+void TimelineLine(const TimelineCanvas &canvas, const float x1, const float y1,
                   const float x2, const float y2, const std::uint32_t color,
                   const float thickness = 1.0F) noexcept {
-  frame->draw_line(frame->user, x1, y1, x2, y2, color, thickness);
+  canvas.Line(x1, y1, x2, y2, color, thickness);
 }
 
-void TimelineDiamond(const AnomalyUe5AhudFrameV1 *frame, const float x, const float y,
+// Key marks are deliberately narrow: a tall thin diamond stays readable when keys sit
+// close together on the track.
+constexpr float kDiamondHalfWidth = 0.6F;
+
+void TimelineDiamondOutline(const TimelineCanvas &canvas, const float x, const float y,
+                            const std::uint32_t color, const float size) noexcept {
+  const float half = size * kDiamondHalfWidth;
+  canvas.Line(x - half, y, x, y - size, color, 1.5F);
+  canvas.Line(x, y - size, x + half, y, color, 1.5F);
+  canvas.Line(x + half, y, x, y + size, color, 1.5F);
+  canvas.Line(x, y + size, x - half, y, color, 1.5F);
+}
+
+void TimelineDiamond(const TimelineCanvas &canvas, const float x, const float y,
                      const std::uint32_t color, const float size = 6.0F) noexcept {
-  frame->draw_line(frame->user, x - size, y, x, y - size, color, 1.5F);
-  frame->draw_line(frame->user, x, y - size, x + size, y, color, 1.5F);
-  frame->draw_line(frame->user, x + size, y, x, y + size, color, 1.5F);
-  frame->draw_line(frame->user, x, y + size, x - size, y, color, 1.5F);
+  if (canvas.batched) {
+    // The batched primitive set has no filled polygon, so fill with 1 px scanlines the way
+    // the joint circles are filled. Every row still rides in the single batched call.
+    const int half = static_cast<int>(size);
+    for (int row = -half; row <= half; ++row) {
+      const int distance = row < 0 ? -row : row;
+      const float taper = 1.0F - static_cast<float>(distance) / static_cast<float>(half + 1);
+      const float width = size * kDiamondHalfWidth * taper;
+      if (width <= 0.25F) continue;
+      canvas.Rect(x - width, y + static_cast<float>(row), width * 2.0F, 1.0F, color);
+    }
+    // Outline in the same hue, lifted by the stroke rule, so the mark keeps a crisp edge.
+    TimelineDiamondOutline(canvas, x, y, color, size);
+    return;
+  }
+  TimelineDiamondOutline(canvas, x, y, color, size);
 }
 
 struct KeyframeOverlayStats {
@@ -22274,6 +22597,11 @@ KeyframeOverlayStats DrawKeyframeOverlay(
   if (!context.keyframe_overlay_enabled.load(std::memory_order_acquire) ||
       motion_loaded || frame == nullptr || frame->viewport_width < 400 ||
       frame->viewport_height < 200) {
+    {
+      std::lock_guard<std::mutex> lock(context.keyframe_overlay_primitives_mutex);
+      context.keyframe_overlay_primitives.clear();
+      context.keyframe_overlay_texts.clear();
+    }
     std::lock_guard<std::mutex> lock(context.keyframe_overlay_mutex);
     context.keyframe_overlay_valid = false;
     stats.draw_us = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -22281,6 +22609,20 @@ KeyframeOverlayStats DrawKeyframeOverlay(
                         .count();
     return stats;
   }
+  const std::uint64_t batch_now = GetTickCount64();
+  const std::uint64_t batch_last =
+      context.overlay_imgui_last_submit_ms.load(std::memory_order_acquire);
+  const bool batch_ready =
+      batch_last != 0 && batch_now - batch_last < 1500U &&
+      context.overlay_text_available.load(std::memory_order_acquire);
+  std::vector<AnomalyUiScreenPrimitiveV1> primitives;
+  std::vector<Context::OverlayTextItem> texts;
+  if (batch_ready) {
+    primitives.reserve(256U);
+    texts.reserve(32U);
+  }
+  const TimelineCanvas canvas{frame, &primitives, batch_ready,
+                              batch_ready ? &texts : nullptr};
   std::vector<tl::KeyMark> marks;
   {
     std::lock_guard<std::mutex> lock(context.keyframe_overlay_mutex);
@@ -22321,11 +22663,11 @@ KeyframeOverlayStats DrawKeyframeOverlay(
                                static_cast<float>(frame->viewport_height), length,
                                playhead, std::move(marks), view);
   const bool zoomed = view.start > 0.0 || view.end < static_cast<double>((std::max)(length, 1U));
-  frame->draw_rect(frame->user, layout.panel.left, layout.panel.top,
+  canvas.Rect(layout.panel.left, layout.panel.top,
                    layout.panel.right - layout.panel.left, layout.panel.bottom - layout.panel.top,
                    kTimelineBackground);
-  TimelineFrame(frame, layout.panel, kTimelineEdge, 1.0F);
-  frame->draw_rect(frame->user, layout.track.left, layout.track.top,
+  TimelineFrame(canvas, layout.panel, kTimelineEdge, 1.0F);
+  canvas.Rect(layout.track.left, layout.track.top,
                    layout.track.right - layout.track.left, layout.track.bottom - layout.track.top,
                    kTimelineTrack);
   const float key_y =
@@ -22350,7 +22692,7 @@ KeyframeOverlayStats DrawKeyframeOverlay(
        static_cast<double>(tick) <= static_cast<double>(layout.frame_end); tick += tick_step) {
     const float x = tl::FrameToX(layout, tick);
     const bool major = tick % major_step == 0;
-    TimelineLine(frame, x,
+    TimelineLine(canvas, x,
                  layout.track.bottom - (major ? 10.0F : 5.0F),
                  x, layout.track.bottom, kTimelineTick, 1.0F);
     if (major) {
@@ -22359,7 +22701,7 @@ KeyframeOverlayStats DrawKeyframeOverlay(
         std::snprintf(label, sizeof(label), "%us", tick / 30U);
       else
         std::snprintf(label, sizeof(label), "%u", tick);
-      frame->draw_text(frame->user, anomaly::sdk::StringView(label), x + 2.0F,
+      canvas.Text(anomaly::sdk::StringView(label), x + 2.0F,
                        layout.track.bottom + 2.0F, kTimelineMuted, 0.7F);
     }
   }
@@ -22371,22 +22713,22 @@ KeyframeOverlayStats DrawKeyframeOverlay(
   const float cursor_x = context.keyframe_overlay_cursor_x.load(std::memory_order_acquire);
   const float cursor_y = context.keyframe_overlay_cursor_y.load(std::memory_order_acquire);
   const auto hot = [&](const tl::Rect &r) { return tl::Contains(r, cursor_x, cursor_y); };
-  TimelineButton(frame, layout.play_button, timeline_playing ? "||" : ">",
+  TimelineButton(canvas, layout.play_button, timeline_playing ? "||" : ">",
                  kTimelinePlayhead, true,
                  hot(layout.play_button));
-  TimelineButton(frame, layout.stop_button, "|<", kTimelinePlayhead, true, hot(layout.stop_button));
-  TimelineButton(frame, layout.delete_button,
+  TimelineButton(canvas, layout.stop_button, "|<", kTimelinePlayhead, true, hot(layout.stop_button));
+  TimelineButton(canvas, layout.delete_button,
                  context.localizer.Text("keyframe.overlay.delete",
                                         "Delete key"),
                  kTimelineDelete, has_selected_key,
                  hot(layout.delete_button));
-  TimelineButton(frame, layout.record_button,
+  TimelineButton(canvas, layout.record_button,
                  context.localizer.Text("keyframe.overlay.record",
                                         "Record key"),
                  kTimelineRecord, true, hot(layout.record_button));
   // Usable only when zoomed in; the accent is the playhead's, like the other
   // view/playback buttons.
-  TimelineButton(frame, layout.fit_button,
+  TimelineButton(canvas, layout.fit_button,
                  context.localizer.Text("keyframe.overlay.fit", "Fit all"),
                  kTimelinePlayhead, zoomed, hot(layout.fit_button));
   for (std::size_t i{}; i != layout.keys.size(); ++i) {
@@ -22396,23 +22738,31 @@ KeyframeOverlayStats DrawKeyframeOverlay(
     const bool selected_key =
         has_selected_key && static_cast<std::size_t>(selected) == i;
     if (selected_key)
-      TimelineDiamond(frame, key.x, key_y, kTimelineText, 10.0F);
-    if (key.pose) TimelineDiamond(frame, key.x, key_y, kTimelinePose);
+      TimelineDiamond(canvas, key.x, key_y, kTimelineText, 14.0F);
+    if (key.pose) {
+      TimelineDiamond(canvas, key.x, key_y, kTimelinePose, 9.5F);
+    } else if (key.expression || key.camera) {
+      // No pose recorded here, but the key still exists: show the empty slot so the track
+      // does not look like it has a gap.
+      TimelineDiamondOutline(canvas, key.x, key_y, kTimelineEmptyPose, 9.5F);
+    }
     if (key.expression)
-      TimelineDiamond(frame, key.x + 2.0F, key_y,
-                      kTimelineExpression, 4.0F);
+      TimelineDiamond(canvas, key.x + 3.5F, key_y,
+                      kTimelineExpression, 6.5F);
     if (key.camera)
-      TimelineDiamond(frame, key.x - 2.0F, key_y, kTimelineCamera, 3.0F);
+      // Yellow and nearly the size of an expression mark, offset onto the left half so the
+      // two read apart at a glance.
+      TimelineDiamond(canvas, key.x - 3.5F, key_y, kTimelineCamera, 5.0F);
   }
   if (layout.playhead_visible) {
-    TimelineLine(frame, layout.playhead_x, layout.track.top - 8.0F, layout.playhead_x,
+    TimelineLine(canvas, layout.playhead_x, layout.track.top - 8.0F, layout.playhead_x,
                  layout.track.bottom + 4.0F, kTimelinePlayhead, 2.0F);
     // Playhead handle: a small triangle above the track.
-    TimelineLine(frame, layout.playhead_x - 5.0F, layout.track.top - 9.0F,
+    TimelineLine(canvas, layout.playhead_x - 5.0F, layout.track.top - 9.0F,
                  layout.playhead_x + 5.0F, layout.track.top - 9.0F, kTimelinePlayhead, 2.0F);
-    TimelineLine(frame, layout.playhead_x - 5.0F, layout.track.top - 9.0F, layout.playhead_x,
+    TimelineLine(canvas, layout.playhead_x - 5.0F, layout.track.top - 9.0F, layout.playhead_x,
                  layout.track.top - 3.0F, kTimelinePlayhead, 2.0F);
-    TimelineLine(frame, layout.playhead_x + 5.0F, layout.track.top - 9.0F, layout.playhead_x,
+    TimelineLine(canvas, layout.playhead_x + 5.0F, layout.track.top - 9.0F, layout.playhead_x,
                  layout.track.top - 3.0F, kTimelinePlayhead, 2.0F);
   } else {
     // Off the zoomed window: an arrow at the edge it went past.
@@ -22420,8 +22770,8 @@ KeyframeOverlayStats DrawKeyframeOverlay(
     const float edge = right ? layout.track.right - 2.0F : layout.track.left + 2.0F;
     const float tip = right ? edge + 6.0F : edge - 6.0F;
     const float mid = (layout.track.top + layout.track.bottom) * 0.5F;
-    TimelineLine(frame, edge, mid - 6.0F, tip, mid, kTimelinePlayhead, 2.0F);
-    TimelineLine(frame, tip, mid, edge, mid + 6.0F, kTimelinePlayhead, 2.0F);
+    TimelineLine(canvas, edge, mid - 6.0F, tip, mid, kTimelinePlayhead, 2.0F);
+    TimelineLine(canvas, tip, mid, edge, mid + 6.0F, kTimelinePlayhead, 2.0F);
   }
   const double current_frame =
       context.keyframe_frame.load(std::memory_order_acquire);
@@ -22436,19 +22786,16 @@ KeyframeOverlayStats DrawKeyframeOverlay(
       context.keyframe_applied_frame >= 0.0 &&
       std::abs(context.keyframe_applied_frame - current_frame) < 0.5 &&
       current_key == key_count && key_count != 0;
+  // These two labels sit on the panel fill, so they go through the canvas like every other
+  // timeline label; drawing them straight on the HUD canvas left them under the batched fill.
   if (unsaved)
-    frame->draw_text(frame->user,
-                     anomaly::sdk::StringView(
-                         context.localizer.Text("keyframe.overlay.unsaved", "*unsaved")),
-                     layout.track.left,
-                     layout.panel.bottom - 18.0F, kTimelineUnsaved, 0.85F);
+    canvas.Text(anomaly::sdk::StringView(
+                    context.localizer.Text("keyframe.overlay.unsaved", "*unsaved")),
+                layout.track.left, layout.panel.bottom - 18.0F, kTimelineUnsaved, 0.85F);
   else
-    frame->draw_text(frame->user,
-                     anomaly::sdk::StringView(
-                         context.localizer.Text(
-                             "keyframe.track", "Keyframes")),
-                     layout.track.left,
-                     layout.panel.bottom - 18.0F, kTimelineMuted, 0.85F);
+    canvas.Text(anomaly::sdk::StringView(
+                    context.localizer.Text("keyframe.track", "Keyframes")),
+                layout.track.left, layout.panel.bottom - 18.0F, kTimelineMuted, 0.85F);
   std::string count_text;
   if (zoomed) {
     char text_buffer[96]{};
@@ -22470,7 +22817,7 @@ KeyframeOverlayStats DrawKeyframeOverlay(
       frame->measure_text(frame->user, anomaly::sdk::StringView(count_text), 0.75F, &count_width,
                           &count_height) == 0)
     count_width = static_cast<float>(count_text.size()) * 6.0F;
-  frame->draw_text(frame->user, anomaly::sdk::StringView(count_text),
+  canvas.Text(anomaly::sdk::StringView(count_text),
                    layout.track.right - count_width, layout.panel.bottom - 18.0F,
                    kTimelineMuted, 0.75F);
   stats.key_count = key_count;
@@ -22490,6 +22837,11 @@ KeyframeOverlayStats DrawKeyframeOverlay(
     std::lock_guard<std::mutex> lock(context.keyframe_overlay_mutex);
     context.keyframe_overlay_layout = std::move(layout);
     context.keyframe_overlay_valid = true;
+  }
+  {
+    std::lock_guard<std::mutex> lock(context.keyframe_overlay_primitives_mutex);
+    context.keyframe_overlay_primitives = std::move(primitives);
+    context.keyframe_overlay_texts = std::move(texts);
   }
   stats.draw_us = std::chrono::duration_cast<std::chrono::microseconds>(
                       std::chrono::steady_clock::now() - started)
@@ -22569,7 +22921,8 @@ void DrawBoneTooltip(Context &context, const AnomalyUe5AhudFrameV1 *frame,
       screen[bone][0], screen[bone][1], width, height, 12.0F,
       static_cast<float>(frame->viewport_width), static_cast<float>(frame->viewport_height));
   frame->draw_rect(frame->user, box.left, box.top, width, height, kTimelineBackground);
-  TimelineFrame(frame, {box.left, box.top, box.left + width, box.top + height},
+  TimelineFrame(TimelineCanvas{frame, nullptr, false, nullptr},
+                {box.left, box.top, box.left + width, box.top + height},
                 bone == selected ? kOverlaySelectedColor : kTimelineEdge, 1.0F);
   frame->draw_text(frame->user, anomaly::sdk::StringView(label), box.left + kPadX,
                    box.top + kPadY, kTimelineText, kScale);
@@ -23873,6 +24226,9 @@ AnomalyStatusV1 ANOMALY_CALL Start(void *plugin_context) {
                   "GWorld discovery signature is unavailable");
   }
   context->stopping.store(false, std::memory_order_release);
+  // The detour always forwards to the engine's Update; see render_pose_bridge.hpp for why
+  // skipping that call when the lease is refused crashed the game on reload-in-world.
+  static_cast<void>(render_pose_bridge::Install(*context));
   BlenderStartServer(*context);
   UpdateRuntime(*context, 0.0);
   context->reflection_action_requested.store(5, std::memory_order_release);
@@ -23887,6 +24243,8 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void *plugin_context, std::uint32_t) {
   if (context == nullptr)
     return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
   context->stopping.store(true, std::memory_order_release);
+  if (!render_pose_bridge::Release(*context))
+    return Status(ANOMALY_STATUS_V1_FAILED, "render observation callbacks did not drain");
   BlenderStopServer(*context);
   // First: the overlay callback reads runtime, which is reset below.
   UnsubscribeSkeletonOverlay(*context);
@@ -23950,8 +24308,10 @@ void ANOMALY_CALL Update(void *plugin_context, const double delta_seconds) {
   if (context == nullptr)
     return;
   try {
+    context->render_bridge.producer_thread.store(GetCurrentThreadId(), std::memory_order_release);
     UpdateRuntime(*context, delta_seconds);
     FinalizeEntityPoses(*context);
+    render_pose_bridge::SynchronizeOwnership(*context);
     BlenderDrain(*context);
     const int collision_request =
         context->collision_overlay_request.exchange(-1, std::memory_order_acq_rel);
@@ -23968,6 +24328,11 @@ void ANOMALY_CALL Update(void *plugin_context, const double delta_seconds) {
   } catch (...) {
     RestoreAll(*context);
     RestoreSharedEntityPoses(*context);
+    RestoreParkedEntityAnimations(*context);
+    {
+      std::lock_guard<std::mutex> lock(context->render_bridge.mutex);
+      context->render_bridge.samples.clear();
+    }
     static_cast<void>(ReleasePlayerFreeze(*context));
     PublishSnapshot(*context, "update failed; overrides restored");
   }
@@ -24249,7 +24614,7 @@ void DrawKeyframePage(Context &context, const AnomalyUiServiceV1 *ui) {
           row += head;
           if (key.has_pose)
             row += context.localizer.Text("keyframe.part.pose", "pose") + "(" +
-                   std::to_string(key.bones.size()) + ") ";
+                   std::to_string(key.has_local_pose ? key.local_pose.size() : key.bones.size()) + ") ";
           if (key.has_expression)
             row += context.localizer.Text("keyframe.part.expression", "face") + "(" +
                    std::to_string(key.morphs.size()) + ") ";
@@ -25101,26 +25466,31 @@ void DrawPendingOverlayPrimitives(
     return;
   std::vector<AnomalyUiScreenPrimitiveV1> primitives;
   {
-    std::lock_guard<std::mutex> lock(context.overlay_screen_primitives_mutex);
-    primitives = context.overlay_screen_primitives;
+    // The timeline used to be drawn before the skeleton overlay, so it goes in first.
+    std::lock_guard<std::mutex> lock(context.keyframe_overlay_primitives_mutex);
+    primitives = context.keyframe_overlay_primitives;
   }
+  {
+    std::lock_guard<std::mutex> lock(context.overlay_screen_primitives_mutex);
+    primitives.insert(primitives.end(), context.overlay_screen_primitives.begin(),
+                      context.overlay_screen_primitives.end());
+  }
+  // Any UI frame proves the batched path is usable, so stamp before content is known: a
+  // "successful non-empty submission" signal deadlocks, because the timeline only queues
+  // geometry once batching is already considered live.
+  context.overlay_imgui_last_submit_ms.store(GetTickCount64(), std::memory_order_release);
   if (primitives.empty())
     return;
-  if (ui->draw_screen_primitives(ui->user, primitives.data(),
-                                 primitives.size()) != 0)
-    context.overlay_imgui_last_submit_ms.store(GetTickCount64(),
-                                               std::memory_order_release);
+  static_cast<void>(ui->draw_screen_primitives(ui->user, primitives.data(),
+                                               primitives.size()));
 }
 
 void ANOMALY_CALL DrawOverlay(void *plugin_context,
                               const AnomalyUiServiceV1 *ui) noexcept {
-  auto *context = static_cast<Context *>(plugin_context);
-  if (context == nullptr || ui == nullptr)
-    return;
-  try {
-    DrawPendingOverlayPrimitives(*context, ui);
-  } catch (...) {
-  }
+  // The host calls this only a few times per second: too slow to keep the batched
+  // submission alive or to animate the timeline. Draw() submits every UI frame instead.
+  static_cast<void>(plugin_context);
+  static_cast<void>(ui);
 }
 
 void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
@@ -25141,6 +25511,29 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
     UpdateSkeletonOverlayPicking(*context, ui);
   UpdateOrbitCameraInput(*context, ui, timeline_owns_mouse);
   UpdatePoseHistoryInput(*context, ui);
+
+  try {
+    DrawPendingOverlayPrimitives(*context, ui);
+  } catch (...) {
+  }
+  const bool text_api =
+      ui->struct_size >=
+          offsetof(AnomalyUiServiceV1, overlay_text) + sizeof(ui->overlay_text) &&
+      ui->overlay_text != nullptr;
+  context->overlay_text_available.store(text_api, std::memory_order_release);
+  if (text_api) {
+    try {
+      std::vector<Context::OverlayTextItem> texts;
+      {
+        std::lock_guard<std::mutex> lock(context->keyframe_overlay_primitives_mutex);
+        texts = context->keyframe_overlay_texts;
+      }
+      for (const auto &item : texts)
+        ui->overlay_text(ui->user, item.x, item.y, anomaly::sdk::StringView(item.text),
+                         item.color, item.size);
+    } catch (...) {
+    }
+  }
 
   RenderSnapshot snapshot{};
   {
@@ -25229,11 +25622,18 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
     context->reflection_action_requested.store(4, std::memory_order_release);
   }
   ui->same_line(ui->user, 0.0F, 6.0F);
-  const std::string load_bones_label =
-      context->localizer.Text("action.load_bones", "Load Bones");
-  if (ui->button(ui->user, anomaly::sdk::StringView(load_bones_label), 80.0F,
-                 0.0F) != 0)
-    context->reflection_action_requested.store(6, std::memory_order_release);
+  const std::string apose_label =
+      context->localizer.Label("pose.apose", "A-pose base", "pose-apose");
+  if (ui->button(ui->user, anomaly::sdk::StringView(apose_label), 90.0F, 0.0F) != 0) {
+    // A loaded MMD motion or a playing keyframe track would keep writing the bones and fight
+    // the reference pose, so stop them the way Refresh Anim does before taking the base.
+    if (context->motion_loaded.load(std::memory_order_acquire))
+      UnloadMotion(*context);
+    if (context->t_pose_calibration_active.load(std::memory_order_acquire))
+      context->t_pose_calibration_request.store(3, std::memory_order_release);
+    context->keyframe_playing.store(false, std::memory_order_release);
+    context->pose_apose_request.store(true, std::memory_order_release);
+  }
   if (context->ahud != nullptr) {
     ui->same_line(ui->user, 0.0F, 6.0F);
     int overlay_enabled =
@@ -28797,6 +29197,12 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
         ui->filter_match != nullptr;
 
     if (can_bone_list) {
+      // Manual fallback for the bone table: the plugin loads it automatically, but a failed
+      // attempt is remembered and not retried for the same component.
+      const std::string load_bones_label =
+          context->localizer.Text("action.load_bones", "Load Bones");
+      if (ui->button(ui->user, anomaly::sdk::StringView(load_bones_label), 90.0F, 0.0F) != 0)
+        context->reflection_action_requested.store(6, std::memory_order_release);
       const std::string filter_label =
           context->localizer.Text("pose.filter", "Bone filter");
       static_cast<void>(ui->input_text(

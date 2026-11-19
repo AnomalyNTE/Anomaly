@@ -8,6 +8,38 @@ The runtime package ships with user-facing built-in plugins. Like third-party pl
 > [!NOTE]
 > `Nearby Pickup`, `Movement Hold Probe`, `Map Spawn Exporter`, `Teleport Landmarks Probe` and Navmesh Demo are developer test packages: neither the default build nor the released runtime package contains them, and only a runtime package built with `build.cmd testplugins` includes them (see [Building from source](../developer-guide/building.md)). The other plugins ship with the release runtime package.
 
+## Better Pose
+
+| | |
+| --- | --- |
+| **ID** | `anomaly.better-pose` |
+| **Purpose** | Pose, expression, keyframe and MMD-motion editing for the local player and Character Studio models. |
+| **Required services** | `anomaly.core`, `anomaly.config`, `anomaly.storage`, `anomaly.profile`, `anomaly.ui`, `anomaly.localization`; `anomaly.ue5.ahud`, `anomaly.input` (optional) |
+| **Requires Profile** | Yes (skeletal-mesh, render and reflection symbols) |
+
+The plugin writes bone poses directly instead of going through the game's animation playback. Its six
+pages are **Targets** (pick the model and show its skeleton), **Joints** (per-bone pitch/yaw/roll and a
+body offset, with mirror, reset and drag-on-overlay), **Expression** (morph targets), **Keyframes** (an
+on-screen timeline for recording, dragging and playing back), **MMD motion** (load a VMD file, map bones,
+tune the dynamic parameters) and **Library** (save and load poses).
+
+Every selected model keeps its own track and base pose, so switching targets never applies one model's
+pose to another. Manual posing is an offset from the base, which is whatever pose the model was in when
+editing started; the **A-pose base** button on the toolbar takes the base from the mesh's reference pose
+instead, so dragging a joint afterwards is relative to that A-pose. A keyframe is refused while the bones
+or the base are not ready, so a recording never silently misses data.
+
+Library poses can be used as keyframe material: load pose A, adjust it and record a keyframe, then load
+pose B and record another. A recorded keyframe stores the complete local rotation, translation and scale
+of every bone at that moment plus the body offset separately, so deleting or editing a library entry
+never changes keyframes already recorded. Rotation interpolates along the shortest path; translation and
+scale interpolate linearly. The `betterpose-keyframes` format keeps reading the older version 1 angle
+frames, and new files use version 2 with the local transforms embedded per bone name in
+`pose.localPose`; when both kinds are mixed, angle frames resolve against the current model's base pose.
+
+[Blender bridge](better-pose-blender.md) uses a separate `.bpmotion` channel and is not the same format as
+the keyframe motion files above.
+
 ## Skin Swapper Lite
 
 `Skin Swapper Lite` (`b1ank.skin-changer`) provides character accessories, glider and awakening appearance previews, and custom license plates. After you turn on **Apply plate** on the license plate page, the text follows the supported vehicles you drive afterwards; turning the switch off restores the original plate. **Animated plate** scrolls the text in a loop, and you can adjust the scroll interval. The panel shows the usable characters and the plate width. These changes only affect the local appearance, and awakening previews grant no combat bonuses.
