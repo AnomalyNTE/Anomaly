@@ -315,6 +315,8 @@
     "settings.interface.reduce_transparency_hint": "Replaces liquid glass with solid surfaces for higher contrast.",
     "settings.interface.remember_last_page": "Remember last page",
     "settings.interface.remember_last_page_hint": "Restores the last open page next time.",
+    "settings.interface.horizontal_layout": "Horizontal layout (experimental)",
+    "settings.interface.horizontal_layout_hint": "Off keeps the native plugin list; on uses the card reel.",
     "settings.input.menu_toggle": "Menu toggle",
     "settings.input.menu_toggle_hint": "Opens or collapses the host interface.",
     "settings.input.press_key": "Press a key...",
