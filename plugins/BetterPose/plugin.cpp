@@ -5511,8 +5511,12 @@ bool ReadPoseArrays(Context &context) noexcept {
   // still describe the previous mesh. That is why modular hair stopped following the pose until a
   // character switch forced a full rescan. Treat an asset change as "rescan this character".
   std::uintptr_t asset{};
+  std::uintptr_t asset_class{};
   const bool asset_readable =
-      Read(context, mesh + native_layout.kMeshSkeletalMeshOffset, asset) && asset != 0;
+      Read(context, mesh + native_layout.kMeshSkeletalMeshOffset, asset) && asset != 0 &&
+      (asset & 0x7U) == 0 &&
+      Read(context, asset + native_layout.kObjectClassOffset, asset_class) &&
+      asset_class != 0;
   if (asset_readable) {
     // RuntimeState follows its component through binding and inactive evaluation.
     if (context.runtime.mesh_asset != 0 && asset != context.runtime.mesh_asset) {
