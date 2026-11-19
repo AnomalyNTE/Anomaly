@@ -233,10 +233,12 @@ struct RuntimeState {
   std::uintptr_t bound_character{};
   std::uintptr_t bound_mesh{};
   std::uintptr_t character{};
+  std::uintptr_t character_class{};
   std::uintptr_t mesh{};
   std::uintptr_t mesh_asset{};   // USkeletalMesh this entry was resolved against
   bool external_target{};
   std::uintptr_t anim_instance{};
+  std::uintptr_t anim_instance_class{};
   std::uint32_t animation_mode{};
   std::uint8_t animation_flags{};
   std::uint32_t bone_space_count{};
@@ -1068,6 +1070,8 @@ struct Context final {
   std::uintptr_t active_check_class{};
   std::uint64_t active_check_ms{};
   std::uint32_t active_check_failures{};
+  std::uint32_t actor_check_failures{};
+  std::uint32_t anim_instance_check_failures{};
   // True while the manual pose should be written even with every angle at zero, which is
   // exactly the reference (A/T) pose case.
   std::atomic_bool pose_hold_base{};
@@ -1763,6 +1767,10 @@ struct Context final {
       float sphere_radius{};
     };
     std::uintptr_t object{};
+    // The component's class when this entry was built: if it reads back differently the object
+    // was destroyed and its storage reused, and writing a pose into it corrupts the heap.
+    std::uintptr_t object_class{};
+    std::uint32_t stale_checks{};
     std::uintptr_t asset{};
     std::string display_name;
     std::uint32_t bone_count{};
@@ -5454,6 +5462,12 @@ bool ResolveLocalCharacter(Context &context) noexcept {
   }
   BindRuntimeCharacter(context, character, mesh, external_target);
   context.runtime.character = character;
+  {
+    std::uintptr_t character_class{};
+    context.runtime.character_class =
+        Read(context, character + native_layout.kObjectClassOffset, character_class)
+            ? character_class : 0;
+  }
   context.runtime.mesh = mesh;
   context.runtime.external_target = external_target;
   {
@@ -5482,6 +5496,14 @@ bool ReadAnimationState(Context &context) noexcept {
     return false;
   static_cast<void>(Read(context, mesh + native_layout.kMeshAnimScriptInstanceOffset,
                         context.runtime.anim_instance));
+  {
+    std::uintptr_t instance_class{};
+    context.runtime.anim_instance_class =
+        context.runtime.anim_instance != 0 &&
+                Read(context, context.runtime.anim_instance + native_layout.kObjectClassOffset,
+                     instance_class)
+            ? instance_class : 0;
+  }
   context.runtime.animation_mode = animation_mode;
   context.runtime.animation_flags = animation_flags;
   return true;
@@ -12857,6 +12879,11 @@ void BuildExtraMeshes(Context &context) noexcept {
       continue;
     Context::ExtraMesh extra;
     extra.object = object;
+  {
+    std::uintptr_t object_class{};
+    extra.object_class =
+        Read(context, object + native_layout.kObjectClassOffset, object_class) ? object_class : 0;
+  }
     extra.bone_count = bone_count;
     std::uintptr_t component_data{};
     std::uint32_t component_count{};
@@ -13615,6 +13642,20 @@ void WriteExtraMeshes(Context &context,
   for (auto &extra : context.extra_meshes) {
     if (extra.bone_count == 0)
       continue;
+    if (extra.object_class != 0) {
+      std::uintptr_t object_class{};
+      const bool readable =
+          Read(context, extra.object + native_layout.kObjectClassOffset, object_class);
+      if (!readable || object_class != extra.object_class) {
+        if (++extra.stale_checks >= 2) {
+          LogDiagnostic(context,
+                        "betterpose dropped an accessory: its component is gone or was reused");
+          extra.object = 0;
+        }
+        continue;
+      }
+      extra.stale_checks = 0;
+    }
     {
       // Switching a skin replaces the SkeletalMesh asset on the *same* component, so the transform
       // buffers cached when this entry was built are freed and reallocated. Writing through the old
@@ -18120,6 +18161,37 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
           context.runtime.component_space_count = 0;
           context.runtime.local_space_count = 0;
           context.pose_target_scan_requested.store(true, std::memory_order_release);
+        }
+      }
+      // The actor and its anim instance can be replaced the same way; clearing them makes the
+      // next resolve take a fresh one instead of calling into freed memory.
+      if (context.runtime.character != 0 && context.runtime.character_class != 0) {
+        std::uintptr_t actor_class{};
+        if (!Read(context, context.runtime.character + native_layout.kObjectClassOffset,
+                  actor_class) ||
+            actor_class != context.runtime.character_class) {
+          if (++context.actor_check_failures >= 2) {
+            LogDiagnostic(context, "betterpose dropped the bound character: it is gone or reused");
+            context.runtime.character = 0;
+            context.runtime.character_class = 0;
+            context.pose_target_scan_requested.store(true, std::memory_order_release);
+          }
+        } else {
+          context.actor_check_failures = 0;
+        }
+      }
+      if (context.runtime.anim_instance != 0 && context.runtime.anim_instance_class != 0) {
+        std::uintptr_t instance_class{};
+        if (!Read(context, context.runtime.anim_instance + native_layout.kObjectClassOffset,
+                  instance_class) ||
+            instance_class != context.runtime.anim_instance_class) {
+          if (++context.anim_instance_check_failures >= 2) {
+            LogDiagnostic(context, "betterpose dropped the anim instance: it is gone or reused");
+            context.runtime.anim_instance = 0;
+            context.runtime.anim_instance_class = 0;
+          }
+        } else {
+          context.anim_instance_check_failures = 0;
         }
       }
     }
