@@ -10512,8 +10512,12 @@ void StepInactiveEntityMotions(Context &context) noexcept {
     const bool readable =
         Read(context, mesh + native_layout.kObjectClassOffset, object_class) &&
         Read(context, mesh + native_layout.kMeshSkeletalMeshOffset, object_asset);
-    if (!readable || object_class != found->second.object_class ||
-        object_asset != found->second.object_asset) {
+    const bool identity_known =
+        found->second.object_class != 0 || found->second.object_asset != 0;
+    const bool identity_matches =
+        (found->second.object_class == 0 || object_class == found->second.object_class) &&
+        (found->second.object_asset == 0 || object_asset == found->second.object_asset);
+    if (identity_known && (!readable || !identity_matches)) {
       LogDiagnostic(context, "betterpose dropped an inactive motion state: the component is gone "
                              "or was reused");
       context.entity_motion_states.erase(found);
@@ -18080,7 +18084,8 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
         const bool class_readable =
             Read(context, bound + native_layout.kObjectClassOffset, object_class) &&
             object_class != 0;
-        if (!class_readable || object_class != context.active_check_class) {
+        const bool identity_known = context.active_check_class != 0;
+        if (identity_known && (!class_readable || object_class != context.active_check_class)) {
           ++context.active_check_failures;
           LogDiagnostic(context, "betterpose dropped the bound component: it is gone or its "
                                  "class changed");
@@ -18637,8 +18642,12 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
         Read(context, parked + native_layout.kMeshSkeletalMeshOffset, object_asset);
     // The spawned actor was removed and its storage reused: drop the state instead of writing
     // a pose through a pointer that no longer belongs to it.
-    if (!readable || object_class != found->second.object_class ||
-        object_asset != found->second.object_asset) {
+    const bool identity_known =
+        found->second.object_class != 0 || found->second.object_asset != 0;
+    const bool identity_matches =
+        (found->second.object_class == 0 || object_class == found->second.object_class) &&
+        (found->second.object_asset == 0 || object_asset == found->second.object_asset);
+    if (identity_known && (!readable || !identity_matches)) {
       LogDiagnostic(context, "betterpose dropped a parked pose state: the component is gone or "
                              "was reused");
       context.entity_pose_states.erase(found);
