@@ -5048,25 +5048,30 @@ private:
         }
 
         const float rounding = Scaled(12.0f) * (std::min)(1.0f, s * 0.75f);
-        const bool dark_surface = anomaly::glass::DarkAppearance();
-        ImU32 face_top = 0;
-        ImU32 face_bottom = 0;
-        if (dark_surface) {
-            face_top = IM_COL32(255, 255, 255, hovered ? 32 : 26);
-            face_bottom = IM_COL32(255, 255, 255, 12);
+        if (anomaly::glass::Active()) {
+            anomaly::glass::DrawThumb(draw_list, origin, maximum, rounding,
+                PlatformUiScale(), false);
         } else {
-            const ImVec4 accent = ThemeColor(theme.accent);
-            const int top_alpha = hovered ? 244 : 236;
-            face_top = IM_COL32(252, 253, 255, top_alpha);
-            face_bottom = IM_COL32(static_cast<int>(248.0f - accent.x * 10.0f),
-                static_cast<int>(250.0f - accent.y * 8.0f),
-                static_cast<int>(255.0f - accent.z * 2.0f), top_alpha - 12);
+            const bool dark_surface = anomaly::glass::DarkAppearance();
+            ImU32 face_top = 0;
+            ImU32 face_bottom = 0;
+            if (dark_surface) {
+                face_top = IM_COL32(255, 255, 255, hovered ? 32 : 26);
+                face_bottom = IM_COL32(255, 255, 255, 12);
+            } else {
+                const ImVec4 accent = ThemeColor(theme.accent);
+                const int top_alpha = hovered ? 244 : 236;
+                face_top = IM_COL32(252, 253, 255, top_alpha);
+                face_bottom = IM_COL32(static_cast<int>(248.0f - accent.x * 10.0f),
+                    static_cast<int>(250.0f - accent.y * 8.0f),
+                    static_cast<int>(255.0f - accent.z * 2.0f), top_alpha - 12);
+            }
+            DrawSoftSurface(draw_list, origin, maximum, rounding, face_top, face_bottom);
+            draw_list->AddRect(origin, maximum,
+                ImGui::ColorConvertFloat4ToU32(ThemeColorWithAlpha(theme.border,
+                    hovered ? 0.22f : 0.10f)),
+                rounding, 0, 1.0f);
         }
-        DrawSoftSurface(draw_list, origin, maximum, rounding, face_top, face_bottom);
-        draw_list->AddRect(origin, maximum,
-            ImGui::ColorConvertFloat4ToU32(ThemeColorWithAlpha(theme.border,
-                hovered ? 0.22f : 0.10f)),
-            rounding, 0, 1.0f);
 
         const float icon_size = Scaled(30.0f) * icon_scale;
         DrawGenericPluginIcon(Offset(origin, pad, pad * 0.9f), icon_size);
@@ -5198,17 +5203,27 @@ private:
         const ImVec2 max(from_max.x + (to_max.x - from_max.x) * eased,
             from_max.y + (to_max.y - from_max.y) * eased);
         const float radius = Scaled(12.0f) + Scaled(4.0f) * eased;
-        list->AddRectFilled(min, max,
-            ImGui::ColorConvertFloat4ToU32(ThemeColorWithAlpha(theme.child_background, 0.97f)),
-            radius);
-        list->AddRect(min, max,
-            ImGui::ColorConvertFloat4ToU32(ThemeColorWithAlpha(theme.accent, 0.50f)),
-            radius, 0, Scaled(1.2f));
+        if (anomaly::glass::Active()) {
+            anomaly::glass::DrawThumb(list, min, max, radius, PlatformUiScale(), false);
+        } else {
+            list->AddRectFilled(min, max,
+                ImGui::ColorConvertFloat4ToU32(
+                    ThemeColorWithAlpha(theme.child_background, 0.97f)), radius);
+            list->AddRect(min, max,
+                ImGui::ColorConvertFloat4ToU32(ThemeColorWithAlpha(theme.accent, 0.50f)),
+                radius, 0, Scaled(1.2f));
+        }
 
         list->PushClipRect(min, max, true);
+        // The content rides with the growing frame and only fades in once the card
+        // has taken shape, so it never appears early at its final position.
+        const float content = ImClamp((eased - 0.55f) / 0.45f, 0.0f, 1.0f);
+        const float content_drift = (1.0f - content) * Scaled(10.0f);
+        const ImVec2 layout_min = Offset(min, 0.0f, content_drift);
         const float pad = Scaled(18.0f);
-        const float icon_size = Scaled(44.0f);
-        DrawGenericPluginIcon(Offset(to_min, pad, pad), icon_size);
+        const float icon_size = Scaled(44.0f) *
+            (0.55f + 0.45f * (std::clamp)((max.y - min.y) / (std::max)(1.0f, height), 0.0f, 1.0f));
+        DrawGenericPluginIcon(Offset(layout_min, pad, pad), icon_size);
         const float text_x = pad + icon_size + Scaled(12.0f);
         const float text_width = (std::max)(
             Scaled(40.0f), width - text_x - pad - Scaled(16.0f));
@@ -5218,8 +5233,9 @@ private:
         if (name_font == nullptr) name_font = ImGui::GetFont();
         const std::string name = EllipsizeFont(name_font, Scaled(name_px),
             plugin.name.empty() ? plugin.id : plugin.name, text_width);
-        list->AddText(name_font, Scaled(name_px), Offset(to_min, text_x, pad),
-            ImGui::ColorConvertFloat4ToU32(ThemeColor(theme.text)), name.c_str());
+        list->AddText(name_font, Scaled(name_px), Offset(layout_min, text_x, pad),
+            ImGui::ColorConvertFloat4ToU32(ThemeColorWithAlpha(theme.text, content)),
+            name.c_str());
 
         const float base_font = ue5mem::PlatformUiBaseFontSize();
         ImFont* small_font = ue5mem::PlatformUiFontForScale(PlatformUiScale() * 1.02f);
@@ -5232,17 +5248,21 @@ private:
             metadata += "v" + plugin.version;
         }
         if (!metadata.empty()) {
-            list->AddText(small_font, small_size, Offset(to_min, text_x, pad + Scaled(22.0f)),
-                ImGui::ColorConvertFloat4ToU32(ThemeColor(theme.text_muted)), metadata.c_str());
+            list->AddText(small_font, small_size,
+                Offset(layout_min, text_x, pad + Scaled(22.0f)),
+                ImGui::ColorConvertFloat4ToU32(
+                    ThemeColorWithAlpha(theme.text_muted, content)), metadata.c_str());
         }
 
         const char* const about = Text(anomaly::MessageId::PluginsAbout);
         const float body_top = pad + icon_size + Scaled(16.0f);
-        list->AddText(small_font, small_size, Offset(to_min, pad, body_top),
-            ImGui::ColorConvertFloat4ToU32(ThemeColorWithAlpha(theme.accent, 0.9f)), about);
-        list->AddText(small_font, small_size, Offset(to_min, pad, body_top + Scaled(18.0f)),
-            ImGui::ColorConvertFloat4ToU32(ThemeColor(theme.text)), plugin.description.c_str(),
-            nullptr, width - pad * 2.0f);
+        list->AddText(small_font, small_size, Offset(layout_min, pad, body_top),
+            ImGui::ColorConvertFloat4ToU32(
+                ThemeColorWithAlpha(theme.accent, 0.9f * content)), about);
+        list->AddText(small_font, small_size,
+            Offset(layout_min, pad, body_top + Scaled(18.0f)),
+            ImGui::ColorConvertFloat4ToU32(ThemeColorWithAlpha(theme.text, content)),
+            plugin.description.c_str(), nullptr, width - pad * 2.0f);
         list->PopClipRect();
     }
 
@@ -5302,6 +5322,9 @@ private:
         const float minimum_width = Scaled(240.0f);
         const float pager_height = Scaled(26.0f);
         BeginShellBodyChild("PlatformPluginGrid", {}, false);
+    if (anomaly::glass::Active()) {
+        anomaly::glass::CaptureBackdrop(ImGui::GetWindowDrawList(), true, false);
+    }
         const ImVec2 area = ImGui::GetContentRegionAvail();
         const int fitting = static_cast<int>((area.x + gap) / (minimum_width + gap));
         const int columns = (std::clamp)(fitting, 1, 3);
