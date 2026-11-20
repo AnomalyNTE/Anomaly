@@ -5049,8 +5049,15 @@ private:
 
         const float rounding = Scaled(12.0f) * (std::min)(1.0f, s * 0.75f);
         if (anomaly::glass::Active()) {
-            anomaly::glass::DrawThumb(draw_list, origin, maximum, rounding,
-                PlatformUiScale(), false);
+            // One shared backdrop for the whole grid; each card is a single
+            // surface, so a page costs nine quads rather than nine captures.
+            anomaly::glass::SurfaceOptions options;
+            options.variant = anomaly::glass::Variant::Regular;
+            options.rounding = rounding;
+            options.scale = PlatformUiScale();
+            options.shadow = false;
+            options.tint_strength = anomaly::glass::DarkAppearance() ? 0.30f : 0.16f;
+            anomaly::glass::DrawSurface(draw_list, origin, maximum, options);
         } else {
             const bool dark_surface = anomaly::glass::DarkAppearance();
             ImU32 face_top = 0;
@@ -5132,12 +5139,21 @@ private:
         const bool toggle_allowed = PluginToggleAllowed(plugin);
         ImGui::SetCursorScreenPos(switch_position);
         ImGui::BeginDisabled(!toggle_allowed);
-        const bool toggle_clicked = ImGui::InvisibleButton("enable-toggle", switch_size);
+        ImGui::InvisibleButton("enable-toggle", switch_size);
         const bool toggle_held = ImGui::IsItemActive();
         ImGui::EndDisabled();
-        const bool toggle_hovered =
-            ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
-        if (toggle_clicked && toggle_allowed) {
+        // The press is resolved from the pointer against the switch rectangle: the
+        // tile's own button owns the rest of the card, and item hover/disabled
+        // bookkeeping there must not be able to swallow the toggle.
+        const ImVec2 pointer = ImGui::GetIO().MousePos;
+        const bool pointer_on_switch =
+            pointer.x >= switch_position.x &&
+            pointer.x <= switch_position.x + switch_size.x &&
+            pointer.y >= switch_position.y &&
+            pointer.y <= switch_position.y + switch_size.y;
+        const bool toggle_hovered = pointer_on_switch;
+        if (pointer_on_switch && toggle_allowed &&
+            ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             model_.State().selected_plugin_id = plugin.id;
             SubmitPluginToggle(plugin);
         }
