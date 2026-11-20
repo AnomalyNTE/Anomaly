@@ -10711,7 +10711,12 @@ void StepMeshScan(Context &context) noexcept {
     if (class_name.find("SkeletalMesh") != std::string::npos &&
         class_name.find("Component") == std::string::npos) {
       ++context.mesh_scan_mesh_assets;
-      if (context.ref_locals.empty())
+      // Only the asset the bound component is actually using can give this character its
+      // reference pose. Probing every skeleton asset in the registry cost one
+      // GetRefPoseTransform call per bone per asset: a single scan during rapid skin swapping
+      // measured 4148 calls in one second, a 14 second frame, and a crash inside the engine.
+      if (context.ref_locals.empty() && context.runtime.mesh_asset != 0 &&
+          object == context.runtime.mesh_asset)
         static_cast<void>(TryAssetReferencePose(context, object));
     }
     if (class_name.find("MeshComponent") == std::string::npos)
