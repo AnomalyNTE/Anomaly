@@ -710,6 +710,9 @@ struct Context final {
   std::atomic<float> overlay_joint_radius{7.0F};
   std::atomic_bool overlay_show_face{};
   std::atomic<std::uint32_t> overlay_hidden_count{};
+  // Odd while the game thread is rebuilding the bone tables; the render thread only reads them when
+  // the value is even and unchanged before and after its reads.
+  std::atomic<std::uint32_t> bone_table_seq{};
   std::atomic<std::uint64_t> overlay_perf_last_log_ms{};
   std::atomic<std::uint64_t> inactive_motion_perf_last_log_ms{};
   std::atomic<std::uint32_t> inactive_motion_applied_count{};
@@ -5555,12 +5558,14 @@ bool ReadPoseArrays(Context &context) noexcept {
       context.ref_locals.clear();
       context.ref_pose_attempted = false;
       context.mesh_scan_owner = 0;
+      context.bone_table_seq.fetch_add(1, std::memory_order_acq_rel);
       context.bone_names_mesh = 0;
       context.bone_names.clear();
       context.bone_names_attempted = false;
       context.bone_parents.clear();
       context.bone_parents_mesh = 0;
       context.bone_parents_ready = false;
+      context.bone_table_seq.fetch_add(1, std::memory_order_acq_rel);
       // The overlay draws an edge per parent/child pair. The array is rebuilt on the next update,
       // but the old skin's table stayed here in the meantime and the bone counts usually match, so
       // the joints were connected the previous skin's way for a few seconds after a swap.
@@ -8511,6 +8516,7 @@ void RefreshBoneHierarchyDirect(Context &context) noexcept {
       context.bone_parents_mesh == context.runtime.mesh &&
       context.bone_parents_count == count)
     return;
+  context.bone_table_seq.fetch_add(1, std::memory_order_acq_rel);
   context.bone_parents.assign(count, -1);
   for (std::uint32_t index{}; index != count; ++index) {
     std::array<std::uint8_t, 8> child_fname{};
@@ -8533,6 +8539,7 @@ void RefreshBoneHierarchyDirect(Context &context) noexcept {
   context.bone_parents_mesh = context.runtime.mesh;
   context.bone_parents_count = count;
   context.bone_parents_ready = true;
+  context.bone_table_seq.fetch_add(1, std::memory_order_acq_rel);
 }
 
 bool ApplyPoseByName(Context &context, const std::uint32_t bone,
@@ -14124,10 +14131,12 @@ void MaybeRefreshBoneNames(Context &context) noexcept {
     context.bone_names.clear();
     return;
   }
+  context.bone_table_seq.fetch_add(1, std::memory_order_acq_rel);
   context.bone_names = std::move(names);
   context.bone_names_mesh = mesh;
   context.bone_names_count = count;
   RefreshBoneHierarchy(context);
+  context.bone_table_seq.fetch_add(1, std::memory_order_acq_rel);
 }
 
 bool ForcePoseCache(Context &context, std::string &detail) noexcept {
@@ -23344,9 +23353,11 @@ void ANOMALY_CALL DrawSkeletonOverlay(void *user,
     // The bone table is rebuilt for the new asset right after a skin swap. Until it matches the
     // pose, edges would follow the previous skeleton and points would sit where the previous
     // skeleton put them, which reads as missing joints and crossed lines for a second or two.
-    const bool table_matches = context->bone_names.size() == count &&
+    const std::uint32_t table_seq = context->bone_table_seq.load(std::memory_order_acquire);
+    const bool table_matches = (table_seq & 1U) == 0 && context->bone_names.size() == count &&
                                context->bone_parents.size() == count;
-    if (!pose_read || !table_matches) {
+    if (!pose_read || !table_matches ||
+        context->bone_table_seq.load(std::memory_order_acquire) != table_seq) {
       ClearOverlayScreen(*context);
       return;
     }
