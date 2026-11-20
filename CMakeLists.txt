@@ -1335,6 +1335,7 @@ if(ANOMALY_BUILD_TEST_FIXTURES)
     add_test(NAME d3d12_interop COMMAND anomaly_d3d12_interop_fixture)
     add_executable(anomaly-platform-preview WIN32        apps/platform_preview/main.cpp
         src/ui/platform_host.cpp
+        src/game/nte/nte_esc_menu_bridge.cpp
         "${PLATFORM_UI_RESOURCES_RC}"
         src/plugin/plugin_manager.cpp)
     set_target_properties(anomaly-platform-preview PROPERTIES

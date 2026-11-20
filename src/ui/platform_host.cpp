@@ -1,4 +1,5 @@
 #include "platform_host.hpp"
+#include "platform_esc_menu.hpp"
 
 #include "anomaly/host_ui_service.hpp"
 #include "anomaly/embedded_artwork.hpp"
@@ -9014,7 +9015,6 @@ void RunPlatform(
     PlatformDiagnostics diagnostics,
     std::shared_ptr<PluginManager> plugin_owner,
     PlatformWindowAppearance appearance) {
-    static_cast<void>(memory_services);
     if (plugin_owner == nullptr) return;
     PluginManager& plugins = *plugin_owner;
     // Keep the native host state heap-backed so a deferred quarantine can
@@ -9033,6 +9033,7 @@ void RunPlatform(
     bool imgui_dx11_initialized{};
     bool plugin_context_published{};
     bool plugin_service_published{};
+    std::shared_ptr<anomaly::NteEscMenuBridge> esc_menu_bridge;
     bool tick_callback_installed{};
     bool ui_initialized{};
     bool cleanup_finished{};
@@ -9069,6 +9070,10 @@ void RunPlatform(
                 retain_generation();
                 return;
             }
+        }
+        if (esc_menu_bridge && !esc_menu_bridge->Stop(std::chrono::seconds(5))) {
+            std::ofstream(root / L"anomaly-platform.log", std::ios::app)
+                << "NTE ESC menu bridge shutdown deadline exceeded\n";
         }
         if (ui_initialized) {
             bool ui_released{};
@@ -9258,12 +9263,15 @@ void RunPlatform(
         }
     };
     if (adapter != nullptr) {
+        esc_menu_bridge = StartPlatformEscMenuBridge(
+            root, memory_services, *adapter, plugin_owner, diagnostics.logger);
         tick_callback_installed = true;
         const auto game_pump = diagnostics.game_pump;
-        adapter->SetTickCallback([plugin_mutex, &plugins, game_pump](double delta_seconds) {
+        adapter->SetTickCallback([plugin_mutex, &plugins, game_pump, esc_menu_bridge](double delta_seconds) {
             if (game_pump) static_cast<void>(game_pump());
             std::scoped_lock lock(*plugin_mutex);
             plugins.GameUpdate(delta_seconds);
+            if (esc_menu_bridge) esc_menu_bridge->Update(delta_seconds);
         });
     }
     ui_initialized = InitializePlatformUi(plugins, std::move(diagnostics), plugin_owner);
