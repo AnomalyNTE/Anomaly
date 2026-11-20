@@ -1879,17 +1879,6 @@ struct Context final {
     std::vector<std::uint8_t> saved_component;
     std::vector<std::uint8_t> saved_bone;
   };
-  // Accessories of an entity that is no longer selected. They keep following that entity's parked
-  // pose instead of freezing the moment another target is picked.
-  struct OwnerExtras {
-    std::vector<ExtraMesh> meshes;
-    std::uintptr_t asset{};
-    std::uint32_t mapped{};
-    std::vector<std::string> bone_names;
-    std::vector<std::int32_t> bone_parents;
-    std::vector<std::array<double, 12>> ref_locals;
-  };
-  std::map<std::uintptr_t, OwnerExtras> parked_extras;
   std::mutex extra_mesh_mutex;
   std::vector<ExtraMesh> extra_meshes;
   std::uintptr_t extra_mesh_owner{};
@@ -6239,27 +6228,8 @@ std::string ClassNameOf(Context &context, std::uintptr_t object) noexcept;
 std::string ObjectNameOf(Context &context, std::uintptr_t object) noexcept;
 void LogDiagnostic(Context &context, const std::string &message) noexcept;
 void BuildExtraMeshes(Context &context) noexcept;
-// Everything the accessory solver needs about the body it belongs to. Passing it explicitly keeps a
-// parked entity's accessories on that entity's skeleton and pose; reading the context's active
-// fields is what made them follow the selected entity instead.
-struct ExtraOwnerView {
-  std::uintptr_t mesh{};
-  std::uintptr_t asset{};
-  const std::vector<std::string> *bone_names{};
-  const std::vector<std::int32_t> *bone_parents{};
-  const std::vector<std::array<double, 12>> *ref_locals{};
-  std::vector<Context::ExtraMesh> *meshes{};
-  std::uint32_t mapped{};
-};
-ExtraOwnerView ActiveExtraOwner(Context &context) noexcept;
-void WriteExtraMeshesLocked(Context &context, const ExtraOwnerView &owner,
-                            const std::vector<PackedTransform> &packed) noexcept;
-void WriteExtraMeshes(Context &context, const ExtraOwnerView &owner,
+void WriteExtraMeshes(Context &context,
                       const std::vector<PackedTransform> &packed) noexcept;
-void DriveParkedExtras(Context &context, std::uintptr_t mesh,
-                       const std::vector<PackedTransform> &packed) noexcept;
-void StashActiveExtras(Context &context, std::uintptr_t mesh) noexcept;
-bool AdoptParkedExtras(Context &context, std::uintptr_t mesh) noexcept;
 bool ReadMeshComponentToWorld(Context &context, std::uintptr_t mesh,
                               Transformd &result) noexcept;
 void AppendKawaiiLimits(
@@ -8833,7 +8803,7 @@ void ApplyPoseOverridesDirect(Context &context,
           now, std::memory_order_release);
   }
   if (write_extras)
-    WriteExtraMeshes(context, ActiveExtraOwner(context), packed);
+    WriteExtraMeshes(context, packed);
   static_cast<void>(ForcePoseMeshObjectUpdate(context));
   } catch (...) {
   }
@@ -8946,11 +8916,9 @@ bool ApplyCachedEntityPose(Context &context,
   }
   const auto *bytes = reinterpret_cast<const std::uint8_t *>(packed.data());
   const auto byte_count = packed.size() * sizeof(PackedTransform);
-  if (!WriteBytes(context, component_data, bytes, byte_count) ||
-      !WriteBytes(context, bone_data, bytes, byte_count))
-    return false;
-  DriveParkedExtras(context, mesh, packed);
-  return ForceMeshObjectUpdate(context, mesh);
+  return WriteBytes(context, component_data, bytes, byte_count) &&
+         WriteBytes(context, bone_data, bytes, byte_count) &&
+         ForceMeshObjectUpdate(context, mesh);
 }
 
 bool MaintainParkedEntityPose(Context &context, const std::uintptr_t mesh,
@@ -10408,7 +10376,7 @@ void ApplyMotionPoseDirect(Context &context,
   const bool wrote_buffer0 =
       write_motion(native_layout.kMeshComponentSpaceBuffer0Offset, bytes, buffer0_length);
   if (publish_auxiliary)
-    WriteExtraMeshes(context, ActiveExtraOwner(context), packed);
+    WriteExtraMeshes(context, packed);
   static_cast<void>(ForcePoseMeshObjectUpdate(context));
   if (wrote_buffer1 || wrote_buffer0)
     static_cast<void>(render_pose_bridge::Publish(context, packed, true));
@@ -12952,28 +12920,6 @@ void ResyncExtraMeshes(Context &context) noexcept {
   }
 }
 
-void EnsurePoseHoldReleased(Context &context) noexcept {
-  const auto mesh = context.runtime.mesh;
-  if (mesh == 0 || mesh != context.local_mesh)
-    return;
-  if (context.pose_override_enabled.load(std::memory_order_acquire) ||
-      !context.keyframe_driving_released.load(std::memory_order_acquire))
-    return;
-  std::uint8_t flags{};
-  if (Read(context, mesh + native_layout.kMeshAnimationFlagsOffset, flags)) {
-    const std::uint8_t pause_bit =
-        static_cast<std::uint8_t>(1U << native_layout.kAnimationFlagPauseAnimsBit);
-    if ((flags & pause_bit) != 0)
-      static_cast<void>(Write(context, mesh + native_layout.kMeshAnimationFlagsOffset,
-                              static_cast<std::uint8_t>(flags & ~pause_bit)));
-  }
-  std::uint8_t mode{};
-  if (Read(context, mesh + native_layout.kMeshAnimationModeOffset, mode) &&
-      mode == kAnimationModeCustom)
-    static_cast<void>(Write(context, mesh + native_layout.kMeshAnimationModeOffset,
-                            std::uint8_t{0}));
-}
-
 void BuildExtraMeshes(Context &context) noexcept {
   // Never latch the result onto an empty mesh: runtime.mesh is zeroed on frames
   // where the local character cannot be resolved, and a build that ran on such a
@@ -13557,96 +13503,9 @@ bool WriteExtraArray(Context &context, const std::uintptr_t object, const std::u
                     elements * sizeof(PackedTransform));
 }
 
-void WriteExtraMeshes(Context &context, const ExtraOwnerView &owner,
+void WriteExtraMeshes(Context &context,
                       const std::vector<PackedTransform> &packed) noexcept {
   std::lock_guard<std::mutex> lock(context.extra_mesh_mutex);
-  // The parked motion path swaps the runtime to the entity it is posing, so the caller's view
-  // describes that entity while still pointing at the selected entity's accessory set. Route it to
-  // the set that belongs to the pose's owner instead of writing another entity's accessories.
-  if (owner.meshes == &context.extra_meshes && owner.mesh != 0 &&
-      owner.mesh != context.extra_mesh_owner) {
-    const auto found = context.parked_extras.find(owner.mesh);
-    if (found == context.parked_extras.end())
-      return;
-    ExtraOwnerView parked;
-    parked.mesh = owner.mesh;
-    parked.asset = found->second.asset != 0 ? found->second.asset : owner.asset;
-    parked.bone_names = &found->second.bone_names;
-    parked.bone_parents = &found->second.bone_parents;
-    parked.ref_locals = &found->second.ref_locals;
-    parked.meshes = &found->second.meshes;
-    parked.mapped = found->second.mapped;
-    WriteExtraMeshesLocked(context, parked, packed);
-    return;
-  }
-  WriteExtraMeshesLocked(context, owner, packed);
-}
-
-// Drives a parked entity's own accessories from that entity's final body pose. The active
-// selection is never consulted: this is what keeps the parked player's hair and costume attached
-// while another entity is being posed.
-void DriveParkedExtras(Context &context, const std::uintptr_t mesh,
-                       const std::vector<PackedTransform> &packed) noexcept {
-  if (mesh == 0 || mesh == context.runtime.mesh || packed.empty())
-    return;
-  std::lock_guard<std::mutex> lock(context.extra_mesh_mutex);
-  const auto found = context.parked_extras.find(mesh);
-  if (found == context.parked_extras.end() || found->second.meshes.empty())
-    return;
-  ExtraOwnerView owner;
-  owner.mesh = mesh;
-  owner.asset = found->second.asset;
-  owner.bone_names = &found->second.bone_names;
-  owner.bone_parents = &found->second.bone_parents;
-  owner.ref_locals = &found->second.ref_locals;
-  owner.meshes = &found->second.meshes;
-  owner.mapped = found->second.mapped;
-  WriteExtraMeshesLocked(context, owner, packed);
-}
-
-void StashActiveExtras(Context &context, const std::uintptr_t mesh) noexcept {
-  if (mesh == 0)
-    return;
-  std::lock_guard<std::mutex> lock(context.extra_mesh_mutex);
-  if (context.extra_meshes.empty())
-    return;
-  Context::OwnerExtras parked;
-  parked.meshes = std::move(context.extra_meshes);
-  parked.asset = context.runtime.mesh_asset;
-  parked.mapped = context.extra_mesh_mapped;
-  parked.bone_names = context.bone_names;
-  parked.bone_parents = context.bone_parents;
-  parked.ref_locals = context.ref_locals;
-  context.extra_meshes.clear();
-  context.parked_extras[mesh] = std::move(parked);
-}
-
-bool AdoptParkedExtras(Context &context, const std::uintptr_t mesh) noexcept {
-  std::lock_guard<std::mutex> lock(context.extra_mesh_mutex);
-  const auto found = context.parked_extras.find(mesh);
-  if (found == context.parked_extras.end())
-    return false;
-  context.extra_meshes = std::move(found->second.meshes);
-  context.extra_mesh_owner = mesh;
-  context.extra_mesh_mapped = found->second.mapped;
-  context.parked_extras.erase(found);
-  return !context.extra_meshes.empty();
-}
-
-ExtraOwnerView ActiveExtraOwner(Context &context) noexcept {
-  ExtraOwnerView owner;
-  owner.mesh = context.runtime.mesh;
-  owner.asset = context.runtime.mesh_asset;
-  owner.bone_names = &context.bone_names;
-  owner.bone_parents = &context.bone_parents;
-  owner.ref_locals = &context.ref_locals;
-  owner.meshes = &context.extra_meshes;
-  owner.mapped = context.extra_mesh_mapped;
-  return owner;
-}
-
-void WriteExtraMeshesLocked(Context &context, const ExtraOwnerView &owner,
-                            const std::vector<PackedTransform> &packed) noexcept {
   {
     const std::uint64_t now = GetTickCount64();
     const std::uint64_t last =
@@ -13677,7 +13536,7 @@ void WriteExtraMeshesLocked(Context &context, const ExtraOwnerView &owner,
                  better_pose::secondary::kMotionMaterialCount>
           materials{};
       std::string component_summary;
-      for (auto &extra : (*owner.meshes)) {
+      for (auto &extra : context.extra_meshes) {
         hierarchies += extra.used_hierarchy ? 1U : 0U;
         poseables += extra.poseable_active ? 1U : 0U;
         if (!extra.used_hierarchy)
@@ -13735,8 +13594,8 @@ void WriteExtraMeshesLocked(Context &context, const ExtraOwnerView &owner,
                     : (std::numeric_limits<std::uint32_t>::max)();
             if (index != 0)
               roots += ", ";
-            roots += body < owner.bone_names->size()
-                         ? (*owner.bone_names)[body]
+            roots += body < context.bone_names.size()
+                         ? context.bone_names[body]
                          : std::to_string(extra_bone);
             if (index == 3 && extra.attachment_bones.size() > 4) {
               roots += ", ...";
@@ -13817,17 +13676,18 @@ void WriteExtraMeshesLocked(Context &context, const ExtraOwnerView &owner,
                     "driven=%u native=%u kawaii=%u/%u extra_limits=%u/%u/%u "
                     "distance=%u self=%u/%u attachments=%u multi=%u "
                     "body=%u owner=%llX",
-                    static_cast<unsigned>((*owner.meshes).size()), hierarchies,
+                    static_cast<unsigned>(context.extra_meshes.size()), hierarchies,
                     poseables, driven_bones, native_springs, kawaii_nodes,
                     kawaii_limits, spherical_limits, box_limits, planar_limits,
                     distance_links, self_collision_links,
                     self_collision_contacts, attachment_roots, multi_attachment,
                     static_cast<unsigned>(packed.size()),
-                    static_cast<unsigned long long>(owner.mesh));
+                    static_cast<unsigned long long>(context.extra_mesh_owner));
       LogDiagnostic(context, message);
     }
   }
-  if ((*owner.meshes).empty() || owner.mesh == 0) {
+  if (context.extra_meshes.empty() ||
+      context.extra_mesh_owner != context.runtime.mesh) {
     ClearCollisionDebugStats(context);
     context.secondary_debug_components.store(0, std::memory_order_release);
     context.secondary_debug_driven_bones.store(0, std::memory_order_release);
@@ -13868,15 +13728,15 @@ void WriteExtraMeshesLocked(Context &context, const ExtraOwnerView &owner,
   // The body's bind pose, needed to turn the anchor's current transform into a delta.
   // Read once per call and only when some mesh actually needs it.
   std::vector<Transformd> body_bind;
-  for (const auto &extra : (*owner.meshes)) {
-    if (extra.used_hierarchy && !owner.ref_locals->empty() &&
-        owner.bone_parents->size() == owner.ref_locals->size()) {
-      body_bind = BindPoseTransforms(*owner.ref_locals, (*owner.bone_parents));
+  for (const auto &extra : context.extra_meshes) {
+    if (extra.used_hierarchy && !context.ref_locals.empty() &&
+        context.bone_parents.size() == context.ref_locals.size()) {
+      body_bind = BindPoseTransforms(context.ref_locals, context.bone_parents);
       break;
     }
   }
   const auto secondary_tuning = context.secondary_tuning.Load();
-  for (auto &extra : (*owner.meshes)) {
+  for (auto &extra : context.extra_meshes) {
     if (extra.bone_count == 0)
       continue;
     if (extra.object_class != 0) {
@@ -13961,7 +13821,7 @@ void WriteExtraMeshesLocked(Context &context, const ExtraOwnerView &owner,
         better_pose::accessory::Bone placement_raw{};
         std::memcpy(placement_raw.data(), &bind_placement, sizeof(bind_placement));
         extra.accessory_dynamics.ConfigureCollisions(collision_bind, context.bone_names,
-            better_pose::accessory::Transform(placement_raw), (*owner.bone_names)[extra.poseable_socket_bone]);
+            better_pose::accessory::Transform(placement_raw), context.bone_names[extra.poseable_socket_bone]);
         // One diagnostic line per accessory per build, not per frame. The radii are
         // measured from the accessory's own rest clearance and capped at half the hip
         // separation, so two leg capsules that overlap would make the constraint
@@ -13996,7 +13856,7 @@ void WriteExtraMeshesLocked(Context &context, const ExtraOwnerView &owner,
           }
         }
         LogDiagnostic(context, "betterpose accessory collisions source=" + Hex(extra.object) +
-                                   " socket=" + (*owner.bone_names)[extra.poseable_socket_bone] +
+                                   " socket=" + context.bone_names[extra.poseable_socket_bone] +
                                    " driven=" + std::to_string(extra.accessory_dynamics.DrivenBones()) +
                                    " masked_legs=" +
                                    std::to_string(extra.accessory_dynamics.MaskedBones(
@@ -14058,7 +13918,7 @@ void WriteExtraMeshesLocked(Context &context, const ExtraOwnerView &owner,
         std::vector<Capsule> capsules;
         Transformd body_world;
         if (have_accessory_world && collision_masks != 0 &&
-            ReadMeshComponentToWorld(context, owner.mesh,
+            ReadMeshComponentToWorld(context, context.runtime.mesh,
                                      body_world)) {
           std::vector<std::array<double, 3>> body_points(packed.size());
           for (std::size_t bone{}; bone != packed.size(); ++bone) {
@@ -14240,30 +14100,6 @@ bool RestoreExtraMeshes(Context &context) noexcept {
   }
   ClearCollisionDebugStats(context);
   return true;
-}
-
-// Best-effort restoration for parked owners: only writes saved bytes back when the array still
-// accepts them, so a reused or shrunk allocation is never overwritten.
-void RestoreParkedExtras(Context &context) noexcept {
-  std::lock_guard<std::mutex> lock(context.extra_mesh_mutex);
-  for (auto &entry : context.parked_extras) {
-    for (auto &extra : entry.second.meshes) {
-      static_cast<void>(EnsureExtraPoseAnimationMode(context, extra, false));
-      if (!extra.buffers_modified)
-        continue;
-      if (!extra.saved_component.empty())
-        static_cast<void>(WriteExtraArray(
-            context, extra.object, native_layout.kMeshComponentSpaceBuffer0Offset,
-            extra.saved_component.data(),
-            extra.saved_component.size() / sizeof(PackedTransform)));
-      if (!extra.saved_bone.empty())
-        static_cast<void>(WriteExtraArray(
-            context, extra.object, native_layout.kMeshComponentSpaceBuffer1Offset,
-            extra.saved_bone.data(), extra.saved_bone.size() / sizeof(PackedTransform)));
-      extra.buffers_modified = false;
-    }
-  }
-  context.parked_extras.clear();
 }
 
 bool DropExtraMeshes(Context &context) noexcept {  // Put the original buffers back before forgetting about them: dropping them
@@ -18632,29 +18468,6 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
     static_cast<void>(EnsurePoseForcedLod(context, false));
     context.pose_override_enabled.store(false, std::memory_order_release);
     context.keyframe_driving_released.store(true, std::memory_order_release);
-    // The record can be gone by now (a target switch parks and drops it), so the generic restore
-    // above has nothing to write back and the component stays paused in Custom mode: the character
-    // could turn but not walk. The user asked for the game's animation, so put the two fields this
-    // plugin owns back to the engine's defaults unconditionally.
-    if (context.runtime.mesh != 0) {
-      const auto mesh = context.runtime.mesh;
-      std::uint8_t flags{};
-      if (Read(context, mesh + native_layout.kMeshAnimationFlagsOffset, flags)) {
-        const std::uint8_t pause_bit =
-            static_cast<std::uint8_t>(1U << native_layout.kAnimationFlagPauseAnimsBit);
-        if ((flags & pause_bit) != 0)
-          static_cast<void>(Write(context, mesh + native_layout.kMeshAnimationFlagsOffset,
-                                  static_cast<std::uint8_t>(flags & ~pause_bit)));
-      }
-      std::uint8_t mode{};
-      if (Read(context, mesh + native_layout.kMeshAnimationModeOffset, mode) &&
-          mode == kAnimationModeCustom)
-        static_cast<void>(Write(context, mesh + native_layout.kMeshAnimationModeOffset,
-                               std::uint8_t{0}));
-      context.runtime.saved_pause = false;
-      context.runtime.saved_animation_mode = false;
-      context.runtime.animation_mode_applied = false;
-    }
     context.pose_hold_base.store(false, std::memory_order_release);
     ResetPoseValues(context);
     {
@@ -18768,13 +18581,8 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
       }
     }
   }
-  EnsurePoseHoldReleased(context);
   const bool force_ok = ApplyMultiThreadedUpdate(context, pose_enabled);
-  // A released timeline must not hold the character: measured flags=53/mode=2 kept coming back with
-  // no saved record, so nothing could restore them later.
-  const bool pose_requested =
-      pose_enabled && pose_available &&
-      !context.keyframe_driving_released.load(std::memory_order_acquire);
+  const bool pose_requested = pose_enabled && pose_available;
   const bool inactive_motion_requested =
       !context.blender_active.load(std::memory_order_acquire) &&
       HasInactiveEntityMotion(context);
@@ -19291,7 +19099,6 @@ void RestoreAll(Context &context) noexcept {
     state.anim_instance = state.multi_threaded_update_instance;
   static_cast<void>(RestorePose(context));
   static_cast<void>(RestoreExtraMeshes(context));
-  RestoreParkedExtras(context);
   static_cast<void>(EnsurePoseAnimationMode(context, false));
   static_cast<void>(EnsurePoseForcedLod(context, false));
   static_cast<void>(RestoreMultiThreadedUpdate(context));
@@ -19325,24 +19132,15 @@ void BindRuntimeCharacter(Context &context, const std::uintptr_t character,
   const bool preserve_previous_pose =
       previous_pose != context.entity_pose_states.end() &&
       HasCachedPoseEffect(previous_pose->second);
-
+  if (preserve_previous_pose) {
+    state.saved_pause = false;
+    state.saved_animation_mode = false;
+    state.animation_mode_applied = false;
+  }
   const bool preserve_player_freeze =
       external_target && !state.external_target && context.player_freeze.active &&
       context.player_freeze.mesh == previous_mesh;
-  // Handing the previous target back means putting the pause flag and animation mode where they
-  // were. Dropping only the record left the component paused in Custom mode with nothing left that
-  // remembered the original values: the character could turn but not walk, and no later restore
-  // could fix it (measured: flags=53, mode=2, saved_pause=0, saved_mode=0, override=0).
-  if ((preserve_previous_pose || preserve_player_freeze) && previous_mesh != 0 &&
-      state.bound_mesh == previous_mesh) {
-    if (state.saved_pause)
-      static_cast<void>(Write(context,
-                              previous_mesh + native_layout.kMeshAnimationFlagsOffset,
-                              state.original_animation_flags));
-    if (state.saved_animation_mode && state.animation_mode_applied)
-      static_cast<void>(Write(context,
-                              previous_mesh + native_layout.kMeshAnimationModeOffset,
-                              state.original_animation_mode));
+  if (preserve_player_freeze) {
     state.saved_pause = false;
     state.saved_animation_mode = false;
     state.animation_mode_applied = false;
@@ -19353,8 +19151,7 @@ void BindRuntimeCharacter(Context &context, const std::uintptr_t character,
   RestoreSharedEntityPoses(context);
   if (preserve_previous_pose)
     ParkEntityPose(context, previous_mesh);
-  if (previous_mesh != 0)
-    StashActiveExtras(context, previous_mesh);
+  static_cast<void>(DropExtraMeshes(context));
   if (target_switch)
     context.extra_build_pending = true;
   state = RuntimeState{};
@@ -19362,7 +19159,6 @@ void BindRuntimeCharacter(Context &context, const std::uintptr_t character,
   state.bound_character = character;
   state.bound_mesh = mesh;
   state.external_target = external_target;
-  static_cast<void>(AdoptParkedExtras(context, mesh));
   if (!external_target)
     SeedPlayerFreezeRuntime(context, mesh);
   else
