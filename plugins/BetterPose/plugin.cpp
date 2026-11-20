@@ -8648,6 +8648,18 @@ void ApplyPoseOverridesDirect(Context &context,
   if (!context.pose_override_enabled.load(std::memory_order_acquire) || state.mesh == 0) return;
   if (!CapturePoseBase(context)) return;
   const std::uint32_t count = static_cast<std::uint32_t>(context.pose_base_locals.size());
+  // The baseline and the buffers must describe the same skeleton. After a skin swap the cached
+  // baseline can still hold the previous asset's bone count, and writing that many transforms into
+  // the new (smaller) arrays overruns them and destroys the array headers, which is exactly what
+  // made the joint overlay read zero and the points disappear.
+  if (context.runtime.component_space_count != 0 && count != context.runtime.component_space_count) {
+    context.pose_base_ready = false;
+    {
+      std::lock_guard<std::mutex> lock(context.pose_angles_mutex);
+      context.pose_base_locals.clear();
+    }
+    return;
+  }
   std::vector<std::array<double, 12>> base_locals;
   std::vector<std::array<double, 3>> angles;
   std::map<std::string, std::array<double, 12>> library_pose;
