@@ -775,6 +775,7 @@ struct Context final {
   // Game thread: the body-only mask, rebuilt when the mesh or its names change.
   std::vector<std::uint8_t> overlay_hidden;
   std::uintptr_t overlay_hidden_mesh{};
+  std::uintptr_t overlay_hidden_asset{};
   std::size_t overlay_hidden_names{};
   bool overlay_hidden_parents{};
   bool overlay_hidden_face{};
@@ -5560,6 +5561,9 @@ bool ReadPoseArrays(Context &context) noexcept {
       context.bone_parents.clear();
       context.bone_parents_mesh = 0;
       context.bone_parents_ready = false;
+      // The overlay draws an edge per parent/child pair. The array is rebuilt on the next update,
+      // but the old skin's table stayed here in the meantime and the bone counts usually match, so
+      // the joints were connected the previous skin's way for a few seconds after a swap.
       context.mesh_scan_requested.store(true, std::memory_order_release);
       {
         // Bone-name mappings belong to the current asset's bone table.
@@ -23311,7 +23315,12 @@ void ANOMALY_CALL DrawSkeletonOverlay(void *user,
         }
       }
     }
-    if (!pose_read) {
+    // The bone table is rebuilt for the new asset right after a skin swap. Until it matches the
+    // pose, edges would follow the previous skeleton and points would sit where the previous
+    // skeleton put them, which reads as missing joints and crossed lines for a second or two.
+    const bool table_matches = context->bone_names.size() == count &&
+                               context->bone_parents.size() == count;
+    if (!pose_read || !table_matches) {
       ClearOverlayScreen(*context);
       return;
     }
@@ -23324,6 +23333,7 @@ void ANOMALY_CALL DrawSkeletonOverlay(void *user,
       const bool hide_face =
           !context->overlay_show_face.load(std::memory_order_acquire);
       if (context->overlay_hidden_mesh != mesh ||
+          context->overlay_hidden_asset != context->runtime.mesh_asset ||
           context->overlay_hidden_names != context->bone_names.size() ||
           context->overlay_hidden.size() != count ||
           context->overlay_hidden_parents != parents_ready ||
@@ -23337,6 +23347,7 @@ void ANOMALY_CALL DrawSkeletonOverlay(void *user,
                 : std::vector<std::int32_t>(count, -1),
             context->overlay_hidden, hide_face);
         context->overlay_hidden_mesh = mesh;
+        context->overlay_hidden_asset = context->runtime.mesh_asset;
         context->overlay_hidden_names = context->bone_names.size();
       }
       body_mask_ready = context->overlay_hidden.size() == count;
