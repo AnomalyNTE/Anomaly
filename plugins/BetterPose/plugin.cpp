@@ -13427,6 +13427,27 @@ void BuildAttachmentDrives(
     extra.attachment_drives.clear();
 }
 
+// Accessories cache their transform-array pointers when the mapping is built, but the engine
+// reallocates those arrays when a skin changes. Re-read the header before every write and never
+// exceed the current capacity: the cached pointer plus the old bone count is what overran the
+// game's heap (0xc0000374, heap corruption detected by ntdll).
+bool WriteExtraArray(Context &context, const std::uintptr_t object, const std::uint32_t offset,
+                     const std::uint8_t *bytes, const std::size_t elements) noexcept {
+  if (object == 0 || bytes == nullptr || elements == 0)
+    return false;
+  std::uintptr_t address{};
+  std::uint32_t count{};
+  if (!ReadArrayHeader(context, object + offset, address, count) || address == 0)
+    return false;
+  std::uint32_t capacity{};
+  if (!Read(context, object + offset + native_layout.kArrayCapacityOffset, capacity))
+    return false;
+  if (count < elements || capacity < elements)
+    return false;
+  return WriteBytes(context, address, bytes,
+                    elements * sizeof(PackedTransform));
+}
+
 void WriteExtraMeshes(Context &context,
                       const std::vector<PackedTransform> &packed) noexcept {
   std::lock_guard<std::mutex> lock(context.extra_mesh_mutex);
@@ -13881,11 +13902,12 @@ void WriteExtraMeshes(Context &context,
         extra.buffers_modified = true;
         const auto *mesh_bytes =
             reinterpret_cast<const std::uint8_t *>(out.data());
-        const auto mesh_size = out.size() * sizeof(PackedTransform);
-        static_cast<void>(WriteBytes(context, extra.component_space_data,
-                                     mesh_bytes, mesh_size));
-        static_cast<void>(WriteBytes(context, extra.bone_space_data,
-                                     mesh_bytes, mesh_size));
+        static_cast<void>(WriteExtraArray(
+            context, extra.object, native_layout.kMeshComponentSpaceBuffer1Offset, mesh_bytes,
+            out.size()));
+        static_cast<void>(WriteExtraArray(
+            context, extra.object, native_layout.kMeshComponentSpaceBuffer0Offset, mesh_bytes,
+            out.size()));
         static_cast<void>(ForceMeshObjectUpdate(context, extra.object));
         continue;
       }
@@ -13966,9 +13988,12 @@ void WriteExtraMeshes(Context &context,
       extra.lag_ready = true;
       extra.buffers_modified = true;
       const auto *mesh_bytes = reinterpret_cast<const std::uint8_t *>(out.data());
-      const auto mesh_size = out.size() * sizeof(PackedTransform);
-      static_cast<void>(WriteBytes(context, extra.component_space_data, mesh_bytes, mesh_size));
-      static_cast<void>(WriteBytes(context, extra.bone_space_data, mesh_bytes, mesh_size));
+      static_cast<void>(WriteExtraArray(
+          context, extra.object, native_layout.kMeshComponentSpaceBuffer1Offset, mesh_bytes,
+          out.size()));
+      static_cast<void>(WriteExtraArray(
+          context, extra.object, native_layout.kMeshComponentSpaceBuffer0Offset, mesh_bytes,
+          out.size()));
       static_cast<void>(ForceMeshObjectUpdate(context, extra.object));
       continue;
     }
@@ -13990,12 +14015,11 @@ void WriteExtraMeshes(Context &context,
       }
     }
     const auto *bytes = reinterpret_cast<const std::uint8_t *>(out.data());
-    const auto byte_count = out.size() * sizeof(PackedTransform);
     extra.buffers_modified = true;
-    static_cast<void>(
-        WriteBytes(context, extra.component_space_data, bytes, byte_count));
-    static_cast<void>(
-        WriteBytes(context, extra.bone_space_data, bytes, byte_count));
+    static_cast<void>(WriteExtraArray(
+        context, extra.object, native_layout.kMeshComponentSpaceBuffer1Offset, bytes, out.size()));
+    static_cast<void>(WriteExtraArray(
+        context, extra.object, native_layout.kMeshComponentSpaceBuffer0Offset, bytes, out.size()));
     // Same as the hierarchy path: the renderer only picks the buffer up when the
     // component's update flag is set.
     static_cast<void>(ForceMeshObjectUpdate(context, extra.object));
@@ -14007,14 +14031,16 @@ bool RestoreExtraMeshes(Context &context) noexcept {
   DestroyPoseableAccessories(context);
   for (auto &extra : context.extra_meshes) {
     static_cast<void>(EnsureExtraPoseAnimationMode(context, extra, false));
-    if (extra.buffers_modified && extra.component_space_data != 0 && !extra.saved_component.empty())
-      static_cast<void>(WriteBytes(context, extra.component_space_data,
-                                   extra.saved_component.data(),
-                                   extra.saved_component.size()));
-    if (extra.buffers_modified && extra.bone_space_data != 0 && !extra.saved_bone.empty())
-      static_cast<void>(WriteBytes(context, extra.bone_space_data,
-                                   extra.saved_bone.data(),
-                                   extra.saved_bone.size()));
+    if (extra.buffers_modified && !extra.saved_component.empty())
+      static_cast<void>(WriteExtraArray(
+          context, extra.object, native_layout.kMeshComponentSpaceBuffer1Offset,
+          extra.saved_component.data(),
+          extra.saved_component.size() / sizeof(PackedTransform)));
+    if (extra.buffers_modified && !extra.saved_bone.empty())
+      static_cast<void>(WriteExtraArray(
+          context, extra.object, native_layout.kMeshComponentSpaceBuffer0Offset,
+          extra.saved_bone.data(),
+          extra.saved_bone.size() / sizeof(PackedTransform)));
     extra.buffers_modified = false;
   }
   ClearCollisionDebugStats(context);
