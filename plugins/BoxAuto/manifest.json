@@ -5,7 +5,7 @@
   "description": "Reads resource point tables and auto-picks them up: Hunter Box, Character Box, Chameleon Box, Furniture, Prop Box, Food Box, Single Food, Prison Resource, Wallet, Shop Items, and Oracle Stone auto-teleport collection.",
   "author": "CCYellowStar",
   "license": "AGPL-3.0-only",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "entry": "plugin.dll",
   "api": {
     "major": 1,
