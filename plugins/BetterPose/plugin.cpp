@@ -1695,6 +1695,11 @@ struct Context final {
   std::atomic_bool motion_seek_immediate{};
   std::string motion_file;
   std::array<char, 96> motion_status{};
+  // Mapping the file's bones onto this skeleton costs a string compare per bone per track, and a
+  // skin whose names do not match fails every time. Retry when the bone table changes (its
+  // sequence) or after a pause, not on every frame.
+  std::uint32_t motion_resolve_seq{};
+  std::uint64_t motion_resolve_ms{};
 
   // Read-only scan: how many skeletal mesh components share this skeleton?
   // Motivated by a character whose outer hair layer stays frozen while the body
@@ -9260,10 +9265,19 @@ bool ResolveMotionIndices(Context &context) noexcept {
     return true;
   if (motion.bone_names.empty())
     return false;
+  const std::uint32_t table_seq = context.bone_table_seq.load(std::memory_order_acquire);
+  const std::uint64_t now = GetTickCount64();
+  if (context.motion_resolve_seq == table_seq && now - context.motion_resolve_ms < 2000)
+    return false;
+  context.motion_resolve_seq = table_seq;
+  context.motion_resolve_ms = now;
   if (context.bone_names.empty())
     MaybeRefreshBoneNames(context);
-  if (context.bone_names.empty())
+  if (context.bone_names.empty()) {
+    std::snprintf(context.motion_status.data(), context.motion_status.size(),
+                  "unmapped: bone names unavailable");
     return false;
+  }
   std::vector<std::uint32_t> indices(motion.bone_names.size(),
                                      (std::numeric_limits<std::uint32_t>::max)());
   std::uint32_t resolved{};
@@ -9277,8 +9291,14 @@ bool ResolveMotionIndices(Context &context) noexcept {
       }
     }
   }
-  if (resolved == 0)
+  if (resolved == 0) {
+    // The skin's skeleton does not share a single name with the file, so nothing can follow it.
+    // Say so instead of silently freezing the playback.
+    std::snprintf(context.motion_status.data(), context.motion_status.size(),
+                  "unmapped: this skin shares none of the %u motion bones",
+                  static_cast<unsigned>(motion.bone_names.size()));
     return false;
+  }
   // How many of the file's tracks this skeleton actually has, and which names
   // found nothing. "Fingers do not move" is only worth investigating once the
   // finger tracks are known to be resolved at all.
