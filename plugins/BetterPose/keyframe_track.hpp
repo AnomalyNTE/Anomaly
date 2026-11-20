@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -13,9 +14,9 @@
 // interpolates between the keys. Pure data and math, no game access.
 //
 // A key holds whatever the user chose to record, each part optional:
-//   - the pose: every bone's slider offset (pitch/yaw/roll, degrees -- the same
-//     values the joint page edits, applied as offset * base by the plugin) and
-//     the body offset (cm);
+//   - the pose: final named local transforms for new keys, legacy slider
+//     offsets (pitch/yaw/roll, degrees, applied as offset * reference) for old
+//     keys, and the body offset (cm);
 //   - the expression: the driven morph weights, by morph name;
 //   - the pose camera: focus, yaw, pitch, distance and lens.
 // A part a key does not carry is not keyed there: interpolation for that part
@@ -58,6 +59,14 @@ struct BoneKey {
   double roll{};
 };
 
+// Named final local transform: quaternion xyzw, translation xyz + pad,
+// scale xyz + pad. New keys own these values, never a pose-library handle.
+struct LocalBone {
+  std::string name;
+  std::array<double, 12> transform{0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+                                   0.0, 0.0, 1.0, 1.0, 1.0, 0.0};
+};
+
 struct MorphKey {
   std::string name;
   float weight{};
@@ -81,6 +90,8 @@ struct Key {
   std::vector<MorphKey> morphs;  // the morphs the user drives at this key
   bool has_camera{};
   CameraKey camera;
+  bool has_local_pose{};
+  std::vector<LocalBone> local_pose;
 };
 
 // ---------------------------------------------------------------------------
@@ -172,10 +183,177 @@ inline double InterpolateAngle(const double a, const double b, const double t) n
   return a + WrapDegrees(b - a) * t;
 }
 
+inline Quat Multiply(const Quat &a, const Quat &b) noexcept {
+  return {a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+          a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+          a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+          a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z};
+}
+
+namespace detail {
+using LocalIndex = std::map<std::string, const LocalBone *>;
+
+inline Quat Rotation(const LocalBone &bone) noexcept {
+  const auto &v = bone.transform;
+  return {v[0], v[1], v[2], v[3]};
+}
+
+inline Quat Canonical(Quat q) noexcept {
+  const double length = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+  q = {q.x / length, q.y / length, q.z / length, q.w / length};
+  // q and -q are identical. Resolve the half-turn tie lexicographically too.
+  const double first = q.w != 0.0 ? q.w : q.z != 0.0 ? q.z : q.y != 0.0 ? q.y : q.x;
+  if (first < 0.0)
+    q = {-q.x, -q.y, -q.z, -q.w};
+  return q;
+}
+
+inline void SetRotation(LocalBone &bone, const Quat &q) noexcept {
+  bone.transform[0] = q.x;
+  bone.transform[1] = q.y;
+  bone.transform[2] = q.z;
+  bone.transform[3] = q.w;
+  bone.transform[7] = bone.transform[11] = 0.0;
+}
+
+inline bool Valid(const LocalBone &bone) noexcept {
+  if (bone.name.empty())
+    return false;
+  for (const double value : bone.transform)
+    if (!std::isfinite(value))
+      return false;
+  const auto q = Rotation(bone);
+  const double norm = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
+  return std::abs(norm - 1.0) <= 1e-4;
+}
+
+// When a rig is known, foreign names are ignored (including foreign payloads).
+// Duplicate known names, nonfinite transforms and nonunit quaternions fail.
+inline bool Index(const std::vector<LocalBone> &pose, LocalIndex &out,
+                  const LocalIndex *known = nullptr) {
+  for (const auto &bone : pose) {
+    if (known && known->find(bone.name) == known->end())
+      continue;
+    if (!Valid(bone) || !out.emplace(bone.name, &bone).second)
+      return false;
+  }
+  return true;
+}
+}  // namespace detail
+
+// Capture final locals in reference-rig order. Library omissions use unposed
+// reference locals; unknown library/offset names are ignored. Invalid known
+// names/transforms/offsets return an empty vector, not fabricated identities.
+// A nonempty, validated reference rig is required for capture.
+inline std::vector<LocalBone> ComposeLocalPose(const std::vector<LocalBone> &reference,
+                                              const std::vector<LocalBone> &libraryPose,
+                                              const std::vector<BoneKey> &offsets) {
+  detail::LocalIndex ref, library;
+  if (reference.empty() || !detail::Index(reference, ref) ||
+      !detail::Index(libraryPose, library, &ref))
+    return {};
+  std::map<std::string, const BoneKey *> offsetIndex;
+  for (const auto &offset : offsets) {
+    if (ref.find(offset.name) == ref.end())
+      continue;
+    if (!std::isfinite(offset.pitch) || !std::isfinite(offset.yaw) ||
+        !std::isfinite(offset.roll) || !offsetIndex.emplace(offset.name, &offset).second)
+      return {};
+  }
+  std::vector<LocalBone> out;
+  out.reserve(reference.size());
+  for (const auto &base : reference) {
+    const auto found = library.find(base.name);
+    LocalBone bone = found == library.end() ? base : *found->second;
+    auto q = detail::Rotation(bone);
+    const auto offset = offsetIndex.find(base.name);
+    if (offset != offsetIndex.end()) {
+      const auto &e = *offset->second;
+      q = Multiply(FromRotator(e.pitch, e.yaw, e.roll), q);
+    }
+    detail::SetRotation(bone, detail::Canonical(q));
+    out.push_back(std::move(bone));
+  }
+  return out;
+}
+
+// Rotation-only compatibility for old exporters: full = offset * reference.
+// Translation/scale cannot be represented by BoneKey. Empty means no offsets
+// or invalid known data; callers must retain full locals as the authoritative key.
+inline std::vector<BoneKey> GenerateOffsetFallback(const std::vector<LocalBone> &full,
+                                                  const std::vector<LocalBone> &reference) {
+  detail::LocalIndex ref, pose;
+  if (reference.empty() || !detail::Index(reference, ref) || !detail::Index(full, pose, &ref))
+    return {};
+  std::vector<BoneKey> out;
+  out.reserve(pose.size());
+  for (const auto &base : reference) {
+    const auto found = pose.find(base.name);
+    if (found == pose.end())
+      continue;
+    const auto r = detail::Canonical(detail::Rotation(base));
+    const auto q = detail::Canonical(Multiply(detail::Rotation(*found->second),
+                                             {-r.x, -r.y, -r.z, r.w}));
+    const auto e = ToRotator(q);
+    if (std::abs(e[0]) > 1e-9 || std::abs(e[1]) > 1e-9 || std::abs(e[2]) > 1e-9)
+      out.push_back({base.name, e[0], e[1], e[2]});
+  }
+  return out;
+}
+
+// Full/full interpolation needs no reference for shared names. Missing names
+// use reference locals when available; an unmatched foreign bone with no
+// reference is skipped, not promoted to an identity transform. Exact endpoints
+// are retained verbatim. Invalid known data marks the sample invalid.
+inline bool MixLocalPoses(const std::vector<LocalBone> &a, const std::vector<LocalBone> &b,
+                          const std::vector<LocalBone> &reference, const double t,
+                          std::vector<LocalBone> &out) {
+  detail::LocalIndex ref, from, to;
+  if (!detail::Index(reference, ref))
+    return false;
+  const auto *known = reference.empty() ? nullptr : &ref;
+  if (t <= 0.0 || t >= 1.0) {
+    const auto &endpoint = t <= 0.0 ? a : b;
+    detail::LocalIndex checked;
+    if (!detail::Index(endpoint, checked, known))
+      return false;
+    out = endpoint;
+    return true;
+  }
+  if (!detail::Index(a, from, known) || !detail::Index(b, to, known))
+    return false;
+  detail::LocalIndex names = ref;
+  names.insert(from.begin(), from.end());
+  names.insert(to.begin(), to.end());
+  out.clear();
+  out.reserve(names.size());
+  for (const auto &entry : names) {
+    const auto &name = entry.first;
+    const auto fa = from.find(name), fb = to.find(name), fallback = ref.find(name);
+    const LocalBone *aa = fa != from.end() ? fa->second
+                         : fallback != ref.end() ? fallback->second : nullptr;
+    const LocalBone *bb = fb != to.end() ? fb->second
+                         : fallback != ref.end() ? fallback->second : nullptr;
+    if (!aa || !bb)
+      continue;
+    LocalBone bone = *aa;
+    detail::SetRotation(bone, detail::Canonical(Slerp(
+        detail::Canonical(detail::Rotation(*aa)), detail::Canonical(detail::Rotation(*bb)), t)));
+    for (const std::size_t start : {std::size_t{4}, std::size_t{8}})
+      for (std::size_t axis{}; axis != 3; ++axis) {
+        const auto i = start + axis;
+        bone.transform[i] = aa->transform[i] + (bb->transform[i] - aa->transform[i]) * t;
+      }
+    out.push_back(std::move(bone));
+  }
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // The track.
 
 struct Sampled {
+  bool pose_valid{true};
   bool has_pose{};
   std::vector<BoneKey> bones;  // the union of both keys' bones, by name
   std::array<double, 3> root_offset{};
@@ -183,6 +361,8 @@ struct Sampled {
   std::vector<MorphKey> morphs;
   bool has_camera{};
   CameraKey camera;
+  bool has_local_pose{};
+  std::vector<LocalBone> local_pose;
 };
 
 class Track {
@@ -247,13 +427,37 @@ public:
   // The pose at a (fractional) frame. Each part interpolates between the
   // nearest keys on either side that carry it, eased by the earlier key's
   // ease; before the first or after the last such key it holds that key.
-  Sampled Sample(const double frame) const {
+  Sampled Sample(const double frame, const std::vector<LocalBone> &reference = {}) const {
     Sampled out;
     SamplePart(
         frame, [](const Key &k) { return k.has_pose; },
         [&](const Key &a, const Key &b, const double t) {
           out.has_pose = true;
-          MixBones(a.bones, b.bones, t, out.bones);
+          if (!a.has_local_pose && !b.has_local_pose) {
+            // Preserve the old offset-only path exactly, including its union.
+            MixBones(a.bones, b.bones, t, out.bones);
+          } else {
+            out.has_local_pose = true;
+            // Do not require a reference for an exact full endpoint even if
+            // the next key is legacy; no interpolation is needed there.
+            if ((t <= 0.0 && a.has_local_pose) || (t >= 1.0 && b.has_local_pose)) {
+              const auto &pose = t <= 0.0 ? a.local_pose : b.local_pose;
+              out.pose_valid = MixLocalPoses(pose, pose, reference, 0.0, out.local_pose);
+            } else if ((!a.has_local_pose || !b.has_local_pose) && reference.empty()) {
+              out.pose_valid = false;
+            } else {
+              const auto legacyA = a.has_local_pose ? std::vector<LocalBone>{}
+                                                    : ComposeLocalPose(reference, {}, a.bones);
+              const auto legacyB = b.has_local_pose ? std::vector<LocalBone>{}
+                                                    : ComposeLocalPose(reference, {}, b.bones);
+              if ((!a.has_local_pose && legacyA.empty()) || (!b.has_local_pose && legacyB.empty()))
+                out.pose_valid = false;
+              else
+                out.pose_valid = MixLocalPoses(a.has_local_pose ? a.local_pose : legacyA,
+                                              b.has_local_pose ? b.local_pose : legacyB,
+                                              reference, t, out.local_pose);
+            }
+          }
           for (std::size_t axis{}; axis != 3; ++axis)
             out.root_offset[axis] =
                 a.root_offset[axis] + (b.root_offset[axis] - a.root_offset[axis]) * t;
@@ -390,11 +594,16 @@ struct TrackState {
       if (a.frame != b.frame || a.ease != b.ease || a.has_pose != b.has_pose ||
           a.has_expression != b.has_expression || a.has_camera != b.has_camera ||
           a.bones.size() != b.bones.size() || a.morphs.size() != b.morphs.size() ||
-          a.root_offset != b.root_offset)
+          a.root_offset != b.root_offset || a.has_local_pose != b.has_local_pose ||
+          a.local_pose.size() != b.local_pose.size())
         return false;
       for (std::size_t j{}; j != a.bones.size(); ++j)
         if (a.bones[j].name != b.bones[j].name || a.bones[j].pitch != b.bones[j].pitch ||
             a.bones[j].yaw != b.bones[j].yaw || a.bones[j].roll != b.bones[j].roll)
+          return false;
+      for (std::size_t j{}; j != a.local_pose.size(); ++j)
+        if (a.local_pose[j].name != b.local_pose[j].name ||
+            a.local_pose[j].transform != b.local_pose[j].transform)
           return false;
       for (std::size_t j{}; j != a.morphs.size(); ++j)
         if (a.morphs[j].name != b.morphs[j].name || a.morphs[j].weight != b.morphs[j].weight)
