@@ -74,16 +74,22 @@ Crosshair teleport advances a preset distance along the current camera direction
 | --- | --- |
 | **ID** | `wawmew.night999` |
 | **Purpose** | Fully automated monster farming loop for the 999 Nights instance. |
-| **Required services** | `anomaly.ui`; `anomaly.core`, `anomaly.nte.session/player/player-teleport/navigation/combat/skills/skill-invocation/actors/entities/pickup`, `anomaly.ue5.names/objects/world/framework`, `anomaly.interop.signature` (all V1, optional) |
+| **Required services** | `anomaly.ui`; `anomaly.core`, `anomaly.nte.session/player/player-teleport/navigation/combat/skills/skill-invocation/actors/entities/pickup/ui-buttons`, `anomaly.ue5.names/objects/world/framework`, `anomaly.interop.signature` (all V1, optional) |
 | **Requires Profile** | Yes (session and player snapshots, the teleport bridge, reflection lookup and auto combat all depend on validated symbols) |
 
 **This script is for the Red Dragon Castle map in 999 Nights**. The window has two tabs, **Start** and **Settings**.
 
 **Start** page: the **Loop count** input box (**0 = infinite loop**), the **Start script / Stop script** buttons, and the live status line below them (`Round N/M · current step`).
 
-**Settings** page: three teleport points (camp, combat point 1, combat point 2), each with three coordinate rows (X / Y / Z) that you can edit directly, or you can click **Read current position as camp** / **Read current position as combat point 1** / **Read current position as combat point 2** to fill in the player's current coordinates (visible in the same frame); below that come the preload delay, and the auto combat switches and parameters.
+**Settings** page: at the top, the **Refresh method** choice between **Memory refresh** and **Button refresh**; below that, three teleport points (camp, combat point 1, combat point 2), each with three coordinate rows (X / Y / Z) that you can edit directly, or you can click **Read current position as camp** / **Read current position as combat point 1** / **Read current position as combat point 2** to fill in the player's current coordinates (visible in the same frame); below that come the preload delay, and the auto combat switches and parameters.
 
 A loop always runs six steps: teleport to camp → refresh monsters → teleport to combat point 1 → auto combat → teleport to combat point 2 → auto combat, then back to camp for the next round (repeats the configured number of times, **0 = unlimited**; every teleport waits 2 seconds to settle after landing).
+
+**Memory refresh** calls the game's own refresh function `FinalTowerCampResetMonsterSpawners` and needs no UI open. It checks the cooldown first: at 0 seconds it sends the request right away; between 1 and 10 seconds it waits "cooldown + 1 second" and then sends; above 10 seconds it assumes the spawn was just refreshed (usually a manual click) and **skips the refresh**, going straight to combat point 1. After sending it also confirms the cooldown was actually written: if the cooldown is still 0 within 4 seconds it sends again, up to 3 rounds. When the cooldown reading is unavailable in a given environment the refresh is not blocked; the attempt is treated as sent.
+
+**Button refresh** does not touch memory: it presses the game's own buttons — `InteractButton` (every one that exists, which opens the campfire panel), then `BtnResetMonsterSpawners`, then `BtnSure` when that step opens a confirmation dialog (skipped when the dialog never shows), then `BtnReset`. Scans and clicks are at least 200 milliseconds apart; a click counts as successful once the button disappears, hides or becomes unclickable, otherwise it retries up to 2 more times. Scanning stops as soon as `BtnReset` was pressed. When the panel opens with a disabled (unclickable) `BtnResetMonsterSpawners`, or the button has not shown up after 5 scans, the plugin presses `BtnClose`, waits 10 seconds and presses `InteractButton` again, up to 6 retries; after 6 failed retries it reports the error and stops the script. Button refresh requires the player to stand next to a campfire.
+
+When a refresh failure is not a cooldown matter (the `FinalTowerCampResetMonsterSpawners` function cannot be found, the local player state is missing, `ProcessEvent` rejects the call, no campfire id is readable, the cooldown is still 0 after 3 rounds, or — for button refresh — no clickable `InteractButton` / `BtnResetMonsterSpawners` / `BtnReset` shows up or the button stays clickable after the retries), the **Start** page shows a `Refresh error: <reason>` line and the script stops instead of heading to the combat points with an empty camp.
 
 The auto combat end conditions (hitting any one of them ends it and moves on to the next round):
 

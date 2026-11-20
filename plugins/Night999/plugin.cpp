@@ -39,9 +39,9 @@ using anomaly::sdk::UiWindow;
 // 三个传送点与传送调参（全部只存在内存里，重载即恢复默认）
 // ---------------------------------------------------------------------------
 // 营地（刷新怪物处）。
-constexpr double kDefaultCampX = -145902.874;
-constexpr double kDefaultCampY = -144517.527;
-constexpr double kDefaultCampZ = 10144.029;
+constexpr double kDefaultCampX = -145990.330;
+constexpr double kDefaultCampY = -144613.473;
+constexpr double kDefaultCampZ = 10159.107;
 // 1 号战斗点。
 constexpr double kDefaultFightX = -145438.826;
 constexpr double kDefaultFightY = -140743.761;
@@ -173,6 +173,8 @@ struct Context {
     const AnomalyNteActorsServiceV1* actors{};
     const AnomalyNteEntitiesServiceV1* entities{};
     const AnomalyNtePickupServiceV1* pickup{};
+    // 按钮刷新用：驱动游戏的界面按钮（anomaly.nte.ui-buttons）。
+    const AnomalyNteUiButtonsServiceV1* ui_buttons{};
     const AnomalySignatureServiceV1* signature{};
     std::mutex mutex;
     Settings settings{};
@@ -522,10 +524,11 @@ void LabeledField(
 }
 
 // ---------------------------------------------------------------------------
-// 子模块：UE 反射直调（刷新怪物）→ 自动战斗 → 脚本循环
+// 子模块：UE 反射直调（内存刷新）→ 按钮刷新 → 自动战斗 → 脚本循环
 // ---------------------------------------------------------------------------
 #include "ue_access.hpp"
 #include "ue_direct.hpp"
+#include "button_refresh.hpp"
 #include "combat.hpp"
 #include "script.hpp"
 
@@ -639,6 +642,21 @@ bool TabsAvailable(const AnomalyUiServiceV1* ui) {
         ui->end_tab_item != nullptr && ui->end_tab_bar != nullptr;
 }
 
+// 刷新失败（找不到函数、调用被拒、刷新不生效）时，把原因留在「开始」页。
+void ScriptErrorLine(const AnomalyUiServiceV1* ui) {
+    const std::string reason = ScriptErrorText();
+    if (reason.empty()) return;
+    if (ui->separator != nullptr) ui->separator(ui->user);
+    const std::array<std::string_view, 1> arguments{std::string_view(reason)};
+    const std::string line =
+        g_context.localizer.Format("script.error.line", "Refresh error: {0}", arguments);
+    if (ui->text_wrapped != nullptr) {
+        ui->text_wrapped(ui->user, StringView(line));
+    } else {
+        DrawText(ui, line);
+    }
+}
+
 // 「开始」页：地图提示、循环次数、开始/停止按钮与实时状态行。
 void ContentStart(const AnomalyUiServiceV1* ui) {
     DrawText(ui, g_context.localizer.Text(
@@ -674,10 +692,39 @@ void ContentStart(const AnomalyUiServiceV1* ui) {
         if (stop != 0) g_script_stop_requested.store(true);
     }
     DrawText(ui, ScriptStatusText());
+    ScriptErrorLine(ui);
 }
 
-// 「设置」页：三个传送点、预载参数与自动战斗参数。
+// 刷新方式二选一。宿主 UI 没有单选项，所以用两个互斥复选框表达同一份状态。
+void RefreshModeFields(const AnomalyUiServiceV1* ui) {
+    DrawText(ui, g_context.localizer.Text("refresh.title", "Refresh method"));
+    const int mode = g_refresh_mode.load();
+    if (ui->checkbox != nullptr) {
+        int memory = mode == 0 ? 1 : 0;
+        const std::string memory_label =
+            g_context.localizer.Text("refresh.memory", "Memory refresh");
+        if (ui->checkbox(ui->user, StringView(memory_label), &memory) != 0 && memory != 0) {
+            g_refresh_mode.store(0);
+        }
+        if (ui->same_line != nullptr) ui->same_line(ui->user, 0.0F, 12.0F);
+        int buttons = mode != 0 ? 1 : 0;
+        const std::string button_label =
+            g_context.localizer.Text("refresh.button", "Button refresh");
+        if (ui->checkbox(ui->user, StringView(button_label), &buttons) != 0 && buttons != 0) {
+            g_refresh_mode.store(1);
+        }
+    }
+    DrawText(ui, g_refresh_mode.load() == 0
+            ? g_context.localizer.Text("refresh.memory.hint",
+                                       "Call the game refresh function directly")
+            : g_context.localizer.Text("refresh.button.hint",
+                                       "Click InteractButton, BtnResetMonsterSpawners and BtnReset"));
+    if (ui->separator != nullptr) ui->separator(ui->user);
+}
+
+// 「设置」页：刷新方式、三个传送点、预载参数与自动战斗参数。
 void ContentSettings(const AnomalyHostApiV1* host, const AnomalyUiServiceV1* ui) {
+    RefreshModeFields(ui);
     DrawText(ui, g_context.localizer.Text("points.title", "Teleport points"));
     for (int slot = 0; slot != kPointCount; ++slot) {
         PointFields(ui, slot);
@@ -770,6 +817,9 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
         host, ANOMALY_NTE_ENTITIES_SERVICE_V1_ID, ANOMALY_NTE_ENTITIES_SERVICE_V1_VERSION).service;
     g_context.pickup = QueryService<AnomalyNtePickupServiceV1>(
         host, ANOMALY_NTE_PICKUP_SERVICE_V1_ID, ANOMALY_NTE_PICKUP_SERVICE_V1_VERSION).service;
+    g_context.ui_buttons = QueryService<AnomalyNteUiButtonsServiceV1>(
+        host, ANOMALY_NTE_UI_BUTTONS_SERVICE_V1_ID,
+        ANOMALY_NTE_UI_BUTTONS_SERVICE_V1_VERSION).service;
     g_context.signature = QueryService<AnomalySignatureServiceV1>(
         host, ANOMALY_SIGNATURE_SERVICE_V1_ID, ANOMALY_SIGNATURE_SERVICE_V1_VERSION).service;
     {
@@ -788,6 +838,7 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* context) {
     g_landing = {};
     g_text_stale.store(true);
     UeStop();
+    ButtonRefreshStop();
     CombatShutdown();
     ScriptShutdown();
     CombatPublish(g_context.localizer.Text("combat.status.idle", "Combat: not started"));
@@ -812,6 +863,7 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void*, std::uint32_t) {
     }
     ScriptShutdown();
     UeStop();
+    ButtonRefreshStop();
     CombatShutdown();
     g_landing = {};
     return Ok();
@@ -839,6 +891,12 @@ void ANOMALY_CALL Update(void*, double) {
             }
         } catch (...) {
             Log(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "night999 ue aborted");
+        }
+        try {
+            // 按钮刷新自己带 200ms 节流，每 tick 推进一次即可。
+            ButtonRefreshAdvance(g_context.ui_buttons);
+        } catch (...) {
+            Log(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "night999 buttons aborted");
         }
         try {
             AdvanceCombat();
@@ -882,7 +940,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     *descriptor = {
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         StringView("wawmew.night999"),
-        StringView("Night 999"), StringView("WawMew"), StringView("0.21.0"),
+        StringView("Night 999"), StringView("WawMew"), StringView("0.23.7"),
         Load, Start, Stop, Unload, Update, Draw};
     return Ok();
 }

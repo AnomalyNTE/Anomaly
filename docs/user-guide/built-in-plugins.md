@@ -179,7 +179,7 @@
 | --- | --- |
 | **ID** | `wawmew.night999` |
 | **作用** | 999夜副本全自动刷怪循环。 |
-| **依赖服务** | `anomaly.ui`；`anomaly.core`、`anomaly.nte.session/player/player-teleport/navigation/combat/skills/skill-invocation/actors/entities/pickup`、`anomaly.ue5.names/objects/world/framework`、`anomaly.interop.signature`（均为 V1，可选） |
+| **依赖服务** | `anomaly.ui`；`anomaly.core`、`anomaly.nte.session/player/player-teleport/navigation/combat/skills/skill-invocation/actors/entities/pickup/ui-buttons`、`anomaly.ue5.names/objects/world/framework`、`anomaly.interop.signature`（均为 V1，可选） |
 | **需要 Profile** | 是（会话与玩家快照、传送桥接、反射定位与自动战斗都依赖已验证符号） |
 
 **此脚本适用于999夜赤龙古堡地图**。窗口分 **开始** / **设置** 两个标签页。
@@ -187,12 +187,30 @@
 **开始**页：**循环次数** 输入框（**0 = 无限循环**）、**开始脚本 / 停止脚本** 两个按钮，以及下面的
 实时状态行（`第 N/M 轮 · 当前步骤`）。
 
-**设置**页：三个传送点（营地、1 号战斗点、2 号战斗点）各占三行坐标（X / Y / Z），可以直接改，
-也可以点 **读取当前坐标为营地** / **读取当前坐标为1号战斗点** / **读取当前坐标为2号战斗点** 把
-玩家当前坐标填进去（当帧即可看到）；再往下是预载延迟，以及自动战斗的开关与参数。
+**设置**页：最上方是 **刷新方式** 二选一——**内存刷新** 与 **按钮刷新**；往下是三个传送点（营地、
+1 号战斗点、2 号战斗点）各占三行坐标（X / Y / Z），可以直接改，也可以点 **读取当前坐标为营地** /
+**读取当前坐标为1号战斗点** / **读取当前坐标为2号战斗点** 把玩家当前坐标填进去（当帧即可看到）；
+再往下是预载延迟，以及自动战斗的开关与参数。
 
 一轮循环固定六步：传送至营地 → 刷新怪物 → 传送至 1 号战斗点 → 自动战斗 → 传送至 2 号战斗点 →
 自动战斗，然后回到营地开始下一轮（按设定次数循环，**0 = 无限**；每次传送落地后先稳定 2 秒）。
+
+**内存刷新**直接调用游戏自己的刷新函数
+`FinalTowerCampResetMonsterSpawners`，不需要打开任何界面。这一步先看冷却：冷却为 0 秒时直接发送；
+1–10 秒时先等「冷却 + 1 秒」再发送；超过 10 秒时视为刚被刷新过（多半是玩家手动点过），**跳过刷新**
+直接前往 1 号战斗点。请求发出后还会确认冷却确实被写上来：4 秒内冷却仍是 0 就重发，最多 3 轮。
+冷却读数在个别环境下取不到时不拦截刷新，只把这次当作已发出。
+
+**按钮刷新**不碰内存，改为按界面按钮走游戏自己的流程：先点 `InteractButton`（有几个点几个，用来
+打开营火面板），再点 `BtnResetMonsterSpawners`，如果这一步弹出确认框就点 `BtnSure`（确认框不出现则
+跳过），最后点 `BtnReset`。每两次扫描或点击之间至少隔
+200 毫秒；点完之后按钮消失、隐藏或变成不可点击就算这次点击成功，否则重试，最多重试 2 次。
+`BtnReset` 点成功后立即停止扫描。如果打开面板后 `BtnResetMonsterSpawners` 处于不可点击（置灰）状态，或者 5 轮扫描内一直没出现，插件会点 `BtnClose` 退出面板、等待 10 秒后重新点 `InteractButton`，最多重试 6 次；6 次都拿不到可点的刷新按钮就报错并停止脚本。按钮刷新需要玩家先站在营火旁。
+
+刷新失败若不属于冷却问题（找不到 `FinalTowerCampResetMonsterSpawners`、找不到本地玩家状态、
+`ProcessEvent` 拒绝调用、读不到营火 ID、重试 3 轮后冷却仍为 0；按钮刷新则是没有出现可点的
+`InteractButton` / `BtnResetMonsterSpawners` / `BtnReset`，或按钮点完仍然可点），**开始**页会多出
+一行 `刷新失败：<原因>`，同时脚本停止，不会在营地没刷出怪的情况下继续跑去战斗点。
 
 自动战斗的结束判据（命中任意一条即结束，然后进入下一轮）：
 

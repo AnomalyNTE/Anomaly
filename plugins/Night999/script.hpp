@@ -11,7 +11,10 @@ constexpr double kScriptArriveRadiusMeters = 40.0;
 constexpr std::chrono::seconds kScriptTeleportTimeout{14};
 // 每次落地后的稳定等待：流送与区域状态需要一点时间才就绪，紧接着刷新会打空。
 constexpr std::chrono::seconds kScriptSettleDuration{2};
-constexpr std::chrono::seconds kScriptRefreshTimeout{30};
+// 刷新要覆盖「等冷却 + 重发校验」的完整流程，比插件内部的 40 秒上限再宽一点。
+constexpr std::chrono::seconds kScriptRefreshTimeout{45};
+// 按钮刷新要覆盖「关面板 → 等 10 秒 → 重开」的六次重试，比插件内部的 150 秒上限再宽一点。
+constexpr std::chrono::seconds kScriptButtonRefreshTimeout{160};
 // 单个战斗点的兜底上限：正常由战斗模块的收尾判据结束，这里只防卡死。
 constexpr std::chrono::minutes kScriptCombatTimeout{5};
 
@@ -41,6 +44,8 @@ std::atomic<std::uint32_t> g_script_loop_count{0};
 std::mutex g_script_mutex;
 // 静态初始化阶段不能访问本地化服务，所以初始为空，由 ScriptStatusText 兜底。
 std::string g_script_status;
+// 上一次失败的原因，显示在「开始」页；开始新脚本或卸载时清空。
+std::string g_script_error;
 
 // Game 线程独占。
 ScriptStep g_script_phase{ScriptStep::idle};
@@ -63,6 +68,22 @@ std::string ScriptStatusText() {
         return g_context.localizer.Text("script.status.idle", "Script: not started");
     }
     return g_script_status;
+}
+
+void ScriptSetError(std::string text) {
+    std::scoped_lock lock(g_script_mutex);
+    g_script_error = std::move(text);
+}
+
+void ScriptClearError() {
+    std::scoped_lock lock(g_script_mutex);
+    g_script_error.clear();
+}
+
+// 失败原因（空表示上次没有出错），由「开始」页显示。
+std::string ScriptErrorText() {
+    std::scoped_lock lock(g_script_mutex);
+    return g_script_error;
 }
 
 std::string ScriptStepName(const ScriptStep step) {
@@ -128,6 +149,7 @@ void ScriptShutdown() {
     g_script_round.store(0);
     g_script_phase = ScriptStep::idle;
     g_script_step_started = false;
+    ScriptClearError();
     ScriptPublish(g_context.localizer.Text("script.status.idle", "Script: not started"));
 }
 
@@ -141,6 +163,12 @@ void ScriptStop(const std::string& reason) {
     if (g_combat_active.load()) g_combat_stop_requested.store(true);
     ScriptPublish(reason);
     Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO, "night999 script: " + reason);
+}
+
+// 环境性失败（找不到函数、调用被拒、刷新不生效…）：记下原因并终止，不再往下走。
+void ScriptFail(const std::string& reason) {
+    ScriptSetError(reason);
+    ScriptStop(g_context.localizer.Text("script.status.failed", "Script: stopped on error"));
 }
 
 // 一轮结束：轮次够了就收工，否则回到第一步。
@@ -174,6 +202,7 @@ void AdvanceScript(const AnomalyHostApiV1* host) {
     if (g_script_start_requested.exchange(false) && !g_script_running.load()) {
         g_script_round.store(1);
         g_script_running.store(true);
+        ScriptClearError();
         ScriptEnterStep(ScriptStep::teleport_camp, now);
         ScriptPublish(ScriptRoundPrefix() + g_context.localizer.Text(
                                                  "script.status.to_camp",
@@ -254,17 +283,46 @@ void AdvanceScript(const AnomalyHostApiV1* host) {
         return;
     }
     case ScriptStep::refresh: {
+        // 两种刷新方式共用同一套 handoff：done / outcome / failure / cooldown_seconds。
+        const bool button_mode = g_refresh_mode.load() != 0;
         if (!g_script_step_started) {
             g_script_step_started = true;
-            g_script_deadline = now + kScriptRefreshTimeout;
+            g_script_deadline = now + (button_mode ? kScriptButtonRefreshTimeout
+                                                   : kScriptRefreshTimeout);
             g_ue_refresh_done.store(0);
-            g_ue_refresh_ok.store(0);
-            g_ue_refresh_requested.store(true);
+            g_ue_refresh_outcome.store(static_cast<int>(UeRefreshOutcome::pending));
+            g_ue_refresh_failure.store(static_cast<int>(UeRefreshFailure::none));
+            if (button_mode) {
+                ButtonRefreshBegin(g_context.ui_buttons, now);
+                ScriptPublish(ScriptRoundPrefix() + g_context.localizer.Text(
+                                                         "script.status.refresh_buttons",
+                                                         " · pressing the reset buttons"));
+            } else {
+                g_ue_refresh_requested.store(true);
+            }
             return;
         }
         if (g_ue_refresh_done.load() != 0) {
-            const bool ok = g_ue_refresh_ok.load() != 0;
-            if (!ok) Log(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "night999 script: refresh failed");
+            const auto outcome = static_cast<UeRefreshOutcome>(g_ue_refresh_outcome.load());
+            if (button_mode) ButtonRefreshStop();
+            if (outcome == UeRefreshOutcome::failed) {
+                // 非冷却类故障：报错并终止，避免在没有怪物的情况下去打战斗点。
+                Log(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "night999 script: refresh failed");
+                ScriptFail(UeRefreshFailureMessage());
+                return;
+            }
+            if (outcome == UeRefreshOutcome::skipped) {
+                const std::string seconds = UeSecondsText(g_ue_refresh_cooldown_seconds);
+                Log(ANOMALY_CORE_LOG_LEVEL_V1_INFO,
+                    "night999 script: refresh skipped, cooldown " + seconds + "s");
+                ScriptEnterStep(ScriptStep::teleport_fight, now);
+                const std::array<std::string_view, 1> arguments{std::string_view(seconds)};
+                ScriptPublish(ScriptRoundPrefix() + g_context.localizer.Format(
+                                                         "script.status.refresh_skipped",
+                                                         " · refresh skipped, cooldown {0}s",
+                                                         arguments));
+                return;
+            }
             ScriptEnterStep(ScriptStep::teleport_fight, now);
             ScriptPublish(ScriptRoundPrefix() + g_context.localizer.Text(
                                                      "script.status.to_fight1",
@@ -273,11 +331,10 @@ void AdvanceScript(const AnomalyHostApiV1* host) {
         }
         if (now >= g_script_deadline) {
             g_ue_refresh_stage.store(0);
+            if (button_mode) ButtonRefreshStop();
             Log(ANOMALY_CORE_LOG_LEVEL_V1_WARNING, "night999 script: refresh timeout");
-            ScriptEnterStep(ScriptStep::teleport_fight, now);
-            ScriptPublish(ScriptRoundPrefix() + g_context.localizer.Text(
-                                                     "script.status.refresh_timeout",
-                                                     " · refresh timed out, moving on"));
+            ScriptFail(g_context.localizer.Text("error.refresh.timeout",
+                                                "The refresh did not finish in time"));
         }
         return;
     }

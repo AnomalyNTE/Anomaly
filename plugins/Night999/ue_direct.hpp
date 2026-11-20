@@ -23,7 +23,46 @@ constexpr std::uint32_t kUeOwnerSlotBudget = 8192;
 constexpr std::uint32_t kUeResolveBudget = 1024;
 constexpr std::chrono::microseconds kUeScanSlice{4000};
 constexpr std::chrono::milliseconds kUeRefreshFireInterval{120};
-constexpr std::chrono::seconds kUeRefreshTimeout{20};
+constexpr std::chrono::seconds kUeRefreshTimeout{40};
+
+// 刷新冷却：FinalTowerCampResetMonsterSpawners 生效后服务器会写剩余秒数，这个 getter 直接读它。
+// 无参、返回 float；读不到就当作「冷却未知」，不因此拦刷新。
+constexpr std::string_view kUeCooldownFunction =
+    "GetFinalTowerMonsterSpawnerResetCooldownRemainingTime";
+constexpr std::string_view kUeCooldownFunctionPath =
+    "/Script/HTGame.HTPlayerState.GetFinalTowerMonsterSpawnerResetCooldownRemainingTime";
+// 冷却超过这个秒数说明不是自己刚刷的（多半是玩家手动刷过）：不等待，直接往下走。
+constexpr double kUeCooldownSkipSeconds = 10.0;
+// 等冷却时多留 1 秒，避免刚好卡在最后一帧。
+constexpr double kUeCooldownWaitBonusSeconds = 1.0;
+// 发送后等服务器把冷却回传的时间窗口。
+constexpr std::chrono::milliseconds kUeRefreshVerifyWindow{4000};
+// 一次刷新最多重发几轮：冷却一直不动说明请求没被接受。
+constexpr int kUeRefreshAttempts = 3;
+
+// 刷新流程的四个阶段。
+constexpr int kUeRefreshStageLocate = 1;
+constexpr int kUeRefreshStageCooldown = 2;
+constexpr int kUeRefreshStageFire = 3;
+constexpr int kUeRefreshStageVerify = 4;
+
+// 脚本循环据此决定继续还是必须停止。
+enum class UeRefreshOutcome : int { pending = 0, ok = 1, skipped = 2, failed = 3 };
+enum class UeRefreshFailure : int {
+    none = 0,
+    no_services = 1,
+    no_function = 2,
+    no_instance = 3,
+    invoke_failed = 4,
+    no_campfire = 5,
+    no_effect = 6,
+    timeout = 7,
+    // 按钮刷新（anomaly.nte.ui-buttons）专用。
+    button_service = 8,
+    no_reset_spawners = 9,
+    no_reset_button = 10,
+    button_refused = 11,
+};
 
 enum class UeProbePhase : std::uint8_t { idle, scanning, finding_owner, ready, failed };
 
@@ -36,15 +75,19 @@ struct UeMatch {
     char owner_name[kUeTextCapacity]{};
 };
 
-// --- 脚本循环的 handoff（界面与生命周期线程置位，Game 线程消费）---
-// 刷新怪物：定位 PlayerState + 刷新函数 → 逐座营火发送。
+// --- 脚本循环用的 handoff：界面线程置位，Game 线程消费 ---
+// 刷新怪物：定位 PlayerState + 刷新函数 → 等待旧冷却 → 逐营火发送 → 校验是否生效。
 std::atomic_bool g_ue_refresh_requested{};
-// 0=空闲 1=定位 2=发送。
+// 0=空闲 1=定位 2=等待冷却 3=发送 4=校验。
 std::atomic_int g_ue_refresh_stage{0};
-// 一次刷新流程结束（任何出口）时置 1，供脚本循环等待；发起前清零。
+// 一趟刷新流程结束（任何出口）时置 1，脚本循环等待它；每趟开始清零。
 std::atomic_int g_ue_refresh_done{0};
-// 上一次刷新是否确实把请求发出去了（诊断用）。
-std::atomic_int g_ue_refresh_ok{0};
+// 这一趟刷新的结局（UeRefreshOutcome）：ok=确实刷新并生效、skipped=冷却太长跳过、failed=失败。
+std::atomic_int g_ue_refresh_outcome{0};
+// 失败原因（UeRefreshFailure），outcome 为 failed 时有效。
+std::atomic_int g_ue_refresh_failure{0};
+// 最近一次读到的剩余冷却秒数（供界面用，Game 线程写）。
+double g_ue_refresh_cooldown_seconds{};
 
 // --- 扫描状态（Game 线程独占）---
 UeProbePhase g_ue_phase{UeProbePhase::idle};
@@ -65,17 +108,24 @@ std::string g_ue_target_name;
 std::uint64_t g_ue_campfire_ids[16]{};
 std::size_t g_ue_campfire_count{};
 std::size_t g_ue_campfire_index{};
+std::size_t g_ue_campfire_sent{};
 std::chrono::steady_clock::time_point g_ue_campfire_next{};
 
 // 刷新的流程状态。
 bool g_ue_refresh_selected{};
 bool g_ue_refresh_fire_started{};
+bool g_ue_refresh_waiting{};
+int g_ue_refresh_attempts{};
 std::chrono::steady_clock::time_point g_ue_refresh_deadline{};
 std::chrono::steady_clock::time_point g_ue_refresh_scan_start{};
+std::chrono::steady_clock::time_point g_ue_refresh_wait_until{};
+std::chrono::steady_clock::time_point g_ue_refresh_verify_at{};
 // 定位缓存：函数地址 / FName id / 参数大小。
 std::uintptr_t g_ue_refresh_fn_cache{};
 std::uint32_t g_ue_refresh_fn_name_id{};
 std::uint32_t g_ue_refresh_fn_parms_size{};
+// 冷却 getter 的地址缓存。
+std::uintptr_t g_ue_cooldown_fn{};
 
 std::string UeLower(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char character) {
@@ -504,18 +554,134 @@ bool UeTryReuseRefreshTarget(const UeReader& reader) {
     return true;
 }
 
-// 刷新怪物的流程：定位 → 逐座营火发送。全程只在 Game 回调域推进。
+// 函数身份校验：Class 是 Function 且名字对得上。
+bool UeFunctionLooksValid(const UeReader& reader, const std::uintptr_t function,
+                          const std::string_view name) {
+    if (function == 0) return false;
+    const std::uintptr_t cls = UeClassOf(reader, function);
+    if (cls == 0 ||
+        reader.NameAt(cls + night999_profile::native_layout.kUeObjectNameOffset) != "Function") {
+        return false;
+    }
+    return reader.NameAt(function + night999_profile::native_layout.kUeObjectNameOffset) ==
+        std::string(name);
+}
+
+// 冷却 getter：find_exact 完整对象路径，毫秒级；定位不到就不拦刷新。
+bool UeEnsureCooldownFunction(const UeReader& reader) {
+    if (UeFunctionLooksValid(reader, g_ue_cooldown_fn, kUeCooldownFunction)) return true;
+    g_ue_cooldown_fn = 0;
+    const auto* objects = g_context.objects;
+    if (objects == nullptr || objects->find_exact == nullptr || !UeEnsureRegistry()) return false;
+    AnomalyGenerationHandleV1 handle{};
+    if (objects->find_exact(objects->user, StringView(kUeCooldownFunctionPath), &handle).code !=
+            ANOMALY_STATUS_V1_OK ||
+        handle.id == 0) {
+        return false;
+    }
+    const std::uintptr_t function = UeResolve(reader, objects, handle);
+    if (!UeFunctionLooksValid(reader, function, kUeCooldownFunction)) return false;
+    std::uint16_t parms_size{};
+    if (!reader.Read(function + night999_profile::native_layout.kUeFunctionParmsSizeOffset,
+                     parms_size) ||
+        parms_size > sizeof(float)) {
+        return false;
+    }
+    g_ue_cooldown_fn = function;
+    UeLog("refresh: cooldown getter located");
+    return true;
+}
+
+// 读剩余冷却秒数。读不到返回 false：调用方按「冷却未知」处理，不因此拦刷新。
+bool UeReadCooldown(const UeReader& reader, double& seconds) {
+    if (g_ue_instance == 0 || !UeEnsureCooldownFunction(reader)) return false;
+    // 参数表只有一个 float ReturnValue，但缓冲按 8 字节开，避免目标写多时踩栈。
+    std::uint8_t buffer[8]{};
+    if (!UeInvoke(reader, g_ue_instance, g_ue_cooldown_fn, buffer)) return false;
+    float value{};
+    std::memcpy(&value, buffer, sizeof(value));
+    if (!std::isfinite(value)) return false;
+    seconds = value > 0.0F ? static_cast<double>(value) : 0.0;
+    return true;
+}
+
+void UeFinishRefresh(const UeRefreshOutcome outcome, const std::string& detail) {
+    g_ue_refresh_failure.store(static_cast<int>(UeRefreshFailure::none));
+    g_ue_refresh_outcome.store(static_cast<int>(outcome));
+    g_ue_refresh_stage.store(0);
+    UeLog("refresh: " + detail);
+}
+
+void UeFailRefresh(const UeRefreshFailure failure, const std::string& detail) {
+    g_ue_refresh_failure.store(static_cast<int>(failure));
+    g_ue_refresh_outcome.store(static_cast<int>(UeRefreshOutcome::failed));
+    g_ue_refresh_stage.store(0);
+    UeLog("refresh: failed, " + detail);
+}
+
+// 失败原因 → 用户可读文案（英文回退，中文在 locales/zh-CN.json）。
+std::string UeRefreshFailureMessage() {
+    switch (static_cast<UeRefreshFailure>(g_ue_refresh_failure.load())) {
+    case UeRefreshFailure::no_services:
+        return g_context.localizer.Text(
+            "error.refresh.services", "UE reflection services are unavailable");
+    case UeRefreshFailure::no_function:
+        return g_context.localizer.Text(
+            "error.refresh.function",
+            "Cannot find FinalTowerCampResetMonsterSpawners - open the camp panel once in "
+            "game, or the profile offsets do not match this game build");
+    case UeRefreshFailure::no_instance:
+        return g_context.localizer.Text(
+            "error.refresh.instance", "Cannot find the local player state - enter the world first");
+    case UeRefreshFailure::invoke_failed:
+        return g_context.localizer.Text(
+            "error.refresh.invoke",
+            "ProcessEvent rejected the refresh call - the profile ProcessEvent entry does not "
+            "match this game build");
+    case UeRefreshFailure::no_campfire:
+        return g_context.localizer.Text(
+            "error.refresh.campfire",
+            "No campfire id is available - the player state has no ActivatedCampfireIDs and the "
+            "default campfire name is not in the name pool");
+    case UeRefreshFailure::no_effect:
+        return g_context.localizer.Text(
+            "error.refresh.no_effect",
+            "The refresh had no effect - the monster cooldown stayed at 0, so the server did not "
+            "accept it");
+    case UeRefreshFailure::timeout:
+        return g_context.localizer.Text("error.refresh.timeout",
+                                        "The refresh did not finish in time");
+    case UeRefreshFailure::button_service:
+        return g_context.localizer.Text(
+            "error.refresh.button_service",
+            "The ui-buttons service is unavailable - the host build cannot drive game buttons");
+    case UeRefreshFailure::no_reset_spawners:
+        return g_context.localizer.Text(
+            "error.refresh.reset_spawners",
+            "No BtnResetMonsterSpawners appeared even after reopening the campfire 6 times");
+    case UeRefreshFailure::no_reset_button:
+        return g_context.localizer.Text("error.refresh.reset_button",
+                                        "No BtnReset appeared in the campfire panel");
+    case UeRefreshFailure::button_refused:
+        return g_context.localizer.Text(
+            "error.refresh.button_refused",
+            "The game kept refusing the button click - the panel may be blocked or in cooldown");
+    default:
+        return g_context.localizer.Text("error.refresh.unknown", "Unknown refresh failure");
+    }
+}
+
+// 刷新怪物的流程：定位 → 冷却门槛 → 逐座营火发送 → 校验是否生效。全程只在 Game 回调域推进。
 void UeAdvanceRefresh(const UeReader& reader) {
     const int stage = g_ue_refresh_stage.load();
     if (stage == 0) return;
     const auto now = std::chrono::steady_clock::now();
     if (now > g_ue_refresh_deadline) {
-        UeLog("refresh: timeout, refresh function or PlayerState instance not found");
-        g_ue_refresh_stage.store(0);
+        UeFailRefresh(UeRefreshFailure::timeout, "the flow exceeded its deadline");
         return;
     }
 
-    if (stage == 1) {  // 定位
+    if (stage == kUeRefreshStageLocate) {  // 定位
         const bool busy = g_ue_phase == UeProbePhase::scanning ||
             g_ue_phase == UeProbePhase::finding_owner;
         if (!g_ue_refresh_selected && !busy) {
@@ -535,8 +701,8 @@ void UeAdvanceRefresh(const UeReader& reader) {
             UeLog("refresh: cache and object path unavailable, falling back to a full scan");
             UeBeginScan();
             if (g_ue_phase != UeProbePhase::scanning) {
-                UeLog("refresh: scan could not start (missing ue5 services or name pool)");
-                g_ue_refresh_stage.store(0);
+                UeFailRefresh(UeRefreshFailure::no_services,
+                              "the fallback scan could not start (ue5 names/objects unavailable)");
             }
             return;
         }
@@ -551,9 +717,9 @@ void UeAdvanceRefresh(const UeReader& reader) {
                 }
             }
             if (reset_index < 0) {
-                UeLog("refresh: registry has no " + std::string(kUeRefreshFunction) +
-                      " — open a camp in game once so the blueprint loads");
-                g_ue_refresh_stage.store(0);
+                UeFailRefresh(UeRefreshFailure::no_function,
+                              "the registry has no " + std::string(kUeRefreshFunction) +
+                                  " - open a camp in game once so the blueprint loads");
                 return;
             }
             const UeMatch& match = g_ue_matches[static_cast<std::size_t>(reset_index)];
@@ -567,73 +733,156 @@ void UeAdvanceRefresh(const UeReader& reader) {
             return;
         }
         if (g_ue_instance == 0) {
-            UeLog("refresh: no live PlayerState instance, enter the world first");
-            g_ue_refresh_stage.store(0);
+            UeFailRefresh(UeRefreshFailure::no_instance,
+                          "no live PlayerState instance, enter the world first");
             return;
         }
-        g_ue_refresh_stage.store(2);
+        g_ue_refresh_stage.store(kUeRefreshStageCooldown);
         return;
     }
 
-    // stage == 2：逐座营火发送刷新请求（服务器会忽略不在身边的那几座）。
-    if (!g_ue_refresh_fire_started) {
-        std::uintptr_t address{};
-        std::uintptr_t data{};
-        std::uint32_t num{};
-        const bool have_list =
-            UeFindField(reader, g_ue_instance, "ActivatedCampfireIDs", address) &&
-            reader.Read(address, data) && reader.Read(address + 8, num) && data > 0x10000 &&
-            num > 0 && num <= 16;
-        if (!have_list) {
-            const bool ok = UeCallByName(reader, std::string(kUeCampfireDefault));
-            UeLog(ok ? "refresh: ActivatedCampfireIDs unreadable, sent by campfire name"
-                     : "refresh: no ActivatedCampfireIDs and the campfire name is not in the pool");
-            if (ok) g_ue_refresh_ok.store(1);
-            g_ue_refresh_stage.store(0);
+    if (stage == kUeRefreshStageCooldown) {  // 冷却门槛
+        double cooldown{};
+        if (!UeReadCooldown(reader, cooldown)) {
+            // 读不到冷却就不再拦：这个 getter 在有些环境里定位不到，拦下去等于整体不刷新。
+            UeLog("refresh: cooldown unavailable, firing without the cooldown gate");
+            g_ue_refresh_waiting = false;
+            g_ue_refresh_stage.store(kUeRefreshStageFire);
             return;
         }
-        g_ue_campfire_count = 0;
-        for (std::uint32_t index = 0; index < num; ++index) {
-            std::uint64_t id{};
-            if (!reader.Read(data + 8 * index, id)) break;
-            g_ue_campfire_ids[g_ue_campfire_count++] = id;
+        g_ue_refresh_cooldown_seconds = cooldown;
+        if (cooldown > kUeCooldownSkipSeconds) {
+            // 冷却很长说明不是自己刚刷的（多半是玩家手动刷过）：不等，直接往下走。
+            UeFinishRefresh(UeRefreshOutcome::skipped,
+                            "skipped, the cooldown is " + UeSecondsText(cooldown) + "s");
+            return;
         }
+        if (cooldown > 0.0) {
+            if (!g_ue_refresh_waiting) {
+                g_ue_refresh_waiting = true;
+                g_ue_refresh_wait_until = now + std::chrono::milliseconds(
+                    static_cast<std::int64_t>(
+                        (cooldown + kUeCooldownWaitBonusSeconds) * 1000.0));
+                UeLog("refresh: cooldown " + UeSecondsText(cooldown) + "s, waiting it out");
+                return;
+            }
+            if (now < g_ue_refresh_wait_until) return;
+        }
+        g_ue_refresh_waiting = false;
+        g_ue_refresh_fire_started = false;
+        g_ue_campfire_count = 0;
         g_ue_campfire_index = 0;
-        g_ue_campfire_next = now;
-        g_ue_refresh_fire_started = true;
-        UeLog("refresh: firing " + std::to_string(g_ue_campfire_count) + " campfire ids");
+        g_ue_campfire_sent = 0;
+        g_ue_refresh_stage.store(kUeRefreshStageFire);
         return;
     }
-    if (g_ue_campfire_index >= g_ue_campfire_count) {
-        UeLog("refresh: done, " + std::to_string(g_ue_campfire_count) + " campfire ids sent");
-        g_ue_refresh_ok.store(1);
-        g_ue_refresh_stage.store(0);
+
+    if (stage == kUeRefreshStageFire) {  // 逐座营火发送（服务器会忽略不在身边的那几座）
+        if (!g_ue_refresh_fire_started) {
+            std::uintptr_t address{};
+            std::uintptr_t data{};
+            std::uint32_t num{};
+            const bool field =
+                UeFindField(reader, g_ue_instance, "ActivatedCampfireIDs", address);
+            const bool have_list = field && reader.Read(address, data) &&
+                reader.Read(address + 8, num) && data > 0x10000 && num > 0 && num <= 16;
+            if (!have_list) {
+                UeLog(std::string("refresh: ActivatedCampfireIDs unusable, field=") +
+                      (field ? "yes" : "no") + " num=" + std::to_string(num));
+                if (UeCallByName(reader, std::string(kUeCampfireDefault))) {
+                    UeLog("refresh: sent by the default campfire name");
+                    g_ue_refresh_verify_at = now;
+                    g_ue_refresh_stage.store(kUeRefreshStageVerify);
+                    return;
+                }
+                UeFailRefresh(UeRefreshFailure::no_campfire,
+                              "no campfire id: field=" + std::string(field ? "yes" : "no") +
+                                  " num=" + std::to_string(num) +
+                                  ", and the default campfire name is not in the name pool");
+                return;
+            }
+            g_ue_campfire_count = 0;
+            for (std::uint32_t index = 0; index < num; ++index) {
+                std::uint64_t id{};
+                if (!reader.Read(data + 8 * index, id)) break;
+                g_ue_campfire_ids[g_ue_campfire_count++] = id;
+            }
+            g_ue_campfire_index = 0;
+            g_ue_campfire_next = now;
+            g_ue_refresh_fire_started = true;
+            UeLog("refresh: firing " + std::to_string(g_ue_campfire_count) + " campfire ids");
+            return;
+        }
+        if (g_ue_campfire_index >= g_ue_campfire_count) {
+            if (g_ue_campfire_sent == 0) {
+                UeFailRefresh(UeRefreshFailure::invoke_failed,
+                              "every campfire call was rejected by ProcessEvent");
+                return;
+            }
+            UeLog("refresh: " + std::to_string(g_ue_campfire_sent) + "/" +
+                  std::to_string(g_ue_campfire_count) + " campfire ids sent, verifying");
+            g_ue_refresh_verify_at = now;
+            g_ue_refresh_stage.store(kUeRefreshStageVerify);
+            return;
+        }
+        if (now >= g_ue_campfire_next) {
+            const std::uint64_t id = g_ue_campfire_ids[g_ue_campfire_index];
+            // 参数缓冲必须按目标的 ParmsSize 开足：只给 8 字节而目标写更多会踩栈。
+            std::uint8_t buffer[64]{};
+            std::memcpy(buffer, &id, sizeof(id));
+            const bool ok = g_ue_parms_size <= sizeof(buffer) &&
+                UeInvoke(reader, g_ue_instance, g_ue_function, buffer);
+            if (ok) ++g_ue_campfire_sent;
+            const std::string name =
+                reader.Name(UeFName{static_cast<std::uint32_t>(id & 0xFFFFFFFFull), 0});
+            UeLog("refresh: campfire [" + std::to_string(g_ue_campfire_index) + "] " +
+                  (name.empty() ? std::string("?") : name) + (ok ? " ok" : " fail"));
+            ++g_ue_campfire_index;
+            g_ue_campfire_next = now + kUeRefreshFireInterval;
+        }
         return;
     }
-    if (now >= g_ue_campfire_next) {
-        const std::uint64_t id = g_ue_campfire_ids[g_ue_campfire_index];
-        // 参数缓冲必须按目标的 ParmsSize 开足：只给 8 字节而目标写更多会踩栈。
-        std::uint8_t buffer[64]{};
-        std::memcpy(buffer, &id, sizeof(id));
-        const bool ok = g_ue_parms_size <= sizeof(buffer) &&
-            UeInvoke(reader, g_ue_instance, g_ue_function, buffer);
-        const std::string name =
-            reader.Name(UeFName{static_cast<std::uint32_t>(id & 0xFFFFFFFFull), 0});
-        UeLog("refresh: campfire [" + std::to_string(g_ue_campfire_index) + "] " +
-              (name.empty() ? std::string("?") : name) + (ok ? " ok" : " fail"));
-        ++g_ue_campfire_index;
-        g_ue_campfire_next = now + kUeRefreshFireInterval;
+
+    // stage == kUeRefreshStageVerify：刷新有没有真的生效，由冷却是否被写上来判断。
+    double cooldown{};
+    if (!UeReadCooldown(reader, cooldown)) {
+        // 发出去之后读不到冷却就无法判定；按已发出收尾，不把可用环境判成故障。
+        UeFinishRefresh(UeRefreshOutcome::ok,
+                        "sent, the cooldown is unreadable so the effect is unverified");
+        return;
     }
+    g_ue_refresh_cooldown_seconds = cooldown;
+    if (cooldown > 0.0) {
+        UeFinishRefresh(UeRefreshOutcome::ok,
+                        "sent, the cooldown is now " + UeSecondsText(cooldown) + "s");
+        return;
+    }
+    if (now < g_ue_refresh_verify_at + kUeRefreshVerifyWindow) return;
+    if (++g_ue_refresh_attempts >= kUeRefreshAttempts) {
+        UeFailRefresh(UeRefreshFailure::no_effect,
+                      "the cooldown stayed at 0 after " +
+                          std::to_string(g_ue_refresh_attempts) + " rounds");
+        return;
+    }
+    UeLog("refresh: no cooldown after round " + std::to_string(g_ue_refresh_attempts) +
+          ", retrying");
+    g_ue_refresh_stage.store(kUeRefreshStageCooldown);
 }
 
 void UeAdvance(const UeReader& reader) {
     // 脚本请求刷新时进入流程（阶段推进在 UeAdvanceRefresh 内，仍在 Game 线程）。
     if (g_ue_refresh_requested.exchange(false) && g_ue_refresh_stage.load() == 0) {
-        g_ue_refresh_stage.store(1);
+        g_ue_refresh_stage.store(kUeRefreshStageLocate);
         g_ue_refresh_done.store(0);
-        g_ue_refresh_ok.store(0);
+        g_ue_refresh_outcome.store(static_cast<int>(UeRefreshOutcome::pending));
+        g_ue_refresh_failure.store(static_cast<int>(UeRefreshFailure::none));
+        g_ue_refresh_cooldown_seconds = 0.0;
         g_ue_refresh_selected = false;
         g_ue_refresh_fire_started = false;
+        g_ue_refresh_waiting = false;
+        g_ue_refresh_attempts = 0;
+        g_ue_campfire_sent = 0;
+        g_ue_campfire_count = 0;
         g_ue_refresh_deadline = std::chrono::steady_clock::now() + kUeRefreshTimeout;
     }
     {
@@ -669,10 +918,16 @@ void UeAdvance(const UeReader& reader) {
 void UeStop() noexcept {
     g_ue_refresh_requested.store(false);
     g_ue_refresh_stage.store(0);
+    g_ue_refresh_outcome.store(static_cast<int>(UeRefreshOutcome::pending));
+    g_ue_refresh_failure.store(static_cast<int>(UeRefreshFailure::none));
+    g_ue_refresh_cooldown_seconds = 0.0;
     g_ue_refresh_selected = false;
     g_ue_refresh_fire_started = false;
+    g_ue_refresh_waiting = false;
+    g_ue_refresh_attempts = 0;
     g_ue_campfire_count = 0;
     g_ue_campfire_index = 0;
+    g_ue_campfire_sent = 0;
     g_ue_phase = UeProbePhase::idle;
     g_ue_cursor = 0;
     g_ue_total = 0;
@@ -680,6 +935,7 @@ void UeStop() noexcept {
     g_ue_owner_class = 0;
     g_ue_instance = 0;
     g_ue_cdo = 0;
+    g_ue_cooldown_fn = 0;
 }
 
 }  // namespace
