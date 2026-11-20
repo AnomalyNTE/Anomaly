@@ -23244,20 +23244,69 @@ void ANOMALY_CALL DrawSkeletonOverlay(void *user,
       return;
     }
     const std::uintptr_t mesh = context->runtime.mesh;
-    const std::uintptr_t pose = context->runtime.component_space_data;
-    const std::uint32_t count = context->runtime.component_space_count;
+    std::uintptr_t pose = context->runtime.component_space_data;
+    std::uint32_t count = context->runtime.component_space_count;
     Transformd component_world;
-    if (mesh == 0 || pose == 0 || count == 0 || count > kMaximumBoneIndex + 1U ||
-        !CoreReady(context->core) ||
-        !ReadMeshComponentToWorld(*context, mesh, component_world)) {
-      ClearOverlayScreen(*context);
-      return;
-    }
     auto &raw = context->overlay_raw_pose;
-    raw.resize(static_cast<std::size_t>(count) * native_layout.kTransformSize);
-    AnomalyMutableByteSpanV1 span{raw.data(), raw.size()};
-    if (context->core->read_memory(context->core->user, pose, span).code !=
-        ANOMALY_STATUS_V1_OK) {
+    const bool drawable = mesh != 0 && CoreReady(context->core) &&
+                          ReadMeshComponentToWorld(*context, mesh, component_world);
+    bool pose_read = false;
+    if (drawable) {
+      if (pose != 0 && count != 0 && count <= kMaximumBoneIndex + 1U) {
+        raw.resize(static_cast<std::size_t>(count) * native_layout.kTransformSize);
+        AnomalyMutableByteSpanV1 span{raw.data(), raw.size()};
+        pose_read = context->core->read_memory(context->core->user, pose, span).code ==
+                    ANOMALY_STATUS_V1_OK;
+      }
+      if (!pose_read) {
+        // The engine swaps these two component-space buffers, and the current read index is not
+        // part of the validated layout, so either one can be the live one.
+        std::uintptr_t buffer0{};
+        std::uintptr_t buffer1{};
+        std::uint32_t count0{};
+        std::uint32_t count1{};
+        const bool valid0 =
+            ReadArrayHeader(*context, mesh + native_layout.kMeshComponentSpaceBuffer0Offset,
+                            buffer0, count0) &&
+            buffer0 != 0 && count0 != 0 && count0 <= kMaximumBoneIndex + 1U;
+        const bool valid1 =
+            ReadArrayHeader(*context, mesh + native_layout.kMeshComponentSpaceBuffer1Offset,
+                            buffer1, count1) &&
+            buffer1 != 0 && count1 != 0 && count1 <= kMaximumBoneIndex + 1U;
+        if (valid0 != valid1) {
+          pose = valid0 ? buffer0 : buffer1;
+          count = valid0 ? count0 : count1;
+          raw.resize(static_cast<std::size_t>(count) * native_layout.kTransformSize);
+          AnomalyMutableByteSpanV1 span{raw.data(), raw.size()};
+          pose_read = context->core->read_memory(context->core->user, pose, span).code ==
+                      ANOMALY_STATUS_V1_OK;
+        }
+      }
+      if (!pose_read) {
+        // Both buffers looked valid (or both looked empty), so take the pose this plugin already
+        // published to the render bridge for the same component and asset: that is the pose the
+        // game is showing. Display only; the pose write path is untouched.
+        std::shared_ptr<const std::vector<Context::RenderBridgeState::Transform>> snapshot;
+        {
+          std::lock_guard<std::mutex> lock(context->render_bridge.mutex);
+          const auto found = context->render_bridge.samples.find(mesh);
+          if (found != context->render_bridge.samples.end() && found->second.asset != 0 &&
+              found->second.asset == context->runtime.mesh_asset &&
+              found->second.count != 0 && found->second.render_pose != nullptr &&
+              found->second.render_pose->size() == found->second.count)
+            snapshot = found->second.render_pose;
+        }
+        if (snapshot != nullptr) {
+          count = static_cast<std::uint32_t>(snapshot->size());
+          raw.resize(static_cast<std::size_t>(count) * native_layout.kTransformSize);
+          for (std::size_t index{}; index != snapshot->size(); ++index)
+            std::memcpy(raw.data() + index * native_layout.kTransformSize,
+                        (*snapshot)[index].raw.data(), sizeof(PackedTransform));
+          pose_read = true;
+        }
+      }
+    }
+    if (!pose_read) {
       ClearOverlayScreen(*context);
       return;
     }
