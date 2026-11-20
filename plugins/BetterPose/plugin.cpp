@@ -12920,6 +12920,30 @@ void ResyncExtraMeshes(Context &context) noexcept {
   }
 }
 
+// Keeps a released character released: the pause bit and Custom mode are this plugin's, so they must
+// not survive a hand-back while nothing is driving the pose.
+void EnsurePoseHoldReleased(Context &context) noexcept {
+  const auto mesh = context.runtime.mesh;
+  if (mesh == 0 || mesh != context.local_mesh)
+    return;
+  if (context.pose_override_enabled.load(std::memory_order_acquire) ||
+      !context.keyframe_driving_released.load(std::memory_order_acquire))
+    return;
+  std::uint8_t flags{};
+  if (Read(context, mesh + native_layout.kMeshAnimationFlagsOffset, flags)) {
+    const std::uint8_t pause_bit =
+        static_cast<std::uint8_t>(1U << native_layout.kAnimationFlagPauseAnimsBit);
+    if ((flags & pause_bit) != 0)
+      static_cast<void>(Write(context, mesh + native_layout.kMeshAnimationFlagsOffset,
+                              static_cast<std::uint8_t>(flags & ~pause_bit)));
+  }
+  std::uint8_t mode{};
+  if (Read(context, mesh + native_layout.kMeshAnimationModeOffset, mode) &&
+      mode == kAnimationModeCustom)
+    static_cast<void>(Write(context, mesh + native_layout.kMeshAnimationModeOffset,
+                            std::uint8_t{0}));
+}
+
 void BuildExtraMeshes(Context &context) noexcept {
   // Never latch the result onto an empty mesh: runtime.mesh is zeroed on frames
   // where the local character cannot be resolved, and a build that ran on such a
@@ -18468,6 +18492,28 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
     static_cast<void>(EnsurePoseForcedLod(context, false));
     context.pose_override_enabled.store(false, std::memory_order_release);
     context.keyframe_driving_released.store(true, std::memory_order_release);
+    // The record may already be gone (a target switch parks and drops it), so the generic restore has
+    // nothing to write back and the component stays paused in Custom mode: the character can turn but
+    // not walk. The user asked for the game's animation, so put these two fields back directly.
+    if (context.runtime.mesh != 0) {
+      const auto mesh = context.runtime.mesh;
+      std::uint8_t flags{};
+      if (Read(context, mesh + native_layout.kMeshAnimationFlagsOffset, flags)) {
+        const std::uint8_t pause_bit =
+            static_cast<std::uint8_t>(1U << native_layout.kAnimationFlagPauseAnimsBit);
+        if ((flags & pause_bit) != 0)
+          static_cast<void>(Write(context, mesh + native_layout.kMeshAnimationFlagsOffset,
+                                  static_cast<std::uint8_t>(flags & ~pause_bit)));
+      }
+      std::uint8_t mode{};
+      if (Read(context, mesh + native_layout.kMeshAnimationModeOffset, mode) &&
+          mode == kAnimationModeCustom)
+        static_cast<void>(Write(context, mesh + native_layout.kMeshAnimationModeOffset,
+                                std::uint8_t{0}));
+      context.runtime.saved_pause = false;
+      context.runtime.saved_animation_mode = false;
+      context.runtime.animation_mode_applied = false;
+    }
     context.pose_hold_base.store(false, std::memory_order_release);
     ResetPoseValues(context);
     {
@@ -18581,8 +18627,13 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
       }
     }
   }
+  EnsurePoseHoldReleased(context);
   const bool force_ok = ApplyMultiThreadedUpdate(context, pose_enabled);
-  const bool pose_requested = pose_enabled && pose_available;
+  // A released timeline must not hold the character; measured flags=53/mode=2 kept coming back with
+  // no saved record, so nothing could restore them later.
+  const bool pose_requested =
+      pose_enabled && pose_available &&
+      !context.keyframe_driving_released.load(std::memory_order_acquire);
   const bool inactive_motion_requested =
       !context.blender_active.load(std::memory_order_acquire) &&
       HasInactiveEntityMotion(context);
@@ -19132,15 +19183,23 @@ void BindRuntimeCharacter(Context &context, const std::uintptr_t character,
   const bool preserve_previous_pose =
       previous_pose != context.entity_pose_states.end() &&
       HasCachedPoseEffect(previous_pose->second);
-  if (preserve_previous_pose) {
-    state.saved_pause = false;
-    state.saved_animation_mode = false;
-    state.animation_mode_applied = false;
-  }
+
   const bool preserve_player_freeze =
       external_target && !state.external_target && context.player_freeze.active &&
       context.player_freeze.mesh == previous_mesh;
-  if (preserve_player_freeze) {
+  // Restore the fields before dropping the record: clearing only the bookkeeping left the component
+  // paused in Custom mode with nothing that remembered the originals (measured flags=53 mode=2 with
+  // saved_pause=0 saved_mode=0), so the character could turn but not walk.
+  if ((preserve_previous_pose || preserve_player_freeze) && previous_mesh != 0 &&
+      state.bound_mesh == previous_mesh) {
+    if (state.saved_pause)
+      static_cast<void>(Write(context,
+                              previous_mesh + native_layout.kMeshAnimationFlagsOffset,
+                              state.original_animation_flags));
+    if (state.saved_animation_mode && state.animation_mode_applied)
+      static_cast<void>(Write(context,
+                              previous_mesh + native_layout.kMeshAnimationModeOffset,
+                              state.original_animation_mode));
     state.saved_pause = false;
     state.saved_animation_mode = false;
     state.animation_mode_applied = false;
