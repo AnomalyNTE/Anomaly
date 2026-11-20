@@ -1468,6 +1468,8 @@ struct Context final {
   // Playhead in frames (30 per second). seek < 0 means none.
   std::atomic<double> keyframe_frame{};
   std::atomic<double> keyframe_seek{-1.0};
+  // Set when the user asks for the game's animation back, cleared by playback, scrubbing or an edit.
+  std::atomic_bool keyframe_driving_released{};
   std::atomic_bool keyframe_playing{};
   std::atomic_bool keyframe_loop{true};
   std::atomic<float> keyframe_speed{1.0F};
@@ -4979,7 +4981,13 @@ void ResetPoseValues(Context &context) noexcept {
     for (auto &angle : context.bone_angles)
       angle = {0.0, 0.0, 0.0};
     context.library_pose_locals.clear();
+    // The cached baseline describes a pose that no longer applies; keeping it makes the next write
+    // use the reference (A) pose with no angles.
+    context.pose_base_locals.clear();
   }
+  context.pose_base_ready = false;
+  context.pose_base_mesh = 0;
+  context.pose_base_asset = 0;
   context.requested_root_offset[0].store(0.0, std::memory_order_release);
   context.requested_root_offset[1].store(0.0, std::memory_order_release);
   context.requested_root_offset[2].store(0.0, std::memory_order_release);
@@ -17082,7 +17090,8 @@ void ApplySample(Context &context, const kf::Sampled &sample,
     for (std::size_t axis{}; axis != 3; ++axis)
       context.requested_root_offset[axis].store(sample.root_offset[axis],
                                                 std::memory_order_release);
-    context.pose_override_enabled.store(true, std::memory_order_release);
+    if (!context.keyframe_driving_released.load(std::memory_order_acquire))
+      context.pose_override_enabled.store(true, std::memory_order_release);
   }
   if (sample.has_pose && !sample.pose_valid) {
     context.pose_override_enabled.store(false, std::memory_order_release);
@@ -18106,6 +18115,8 @@ void StepKeyframes(Context &context, const double delta_seconds) noexcept {
     keyframe_impl::HandleRequest(context);
 
     const double seek = context.keyframe_seek.exchange(-1.0, std::memory_order_acq_rel);
+  if (seek >= 0.0)
+    context.keyframe_driving_released.store(false, std::memory_order_release);
     double frame = context.keyframe_frame.load(std::memory_order_acquire);
     if (seek >= 0.0)
       frame = seek;
@@ -18456,6 +18467,7 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
     static_cast<void>(EnsurePoseAnimationMode(context, false));
     static_cast<void>(EnsurePoseForcedLod(context, false));
     context.pose_override_enabled.store(false, std::memory_order_release);
+    context.keyframe_driving_released.store(true, std::memory_order_release);
     context.pose_hold_base.store(false, std::memory_order_release);
     ResetPoseValues(context);
     {
@@ -19140,6 +19152,8 @@ void BindRuntimeCharacter(Context &context, const std::uintptr_t character,
   if (preserve_previous_pose)
     ParkEntityPose(context, previous_mesh);
   static_cast<void>(DropExtraMeshes(context));
+  if (target_switch)
+    context.extra_build_pending = true;
   state = RuntimeState{};
   state.g_world_address = g_world_address;
   state.bound_character = character;
@@ -23857,6 +23871,20 @@ bool UpdateKeyframeOverlayPicking(Context &context, const AnomalyUiServiceV1 * /
       const bool playing =
           context.keyframe_playing.load(std::memory_order_acquire);
       context.keyframe_playing.store(!playing, std::memory_order_release);
+  if (!playing)
+    context.keyframe_driving_released.store(false, std::memory_order_release);
+  if (!playing)
+    context.keyframe_driving_released.store(false, std::memory_order_release);
+  if (!playing)
+    context.keyframe_driving_released.store(false, std::memory_order_release);
+  if (!playing)
+    context.keyframe_driving_released.store(false, std::memory_order_release);
+  if (!playing)
+    context.keyframe_driving_released.store(false, std::memory_order_release);
+  if (!playing)
+    context.keyframe_driving_released.store(false, std::memory_order_release);
+  if (!playing)
+    context.keyframe_driving_released.store(false, std::memory_order_release);
     } else if (hit == tl::Hit::Stop) {
       context.keyframe_playing.store(false, std::memory_order_release);
       context.keyframe_seek.store(0.0, std::memory_order_release);
@@ -24438,6 +24466,11 @@ void UpdatePoseHistoryInput(Context &context, const AnomalyUiServiceV1 *ui) noex
     case better_pose::timeline::SpaceAction::ToggleKeyframes: {
       const bool playing = context.keyframe_playing.load(std::memory_order_acquire);
       context.keyframe_playing.store(!playing, std::memory_order_release);
+      if (!playing) {
+        // Space is a deliberate drive of the timeline: take the pose back over.
+        context.keyframe_driving_released.store(false, std::memory_order_release);
+        context.pose_override_enabled.store(true, std::memory_order_release);
+      }
       break;
     }
     case better_pose::timeline::SpaceAction::None:
