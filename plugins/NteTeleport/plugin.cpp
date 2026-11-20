@@ -238,7 +238,6 @@ struct Context {
     const AnomalySchedulerServiceV1* scheduler{};
     const AnomalyCoreServiceV1* core{};
     const AnomalySignatureServiceV1* signature{};
-    const AnomalyNtePlayerTeleportServiceV1* teleport_service{};
     AnomalyGenerationHandleV1 settings_schema{};
     double target[3]{};
     std::uintptr_t g_world_address{};
@@ -280,10 +279,11 @@ struct Context {
     PendingTeleport pending{};
     bool has_result{};
     bool current_position_unavailable{};
-    // A settings write is pending. Draw (Render domain) only raises the flag; Update and
-    // on_stop do the write, because a Render callback must not touch the disk. The write
-    // itself belongs to the host's anomaly.config service.
+    // Draw (Render domain) only raises the dirty flag. Update schedules debounced
+    // persistence on the Worker domain; Stop flushes any final pending change.
     std::atomic_bool settings_dirty{};
+    std::atomic_bool settings_save_scheduled{};
+    std::mutex settings_save_mutex;
     std::uint32_t result_code{ANOMALY_STATUS_V1_UNAVAILABLE};
     char result_message[192]{};
     std::mutex mutex;
@@ -579,6 +579,7 @@ bool ResolveGWorld() noexcept {
 }
 
 bool ReadTrackedTarget(double position[3]) noexcept {
+    if (!native_layout.tracked_target_available) return false;
     if (!ResolveGWorld()) return false;
     std::uintptr_t world{};
     std::uintptr_t game_instance{};
@@ -629,12 +630,23 @@ void Log(const std::uint32_t level, const std::string& message) noexcept {
     }
 }
 
+void LogLoadFailure(const AnomalyCoreServiceV1* core, const std::string_view message) noexcept {
+    if (!CoreMethodsAvailable(core) || core->log == nullptr) return;
+    try {
+        core->log(core->user, ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
+                  anomaly::sdk::StringView(message));
+    } catch (...) {
+    }
+}
+
 // The framework owns the streaming-source hook and the preload window, so the plugin only
 // asks for a preload through the teleport service. A failure is not fatal: the host still
 // teleports, it just cannot stream the destination in first.
 void ArmTeleportPreload(const PendingTeleport& pending) noexcept {
-    if (g_context.teleport_service == nullptr ||
-        !TeleportServiceMethodsAvailable(g_context.teleport_service)) {
+    const auto teleport = QueryService<AnomalyNtePlayerTeleportServiceV1>(
+        g_context.host, ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_ID,
+        ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_VERSION);
+    if (!teleport || !TeleportServiceMethodsAvailable(teleport.service)) {
         return;
     }
     double delay{};
@@ -649,7 +661,7 @@ void ArmTeleportPreload(const PendingTeleport& pending) noexcept {
         request.position[axis] = pending.position[axis];
     }
     const AnomalyStatusV1 status =
-        g_context.teleport_service->preload(g_context.teleport_service->user, &request);
+        teleport.service->preload(teleport.service->user, &request);
     if (status.code != ANOMALY_STATUS_V1_OK) {
         Log(ANOMALY_CORE_LOG_LEVEL_V1_WARNING,
             "teleport preload unavailable; teleporting without a streamed preload");
@@ -1141,37 +1153,65 @@ bool LoadSettings() {
 }
 
 bool SaveSettings() {
-    TeleportSettings settings;
-    {
-        std::scoped_lock lock(g_context.mutex);
-        if (!g_context.settings_dirty) return true;
-        std::ranges::copy(g_context.target, settings.target.begin());
-        settings.presets = g_context.presets;
-        settings.forward_distance = g_context.forward_distance;
-        settings.z_lift = g_context.z_lift;
-        settings.vehicle_forward_distance = g_context.vehicle_forward_distance;
-        settings.vehicle_z_offset = g_context.vehicle_z_offset;
-        settings.vehicle_preload_delay = g_context.vehicle_preload_delay;
-        settings.landing_lift = g_context.landing_lift;
-        settings.sink_retries = g_context.sink_retries;
-        settings.preload_delay = g_context.preload_delay;
-        settings.forward_hotkey = g_context.forward_hotkey_key;
-        settings.tracked_hotkey = g_context.tracked_hotkey_key;
-        settings.points = g_context.imported_points;
-    }
-    if (!ConfigMethodsAvailable(g_context.config)) return false;
-
+    const std::scoped_lock save_lock(g_context.settings_save_mutex);
+    if (!g_context.settings_dirty.exchange(false, std::memory_order_acq_rel)) return true;
     try {
+        TeleportSettings settings;
+        {
+            std::scoped_lock lock(g_context.mutex);
+            std::ranges::copy(g_context.target, settings.target.begin());
+            settings.presets = g_context.presets;
+            settings.forward_distance = g_context.forward_distance;
+            settings.z_lift = g_context.z_lift;
+            settings.vehicle_forward_distance = g_context.vehicle_forward_distance;
+            settings.vehicle_z_offset = g_context.vehicle_z_offset;
+            settings.vehicle_preload_delay = g_context.vehicle_preload_delay;
+            settings.landing_lift = g_context.landing_lift;
+            settings.sink_retries = g_context.sink_retries;
+            settings.preload_delay = g_context.preload_delay;
+            settings.forward_hotkey = g_context.forward_hotkey_key;
+            settings.tracked_hotkey = g_context.tracked_hotkey_key;
+            settings.points = g_context.imported_points;
+        }
+        if (!ConfigMethodsAvailable(g_context.config)) {
+            g_context.settings_dirty.store(true, std::memory_order_release);
+            return false;
+        }
         const std::string document = SerializeSettings(settings);
         const AnomalyStatusV1 status = g_context.config->write_atomic(
             g_context.config->user, anomaly::sdk::StringView(kSettingsSchemaId),
             kSettingsSchemaVersion, Bytes(document));
-        if (status.code != ANOMALY_STATUS_V1_OK) return false;
-        std::scoped_lock lock(g_context.mutex);
-        g_context.settings_dirty = false;
+        if (status.code != ANOMALY_STATUS_V1_OK) {
+            g_context.settings_dirty.store(true, std::memory_order_release);
+            return false;
+        }
         return true;
     } catch (...) {
+        g_context.settings_dirty.store(true, std::memory_order_release);
         return false;
+    }
+}
+
+void ANOMALY_CALL SaveSettingsTask(void*, AnomalyGenerationHandleV1) {
+    static_cast<void>(SaveSettings());
+    g_context.settings_save_scheduled.store(false, std::memory_order_release);
+}
+
+void ScheduleSettingsSave(Context& context) {
+    if (!context.settings_dirty.load(std::memory_order_acquire) ||
+        !SchedulerMethodsAvailable(context.scheduler)) {
+        return;
+    }
+    bool expected = false;
+    if (!context.settings_save_scheduled.compare_exchange_strong(
+            expected, true, std::memory_order_acq_rel)) {
+        return;
+    }
+    AnomalyGenerationHandleV1 task{};
+    const AnomalyStatusV1 status = context.scheduler->schedule(
+        context.scheduler->user, 250, SaveSettingsTask, nullptr, &task);
+    if (status.code != ANOMALY_STATUS_V1_OK || task.id == 0) {
+        context.settings_save_scheduled.store(false, std::memory_order_release);
     }
 }
 
@@ -2188,12 +2228,18 @@ std::string FormatPosition(const std::array<double, 3>& position) {
 }
 
 AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) {
-    if (!LoadCompatibility(host)) return {ANOMALY_STATUS_V1_UNAVAILABLE,0,{}};
+    if (context == nullptr) return StatusCode(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+    const auto core = QueryService<AnomalyCoreServiceV1>(
+        host, ANOMALY_CORE_SERVICE_V1_ID, ANOMALY_CORE_SERVICE_V1_VERSION);
+    std::string compatibility_error;
+    if (!LoadCompatibility(host, &compatibility_error)) {
+        LogLoadFailure(core.service, "NteTeleport load blocked: ProfileSnapshot: " + compatibility_error);
+        return {ANOMALY_STATUS_V1_UNAVAILABLE,0,{}};
+    }
     // The vehicle profile shares the compatibility document: object, reflection and
     // registry strides plus the global object array the runtime keeps for the game.
     static_cast<void>(nteteleport_vehicle::Instance().LoadLayout(compatibility.Document()));
     nteteleport_vehicle::Instance().SetObjectSymbol(compatibility.Address("Objects"));
-    if (context == nullptr) return StatusCode(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
     const auto ui = QueryService<AnomalyUiServiceV1>(
         host, ANOMALY_UI_SERVICE_V1_ID, ANOMALY_UI_SERVICE_V1_VERSION);
     const auto config = QueryService<AnomalyConfigServiceV1>(
@@ -2204,16 +2250,39 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
         host, ANOMALY_JSON_SERVICE_V1_ID, ANOMALY_JSON_SERVICE_V1_VERSION);
     const auto scheduler = QueryService<AnomalySchedulerServiceV1>(
         host, ANOMALY_SCHEDULER_SERVICE_V1_ID, ANOMALY_SCHEDULER_SERVICE_V1_VERSION);
-    const auto core = QueryService<AnomalyCoreServiceV1>(
-        host, ANOMALY_CORE_SERVICE_V1_ID, ANOMALY_CORE_SERVICE_V1_VERSION);
     const auto signature = QueryService<AnomalySignatureServiceV1>(
         host, ANOMALY_SIGNATURE_SERVICE_V1_ID, ANOMALY_SIGNATURE_SERVICE_V1_VERSION);
-    const auto teleport = QueryService<AnomalyNtePlayerTeleportServiceV1>(
-        host, ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_ID,
-        ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_VERSION);
-    if (!ui) return ui.status;
-    if (!config) return config.status;
-    if (!HasUiFunctions(ui.service) || !ConfigMethodsAvailable(config.service)) {
+    const auto log_service_failure = [&](const char* service, const AnomalyStatusV1& status) {
+        std::string message = "NteTeleport load blocked: ";
+        message += service;
+        message += " query status=";
+        message += StatusName(status.code);
+        if (status.message.data != nullptr && status.message.size != 0) {
+            message += " detail=";
+            message.append(status.message.data, status.message.size);
+        }
+        LogLoadFailure(core.service, message);
+    };
+    if (!ui) {
+        log_service_failure("anomaly.ui", ui.status);
+        return ui.status;
+    }
+    if (!config) {
+        log_service_failure("anomaly.config", config.status);
+        return config.status;
+    }
+    if (!scheduler) {
+        log_service_failure("anomaly.scheduler", scheduler.status);
+        return scheduler.status;
+    }
+    if (!SchedulerMethodsAvailable(scheduler.service)) {
+        LogLoadFailure(core.service,
+            "NteTeleport load blocked: anomaly.scheduler schedule method unavailable");
+        return StatusCode(ANOMALY_STATUS_V1_UNAVAILABLE);
+    }
+    if (!ConfigMethodsAvailable(config.service)) {
+        LogLoadFailure(core.service,
+            "NteTeleport load blocked: anomaly.config methods unavailable");
         return StatusCode(ANOMALY_STATUS_V1_UNAVAILABLE);
     }
     {
@@ -2223,15 +2292,11 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
         g_context.config = config.service;
         g_context.input = InputMethodsAvailable(input.service) ? input.service : nullptr;
         g_context.json = JsonMethodsAvailable(json.service) ? json.service : nullptr;
-        g_context.scheduler = SchedulerMethodsAvailable(scheduler.service)
-            ? scheduler.service
-            : nullptr;
+        g_context.scheduler = scheduler.service;
         g_context.core = CoreMethodsAvailable(core.service) ? core.service : nullptr;
         g_context.signature = SignatureMethodsAvailable(signature.service)
             ? signature.service
             : nullptr;
-        g_context.teleport_service =
-            TeleportServiceMethodsAvailable(teleport.service) ? teleport.service : nullptr;
         g_context.g_world_address = 0;
         g_context.tracked_target_valid = false;
         g_context.tracked_target_read_requested = false;
@@ -2274,6 +2339,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
         g_context.has_result = false;
         g_context.current_position_unavailable = false;
         g_context.settings_dirty = false;
+        g_context.settings_save_scheduled = false;
         g_context.result_code = ANOMALY_STATUS_V1_UNAVAILABLE;
         g_context.result_message[0] = '\0';
     }
@@ -2286,6 +2352,13 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
         kSettingsSchemaVersion, Bytes(kSettingsSchema), &g_context.settings_schema);
     if (schema_status.code != ANOMALY_STATUS_V1_OK || g_context.settings_schema.id == 0 ||
         g_context.settings_schema.generation == 0) {
+        std::string message = "NteTeleport load blocked: anomaly.config register_schema status=";
+        message += StatusName(schema_status.code);
+        if (schema_status.message.data != nullptr && schema_status.message.size != 0) {
+            message += " detail=";
+            message.append(schema_status.message.data, schema_status.message.size);
+        }
+        LogLoadFailure(core.service, message);
         std::scoped_lock lock(g_context.mutex);
         g_context.host = nullptr;
         g_context.localizer = {};
@@ -2333,6 +2406,7 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void* context, std::uint32_t) {
         std::scoped_lock lock(g_context.mutex);
         g_context.pending = {};
     }
+    g_context.settings_save_scheduled.store(false, std::memory_order_release);
     return settings_saved ? anomaly::sdk::Ok() : StatusCode(ANOMALY_STATUS_V1_FAILED);
 }
 
@@ -2347,7 +2421,6 @@ void ANOMALY_CALL Unload(void* context) {
     g_context.scheduler = nullptr;
     g_context.core = nullptr;
     g_context.signature = nullptr;
-    g_context.teleport_service = nullptr;
     g_context.g_world_address = 0;
     g_context.tracked_target_valid = false;
     g_context.tracked_target_read_requested = false;
@@ -2374,6 +2447,7 @@ void ANOMALY_CALL Unload(void* context) {
     g_context.has_result = false;
     g_context.current_position_unavailable = false;
     g_context.settings_dirty = false;
+    g_context.settings_save_scheduled = false;
     g_context.result_code = ANOMALY_STATUS_V1_UNAVAILABLE;
     g_context.result_message[0] = '\0';
 }
@@ -2411,13 +2485,7 @@ void ANOMALY_CALL Update(void* context, double) {
     ProcessLandingMonitor(host);
     ProcessVehicleHold(host);
 
-    // Persist a rebind or an option edit on the tick it happens. Writing only in on_stop
-    // loses the change whenever the game exits abruptly (crash, force kill); the host's
-    // anomaly.config service owns validation and the atomic replace, so this is only the
-    // moment to write.
-    if (g_context.settings_dirty.load(std::memory_order_relaxed)) {
-        static_cast<void>(SaveSettings());
-    }
+    ScheduleSettingsSave(g_context);
 
     if (import_folder_selected) ScheduleFolderScan(g_context);
     if (import_file_selected) ScheduleImportFile(g_context);

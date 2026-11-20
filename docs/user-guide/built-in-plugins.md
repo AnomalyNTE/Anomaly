@@ -142,13 +142,13 @@
 | --- | --- |
 | **ID** | `anomaly.nte-teleport` |
 | **作用** | 手动输入或读取当前坐标后传送玩家；支持准心方向传送、面朝方向定距传送，以及导入 JSON 点位分类管理。 |
-| **依赖服务** | `anomaly.ui`、`anomaly.config`；`anomaly.input`、`anomaly.json`、`anomaly.scheduler`、`anomaly.plugin-state`、`anomaly.nte.session/player/player-teleport`（均为 V1，可选） |
+| **依赖服务** | `anomaly.ui`、`anomaly.config`、`anomaly.scheduler`；`anomaly.input`、`anomaly.json`、`anomaly.plugin-state`、`anomaly.nte.session/player/player-teleport`（均为 V1，可选） |
 | **需要 Profile** | 是（玩家、会话与传送桥接依赖已验证符号） |
 
 准心传送沿当前相机朝向前进预设距离，并把目标 Z 轴钳制在相机高度加安全抬升之上，
 避免落到地下；向前传送沿水平朝向移动预设距离。两个快捷键都可以在插件窗口中重新捕获，
-捕获和选项改动在下一帧就写入 `anomaly.config`（宿主负责校验与原子替换），不需要等到停用；
-停用时还会再写一次兜底。
+捕获和选项改动通过 `anomaly.scheduler` 延迟合并后在 Worker 中写入 `anomaly.config`
+（宿主负责校验与原子替换），不需要等到停用；停用时会同步写入尚未落盘的改动。
 点击 **Import points** 会从 JSON 文件路径（相对路径基于插件私有状态目录）读取点位数组，
 支持 `color`、`name`、`x/y/z`，可选 `category`；缺少 `category` 时会按 `1. Name` 这类
 前缀派生分类。导入结果会在插件停用时随设置一起持久化。

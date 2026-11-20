@@ -45,8 +45,7 @@
     },
     {
       "id": "anomaly.scheduler",
-      "minVersion": 1,
-      "optional": true
+      "minVersion": 1
     },
     {
       "id": "anomaly.plugin-state",
