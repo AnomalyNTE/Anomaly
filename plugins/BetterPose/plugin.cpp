@@ -10338,14 +10338,21 @@ void ApplyMotionPoseDirect(Context &context,
   // what this build actually renders from.
   const auto *bytes = reinterpret_cast<const std::uint8_t *>(packed.data());
   const auto byte_count = packed.size() * sizeof(PackedTransform);
-  static_cast<void>(WriteBytes(
-      context, state.local_space_data,
-      reinterpret_cast<const std::uint8_t *>(local_packed.data()),
-      local_packed.size() * sizeof(PackedTransform)));
-  static_cast<void>(WriteBytes(context, state.component_space_data, bytes,
-                               byte_count));
-  static_cast<void>(WriteBytes(context, state.bone_space_data, bytes,
-                               byte_count));
+  // The cached array pointers come from ReadPoseArrays, which refuses to keep them when the
+  // component's arrays were replaced (a skin change reallocates them). Writing through a stale or
+  // cleared pointer does nothing, which showed up as "the motion stopped and the joint markers
+  // disappeared" while the status line still said it was playing. Re-read the header and require
+  // the current length to cover this pose, exactly like the manual pose path.
+  const auto write_motion = [&](const std::uint32_t offset, const std::uint8_t *data) {
+    std::uintptr_t address{};
+    std::uint32_t length{};
+    return ReadArrayHeader(context, state.mesh + offset, address, length) && address != 0 &&
+           length == count && WriteBytes(context, address, data, byte_count);
+  };
+  static_cast<void>(write_motion(native_layout.kMeshLocalSpaceTransformsOffset,
+                                 reinterpret_cast<const std::uint8_t *>(local_packed.data())));
+  static_cast<void>(write_motion(native_layout.kMeshComponentSpaceBuffer1Offset, bytes));
+  static_cast<void>(write_motion(native_layout.kMeshComponentSpaceBuffer0Offset, bytes));
   if (publish_auxiliary)
     WriteExtraMeshes(context, packed);
   static_cast<void>(ForcePoseMeshObjectUpdate(context));
