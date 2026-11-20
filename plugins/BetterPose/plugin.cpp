@@ -9794,9 +9794,12 @@ void ApplyMotionPoseDirect(Context &context,
           static_cast<int>(status), std::memory_order_release);
   };
   publish_limb_status(limb_cal::Status::Original);
-  if (state.mesh == 0 || state.local_space_data == 0 ||
-      state.local_space_count == 0 || state.component_space_data == 0 ||
-      state.component_space_count != state.local_space_count) {
+  std::uintptr_t local_data{};
+  std::uint32_t local_count{};
+  if (state.mesh == 0 ||
+      !ReadArrayHeader(context, state.mesh + native_layout.kMeshLocalSpaceTransformsOffset,
+                       local_data, local_count) ||
+      local_data == 0 || local_count == 0 || local_count > kMaxBoneCount) {
     publish_limb_status(limb_cal::Status::NotApplicable);
     return;
   }
@@ -9825,7 +9828,7 @@ void ApplyMotionPoseDirect(Context &context,
       LogDiagnostic(context, status);
     }
   }
-  const std::uint32_t count = state.local_space_count;
+  const std::uint32_t count = local_count;
   if (context.bone_parents.size() != count) {
     publish_limb_status(limb_cal::Status::NotApplicable);
     return;
@@ -10343,19 +10346,32 @@ void ApplyMotionPoseDirect(Context &context,
   // cleared pointer does nothing, which showed up as "the motion stopped and the joint markers
   // disappeared" while the status line still said it was playing. Re-read the header and require
   // the current length to cover this pose, exactly like the manual pose path.
-  const auto write_motion = [&](const std::uint32_t offset, const std::uint8_t *data) {
+  std::uint32_t local_length{};
+  std::uint32_t buffer1_length{};
+  std::uint32_t buffer0_length{};
+  const auto write_motion = [&](const std::uint32_t offset, const std::uint8_t *data,
+                                std::uint32_t &seen_length) {
     std::uintptr_t address{};
     std::uint32_t length{};
-    return ReadArrayHeader(context, state.mesh + offset, address, length) && address != 0 &&
-           length == count && WriteBytes(context, address, data, byte_count);
+    if (!ReadArrayHeader(context, state.mesh + offset, address, length) || address == 0) {
+      seen_length = 0;
+      return false;
+    }
+    seen_length = length;
+    return length == count && WriteBytes(context, address, data, byte_count);
   };
-  static_cast<void>(write_motion(native_layout.kMeshLocalSpaceTransformsOffset,
-                                 reinterpret_cast<const std::uint8_t *>(local_packed.data())));
-  static_cast<void>(write_motion(native_layout.kMeshComponentSpaceBuffer1Offset, bytes));
-  static_cast<void>(write_motion(native_layout.kMeshComponentSpaceBuffer0Offset, bytes));
+  static_cast<void>(write_motion(
+      native_layout.kMeshLocalSpaceTransformsOffset,
+      reinterpret_cast<const std::uint8_t *>(local_packed.data()), local_length));
+  const bool wrote_buffer1 =
+      write_motion(native_layout.kMeshComponentSpaceBuffer1Offset, bytes, buffer1_length);
+  const bool wrote_buffer0 =
+      write_motion(native_layout.kMeshComponentSpaceBuffer0Offset, bytes, buffer0_length);
   if (publish_auxiliary)
     WriteExtraMeshes(context, packed);
   static_cast<void>(ForcePoseMeshObjectUpdate(context));
+  if (wrote_buffer1 || wrote_buffer0)
+    static_cast<void>(render_pose_bridge::Publish(context, packed, true));
   } catch (...) {
   }
 }
@@ -10590,9 +10606,6 @@ void StepInactiveEntityMotions(Context &context) noexcept {
         Read(context, mesh + native_layout.kMeshSkeletalMeshOffset, object_asset);
     const bool identity_known =
         found->second.object_class != 0 || found->second.object_asset != 0;
-    const bool identity_matches =
-        (found->second.object_class == 0 || object_class == found->second.object_class) &&
-        (found->second.object_asset == 0 || object_asset == found->second.object_asset);
     const bool class_mismatch =
         !readable ||
         (found->second.object_class != 0 && object_class != found->second.object_class);
@@ -18821,9 +18834,6 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
     // a pose through a pointer that no longer belongs to it.
     const bool identity_known =
         found->second.object_class != 0 || found->second.object_asset != 0;
-    const bool identity_matches =
-        (found->second.object_class == 0 || object_class == found->second.object_class) &&
-        (found->second.object_asset == 0 || object_asset == found->second.object_asset);
     const bool class_mismatch =
         !readable ||
         (found->second.object_class != 0 && object_class != found->second.object_class);
