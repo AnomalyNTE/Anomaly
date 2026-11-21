@@ -8796,10 +8796,10 @@ void ApplyPoseOverridesDirect(Context &context,
     return ReadArrayHeader(context, state.mesh + offset, address, length) && address != 0 &&
         length == count && WriteBytes(context, address, data, byte_count);
   };
-  bool wrote_body = write_current(native_layout.kMeshLocalSpaceTransformsOffset,
-      reinterpret_cast<const std::uint8_t *>(local_packed.data()));
-  wrote_body = write_current(native_layout.kMeshComponentSpaceBuffer1Offset, bytes) || wrote_body;
-  wrote_body = write_current(native_layout.kMeshComponentSpaceBuffer0Offset, bytes) || wrote_body;
+  static_cast<void>(write_current(native_layout.kMeshLocalSpaceTransformsOffset,
+      reinterpret_cast<const std::uint8_t *>(local_packed.data())));
+  static_cast<void>(write_current(native_layout.kMeshComponentSpaceBuffer1Offset, bytes));
+  static_cast<void>(write_current(native_layout.kMeshComponentSpaceBuffer0Offset, bytes));
   production.published = render_pose_bridge::Publish(context, packed);
   // Blender live preview already pauses the main animation and writes the
   // body after the skeletal tick. Re-running every accessory Kawaii/collision
@@ -8819,8 +8819,7 @@ void ApplyPoseOverridesDirect(Context &context,
   }
   if (write_extras)
     WriteExtraMeshes(context, packed);
-  if (wrote_body)
-    DriveParkedPlayerPoseable(context, state.mesh, packed);
+  DriveParkedPlayerPoseable(context, state.mesh, packed);
   static_cast<void>(ForcePoseMeshObjectUpdate(context));
   } catch (...) {
   }
@@ -10396,8 +10395,7 @@ void ApplyMotionPoseDirect(Context &context,
       write_motion(native_layout.kMeshComponentSpaceBuffer0Offset, bytes, buffer0_length);
   if (publish_auxiliary)
     WriteExtraMeshes(context, packed);
-  if (wrote_buffer1 || wrote_buffer0)
-    DriveParkedPlayerPoseable(context, state.mesh, packed);
+  DriveParkedPlayerPoseable(context, state.mesh, packed);
   static_cast<void>(ForcePoseMeshObjectUpdate(context));
   if (wrote_buffer1 || wrote_buffer0)
     static_cast<void>(render_pose_bridge::Publish(context, packed, true));
