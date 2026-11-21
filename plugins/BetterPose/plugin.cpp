@@ -1287,6 +1287,7 @@ struct Context final {
     std::string ref_pose_status;
     MotionTrack track;
     better_pose::keyframes::Track keyframe_track;
+    bool keyframe_driving_released{};
     std::string file;
   };
   std::map<std::uintptr_t, EntityMotionState> entity_motion_states;
@@ -5178,6 +5179,8 @@ void ParkCurrentEntityMotion(Context &context,
     {
       std::lock_guard<std::mutex> lock(context.keyframe_mutex);
       saved.keyframe_track = std::move(context.keyframe_track);
+      saved.keyframe_driving_released =
+          context.keyframe_driving_released.load(std::memory_order_acquire);
       context.keyframe_track = better_pose::keyframes::Track{};
       ++context.keyframe_revision;
       context.keyframe_applied_frame = -1.0;
@@ -5235,6 +5238,8 @@ bool RestoreEntityMotion(Context &context,
     {
       std::lock_guard<std::mutex> lock(context.keyframe_mutex);
       context.keyframe_track = std::move(saved.keyframe_track);
+      context.keyframe_driving_released.store(saved.keyframe_driving_released,
+                                             std::memory_order_release);
       ++context.keyframe_revision;
       context.keyframe_applied_frame = -1.0;
       context.keyframe_applied_revision =
@@ -17208,6 +17213,7 @@ kf::Key CaptureKey(Context &context, const std::uint32_t frame) {
 // the track describes the whole pose, so a bone the animation does not move
 // must not keep a stray offset from an earlier edit.
 void ApplySample(Context &context, const kf::Sampled &sample,
+                 const bool take_pose_ownership,
                  const bool apply_expression = true,
                  const bool apply_camera = true) {
   if (sample.has_pose && sample.pose_valid) {
@@ -17231,7 +17237,7 @@ void ApplySample(Context &context, const kf::Sampled &sample,
     for (std::size_t axis{}; axis != 3; ++axis)
       context.requested_root_offset[axis].store(sample.root_offset[axis],
                                                 std::memory_order_release);
-    if (!context.keyframe_driving_released.load(std::memory_order_acquire))
+    if (take_pose_ownership)
       context.pose_override_enabled.store(true, std::memory_order_release);
   }
   if (sample.has_pose && !sample.pose_valid) {
@@ -17743,6 +17749,7 @@ bool ApplyInactiveEntityKeyframe(Context &context,
   const auto found = context.entity_motion_states.find(mesh);
   if (found == context.entity_motion_states.end() ||
       found->second.track.frame_count != 0 ||
+      found->second.keyframe_driving_released ||
       found->second.keyframe_track.Empty())
     return false;
   try {
@@ -17898,7 +17905,7 @@ bool ApplyInactiveEntityKeyframe(Context &context,
       const double frame =
           context.keyframe_frame.load(std::memory_order_acquire);
       const auto sample = entity.keyframe_track.Sample(frame, keyframe_impl::ReferencePose(context));
-      keyframe_impl::ApplySample(context, sample, false, false);
+      keyframe_impl::ApplySample(context, sample, true, false, false);
       ApplyPoseOverridesDirect(context, false);
 
       context.bone_names.swap(entity.bone_names);
@@ -18368,7 +18375,8 @@ void StepKeyframes(Context &context, const double delta_seconds) noexcept {
       std::lock_guard<std::mutex> lock(context.keyframe_mutex);
       sample = context.keyframe_track.Sample(frame, reference);
     }
-    keyframe_impl::ApplySample(context, sample);
+    keyframe_impl::ApplySample(
+        context, sample, !context.keyframe_driving_released.load(std::memory_order_acquire));
     context.keyframe_applied_frame = frame;
     context.keyframe_applied_revision = revision;
   } catch (...) {
@@ -19423,6 +19431,8 @@ void BindRuntimeCharacter(Context &context, const std::uintptr_t character,
   context.next_mesh_scan_retry_ms = 0;
   context.mesh_scan_requested.store(true, std::memory_order_release);
   context.attach_scan_requested.store(false, std::memory_order_release);
+  if (previous_mesh != mesh)
+    context.keyframe_driving_released.store(false, std::memory_order_release);
   if (target_switch)
     static_cast<void>(RestoreEntityMotion(context, mesh));
   if (previous_mesh != 0)

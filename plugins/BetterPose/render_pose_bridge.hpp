@@ -67,7 +67,8 @@ inline void SynchronizeOwnership(Context &context) noexcept {
     } else {
       const auto track = context.entity_motion_states.find(mesh);
       owned = track != context.entity_motion_states.end() &&
-          (track->second.track.frame_count != 0 || !track->second.keyframe_track.Empty());
+          (track->second.track.frame_count != 0 ||
+           (!track->second.keyframe_driving_released && !track->second.keyframe_track.Empty()));
     }
     if (!owned) it = context.render_bridge.samples.erase(it);
     else ++it;
