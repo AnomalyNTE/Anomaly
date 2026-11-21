@@ -236,7 +236,6 @@ struct RuntimeState {
   std::uintptr_t character_class{};
   std::uintptr_t mesh{};
   std::uintptr_t mesh_asset{};   // USkeletalMesh this entry was resolved against
-  std::chrono::steady_clock::time_point last_foreign_pose{};
   bool external_target{};
   std::uintptr_t anim_instance{};
   std::uintptr_t anim_instance_class{};
@@ -705,6 +704,9 @@ struct Context final {
   bool secondary_self_collision_open{};  // render thread only
   std::atomic<std::uint64_t> pose_pipeline_last_log_ms{};
   std::atomic<std::uint64_t> extra_write_last_log_ms{};
+  // Producer thread only: bounds foreign-tick pose writes to one per frame.
+  std::chrono::steady_clock::time_point frame_start{};
+  std::chrono::steady_clock::time_point last_pose_write{};
   // Hide hair, clothing and ornament bones from the overlay (drawing and picking).
   std::atomic_bool overlay_body_only{true};
   // Joint marker radius in canvas pixels; the pick radius follows it.
@@ -6548,18 +6550,16 @@ void ProcessSkeletalMeshTick(Context *context, const std::size_t slot,
           }
         } else {
           const bool motion_loaded = context->motion_loaded.load(std::memory_order_acquire);
-          if (motion_loaded || context->pose_override_enabled.load(std::memory_order_acquire)) {
-            const auto now = std::chrono::steady_clock::now();
-            auto &last = context->runtime.last_foreign_pose;
-            if (last.time_since_epoch().count() == 0 ||
-                now - last >= std::chrono::milliseconds(2)) {
-              last = now;
-              static_cast<void>(ReadPoseArrays(*context));
-              if (motion_loaded)
-                ApplyMotionPoseDirect(*context);
-              else
-                ApplyPoseOverridesDirect(*context, false);
-            }
+          // One body write per frame is what the renderer consumes. Once this frame already
+          // produced a pose (from the body's own tick or the plugin update), a foreign tick is a
+          // repeat; when nothing has written yet, this tick is the only chance to land the pose.
+          if ((motion_loaded || context->pose_override_enabled.load(std::memory_order_acquire)) &&
+              context->last_pose_write < context->frame_start) {
+            static_cast<void>(ReadPoseArrays(*context));
+            if (motion_loaded)
+              ApplyMotionPoseDirect(*context);
+            else
+              ApplyPoseOverridesDirect(*context, false);
           }
         }
       }
@@ -8824,6 +8824,8 @@ void ApplyPoseOverridesDirect(Context &context,
   if (wrote_body)
     DriveParkedPlayerPoseable(context, state.mesh, packed);
   static_cast<void>(ForcePoseMeshObjectUpdate(context));
+  if (wrote_body)
+    context.last_pose_write = std::chrono::steady_clock::now();
   } catch (...) {
   }
 }
@@ -10404,6 +10406,8 @@ void ApplyMotionPoseDirect(Context &context,
   if (wrote_buffer1 || wrote_buffer0)
     DriveParkedPlayerPoseable(context, state.mesh, packed);
   static_cast<void>(ForcePoseMeshObjectUpdate(context));
+  if (wrote_buffer1 || wrote_buffer0)
+    context.last_pose_write = std::chrono::steady_clock::now();
   } catch (...) {
   }
 }
@@ -24978,6 +24982,7 @@ void ANOMALY_CALL Update(void *plugin_context, const double delta_seconds) {
     return;
   try {
     context->render_bridge.producer_thread.store(GetCurrentThreadId(), std::memory_order_release);
+    context->frame_start = std::chrono::steady_clock::now();
     UpdateRuntime(*context, delta_seconds);
     FinalizeEntityPoses(*context);
     // Parked keyframe application pauses the player and switches it to Custom; restore the
