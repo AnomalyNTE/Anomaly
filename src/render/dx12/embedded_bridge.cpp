@@ -3,7 +3,7 @@
 #include "embedded_present_scope.hpp"
 
 #include "anomaly/host_ui_service.hpp"
-#include "anomaly/nte_esc_menu_bridge.hpp"
+#include "ui/platform_esc_menu.hpp"
 #include "anomaly/structured_logger.hpp"
 #include "anomaly/thread_local_value.hpp"
 #include "anomaly/ue5_nte_adapter.hpp"
@@ -995,7 +995,6 @@ void RunEmbeddedPlatform(
     const auto tick_enabled = std::make_shared<std::atomic_bool>(true);
     std::shared_ptr<anomaly::NteEscMenuBridge> esc_menu_bridge;
     bool tick_bound{};
-    bool esc_menu_bridge_started{};
     bool hooks_owned{};
     bool cleanup_done{};
     ScopeExit cleanup_guard;
@@ -1027,8 +1026,7 @@ void RunEmbeddedPlatform(
                     return;
                 }
             }
-            if (esc_menu_bridge_started && esc_menu_bridge != nullptr) {
-                esc_menu_bridge_started = false;
+            if (esc_menu_bridge != nullptr) {
                 if (!esc_menu_bridge->Stop(std::chrono::seconds(5))) {
                     std::ofstream(root / L"anomaly-platform.log", std::ios::app)
                         << "NTE ESC menu bridge shutdown deadline exceeded\n";
@@ -1091,42 +1089,8 @@ void RunEmbeddedPlatform(
         }
     };
     if (adapter != nullptr) {
-        const auto bridge_logger = state.diagnostics.logger;
-        esc_menu_bridge = std::make_shared<anomaly::NteEscMenuBridge>(
-            memory_services, adapter->Resolution(),
-            [weak = std::weak_ptr<PluginManager>(plugin_owner)] {
-                const auto plugins = weak.lock();
-                return plugins == nullptr
-                    ? std::vector<anomaly::NteEscMenuButtonSnapshot>{}
-                    : plugins->NteEscMenuButtons();
-            },
-            [weak = std::weak_ptr<PluginManager>(plugin_owner)](
-                const AnomalyGenerationHandleV1 handle) {
-                if (const auto plugins = weak.lock()) {
-                    static_cast<void>(plugins->InvokeNteEscMenuButton(handle));
-                }
-            },
-            [bridge_logger](const std::uint32_t level, std::string message) {
-                if (bridge_logger == nullptr) return;
-                anomaly::LogLevel mapped = anomaly::LogLevel::Info;
-                if (level >= ANOMALY_CORE_LOG_LEVEL_V1_ERROR) {
-                    mapped = anomaly::LogLevel::Error;
-                } else if (level >= ANOMALY_CORE_LOG_LEVEL_V1_WARNING) {
-                    mapped = anomaly::LogLevel::Warning;
-                } else if (level == ANOMALY_CORE_LOG_LEVEL_V1_TRACE) {
-                    mapped = anomaly::LogLevel::Trace;
-                }
-                anomaly::LogDetails details;
-                details.thread_domain = anomaly::LogThreadDomain::Game;
-                details.event_id = "nte.esc-menu-bridge";
-                static_cast<void>(bridge_logger->Log(
-                    mapped, "nte.esc-menu", std::move(message), std::move(details)));
-            });
-        esc_menu_bridge_started = esc_menu_bridge->Start();
-        if (!esc_menu_bridge_started) {
-            std::ofstream(root / L"anomaly-platform.log", std::ios::app)
-                << "NTE ESC menu bridge unavailable for active Profile\n";
-        }
+        esc_menu_bridge = StartPlatformEscMenuBridge(
+            root, memory_services, *adapter, plugin_owner, state.diagnostics.logger);
         const auto plugin_mutex = state.plugin_mutex;
         const auto game_pump = state.diagnostics.game_pump;
         auto* const performance = &state.performance;
