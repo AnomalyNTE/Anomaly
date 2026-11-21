@@ -1601,7 +1601,9 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
             anomaly_mmd2bip_converter winmm ws2_32 user32 ole32 shell32 uuid comdlg32 advapi32 shlwapi)
         add_executable(anomaly_better_pose_character_switch_fixture
             plugins/BetterPose/tests/character_switch_test.cpp)
-        target_compile_options(anomaly_better_pose_character_switch_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
+        # This fixture includes plugins/BetterPose/plugin.cpp, so its object exceeds the default
+        # section limit (C1128).
+        target_compile_options(anomaly_better_pose_character_switch_fixture PRIVATE /W4 /permissive- /EHsc /utf-8 /bigobj)
         target_include_directories(anomaly_better_pose_character_switch_fixture PRIVATE include)
         target_link_libraries(anomaly_better_pose_character_switch_fixture PRIVATE
             anomaly_mmd2bip_converter winmm ws2_32 user32 ole32 shell32 uuid comdlg32 advapi32 shlwapi)
