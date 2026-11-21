@@ -6,7 +6,6 @@
 
 **稳定、灵活、开放的《异环》插件平台**
 
-qq交流群: 1037114140
 
 <a href="https://discord.gg/tfeh8QQ9Vy"><img src="https://img.shields.io/badge/Discord-Join%20the%20community-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Join the Anomaly Discord" /></a>
 
