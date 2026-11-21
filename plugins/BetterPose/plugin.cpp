@@ -707,6 +707,10 @@ struct Context final {
   // Producer thread only: bounds foreign-tick pose writes to one per frame.
   std::chrono::steady_clock::time_point frame_start{};
   std::chrono::steady_clock::time_point last_pose_write{};
+  // A write that happens inside the skeletal tick lands after the engine evaluated the pose, so it
+  // is the one the renderer keeps; a write from the plugin update can still be overwritten.
+  bool posing_from_tick{};
+  bool last_pose_write_from_tick{};
   // Hide hair, clothing and ornament bones from the overlay (drawing and picking).
   std::atomic_bool overlay_body_only{true};
   // Joint marker radius in canvas pixels; the pick radius follows it.
@@ -6490,6 +6494,7 @@ void ProcessSkeletalMeshTick(Context *context, const std::size_t slot,
 
   try {
     if (context != nullptr) {
+      context->posing_from_tick = true;
       const auto address = reinterpret_cast<std::uintptr_t>(object);
       const bool active_target =
           address == context->runtime.mesh &&
@@ -6558,8 +6563,13 @@ void ProcessSkeletalMeshTick(Context *context, const std::size_t slot,
           const auto now = std::chrono::steady_clock::now();
           const bool stale = context->last_pose_write.time_since_epoch().count() == 0 ||
               now - context->last_pose_write >= std::chrono::milliseconds(50);
+          // Only a write made inside a skeletal tick is guaranteed to survive the engine's own
+          // evaluation. A write from the plugin update may still be overwritten, so this tick
+          // re-applies once and then defers to the tick-path write that just landed.
+          const bool written_after_tick =
+              context->last_pose_write_from_tick && context->last_pose_write >= context->frame_start;
           if ((motion_loaded || context->pose_override_enabled.load(std::memory_order_acquire)) &&
-              (stale || context->last_pose_write < context->frame_start)) {
+              (stale || !written_after_tick)) {
             static_cast<void>(ReadPoseArrays(*context));
             if (motion_loaded)
               ApplyMotionPoseDirect(*context);
@@ -6571,6 +6581,8 @@ void ProcessSkeletalMeshTick(Context *context, const std::size_t slot,
     }
   } catch (...) {
   }
+  if (context != nullptr)
+    context->posing_from_tick = false;
   try {
     if (context != nullptr) {
       const auto address = reinterpret_cast<std::uintptr_t>(object);
@@ -8829,8 +8841,10 @@ void ApplyPoseOverridesDirect(Context &context,
   if (wrote_body)
     DriveParkedPlayerPoseable(context, state.mesh, packed);
   static_cast<void>(ForcePoseMeshObjectUpdate(context));
-  if (wrote_body)
+  if (wrote_body) {
     context.last_pose_write = std::chrono::steady_clock::now();
+    context.last_pose_write_from_tick = context.posing_from_tick;
+  }
   } catch (...) {
   }
 }
@@ -10411,8 +10425,10 @@ void ApplyMotionPoseDirect(Context &context,
   if (wrote_buffer1 || wrote_buffer0)
     DriveParkedPlayerPoseable(context, state.mesh, packed);
   static_cast<void>(ForcePoseMeshObjectUpdate(context));
-  if (wrote_buffer1 || wrote_buffer0)
+  if (wrote_buffer1 || wrote_buffer0) {
     context.last_pose_write = std::chrono::steady_clock::now();
+    context.last_pose_write_from_tick = context.posing_from_tick;
+  }
   } catch (...) {
   }
 }
@@ -24988,6 +25004,7 @@ void ANOMALY_CALL Update(void *plugin_context, const double delta_seconds) {
   try {
     context->render_bridge.producer_thread.store(GetCurrentThreadId(), std::memory_order_release);
     context->frame_start = std::chrono::steady_clock::now();
+    context->posing_from_tick = false;
     UpdateRuntime(*context, delta_seconds);
     FinalizeEntityPoses(*context);
     // Parked keyframe application pauses the player and switches it to Custom; restore the
