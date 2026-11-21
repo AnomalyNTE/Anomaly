@@ -14,7 +14,6 @@ Anomaly是免费开源软件，如果你是付费获取，那么恭喜你，你�
 
 ## 社群
 
-- QQ 群：**1037114140**
 - [Discord](https://discord.gg/tfeh8QQ9Vy)
 
 ## 数据与隐私
