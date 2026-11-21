@@ -6553,8 +6553,13 @@ void ProcessSkeletalMeshTick(Context *context, const std::size_t slot,
           // One body write per frame is what the renderer consumes. Once this frame already
           // produced a pose (from the body's own tick or the plugin update), a foreign tick is a
           // repeat; when nothing has written yet, this tick is the only chance to land the pose.
+          // The age bound keeps the fallback alive if the plugin update ever stops advancing the
+          // frame marker: without it a stalled update would silence this path for good.
+          const auto now = std::chrono::steady_clock::now();
+          const bool stale = context->last_pose_write.time_since_epoch().count() == 0 ||
+              now - context->last_pose_write >= std::chrono::milliseconds(50);
           if ((motion_loaded || context->pose_override_enabled.load(std::memory_order_acquire)) &&
-              context->last_pose_write < context->frame_start) {
+              (stale || context->last_pose_write < context->frame_start)) {
             static_cast<void>(ReadPoseArrays(*context));
             if (motion_loaded)
               ApplyMotionPoseDirect(*context);
