@@ -1563,6 +1563,12 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/CameraBlurFix/manifest.json
         PACKAGE_NAME CameraBlurFix
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/CameraBlurFix")
+    anomaly_add_plugin(anomaly_builtin_fps_unlocker
+        SOURCES plugins/FpsUnlocker/plugin.cpp
+        MANIFEST plugins/FpsUnlocker/manifest.json
+        PACKAGE_NAME FpsUnlocker
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/FpsUnlocker")
+    target_compile_options(anomaly_builtin_fps_unlocker PRIVATE /utf-8)
     anomaly_add_plugin(anomaly_builtin_better_pose
         SOURCES plugins/BetterPose/plugin.cpp plugins/BetterPose/blender_motion.hpp
         MANIFEST plugins/BetterPose/manifest.json
@@ -2173,7 +2179,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         anomaly_builtin_nte_position anomaly_builtin_nte_teleport anomaly_builtin_nte_vehicle
         anomaly_builtin_entity_esp anomaly_builtin_pink_paw_heist_esp
         anomaly_builtin_fake_uid anomaly_builtin_camera_tools
-        anomaly_builtin_camera_blur_fix anomaly_builtin_better_pose
+        anomaly_builtin_camera_blur_fix anomaly_builtin_better_pose anomaly_builtin_fps_unlocker
         anomaly_builtin_wallet_collector anomaly_builtin_box_auto anomaly_builtin_combat_box
         anomaly_builtin_clone_enter anomaly_builtin_scene_loader
         anomaly_builtin_nte_quick_ultimate
