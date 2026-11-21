@@ -26,10 +26,6 @@
       "minVersion": 1
     },
     {
-      "id": "anomaly.font",
-      "minVersion": 1
-    },
-    {
       "id": "anomaly.texture",
       "minVersion": 1
     },
@@ -107,7 +103,6 @@
     "configuration",
     "scheduler",
     "ui-texture",
-    "ui-font",
     "input",
     "json"
   ]

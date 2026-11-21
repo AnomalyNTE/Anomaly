@@ -28,8 +28,8 @@ sources. In-flight purchases and the batch selection are temporary session state
 Icons are exported by the game into the process-specific temporary
 `AnomalyRemoteShopIcons` directory, normalized with Windows Imaging Component, and
 cached as a bounded set of host-owned textures. File reads and image decoding run
-on a Worker; drawing only requests cached resources. The small selection fallback font
-is an original generated asset; it does not contain game artwork.
+on a Worker; drawing only requests cached resources. Selection boxes, stars and
+close icons use generated RGBA textures; no font files are bundled.
 
 Build with the repository presets:
 

@@ -85,8 +85,6 @@ struct Context {
     uint64_t rendered_catalog_revision{};
     bool catalog_initialized{}, scroll_reset_frame{};
     IconCache icons;
-    const AnomalyFontServiceV1* fonts{};
-    Handle selection_font{};
     const AnomalyInputServiceV1* input{};
     bool selection_mouse_down{};
     std::map<GoodsKey,uint32_t> basket;
@@ -426,9 +424,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* api, void** out) noexc
         ctx->favorites.core = engine.core;
         ctx->favorites.scheduler = Query<AnomalySchedulerServiceV1>(host,ANOMALY_SCHEDULER_SERVICE_V1_ID);
         ctx->icons.service = Query<AnomalyTextureServiceV1>(host, ANOMALY_TEXTURE_SERVICE_V1_ID);
-        ctx->fonts = Query<AnomalyFontServiceV1>(host,ANOMALY_FONT_SERVICE_V1_ID);
         ctx->input = Query<AnomalyInputServiceV1>(host,ANOMALY_INPUT_SERVICE_V1_ID);
-        if (ctx->fonts && (!ctx->fonts->request || !ctx->fonts->release || !ctx->fonts->push || !ctx->fonts->pop)) ctx->fonts = nullptr;
         if (ctx->icons.service && (!ctx->icons.service->request || !ctx->icons.service->state || !ctx->icons.service->draw || !ctx->icons.service->release)) ctx->icons.service = nullptr;
         ctx->controls.service = ctx->icons.service;
         ctx->icons.scheduler = ctx->favorites.scheduler;
@@ -447,12 +443,6 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* api, void** out) noexc
         if (!ctx->input || !ctx->input->snapshot) return {ANOMALY_STATUS_V1_UNAVAILABLE,0,StringView("RemoteShop requires the input snapshot service")};
         if (ctx->favorites.Load()) ctx->Log("RemoteShop favorites restored shops=" + std::to_string(ctx->favorites.value.shops.size()) +
             " goods=" + std::to_string(ctx->favorites.value.goods.size()));
-        if (ctx->fonts) {
-            AnomalyFontRequestV1 request{sizeof(request)};
-            request.relative_path = StringView("assets/Selection.ttf"); request.size_pixels = 20;
-            request.glyph_range = ANOMALY_GLYPH_RANGE_V1_PRIVATE_USE;
-            ctx->fonts->request(ctx->fonts->user,&request,&ctx->selection_font);
-        }
         if (ctx->favorites.value.browser) {
             const auto& browser = *ctx->favorites.value.browser;
             ctx->page = static_cast<Page>(browser.page); ctx->quantity = browser.quantity;
@@ -509,7 +499,6 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void* raw, uint32_t) noexcept {
         ctx.favorites.CommitPending();
         ctx.controls.Release();
         ctx.icons.Release();
-        if (ctx.selection_font.id) { ctx.fonts->release(ctx.fonts->user,ctx.selection_font); ctx.selection_font = {}; }
         return Ok();
     } catch (...) { return {ANOMALY_STATUS_V1_FAILED}; }
 }
@@ -757,10 +746,7 @@ void DrawContents(Context& ctx, const AnomalyUiServiceV1& ui) {
         if (check) {
         int picked = std::ranges::any_of(group.offers,[&](auto i){const auto& offer = (*view.goods)[i];return ctx.basket.contains({offer.shop_id,offer.id});}) ? 1 : 0;
         if (!ctx.controls.Draw(picked ? 1 : 0)) {
-            const bool custom_font = ctx.selection_font.id && Succeeded(ctx.fonts->push(ctx.fonts->user,ctx.selection_font));
-            const auto symbol = custom_font ? (picked ? "\xee\x80\x81" : "\xee\x80\x80") : (picked ? "[x]" : "[ ]");
-            text(symbol);
-            if (custom_font) ctx.fonts->pop(ctx.fonts->user);
+            text(picked ? "[x]" : "[ ]");
         }
         if (!view.busy && !view.batch_active && selection_pressed && (ui.frame_state(ui.user) & ANOMALY_UI_FRAME_V1_ITEM_HOVERED)) {
             if (!picked) { select(item); ctx.basket[{item.shop_id,item.id}] = ctx.quantity; }
