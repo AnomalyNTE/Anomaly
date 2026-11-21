@@ -23986,12 +23986,18 @@ bool UpdateKeyframeOverlayPicking(Context &context, const AnomalyUiServiceV1 * /
   float y = input.mouse_y;
   {
     std::lock_guard<std::mutex> lock(context.overlay_mutex);
-    if (HWND window = FindWindowW(L"UnrealWindow", nullptr); window != nullptr) {
-      RECT client{};
-      if (GetClientRect(window, &client) != FALSE && client.right > 0 && client.bottom > 0 &&
-          context.overlay_viewport_width > 0.0F && context.overlay_viewport_height > 0.0F) {
-        x *= context.overlay_viewport_width / static_cast<float>(client.right);
-        y *= context.overlay_viewport_height / static_cast<float>(client.bottom);
+    // The host reports AHUD canvas pixels; rescaling by the window client size doubled the
+    // transform (measured y=18360 in a 1080 tall viewport) and pushed every scene pick outside
+    // the canvas. Convert only coordinates that fall outside it.
+    if (x < 0.0F || y < 0.0F || x > context.overlay_viewport_width + 1.0F ||
+        y > context.overlay_viewport_height + 1.0F) {
+      if (HWND window = FindWindowW(L"UnrealWindow", nullptr); window != nullptr) {
+        RECT client{};
+        if (GetClientRect(window, &client) != FALSE && client.right > 0 && client.bottom > 0 &&
+            context.overlay_viewport_width > 0.0F && context.overlay_viewport_height > 0.0F) {
+          x *= context.overlay_viewport_width / static_cast<float>(client.right);
+          y *= context.overlay_viewport_height / static_cast<float>(client.bottom);
+        }
       }
     }
   }
@@ -24142,15 +24148,22 @@ bool UpdateCameraOriginPicking(Context &context,
       (input.capture_flags & ANOMALY_INPUT_CAPTURE_V1_MOUSE) != 0;
   float mouse_x = input.mouse_x;
   float mouse_y = input.mouse_y;
-  if (HWND window = FindWindowW(L"UnrealWindow", nullptr); window != nullptr) {
-    RECT client{};
-    if (GetClientRect(window, &client) != FALSE && client.right > 0 &&
-        client.bottom > 0 && context.overlay_viewport_width > 0.0F &&
-        context.overlay_viewport_height > 0.0F) {
-      mouse_x *=
-          context.overlay_viewport_width / static_cast<float>(client.right);
-      mouse_y *=
-          context.overlay_viewport_height / static_cast<float>(client.bottom);
+  // The host reports AHUD canvas pixels; rescaling by the window client size doubled the
+  // transform (measured y=18360 in a 1080 tall viewport) and pushed every scene pick outside the
+  // canvas. Convert only coordinates that fall outside it.
+  if (mouse_x < 0.0F || mouse_y < 0.0F ||
+      mouse_x > context.overlay_viewport_width + 1.0F ||
+      mouse_y > context.overlay_viewport_height + 1.0F) {
+    if (HWND window = FindWindowW(L"UnrealWindow", nullptr); window != nullptr) {
+      RECT client{};
+      if (GetClientRect(window, &client) != FALSE && client.right > 0 &&
+          client.bottom > 0 && context.overlay_viewport_width > 0.0F &&
+          context.overlay_viewport_height > 0.0F) {
+        mouse_x *=
+            context.overlay_viewport_width / static_cast<float>(client.right);
+        mouse_y *=
+            context.overlay_viewport_height / static_cast<float>(client.bottom);
+      }
     }
   }
   if (context.overlay_camera_arrow_pressed) {
@@ -24323,13 +24336,18 @@ void UpdateSkeletonOverlayPicking(Context &context,
     end_drag();
     return;
   }
-  if (HWND window = FindWindowW(L"UnrealWindow", nullptr); window != nullptr) {
-    RECT client{};
-    if (GetClientRect(window, &client) != FALSE && client.right > 0 &&
-        client.bottom > 0 && context.overlay_viewport_width > 0.0F &&
-        context.overlay_viewport_height > 0.0F) {
-      mouse_x *= context.overlay_viewport_width / static_cast<float>(client.right);
-      mouse_y *= context.overlay_viewport_height / static_cast<float>(client.bottom);
+  // Same canvas-pixel contract as the picker above: only convert outside-canvas coordinates.
+  if (mouse_x < 0.0F || mouse_y < 0.0F ||
+      mouse_x > context.overlay_viewport_width + 1.0F ||
+      mouse_y > context.overlay_viewport_height + 1.0F) {
+    if (HWND window = FindWindowW(L"UnrealWindow", nullptr); window != nullptr) {
+      RECT client{};
+      if (GetClientRect(window, &client) != FALSE && client.right > 0 &&
+          client.bottom > 0 && context.overlay_viewport_width > 0.0F &&
+          context.overlay_viewport_height > 0.0F) {
+        mouse_x *= context.overlay_viewport_width / static_cast<float>(client.right);
+        mouse_y *= context.overlay_viewport_height / static_cast<float>(client.bottom);
+      }
     }
   }
   // Rotate gizmo: a held ring keeps the cursor until the left button is let
@@ -24519,12 +24537,18 @@ void UpdateOrbitCameraInput(Context &context, const AnomalyUiServiceV1 *ui,
   float y = input.mouse_y;
   {
     std::lock_guard<std::mutex> lock(context.overlay_mutex);
-    if (HWND window = FindWindowW(L"UnrealWindow", nullptr); window != nullptr) {
-      RECT client{};
-      if (GetClientRect(window, &client) != FALSE && client.right > 0 && client.bottom > 0 &&
-          context.overlay_viewport_width > 0.0F && context.overlay_viewport_height > 0.0F) {
-        x *= context.overlay_viewport_width / static_cast<float>(client.right);
-        y *= context.overlay_viewport_height / static_cast<float>(client.bottom);
+    // The host reports AHUD canvas pixels; rescaling by the window client size doubled the
+    // transform (measured y=18360 in a 1080 tall viewport) and pushed every scene pick outside
+    // the canvas. Convert only coordinates that fall outside it.
+    if (x < 0.0F || y < 0.0F || x > context.overlay_viewport_width + 1.0F ||
+        y > context.overlay_viewport_height + 1.0F) {
+      if (HWND window = FindWindowW(L"UnrealWindow", nullptr); window != nullptr) {
+        RECT client{};
+        if (GetClientRect(window, &client) != FALSE && client.right > 0 && client.bottom > 0 &&
+            context.overlay_viewport_width > 0.0F && context.overlay_viewport_height > 0.0F) {
+          x *= context.overlay_viewport_width / static_cast<float>(client.right);
+          y *= context.overlay_viewport_height / static_cast<float>(client.bottom);
+        }
       }
     }
   }
