@@ -66,8 +66,8 @@ inline void SynchronizeOwnership(Context &context) noexcept {
           context.motion_loaded.load(std::memory_order_acquire);
     } else {
       const auto track = context.entity_motion_states.find(mesh);
-      owned = track != context.entity_motion_states.end() && track->second.track.frame_count == 0 &&
-          !track->second.keyframe_track.Empty();
+      owned = track != context.entity_motion_states.end() &&
+          (track->second.track.frame_count != 0 || !track->second.keyframe_track.Empty());
     }
     if (!owned) it = context.render_bridge.samples.erase(it);
     else ++it;

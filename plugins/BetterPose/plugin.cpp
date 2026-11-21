@@ -236,6 +236,7 @@ struct RuntimeState {
   std::uintptr_t character_class{};
   std::uintptr_t mesh{};
   std::uintptr_t mesh_asset{};   // USkeletalMesh this entry was resolved against
+  std::chrono::steady_clock::time_point last_foreign_pose{};
   bool external_target{};
   std::uintptr_t anim_instance{};
   std::uintptr_t anim_instance_class{};
@@ -1829,6 +1830,7 @@ struct Context final {
     std::uint32_t poseable_socket_bone{(std::numeric_limits<std::uint32_t>::max)()};
     std::array<double, 12> poseable_socket_relative{};
     std::array<double, 12> poseable_expected_relative{};
+    bool poseable_relative_written{};
     bool poseable_bind_written{};
     bool poseable_last_write_ok{};
     bool original_animation_mode_saved{};
@@ -6532,28 +6534,27 @@ void ProcessSkeletalMeshTick(Context *context, const std::size_t slot,
           if (!shared_target)
             static_cast<void>(ApplyCachedEntityPose(*context, address));
         }
-        // The one allowed native hook may belong to a summoned entity while
-        // the Player is selected. Finalize the selected body from this same
-        // post-tick callback so both component classes remain driven.
-        //
-        // Gating this on "does this component belong to us" was tried twice (actor
-        // ownership, then the scanned accessory list) and both times the selected body
-        // stopped being driven on a modded character: the drag stopped following and the
-        // skeleton overlay vanished. Whatever component ticks here is part of how this
-        // character's body stays driven, so the write stays unconditional.
-        if (!context->blender_active.load(std::memory_order_acquire) ||
-            context->blender_frame.valid) {
-          static_cast<void>(ReadPoseArrays(*context));
-          if (context->blender_active.load(std::memory_order_acquire)) {
-            static_cast<void>(
-                ApplyBlenderPoseSmoothed(*context, delta_seconds));
-          } else if (context->motion_loaded.load(
-                         std::memory_order_acquire)) {
-            ApplyMotionPoseDirect(*context);
-          } else if (context->pose_override_enabled.load(
-                         std::memory_order_acquire)) {
-            // Keep manual edits on the same post-tick path as recorded poses.
-            ApplyPoseOverridesDirect(*context);
+        // Foreign ticks can be needed on modded rigs where the body does not use our trampoline.
+        // Keep the manual fallback, but bound its cost when many unrelated components tick.
+        if (context->blender_active.load(std::memory_order_acquire)) {
+          if (context->blender_frame.valid) {
+            static_cast<void>(ReadPoseArrays(*context));
+            static_cast<void>(ApplyBlenderPoseSmoothed(*context, delta_seconds));
+          }
+        } else {
+          const bool motion_loaded = context->motion_loaded.load(std::memory_order_acquire);
+          if (motion_loaded || context->pose_override_enabled.load(std::memory_order_acquire)) {
+            const auto now = std::chrono::steady_clock::now();
+            auto &last = context->runtime.last_foreign_pose;
+            if (last.time_since_epoch().count() == 0 ||
+                now - last >= std::chrono::milliseconds(2)) {
+              last = now;
+              static_cast<void>(ReadPoseArrays(*context));
+              if (motion_loaded)
+                ApplyMotionPoseDirect(*context);
+              else
+                ApplyPoseOverridesDirect(*context, false);
+            }
           }
         }
       }
@@ -8523,16 +8524,12 @@ void RefreshBoneHierarchy(Context &context) noexcept {
     std::array<std::uint8_t, 8> parent_fname{};
     if (!GetParentBoneFName(context, child_fname, parent_fname))
       continue;
-    std::uint32_t parent_name_id{};
-    std::memcpy(&parent_name_id, parent_fname.data(), sizeof(parent_name_id));
-    std::string parent_name;
-    if (!ResolveName(context, parent_name_id, parent_name))
-      continue;
-    const auto it = std::find(context.bone_names.begin(),
-                              context.bone_names.end(), parent_name);
-    if (it != context.bone_names.end())
-      context.bone_parents[index] =
-          static_cast<std::int32_t>(it - context.bone_names.begin());
+    // Use the complete FName. A numbered parent does not match its base name
+    // in the bone table, and treating its child as a root breaks the pose.
+    std::int32_t parent_index = -1;
+    if (GetBoneIndexFName(context, parent_fname, parent_index) &&
+        parent_index >= 0 && static_cast<std::uint32_t>(parent_index) < count)
+      context.bone_parents[index] = parent_index;
   }
 }
 
@@ -9813,6 +9810,7 @@ void RestoreMotionVisibility(Context &context) noexcept;
 
 void ApplyMotionPoseDirect(Context &context,
                            const bool publish_auxiliary) noexcept {
+  render_pose_bridge::ProductionScope production(context);
   try {
   RuntimeState &state = context.runtime;
   const auto publish_limb_status = [&](const limb_cal::Status status) {
@@ -10394,13 +10392,13 @@ void ApplyMotionPoseDirect(Context &context,
       write_motion(native_layout.kMeshComponentSpaceBuffer1Offset, bytes, buffer1_length);
   const bool wrote_buffer0 =
       write_motion(native_layout.kMeshComponentSpaceBuffer0Offset, bytes, buffer0_length);
+  if (wrote_buffer1 || wrote_buffer0)
+    production.published = render_pose_bridge::Publish(context, packed, true);
   if (publish_auxiliary)
     WriteExtraMeshes(context, packed);
   if (wrote_buffer1 || wrote_buffer0)
     DriveParkedPlayerPoseable(context, state.mesh, packed);
   static_cast<void>(ForcePoseMeshObjectUpdate(context));
-  if (wrote_buffer1 || wrote_buffer0)
-    static_cast<void>(render_pose_bridge::Publish(context, packed, true));
   } catch (...) {
   }
 }
@@ -11120,24 +11118,8 @@ bool GetBoneCount(Context &context, std::int32_t &count,
 bool GetBoneNameForMesh(Context &context, const std::uintptr_t mesh,
                         const std::uint32_t bone_index,
                         std::string &name) noexcept {
-  name.clear();
-  if (mesh == 0)
-    return false;
-  std::array<std::uint8_t, 12> parameters{};
-  const std::int32_t index = static_cast<std::int32_t>(bone_index);
-  std::memcpy(parameters.data(), &index, sizeof(index));
-  std::array<std::uint8_t, 12> output{};
-  std::string detail;
-  if (!CallVirtualUFunction(context, mesh, kFunctionGetBoneNamePath,
-                            parameters.data(), parameters.size(), detail,
-                            output.data()))
-    return false;
-  std::uint32_t name_id{};
-  std::memcpy(&name_id, output.data() + 4, sizeof(name_id));
-  if (ResolveName(context, name_id, name))
-    return true;
-  name = "Bone_" + std::to_string(bone_index);
-  return false;
+  std::array<std::uint8_t, 8> fname{};
+  return GetBoneFNameForMesh(context, mesh, bone_index, fname, name);
 }
 
 bool GetBoneFNameForMesh(Context &context, const std::uintptr_t mesh,
@@ -11160,8 +11142,16 @@ bool GetBoneFNameForMesh(Context &context, const std::uintptr_t mesh,
   std::memcpy(fname.data(), output.data() + 4, fname.size());
   std::uint32_t name_id{};
   std::memcpy(&name_id, fname.data(), sizeof(name_id));
-  if (ResolveName(context, name_id, name))
+  if (ResolveName(context, name_id, name)) {
+    // UE stores the numeric suffix plus one; zero denotes an unnumbered name.
+    std::uint32_t number{};
+    std::memcpy(&number, fname.data() + sizeof(name_id), sizeof(number));
+    if (number != 0) {
+      name += '_';
+      name += std::to_string(number - 1U);
+    }
     return true;
+  }
   name = "Bone_" + std::to_string(bone_index);
   return false;
 }
@@ -11425,18 +11415,23 @@ bool DrivePoseableSocketPose(Context &context, Context::ExtraMesh &extra,
   PackedTransform placement{};
   PackTransform(TransformMultiply(UnpackTransform(body_pose[extra.poseable_socket_bone]),
                                   UnpackTransform(authored)), placement);
-  std::memcpy(extra.poseable_expected_relative.data(), &placement, sizeof(placement));
-  std::array<std::uint8_t, 369> parameters{};
-  static_assert(parameters.size() <= kMaximumUFunctionParameterBytes);
-  std::memcpy(parameters.data(), &placement, sizeof(placement));
-  if (extra.poseable_set_relative_function == 0 || extra.poseable_process_event == 0 ||
-      !CallResolvedUFunction(context, extra.poseable_component,
-                             extra.poseable_set_relative_function,
-                             extra.poseable_process_event, parameters.data(),
-                             parameters.size()))
-    return false;
   const bool was_dynamic = extra.accessory_dynamics.Moving();
   const bool strand_enabled = extra.accessory_dynamics.DrivenBones() != 0;
+  if (strand_enabled || was_dynamic || !extra.poseable_relative_written ||
+      std::memcmp(extra.poseable_expected_relative.data(), &placement, sizeof(placement)) != 0) {
+    std::array<std::uint8_t, 369> parameters{};
+    static_assert(parameters.size() <= kMaximumUFunctionParameterBytes);
+    std::memcpy(parameters.data(), &placement, sizeof(placement));
+    extra.poseable_relative_written = false;
+    if (extra.poseable_set_relative_function == 0 || extra.poseable_process_event == 0 ||
+        !CallResolvedUFunction(context, extra.poseable_component,
+                               extra.poseable_set_relative_function,
+                               extra.poseable_process_event, parameters.data(),
+                               parameters.size()))
+      return false;
+    std::memcpy(extra.poseable_expected_relative.data(), &placement, sizeof(placement));
+    extra.poseable_relative_written = true;
+  }
   const std::vector<std::array<double, 12>>* desired_pose = &extra.bind_world;
   if (!context.collision_debug_enabled.load(std::memory_order_acquire))
     extra.accessory_dynamics.ClearCollisionDebug();
@@ -11635,6 +11630,7 @@ void DestroyPoseableAccessories(Context &context) noexcept {
     extra.poseable_active = false;
     extra.poseable_source_visibility_changed = false;
     extra.poseable_attempted = false;
+    extra.poseable_relative_written = false;
     extra.poseable_bind_written = false;
     extra.poseable_last_write_ok = false;
     extra.poseable_process_event = 0;
@@ -15588,6 +15584,7 @@ void ANOMALY_CALL PoseFileTask(void *value, AnomalyGenerationHandleV1) {
         if (!ApplyPoseDocument(*context, json, &report)) {
           SetReflectionStatus(*context, "pose import failed: invalid document");
         } else {
+          context->keyframe_driving_released.store(false, std::memory_order_release);
           context->pose_override_enabled.store(true, std::memory_order_release);
           context->pose_settings_dirty.store(true, std::memory_order_release);
           std::string status =
@@ -18069,6 +18066,7 @@ void StepLibrary(Context &context) noexcept {
         UnloadMotion(context);
         context.reflection_action_requested.store(4, std::memory_order_release);
       }
+      context.keyframe_driving_released.store(false, std::memory_order_release);
       context.pose_override_enabled.store(true, std::memory_order_release);
       context.pose_edit_held.store(false, std::memory_order_release);
       context.keyframe_auto_user_state_valid = false;
@@ -18581,10 +18579,12 @@ void UpdateRuntime(Context &context, const double delta_seconds) noexcept {
   StepMusic(context, delta_seconds);
   const bool motion_active = motion_ready;
 
-  // Keep the extra-component state fresh after every hot reload: both scans are read-only and
-  // chunked, so redo them automatically when a motion is loaded and the state for this pawn is
-  // missing.
-  if (context.motion_loaded.load(std::memory_order_acquire) &&
+  // An initial scan can finish before modular components have usable pose arrays. Retry while
+  // either motion playback or manual posing owns the selected mesh, with the same bounded budget.
+  const bool manual_accessory_pose =
+      context.pose_override_enabled.load(std::memory_order_acquire) &&
+      !context.keyframe_driving_released.load(std::memory_order_acquire);
+  if ((context.motion_loaded.load(std::memory_order_acquire) || manual_accessory_pose) &&
       !context.mesh_scan_running &&
       !context.mesh_scan_requested.load(std::memory_order_acquire) &&
       !context.attach_scan_requested.load(std::memory_order_acquire)) {
@@ -21319,6 +21319,7 @@ void StepSkeletonDrag(Context &context, const AnomalyUe5AhudFrameV1 *frame,
     drag.valid = true;
     // The sliders now show the bone the drag edits.
     context.requested_bone_index.store(drag.pivot, std::memory_order_release);
+    context.keyframe_driving_released.store(false, std::memory_order_release);
     context.pose_override_enabled.store(true, std::memory_order_release);
   }
 
@@ -22452,6 +22453,7 @@ bool StepArrowDrag(Context &context) noexcept {
     for (std::size_t a{}; a != 3; ++a)
       drag.start_offset[a] = context.requested_root_offset[a].load(std::memory_order_acquire);
     drag.valid = true;
+    context.keyframe_driving_released.store(false, std::memory_order_release);
     context.pose_override_enabled.store(true, std::memory_order_release);
     return true;
   }
@@ -22637,6 +22639,7 @@ bool StepGizmoDrag(Context &context, const AnomalyUe5AhudFrameV1 *frame) noexcep
     drag.start_offset = {start_offset.x, start_offset.y, start_offset.z, start_offset.w};
     drag.start_angles = start_angles;
     drag.valid = true;
+    context.keyframe_driving_released.store(false, std::memory_order_release);
     context.pose_override_enabled.store(true, std::memory_order_release);
     return true;
   }
@@ -24673,9 +24676,11 @@ void UpdatePoseHistoryInput(Context &context, const AnomalyUiServiceV1 *ui) noex
     case better_pose::timeline::SpaceAction::ToggleMotion: {
       const bool playing = context.motion_playing.load(std::memory_order_acquire);
       const bool next_playing = !playing;
-      context.motion_playing.store(next_playing, std::memory_order_release);
-      if (next_playing)
+      if (next_playing) {
+        context.keyframe_driving_released.store(false, std::memory_order_release);
         context.camera_session_active.store(true, std::memory_order_release);
+      }
+      context.motion_playing.store(next_playing, std::memory_order_release);
       break;
     }
     case better_pose::timeline::SpaceAction::ToggleKeyframes: {
@@ -25101,8 +25106,11 @@ void DrawKeyframePage(Context &context, const AnomalyUiServiceV1 *ui) {
       playing ? context.localizer.Label("keyframe.pause", "Pause", "keyframe-play")
               : context.localizer.Label("keyframe.play", "Play", "keyframe-play");
   if (button(play_label,
-             key_count >= 2 && !motion_owns && !calibration_owns, 70.0F))
+             key_count >= 2 && !motion_owns && !calibration_owns, 70.0F)) {
+    if (!playing)
+      context.keyframe_driving_released.store(false, std::memory_order_release);
     context.keyframe_playing.store(!playing, std::memory_order_release);
+  }
   ui->same_line(ui->user, 0.0F, 6.0F);
   if (button(context.localizer.Label("keyframe.stop", "To start", "keyframe-stop"), true, 70.0F)) {
     context.keyframe_playing.store(false, std::memory_order_release);
@@ -26609,9 +26617,11 @@ void ANOMALY_CALL Draw(void *plugin_context, const AnomalyUiServiceV1 *ui) {
     if (ui->button(ui->user, anomaly::sdk::StringView(motion_play_label), 60.0F,
                    0.0F) != 0) {
       const bool next_playing = !motion_playing;
-      context->motion_playing.store(next_playing, std::memory_order_release);
-      if (next_playing)
+      if (next_playing) {
+        context->keyframe_driving_released.store(false, std::memory_order_release);
         context->camera_session_active.store(true, std::memory_order_release);
+      }
+      context->motion_playing.store(next_playing, std::memory_order_release);
     }
     ui->same_line(ui->user, 0.0F, 6.0F);
     const std::string motion_stop_label =
