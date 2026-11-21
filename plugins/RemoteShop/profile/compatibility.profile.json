@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "game": "nte",
+  "module": "HTGame.exe",
+  "section": ".text",
+  "contract": "remote-shop-v1",
+  "layout": {
+    "objectFlags": 8,
+    "objectIndex": 12,
+    "objectClass": 16,
+    "objectName": 24,
+    "objectOuter": 32,
+    "structSuper": 64,
+    "structProperties": 112,
+    "propertyName": 32,
+    "propertySize": 52,
+    "propertyOffset": 68,
+    "propertyLinkNext": 72,
+    "structChildren": 72,
+    "fieldNext": 40,
+    "functionFlags": 176,
+    "functionParameterCount": 180,
+    "functionParameterSize": 182,
+    "actorProcessEvent": 608,
+    "textDisplayGetter": 40,
+    "textSharedGetter": 48,
+    "tableRowStruct": 40,
+    "tableRowMap": 48,
+    "mapStride": 24,
+    "mapKey": 0,
+    "mapValue": 8,
+    "iconPackage": 8,
+    "iconAsset": 16
+  },
+  "symbols": [
+    {
+      "name": "text-shared-getter",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 18 57 48 83 EC 20 48 8B 49 18 33 DB 48 8B FA 48 85 C9 74 5F 45 33 C0 48 8D 54 24 30 E8",
+          "entry": "48 89 5C 24 18 57 48 83 EC 20 48 8B 49 18 33 DB 48 8B FA 48 85 C9 74 5F 45 33 C0 48 8D 54 24 30 E8",
+          "values": {}
+        }
+      ]
+    }
+  ]
+}
