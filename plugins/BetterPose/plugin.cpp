@@ -1879,15 +1879,6 @@ struct Context final {
     std::vector<std::uint8_t> saved_component;
     std::vector<std::uint8_t> saved_bone;
   };
-  struct ParkedPlayerAnim {
-    std::uint8_t tick_option{};
-    std::uint8_t animation_mode{};
-    std::uint8_t animation_flags{};
-  };
-  std::map<std::uintptr_t, ParkedPlayerAnim> parked_player_anim;
-  // The visible player accessory is a poseable replacement; retain it while the player is parked.
-  std::uintptr_t parked_player_poseable_owner{};
-  std::vector<ExtraMesh> parked_player_poseables;
   std::mutex extra_mesh_mutex;
   std::vector<ExtraMesh> extra_meshes;
   std::uintptr_t extra_mesh_owner{};
@@ -6262,12 +6253,6 @@ bool EnsureExtraPoseAnimationMode(Context &context,
 bool WritePoseableAccessoryPose(Context &context, Context::ExtraMesh &extra,
                                 const std::vector<std::array<double, 12>> &components) noexcept;
 void DestroyPoseableAccessories(Context &context) noexcept;
-void SyncParkedPlayerAnimation(Context &context) noexcept;
-void StashPlayerPoseableAccessories(Context &context, std::uintptr_t mesh) noexcept;
-void AdoptPlayerPoseableAccessories(Context &context, std::uintptr_t mesh) noexcept;
-void DriveParkedPlayerPoseable(Context &context, std::uintptr_t mesh,
-                               const std::vector<PackedTransform> &packed) noexcept;
-void RestoreParkedPlayerPoseable(Context &context) noexcept;
 void DestroyStalePoseableComponent(Context &context,
                                    std::uintptr_t component) noexcept;
 
@@ -8819,7 +8804,6 @@ void ApplyPoseOverridesDirect(Context &context,
   }
   if (write_extras)
     WriteExtraMeshes(context, packed);
-  DriveParkedPlayerPoseable(context, state.mesh, packed);
   static_cast<void>(ForcePoseMeshObjectUpdate(context));
   } catch (...) {
   }
@@ -8932,11 +8916,9 @@ bool ApplyCachedEntityPose(Context &context,
   }
   const auto *bytes = reinterpret_cast<const std::uint8_t *>(packed.data());
   const auto byte_count = packed.size() * sizeof(PackedTransform);
-  if (!WriteBytes(context, component_data, bytes, byte_count) ||
-      !WriteBytes(context, bone_data, bytes, byte_count))
-    return false;
-  DriveParkedPlayerPoseable(context, mesh, packed);
-  return ForceMeshObjectUpdate(context, mesh);
+  return WriteBytes(context, component_data, bytes, byte_count) &&
+         WriteBytes(context, bone_data, bytes, byte_count) &&
+         ForceMeshObjectUpdate(context, mesh);
 }
 
 bool MaintainParkedEntityPose(Context &context, const std::uintptr_t mesh,
@@ -10395,7 +10377,6 @@ void ApplyMotionPoseDirect(Context &context,
       write_motion(native_layout.kMeshComponentSpaceBuffer0Offset, bytes, buffer0_length);
   if (publish_auxiliary)
     WriteExtraMeshes(context, packed);
-  DriveParkedPlayerPoseable(context, state.mesh, packed);
   static_cast<void>(ForcePoseMeshObjectUpdate(context));
   if (wrote_buffer1 || wrote_buffer0)
     static_cast<void>(render_pose_bridge::Publish(context, packed, true));
@@ -11506,105 +11487,6 @@ bool DrivePoseableSocketPose(Context &context, Context::ExtraMesh &extra,
     extra.poseable_source_visibility_changed = true;
   }
   return true;
-}
-
-void SyncParkedPlayerAnimation(Context &context) noexcept {
-  const std::uintptr_t mesh = context.local_mesh;
-  if (mesh == 0)
-    return;
-  const bool parked = context.runtime.mesh != mesh;
-  auto saved = context.parked_player_anim.find(mesh);
-  if (parked) {
-    if (saved == context.parked_player_anim.end()) {
-      Context::ParkedPlayerAnim original;
-      if (!Read(context, mesh + native_layout.kMeshVisibilityBasedAnimTickOptionOffset,
-                original.tick_option) ||
-          !Read(context, mesh + native_layout.kMeshAnimationModeOffset, original.animation_mode) ||
-          !Read(context, mesh + native_layout.kMeshAnimationFlagsOffset, original.animation_flags))
-        return;
-      saved = context.parked_player_anim.emplace(mesh, original).first;
-    }
-    // 0 is AlwaysTickPoseAndRefreshBones in UE 5.6; mode 0 lets the AnimBP run; PauseAnims must be
-    // clear or the visibility option alone cannot refresh the component-space bones.
-    static_cast<void>(Write(context, mesh + native_layout.kMeshVisibilityBasedAnimTickOptionOffset,
-                            std::uint8_t{0}));
-    static_cast<void>(Write(context, mesh + native_layout.kMeshAnimationModeOffset, std::uint8_t{0}));
-    const std::uint8_t pause_bit =
-        static_cast<std::uint8_t>(1U << native_layout.kAnimationFlagPauseAnimsBit);
-    static_cast<void>(Write(context, mesh + native_layout.kMeshAnimationFlagsOffset,
-                            static_cast<std::uint8_t>(saved->second.animation_flags &
-                                                      static_cast<std::uint8_t>(~pause_bit))));
-  } else if (saved != context.parked_player_anim.end()) {
-    static_cast<void>(Write(context, mesh + native_layout.kMeshVisibilityBasedAnimTickOptionOffset,
-                            saved->second.tick_option));
-    static_cast<void>(Write(context, mesh + native_layout.kMeshAnimationModeOffset,
-                            saved->second.animation_mode));
-    static_cast<void>(Write(context, mesh + native_layout.kMeshAnimationFlagsOffset,
-                            saved->second.animation_flags));
-    context.parked_player_anim.erase(saved);
-  }
-}
-
-void StashPlayerPoseableAccessories(Context &context, const std::uintptr_t mesh) noexcept {
-  if (mesh == 0 || mesh != context.local_mesh)
-    return;
-  std::lock_guard<std::mutex> lock(context.extra_mesh_mutex);
-  if (context.extra_mesh_owner != mesh)
-    return;
-  std::vector<Context::ExtraMesh> kept;
-  std::vector<Context::ExtraMesh> remaining;
-  for (auto &extra : context.extra_meshes) {
-    if (extra.poseable_component != 0)
-      kept.push_back(std::move(extra));
-    else
-      remaining.push_back(std::move(extra));
-  }
-  if (!kept.empty()) {
-    context.parked_player_poseable_owner = mesh;
-    context.parked_player_poseables = std::move(kept);
-  }
-  context.extra_meshes = std::move(remaining);
-}
-
-void AdoptPlayerPoseableAccessories(Context &context, const std::uintptr_t mesh) noexcept {
-  if (mesh == 0 || mesh != context.local_mesh)
-    return;
-  std::lock_guard<std::mutex> lock(context.extra_mesh_mutex);
-  if (context.parked_player_poseable_owner != mesh || context.parked_player_poseables.empty())
-    return;
-  for (auto &extra : context.parked_player_poseables)
-    context.extra_meshes.push_back(std::move(extra));
-  context.parked_player_poseables.clear();
-  context.parked_player_poseable_owner = 0;
-  context.extra_mesh_owner = mesh;
-}
-
-void DriveParkedPlayerPoseable(Context &context, const std::uintptr_t mesh,
-                               const std::vector<PackedTransform> &packed) noexcept {
-  if (mesh == 0 || mesh != context.local_mesh || packed.empty())
-    return;
-  std::lock_guard<std::mutex> lock(context.extra_mesh_mutex);
-  if (context.parked_player_poseable_owner != mesh)
-    return;
-  for (auto &extra : context.parked_player_poseables)
-    if (extra.poseable_component != 0 && extra.poseable_active)
-      static_cast<void>(DrivePoseableSocketPose(context, extra, packed));
-}
-
-void RestoreParkedPlayerPoseable(Context &context) noexcept {
-  {
-    std::lock_guard<std::mutex> lock(context.extra_mesh_mutex);
-    if (context.parked_player_poseables.empty()) {
-      context.parked_player_poseable_owner = 0;
-      return;
-    }
-    for (auto &extra : context.parked_player_poseables)
-      context.extra_meshes.push_back(std::move(extra));
-    context.parked_player_poseables.clear();
-    context.extra_mesh_owner = context.parked_player_poseable_owner;
-    context.parked_player_poseable_owner = 0;
-  }
-  static_cast<void>(DropExtraMeshes(context));
 }
 
 void DestroyPoseableAccessories(Context &context) noexcept {
@@ -19297,8 +19179,6 @@ void BindRuntimeCharacter(Context &context, const std::uintptr_t character,
   // is selected.  Capture it before RestoreAll clears the transient state.
   CaptureEntityPose(context, previous_mesh);
   CapturePlayerFreeze(context);
-  if (target_switch && previous_mesh == context.local_mesh)
-    StashPlayerPoseableAccessories(context, previous_mesh);
   const auto previous_pose = context.entity_pose_states.find(previous_mesh);
   const bool preserve_previous_pose =
       previous_pose != context.entity_pose_states.end() &&
@@ -19338,8 +19218,6 @@ void BindRuntimeCharacter(Context &context, const std::uintptr_t character,
   state.bound_character = character;
   state.bound_mesh = mesh;
   state.external_target = external_target;
-  if (!external_target)
-    AdoptPlayerPoseableAccessories(context, mesh);
   if (!external_target)
     SeedPlayerFreezeRuntime(context, mesh);
   else
@@ -24903,17 +24781,6 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void *plugin_context, std::uint32_t) {
   RestoreSharedEntityPoses(*context);
   RestoreParkedEntityAnimations(*context);
   static_cast<void>(ReleasePlayerFreeze(*context));
-  RestoreParkedPlayerPoseable(*context);
-  for (const auto &entry : context->parked_player_anim) {
-    static_cast<void>(Write(*context,
-        entry.first + native_layout.kMeshVisibilityBasedAnimTickOptionOffset,
-        entry.second.tick_option));
-    static_cast<void>(Write(*context, entry.first + native_layout.kMeshAnimationModeOffset,
-                            entry.second.animation_mode));
-    static_cast<void>(Write(*context, entry.first + native_layout.kMeshAnimationFlagsOffset,
-                            entry.second.animation_flags));
-  }
-  context->parked_player_anim.clear();
   g_active.store(nullptr, std::memory_order_release);
   context->camera_follow_target.store(0, std::memory_order_release);
   context->requested_camera_follow_target.store(
@@ -24963,9 +24830,6 @@ void ANOMALY_CALL Update(void *plugin_context, const double delta_seconds) {
     context->render_bridge.producer_thread.store(GetCurrentThreadId(), std::memory_order_release);
     UpdateRuntime(*context, delta_seconds);
     FinalizeEntityPoses(*context);
-    // Parked keyframe application pauses the player and switches it to Custom; restore the
-    // full-refresh fields after that path so the leader-pose accessory can follow this frame.
-    SyncParkedPlayerAnimation(*context);
     render_pose_bridge::SynchronizeOwnership(*context);
     BlenderDrain(*context);
     const int collision_request =
