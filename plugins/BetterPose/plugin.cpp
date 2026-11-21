@@ -11117,6 +11117,12 @@ bool LoadMotionDocument(Context &context, const std::string &document,
     }
   }
   context.motion_loaded.store(true, std::memory_order_release);
+  // A freshly loaded motion must get one mapping attempt immediately. The retry backoff below
+  // suppresses repeated failures for two seconds on the same bone table, and a new file is not a
+  // repeated failure: without this reset, a track loaded right after another one stays unmapped
+  // (the character plays nothing) until that window expires.
+  context.motion_resolve_seq = (std::numeric_limits<std::uint32_t>::max)();
+  context.motion_resolve_ms = 0;
   return true;
 }
 
