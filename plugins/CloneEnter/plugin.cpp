@@ -405,43 +405,49 @@ void SetCombatStatus(void* user, const std::string& text) noexcept {
     static_cast<Context*>(user)->combat_status = text;
 }
 
-// 实体 / 玩家 / 拾取 / 寻路这些服务是**随世界加载才发布**的：加载期查一次会永远拿到
-// null，表现就是一键副本和自动战斗永远停在「等待目标数据」。这里和 session / skills
-// 一样惰性重查，拿到就缓存；还拿不到时节流到一秒一次，避免每帧都做服务查找。
+// 实体 / 玩家 / 拾取 / 寻路这些服务**随世界发布、随世界撤销**：宿主在语义端点就绪后
+// 才发布它们（角色/关卡对象已经存在），回到登录界面或切场景时又会撤销已发布的服务。
+// 所以插件在哪个时刻加载都不该假设这些指针是稳定的：
+// - 加载期查一次并缓存 null ⇒ 一键副本永远停在「等待目标数据」（进世界前加载的那个 bug）；
+// - 撤销后仍留着旧指针 ⇒ 旧表随语义端点一起释放，用它就是野指针。
+// 这里按秒重查并按结果同步缓存：新发布的补上，被撤销的清空。开销是每秒几个服务查找。
+void LogRewardDiagnostic(Context& context, const std::string& message);
+
 template <typename Service>
-void RefreshLateService(const AnomalyHostApiV1* api, const Service*& slot, const char* id,
+void RefreshLateService(Context& context, const Service*& slot, const char* id,
                         const std::uint32_t version) noexcept {
-    if (slot != nullptr || api == nullptr) return;
-    slot = anomaly::sdk::Host(api).Query<Service>(id, version).get();
+    if (context.host == nullptr) return;
+    const Service* current =
+        anomaly::sdk::Host(context.host).Query<Service>(id, version).get();
+    if (current == slot) return;
+    // 只在真变化时打一条，避免每秒刷屏。
+    LogRewardDiagnostic(context, std::string("late service ") + id + ": " +
+                                     (current != nullptr ? "available" : "revoked"));
+    slot = current;
 }
 
 void RefreshLateServices(Context& context) noexcept {
     if (context.host == nullptr) return;
-    if (context.entities != nullptr && context.actors != nullptr && context.player != nullptr &&
-        context.pickup != nullptr && context.navigation != nullptr &&
-        context.map_landmarks != nullptr) {
-        return;
-    }
     const auto now = std::chrono::steady_clock::now();
     if (context.late_service_probe.time_since_epoch().count() != 0 &&
         now < context.late_service_probe) {
         return;
     }
     context.late_service_probe = now + std::chrono::seconds(1);
-    RefreshLateService(context.host, context.player, ANOMALY_NTE_PLAYER_SERVICE_V1_ID,
+    RefreshLateService(context, context.player, ANOMALY_NTE_PLAYER_SERVICE_V1_ID,
                        ANOMALY_NTE_PLAYER_SERVICE_V1_VERSION);
-    RefreshLateService(context.host, context.entities, ANOMALY_NTE_ENTITIES_SERVICE_V1_ID,
+    RefreshLateService(context, context.entities, ANOMALY_NTE_ENTITIES_SERVICE_V1_ID,
                        ANOMALY_NTE_ENTITIES_SERVICE_V1_VERSION);
-    RefreshLateService(context.host, context.actors, ANOMALY_NTE_ACTORS_SERVICE_V1_ID,
+    RefreshLateService(context, context.actors, ANOMALY_NTE_ACTORS_SERVICE_V1_ID,
                        ANOMALY_NTE_ACTORS_SERVICE_V1_VERSION);
-    RefreshLateService(context.host, context.pickup, ANOMALY_NTE_PICKUP_SERVICE_V1_ID,
+    RefreshLateService(context, context.pickup, ANOMALY_NTE_PICKUP_SERVICE_V1_ID,
                        ANOMALY_NTE_PICKUP_SERVICE_V1_VERSION);
-    RefreshLateService(context.host, context.navigation, ANOMALY_NTE_NAVIGATION_SERVICE_V1_ID,
+    RefreshLateService(context, context.navigation, ANOMALY_NTE_NAVIGATION_SERVICE_V1_ID,
                        ANOMALY_NTE_NAVIGATION_SERVICE_V1_VERSION);
-    RefreshLateService(context.host, context.map_landmarks,
+    RefreshLateService(context, context.map_landmarks,
                        ANOMALY_NTE_MAP_LANDMARKS_SERVICE_V1_ID,
                        ANOMALY_NTE_MAP_LANDMARKS_SERVICE_V1_VERSION);
-    RefreshLateService(context.host, context.teleport,
+    RefreshLateService(context, context.teleport,
                        ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_ID,
                        ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_VERSION);
 }
@@ -7583,7 +7589,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         anomaly::sdk::StringView("ccyellowstar.clone-enter"),
         anomaly::sdk::StringView("Clone Enter"),
         anomaly::sdk::StringView("CCYellowStar"),
-        anomaly::sdk::StringView("0.2.17"),
+        anomaly::sdk::StringView("0.2.18"),
         Load, Start, Stop, Unload, Update, Draw};
     return anomaly::sdk::Ok();
 }
