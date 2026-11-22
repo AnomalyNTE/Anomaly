@@ -1232,6 +1232,32 @@ std::string WhitelistExtraEffectDisplay(const std::string& extra_id) {
     return {};
 }
 
+// Local feature: convert a virtual-key code to the localized key name the user
+// sees on the keyboard (e.g. 0x48 -> "H"), with extended-key handling.
+std::string VirtualKeyDisplayName(std::uint32_t vk) {
+    const UINT scan = MapVirtualKeyA(vk, MAPVK_VK_TO_VSC);
+    if (scan == 0) return std::to_string(vk);
+    LONG parameter = static_cast<LONG>(scan) << 16;
+    switch (vk) {
+        case VK_LEFT: case VK_RIGHT: case VK_UP: case VK_DOWN:
+        case VK_HOME: case VK_END: case VK_PRIOR: case VK_NEXT:
+        case VK_INSERT: case VK_DELETE: case VK_RCONTROL: case VK_RMENU:
+        case VK_NUMLOCK: case VK_DIVIDE: case VK_SNAPSHOT:
+            parameter |= 1L << 24;
+            break;
+        default:
+            break;
+    }
+    wchar_t name[64]{};
+    if (GetKeyNameTextW(parameter, name, 63) == 0) return std::to_string(vk);
+    const int utf8_size = WideCharToMultiByte(
+        CP_UTF8, 0, name, -1, nullptr, 0, nullptr, nullptr);
+    if (utf8_size <= 1) return std::to_string(vk);
+    std::string text(static_cast<std::size_t>(utf8_size - 1), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, name, -1, text.data(), utf8_size, nullptr, nullptr);
+    return text;
+}
+
 // Candidate display name: catalog label first, official effect display name for
 // whitelisted premiums, raw ID (without the #number) as the last resort.
 std::string CandidateDisplayName(const std::string& id) {
@@ -3074,6 +3100,9 @@ void DrawCustomizationDetail(
             has_default_skin = has_default_skin || option.is_default;
             const bool current = skin_id == option.id;
             std::string label = skin_display_label(option);
+            if (current) {
+                label = "[" + g_context.localizer.Text("label.selected_mark", "Selected") + "] " + label;
+            }
             label += "##custom-skin-" + option.id;
             if (ui->button(ui->user, anomaly::sdk::StringView(label), list_width, 0.0F)) {
                 std::scoped_lock lock(g_context.mutex);
@@ -3119,6 +3148,14 @@ void DrawCustomizationDetail(
                 selected_option_id == option.id;
             const bool default_selected = selected_option_id.empty() && option.is_default;
             std::string label = option.label.empty() ? option.id : option.label;
+            // Local feature: mark the equipped slot ("已选") and the slot that
+            // currently keeps the game default ("默认"), matching the community
+            // build's customization list.
+            if (explicit_selected) {
+                label = "[" + g_context.localizer.Text("label.selected_mark", "Selected") + "] " + label;
+            } else if (default_selected) {
+                label = "[" + g_context.localizer.Text("label.default_mark", "Default") + "] " + label;
+            }
             label += "##custom-module-" + std::to_string(type) + "-" + option.id;
             if (ui->button(ui->user, anomaly::sdk::StringView(label), list_width, 0.0F)) {
                 std::scoped_lock lock(g_context.mutex);
@@ -3150,10 +3187,24 @@ void DrawCustomizationDetail(
                 std::scoped_lock lock(g_context.mutex);
                 extras = g_context.allowed_extra_modules;
             }
+            // Only this vehicle's own whitelist entries render, deduplicated
+            // against catalog rows of the same base ID (the catalog carries the
+            // effect once it is owned, so the whitelist entry would duplicate it).
+            const std::string extra_prefix = VehicleModulePrefixFromId(selected);
             for (const auto& extra : extras) {
                 if (extra.first != type) continue;
+                if (!WhitelistExtraForVehicle(extra.second, extra_prefix)) continue;
                 const std::string display = WhitelistExtraEffectDisplay(extra.second);
                 if (display.empty()) continue;
+                std::string extra_base = extra.second;
+                const auto extra_hash = extra_base.find('#');
+                if (extra_hash != std::string::npos) extra_base.resize(extra_hash);
+                const bool duplicated = std::ranges::any_of(options,
+                    [&](const CustomizationOption& option) {
+                        return option.kind == nte_vehicle::kCustomizationModule &&
+                            option.module_type == type && option.id == extra_base;
+                    });
+                if (duplicated) continue;
                 const bool selected_extra = override_for_type(type) == extra.second;
                 std::string label = (selected_extra ? "[x] " : "") + display +
                     "##whitelist-extra-" + extra.second;
@@ -3252,7 +3303,9 @@ void DrawCustomizationDetail(
     }
 
     // Local feature: save the driven vehicle's current module list as this
-    // vehicle's plugin memory (restored on catalog reload and summon).
+    // vehicle's plugin memory (restored on catalog reload and summon). The
+    // currently bound summon hotkey is shown next to the button instead of a
+    // long binding list.
     {
         const auto save_label =
             g_context.localizer.Text("action.save_current_modules", "Save current vehicle modules") +
@@ -3263,15 +3316,33 @@ void DrawCustomizationDetail(
             SetStatus(g_context.localizer.Text("status.modules_save_requested",
                 "Saving the current vehicle's module list to its memory..."));
         }
-    }
-    // Local feature: per-vehicle summon hotkey binding.
-    {
-        DrawDivider(ui);
-        std::map<std::uint32_t, std::string> bindings;
+        DrawInlineGap(ui);
+        std::uint32_t bound = 0;
         bool binding_mode = false;
         {
             std::scoped_lock lock(g_context.mutex);
-            bindings = g_context.hotkey_vehicle_bindings;
+            for (const auto& [key, vehicle_id] : g_context.hotkey_vehicle_bindings) {
+                if (vehicle_id == selected) {
+                    bound = key;
+                    break;
+                }
+            }
+            binding_mode = g_context.hotkey_binding_mode;
+        }
+        const std::string bound_text = bound != 0 ? VirtualKeyDisplayName(bound)
+            : g_context.localizer.Text("text.hotkey_none", "none");
+        const std::array bound_arguments{std::string_view(bound_text)};
+        DrawText(ui, g_context.localizer.Format("text.current_hotkey",
+            "Hotkey: {0}", bound_arguments) +
+            std::string(binding_mode ? "  <<" +
+                g_context.localizer.Text("action.binding_wait", "press any key to bind...") + ">>"
+                : std::string()));
+    }
+    // Local feature: per-vehicle summon hotkey binding.
+    {
+        bool binding_mode = false;
+        {
+            std::scoped_lock lock(g_context.mutex);
             binding_mode = g_context.hotkey_binding_mode;
         }
         if (binding_mode) {
@@ -3299,12 +3370,6 @@ void DrawCustomizationDetail(
             g_context.memory_dirty.store(true, std::memory_order_release);
             g_context.status = g_context.localizer.Text("status.hotkey_cleared",
                 "Cleared this vehicle's summon hotkey.");
-        }
-        if (!bindings.empty()) {
-            DrawText(ui, g_context.localizer.Text("text.hotkey_bindings", "Summon hotkeys"));
-            for (const auto& [key, vehicle_id] : bindings) {
-                DrawText(ui, "[key " + std::to_string(key) + "] -> " + vehicle_id);
-            }
         }
     }
 
@@ -3492,7 +3557,9 @@ void DrawCustomizationTab(
 void DrawPerformanceTab(
     const AnomalyUiServiceV1* ui, const Snapshot& snap,
     float speed_ratio, float torque_ratio, float other_speed_ratio,
-    float other_speed_floor_ratio, float other_torque_ratio) {
+    float other_speed_floor_ratio, float other_torque_ratio,
+    bool friction, bool durability_guard, bool durability_guard_installed,
+    const std::string& durability_guard_detail, bool durability_auto_full) {
     if ((snap.flags & nte_vehicle::kSnapshotValid) == 0) {
         DrawText(ui, g_context.localizer.Text("text.current_vehicle_none",
             "Current vehicle: not identified"));
@@ -3666,6 +3733,15 @@ void DrawPerformanceTab(
                 if (!listed) patterns.push_back(pattern);
             }
             std::sort(patterns.begin(), patterns.end());
+            // Display each tier pattern with its Chinese effect name instead of
+            // the raw ID token.
+            std::map<std::string, std::string> pattern_names;
+            for (const auto& id : candidates) {
+                const std::string pattern = CandidateTierPattern(id);
+                if (pattern_names.find(pattern) == pattern_names.end()) {
+                    pattern_names.emplace(pattern, CandidateDisplayName(id));
+                }
+            }
             const bool child_available =
                 UiFieldAvailable(ui, offsetof(AnomalyUiServiceV1, end_child),
                     sizeof(decltype(AnomalyUiServiceV1::end_child))) &&
@@ -3682,8 +3758,10 @@ void DrawPerformanceTab(
                         if (tier == pattern) { checked = true; break; }
                     }
                     int flag = checked ? 1 : 0;
+                    const std::string display = pattern_names.count(pattern) != 0
+                        ? pattern_names[pattern] : pattern;
                     const std::string checkbox_label =
-                        "[" + std::string(checked ? "x" : " ") + "] " + pattern +
+                        "[" + std::string(checked ? "x" : " ") + "] " + display +
                         "##drift-scope-" + std::to_string(type) + "-" + pattern;
                     if (ui->checkbox(ui->user,
                             anomaly::sdk::StringView(checkbox_label), &flag) != 0) {
@@ -3709,7 +3787,9 @@ void DrawPerformanceTab(
             std::scoped_lock lock(g_context.mutex);
             return g_context.drift_mark_scope; }(), "##drift-mark-scope-list");
     }
-    // Live option picker: per-category buttons that apply immediately.
+    // Live option picker: category cards first (like the customization tab);
+    // clicking a card shows only that category's list below. Every option click
+    // applies to the driven vehicle immediately.
     {
         std::string realtime_id;
         std::string customization_vehicle;
@@ -3731,9 +3811,6 @@ void DrawPerformanceTab(
                 "Click \"Read driven vehicle\" first; the picker appears once this "
                 "car's customization catalog is loaded."));
         } else {
-            static constexpr std::array<std::uint32_t, 26> kLiveCategories{
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
-                20, 21, 22, 23, 24, 25, 26, 27};
             static constexpr std::array<std::string_view, 28> live_type_keys{
                 "label.module.none", "label.module.engine", "label.module.gearbox",
                 "label.module.brake", "label.module.suspension", "label.module.body_color",
@@ -3753,85 +3830,162 @@ void DrawPerformanceTab(
                 "Limited-slip differential LSD", "Body rigidity", "Skin module",
                 "Interior leather color", "Interior stitching color", "Vehicle badge",
                 "Tire smoke", "Tire tracks", "Tow hook", "ECU", "Exhaust smoke"};
-            for (const auto type : kLiveCategories) {
-                const std::string category = g_context.localizer.Text(
-                    live_type_keys[type], live_type_english[type]);
-                // Current override for this slot.
-                std::string current;
-                for (const auto& entry : overrides) {
-                    if (entry.first == type) { current = entry.second; break; }
+            const std::string prefix = VehicleModulePrefixFromId(realtime_id);
+            // Category list: paint first, then every module type that has
+            // catalog options or whitelisted effect entries for this vehicle.
+            std::vector<std::pair<std::uint32_t, std::string>> live_categories;
+            live_categories.emplace_back(0U,
+                g_context.localizer.Text("section.paint", "Paint"));
+            std::vector<std::uint32_t> live_types;
+            for (const auto& option : options) {
+                if (option.kind != nte_vehicle::kCustomizationModule ||
+                    option.module_type == 0 || option.module_type == 19 ||
+                    option.module_type >= 28) continue;
+                if (std::find(live_types.begin(), live_types.end(),
+                        option.module_type) == live_types.end()) {
+                    live_types.push_back(option.module_type);
                 }
-                bool any_button = false;
-                for (const auto& option : options) {
-                    if (option.kind != nte_vehicle::kCustomizationModule ||
-                        option.module_type != type) continue;
-                    const bool chosen = current == option.id;
-                    std::string label =
-                        (chosen ? "[x] " : "") +
-                        (option.label.empty() ? option.id : option.label) +
-                        "##live-" + std::to_string(type) + "-" + option.id;
-                    any_button = true;
-                    if (ui->button(ui->user, anomaly::sdk::StringView(label), 0.0F, 0.0F)) {
-                        {
-                            std::scoped_lock lock(g_context.mutex);
-                            auto& target = g_context.selected_module_overrides;
-                            const auto found = std::ranges::find_if(target,
-                                [type](const auto& entry) { return entry.first == type; });
-                            if (found == target.end()) target.emplace_back(type, option.id);
-                            else found->second = option.id;
-                        }
-                        g_context.apply_current_modules_requested.store(
-                            true, std::memory_order_release);
+            }
+            for (const auto& extra : extras) {
+                if (extra.first == 0 || extra.first == 19 || extra.first >= 28) continue;
+                if (!WhitelistExtraForVehicle(extra.second, prefix)) continue;
+                if (WhitelistExtraEffectDisplay(extra.second).empty()) continue;
+                if (std::find(live_types.begin(), live_types.end(),
+                        extra.first) == live_types.end()) {
+                    live_types.push_back(extra.first);
+                }
+            }
+            std::sort(live_types.begin(), live_types.end());
+            for (const auto type : live_types) {
+                live_categories.emplace_back(type, g_context.localizer.Text(
+                    live_type_keys[type], live_type_english[type]));
+            }
+            static std::size_t live_active = 0;
+            if (live_active >= live_categories.size()) live_active = 0;
+            // Category cards: up to five per row, the active one bracketed.
+            constexpr std::size_t kLiveColumns = 5;
+            const bool has_same_line =
+                UiFieldAvailable(ui, offsetof(AnomalyUiServiceV1, same_line),
+                    sizeof(decltype(AnomalyUiServiceV1::same_line))) && ui->same_line;
+            for (std::size_t row_begin = 0; row_begin < live_categories.size();
+                 row_begin += kLiveColumns) {
+                const std::size_t row_end =
+                    (std::min)(live_categories.size(), row_begin + kLiveColumns);
+                for (std::size_t i = row_begin; i < row_end; ++i) {
+                    const auto& category = live_categories[i];
+                    const std::string card_label =
+                        (live_active == i ? "[" + category.second + "]" : category.second) +
+                        "##live-cat-" + std::to_string(category.first);
+                    if (ui->button(ui->user, anomaly::sdk::StringView(card_label),
+                            96.0F, 0.0F)) {
+                        live_active = i;
+                    }
+                    if (i + 1 < row_end) {
+                        if (has_same_line) ui->same_line(ui->user, 0.0F, 8.0F);
+                        else DrawInlineGap(ui);
                     }
                 }
-                // Whitelisted premium effects for the tyre slots.
-                if (type == 23 || type == 24) {
-                    for (const auto& extra : extras) {
-                        if (extra.first != type) continue;
-                        const std::string display = WhitelistExtraEffectDisplay(extra.second);
-                        if (display.empty()) continue;
-                        const bool chosen = current == extra.second;
-                        const std::string label =
-                            (chosen ? "[x] " : "") + display +
-                            "##live-wl-" + std::to_string(type) + "-" + extra.second;
-                        any_button = true;
+            }
+            // Only the active category's list renders, in a bounded child.
+            const bool child_available =
+                UiFieldAvailable(ui, offsetof(AnomalyUiServiceV1, end_child),
+                    sizeof(decltype(AnomalyUiServiceV1::end_child))) &&
+                ui->begin_child && ui->end_child;
+            bool list_visible = true;
+            if (child_available) {
+                list_visible = ui->begin_child(ui->user,
+                    anomaly::sdk::StringView("##live-options-child"), 0.0F, 300.0F, 1U) != 0;
+            }
+            if (list_visible) {
+                const std::uint32_t active_type = live_categories[live_active].first;
+                const auto current_override = [&](const std::uint32_t type) {
+                    std::string current;
+                    for (const auto& entry : overrides) {
+                        if (entry.first == type) { current = entry.second; break; }
+                    }
+                    return current;
+                };
+                if (active_type == 0) {
+                    // Paint: clicking a skin applies it to the driven vehicle.
+                    for (const auto& option : options) {
+                        if (option.kind != nte_vehicle::kCustomizationSkin) continue;
+                        const bool chosen = skin_id == option.id;
+                        std::string label =
+                            (chosen ? "[" + g_context.localizer.Text("label.selected_mark", "Selected") + "] " : "") +
+                            (option.label.empty() ? option.id : option.label) +
+                            "##live-skin-" + option.id;
+                        if (ui->button(ui->user, anomaly::sdk::StringView(label), 0.0F, 0.0F)) {
+                            {
+                                std::scoped_lock lock(g_context.mutex);
+                                g_context.realtime_skin_id = option.id;
+                            }
+                            g_context.apply_skin_requested.store(true, std::memory_order_release);
+                        }
+                    }
+                } else {
+                    const std::string current = current_override(active_type);
+                    for (const auto& option : options) {
+                        if (option.kind != nte_vehicle::kCustomizationModule ||
+                            option.module_type != active_type) continue;
+                        const bool chosen = current == option.id;
+                        std::string label =
+                            (chosen ? "[" + g_context.localizer.Text("label.selected_mark", "Selected") + "] " : "") +
+                            (option.label.empty() ? option.id : option.label) +
+                            "##live-" + std::to_string(active_type) + "-" + option.id;
                         if (ui->button(ui->user, anomaly::sdk::StringView(label), 0.0F, 0.0F)) {
                             {
                                 std::scoped_lock lock(g_context.mutex);
                                 auto& target = g_context.selected_module_overrides;
                                 const auto found = std::ranges::find_if(target,
-                                    [type](const auto& entry) { return entry.first == type; });
-                                if (found == target.end())
-                                    target.emplace_back(type, extra.second);
-                                else found->second = extra.second;
+                                    [active_type](const auto& entry) { return entry.first == active_type; });
+                                if (found == target.end()) target.emplace_back(active_type, option.id);
+                                else found->second = option.id;
                             }
                             g_context.apply_current_modules_requested.store(
                                 true, std::memory_order_release);
                         }
                     }
-                }
-                if (any_button) {
-                    DrawText(ui, category);
-                }
-            }
-            // Paint area: clicking a skin applies it to the driven vehicle.
-            DrawText(ui, g_context.localizer.Text("label.paint_live",
-                "Paint (click to apply)"));
-            for (const auto& option : options) {
-                if (option.kind != nte_vehicle::kCustomizationSkin) continue;
-                const bool chosen = skin_id == option.id;
-                std::string label =
-                    (chosen ? "[x] " : "") +
-                    (option.label.empty() ? option.id : option.label) +
-                    "##live-skin-" + option.id;
-                if (ui->button(ui->user, anomaly::sdk::StringView(label), 0.0F, 0.0F)) {
-                    {
-                        std::scoped_lock lock(g_context.mutex);
-                        g_context.realtime_skin_id = option.id;
+                    // Whitelisted premium effects for the tyre slots: filtered to
+                    // this vehicle's prefix and deduplicated against catalog rows.
+                    if (active_type == 23 || active_type == 24) {
+                        for (const auto& extra : extras) {
+                            if (extra.first != active_type) continue;
+                            if (!WhitelistExtraForVehicle(extra.second, prefix)) continue;
+                            const std::string display =
+                                WhitelistExtraEffectDisplay(extra.second);
+                            if (display.empty()) continue;
+                            std::string base = extra.second;
+                            const auto hash_pos = base.find('#');
+                            if (hash_pos != std::string::npos) base.resize(hash_pos);
+                            const bool duplicated = std::ranges::any_of(options,
+                                [&](const CustomizationOption& option) {
+                                    return option.kind == nte_vehicle::kCustomizationModule &&
+                                        option.module_type == active_type &&
+                                        option.id == base;
+                                });
+                            if (duplicated) continue;
+                            const bool chosen = current == extra.second;
+                            const std::string label =
+                                (chosen ? "[" + g_context.localizer.Text("label.selected_mark", "Selected") + "] " : "") +
+                                display + "##live-wl-" + std::to_string(active_type) + "-" + extra.second;
+                            if (ui->button(ui->user, anomaly::sdk::StringView(label), 0.0F, 0.0F)) {
+                                {
+                                    std::scoped_lock lock(g_context.mutex);
+                                    auto& target = g_context.selected_module_overrides;
+                                    const auto found = std::ranges::find_if(target,
+                                        [active_type](const auto& entry) { return entry.first == active_type; });
+                                    if (found == target.end())
+                                        target.emplace_back(active_type, extra.second);
+                                    else found->second = extra.second;
+                                }
+                                g_context.apply_current_modules_requested.store(
+                                    true, std::memory_order_release);
+                            }
+                        }
                     }
-                    g_context.apply_skin_requested.store(true, std::memory_order_release);
                 }
             }
+            if (child_available) ui->end_child(ui->user);
         }
     }
 
@@ -4008,6 +4162,37 @@ void DrawPerformanceTab(
     DrawText(ui, g_context.localizer.Text("text.durability_detail",
         "The guard blocks the dump-verified vehicle damage entry; without it the plugin falls "
         "back to RepairSelf(true). Water vehicles have no verified equivalent."));
+    // Local feature (community layout): the wheel friction switch and the
+    // automatic durability repair toggle live on this page, next to the
+    // durability explanation.
+    DrawInlineGap(ui);
+    int guard_flag = durability_guard ? 1 : 0;
+    if (ui->checkbox(ui->user,
+            anomaly::sdk::StringView(g_context.localizer.Text(
+                "label.durability_guard", "Durability guard") + "##perf-guard"),
+            &guard_flag) != 0) {
+        g_context.durability_guard_toggle.store(true, std::memory_order_release);
+    }
+    if (!durability_guard_installed) {
+        DrawInlineGap(ui);
+        DrawText(ui, durability_guard_detail.empty()
+            ? g_context.localizer.Text("status.durability_guard_unavailable",
+                  "Vehicle durability guard is unavailable.")
+            : durability_guard_detail);
+    }
+    DrawInlineGap(ui);
+    {
+        const std::string auto_full_label =
+            g_context.localizer.Format("action.durability_auto_full_toggle",
+                "Keep durability full: {0}",
+                std::array<std::string_view, 1>{std::string(
+                    durability_auto_full
+                        ? g_context.localizer.Text("text.on", "On")
+                        : g_context.localizer.Text("text.off", "Off"))});
+        if (DrawButtonEnabled(ui, auto_full_label + "##perf-auto-full", true)) {
+            g_context.durability_auto_full_requested.store(true, std::memory_order_release);
+        }
+    }
 
     DrawDivider(ui);
     DrawText(ui, g_context.localizer.Text("text.torque_heading",
@@ -4071,46 +4256,33 @@ void DrawPerformanceTab(
     if (ui->button(ui->user, anomaly::sdk::StringView(reset_label), 0.0F, 0.0F)) {
         g_context.reset.store(true, std::memory_order_release);
     }
-}
-
-void DrawChassisTab(const AnomalyUiServiceV1* ui, bool friction, bool durability_guard,
-                    bool durability_guard_installed, const std::string& durability_guard_detail,
-                    const bool durability_auto_full) {
-    DrawText(ui, g_context.localizer.Text("section.wheel_friction", "Wheel friction"));
-    DrawInlineGap(ui);
-    int friction_flag = friction ? 1 : 0;
-    if (ui->checkbox(ui->user, anomaly::sdk::StringView("##friction"), &friction_flag) != 0) {
-        g_context.friction_toggle.store(true, std::memory_order_release);
-    }
-
-    DrawDivider(ui);
-    // Local feature: automatic durability repair toggle (keeps the current land
-    // vehicle at full durability; complements the damage-event guard below).
-    DrawText(ui, g_context.localizer.Text("label.durability_auto_full",
-        "Keep durability full"));
-    DrawInlineGap(ui);
-    int auto_full_flag = durability_auto_full ? 1 : 0;
-    if (ui->checkbox(ui->user,
-            anomaly::sdk::StringView("##durability_auto_full"), &auto_full_flag) != 0) {
-        g_context.durability_auto_full_requested.store(true, std::memory_order_release);
-    }
-    DrawText(ui, g_context.localizer.Text("hint.durability_auto_full",
-        "Repairs the current land vehicle to full durability every tick "
-        "(RepairSelf); works with or without the guard hooks below."));
-
-    DrawDivider(ui);
-    DrawText(ui, g_context.localizer.Text("label.durability_guard", "Durability guard"));
-    if (!durability_guard_installed) {
-        DrawText(ui, durability_guard_detail.empty()
-            ? g_context.localizer.Text("status.durability_guard_unavailable",
-                  "Vehicle durability guard is unavailable.")
-            : durability_guard_detail);
-        return;
-    }
-    DrawInlineGap(ui);
-    int guard_flag = durability_guard ? 1 : 0;
-    if (ui->checkbox(ui->user, anomaly::sdk::StringView("##durability_guard"), &guard_flag) != 0) {
-        g_context.durability_guard_toggle.store(true, std::memory_order_release);
+    // Local feature (community layout): wheel friction sits at the far right
+    // of the reset row.
+    {
+        float window_width = 0.0F;
+        float window_height = 0.0F;
+        const bool has_size =
+            UiFieldAvailable(ui, offsetof(AnomalyUiServiceV1, get_window_size),
+                sizeof(decltype(AnomalyUiServiceV1::get_window_size))) &&
+            ui->get_window_size != nullptr;
+        if (has_size) ui->get_window_size(ui->user, &window_width, &window_height);
+        const bool has_cursor =
+            UiFieldAvailable(ui, offsetof(AnomalyUiServiceV1, set_cursor_pos_x),
+                sizeof(decltype(AnomalyUiServiceV1::set_cursor_pos_x))) &&
+            ui->set_cursor_pos_x != nullptr;
+        if (has_cursor && window_width > 240.0F) {
+            ui->set_cursor_pos_x(ui->user, window_width - 150.0F);
+        } else {
+            DrawInlineGap(ui);
+        }
+        const std::string friction_label =
+            g_context.localizer.Format("action.friction_toggle", "Wheel friction: {0}",
+                std::array<std::string_view, 1>{std::string(
+                    friction ? g_context.localizer.Text("text.on", "On")
+                             : g_context.localizer.Text("text.off", "Off"))});
+        if (DrawButtonEnabled(ui, friction_label + "##perf-friction", true)) {
+            g_context.friction_toggle.store(true, std::memory_order_release);
+        }
     }
 }
 
@@ -4200,8 +4372,15 @@ void DrawDebugPanel(
         "Vehicle catalog: {0} entries; current selection: {1}", catalog_arguments));
 
     // Local feature: diagnostic actions writing timestamped evidence files into
-    // the plugin state directory (for bug reports).
+    // the plugin state directory (for bug reports). The catalog refresh button
+    // lives here too (community layout).
     DrawDivider(ui);
+    const auto refresh_label =
+        g_context.localizer.Text("action.refresh_catalog", "Refresh vehicle list") +
+        "##diag-refresh";
+    if (ui->button(ui->user, anomaly::sdk::StringView(refresh_label), 0.0F, 0.0F)) {
+        g_context.refresh_catalog_requested.store(true, std::memory_order_release);
+    }
     const auto read_label =
         g_context.localizer.Text("action.read_live_modules",
             "Read driven vehicle (sync selection)") + "##diag-read-modules";
@@ -4299,16 +4478,7 @@ void DrawContents(const AnomalyUiServiceV1* ui) {
     };
     nav_button(g_context.localizer.Text("action.tab_customization", "Customize vehicles"), 0);
     nav_button(g_context.localizer.Text("action.tab_performance", "Performance tuning"), 1);
-    nav_button(g_context.localizer.Text("action.tab_chassis", "Wheel friction and durability"), 2);
-
-    nav_button(g_context.localizer.Text("action.tab_diagnostics", "Diagnostics"), 3);
-    const auto refresh_label =
-        g_context.localizer.Text("action.refresh_catalog", "Refresh vehicle list");
-    if (ui->button(ui->user, anomaly::sdk::StringView(refresh_label), 0.0F, 0.0F)) {
-        g_context.refresh_catalog_requested.store(true, std::memory_order_release);
-        SetStatus(g_context.localizer.Text("status.catalog_refresh_requested",
-            "Vehicle catalog refresh requested."));
-    }
+    nav_button(g_context.localizer.Text("action.tab_diagnostics", "Diagnostics"), 2);
     DrawDivider(ui);
 
     if (active_tab == 0) {
@@ -4318,11 +4488,9 @@ void DrawContents(const AnomalyUiServiceV1* ui) {
             player_position_valid);
     } else if (active_tab == 1) {
         DrawPerformanceTab(ui, snap, speed_ratio, torque_ratio, other_speed_ratio,
-            other_speed_floor_ratio, other_torque_ratio);
+            other_speed_floor_ratio, other_torque_ratio, friction, durability_guard,
+            durability_guard_installed, durability_guard_detail, durability_auto_full);
     } else if (active_tab == 2) {
-        DrawChassisTab(ui, friction, durability_guard, durability_guard_installed,
-            durability_guard_detail, durability_auto_full);
-    } else if (active_tab == 3) {
         DrawDebugPanel(ui, snap, status, selected, ids.size(), player_position_valid);
     }
 }
