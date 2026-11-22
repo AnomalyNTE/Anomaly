@@ -106,6 +106,7 @@ struct Command {
     Vector position{};
     double yaw{};
     double spacing{DefaultSpacing};
+    Name fashion{};
 };
 struct Batch {
     Name character{};
@@ -114,6 +115,7 @@ struct Batch {
     double yaw{};
     Vector right{}, forward{};
     std::uint32_t placed{};
+    Name fashion{};
 };
 struct View {
     Handle world{};
@@ -135,6 +137,7 @@ struct RenderState {
     double facing_offset{};
     double spacing{DefaultSpacing};
     double model_yaw{};
+    Name fashion{};
     Name character{};
     std::uint64_t selected{};
     std::size_t character_page{}, model_page{};
@@ -184,6 +187,18 @@ void Status(Context& c, std::string text, bool warning = false) {
         c.process.core->log(c.process.core->user,
             warning ? ANOMALY_CORE_LOG_LEVEL_V1_WARNING : ANOMALY_CORE_LOG_LEVEL_V1_INFO,
             StringView("Character Studio: " + c.status));
+}
+std::string CharacterLabel(const Character& character,
+                           const anomaly::sdk::Localizer& localizer) {
+    if (character.code.find("046") != std::string::npos) {
+        const std::array arguments{std::string_view(character.chinese)};
+        return localizer.Format("label.protagonist_male", "{0} (male protagonist)", arguments);
+    }
+    if (character.code.find("051") != std::string::npos) {
+        const std::array arguments{std::string_view(character.chinese)};
+        return localizer.Format("label.protagonist_female", "{0} (female protagonist)", arguments);
+    }
+    return character.chinese;
 }
 Address ResolveSymbol(Context& c, const AnomalySignatureServiceV1* signatures,
                       const anomaly::sdk::Profile& profile, std::string_view name) {
@@ -444,7 +459,7 @@ void ANOMALY_CALL Update(void* context, double delta) noexcept {
                      player.position[1] + sine * cmd.position.x + cosine * cmd.position.y,
                      player.position[2] + cmd.position.z}, yaw,
                     {-sine * cmd.spacing, cosine * cmd.spacing, 0},
-                    {cosine * cmd.spacing, sine * cmd.spacing, 0}});
+                    {cosine * cmd.spacing, sine * cmd.spacing, 0}, 0, cmd.fashion});
                 c.status_failed = false;
                 c.status = c.localizer.Text("status.spawning",
                     "Spawning frame by frame; the plugin sets no total limit");
@@ -484,7 +499,7 @@ void ANOMALY_CALL Update(void* context, double delta) noexcept {
                 batch.position.x + column * batch.right.x + row * batch.forward.x,
                 batch.position.y + column * batch.right.y + row * batch.forward.y,
                 batch.position.z};
-            c.studio->Spawn(batch.character, position, batch.yaw);
+            c.studio->Spawn(batch.character, batch.fashion, position, batch.yaw);
             ++batch.placed;
             if (!--batch.remaining) c.batches.pop_front();
             changed = true;
@@ -654,11 +669,13 @@ void ANOMALY_CALL Draw(void* context, const AnomalyUiServiceV1* ui) noexcept {
                             ui->table_next_column(ui->user);
                         } else if ((i - start) % 3 != 0) same_line();
                         const auto& item = *filtered[i];
-                        const auto label = item.chinese + "##character-" + item.code;
+                        const auto label = CharacterLabel(item, c.localizer) +
+                            "##character-" + item.code;
                         int checked = item.id == r.character;
                         if (ui->checkbox(ui->user, StringView(label), &checked) && checked) {
                             selected = &item;
                             r.character = item.id;
+                            r.fashion = {};
                         }
                     }
                 }
@@ -668,15 +685,29 @@ void ANOMALY_CALL Draw(void* context, const AnomalyUiServiceV1* ui) noexcept {
                         : c.localizer.Text("status.no_match", "No character matches the filter"));
                 }
                 if (selected) {
-                    const std::array arguments{std::string_view(selected->chinese)};
+                    const auto selected_label = CharacterLabel(*selected, c.localizer);
+                    const std::array arguments{std::string_view(selected_label)};
                     Text(ui, c.localizer.Format("text.selected", "Selected: {0}", arguments));
                 }
                 ui->input_uint32(ui->user, StringView(c.localizer.Text("label.count", "Count")),
                                  &r.count, 1, 10);
+                Text(ui, c.localizer.Text("label.appearance", "Appearance"));
+                int default_fashion = r.fashion.index == 0;
+                if (ui->checkbox(ui->user, StringView(c.localizer.Text("label.appearance_default",
+                        "Default")), &default_fashion) && default_fashion)
+                    r.fashion = {};
+                if (selected) {
+                    for (const auto& fashion : selected->fashions) {
+                        int checked = fashion.id == r.fashion;
+                        const auto label = fashion.label + "##fashion-" + std::to_string(fashion.id.index);
+                        if (ui->checkbox(ui->user, StringView(label), &checked) && checked)
+                            r.fashion = fashion.id;
+                    }
+                }
                 if (enabled_button(c.localizer.Text("action.spawn", "Spawn"),
                                    view->ready && selected && r.count > 0))
                     Request(c, {Action::spawn, view->world, r.character, 0, r.count,
-                                r.offset, r.facing_offset, r.spacing});
+                                r.offset, r.facing_offset, r.spacing, r.fashion});
                 if (view->queued) {
                     same_line();
                     const std::string queued = std::to_string(view->queued);
