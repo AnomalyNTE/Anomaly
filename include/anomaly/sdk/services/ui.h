@@ -287,6 +287,8 @@ typedef struct AnomalyUiServiceV1 {
     int (ANOMALY_CALL *draw_screen_primitives)(
         void* user, const AnomalyUiScreenPrimitiveV1* primitives,
         size_t count);
+    // Optional on_draw widget. Draws a square check box and returns 1 when value changes.
+    int (ANOMALY_CALL *checkbox_square)(void* user, AnomalyStringViewV1 label, int* value);
 } AnomalyUiServiceV1;
 
 #ifdef __cplusplus

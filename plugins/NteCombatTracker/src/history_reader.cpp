@@ -109,6 +109,8 @@ HistoricalEncounter ParseSummary(
             counts->value("buff_remove", Json{"0"}));
     }
     result.end_reason = value.at("end_reason").get<std::string>();
+    result.name = value.value("name", std::string{});
+    result.summons_only = value.value("summons_only", false);
     result.complete = value.value("complete", false);
     result.event_count = Decimal<std::uint64_t>(value.value("event_count", Json{"0"}));
     result.first_sequence = Decimal<std::uint64_t>(value.value("first_sequence", Json{"0"}));
@@ -621,7 +623,10 @@ std::optional<EncounterDetail> CombatLogReader::ReadEncounter(
                 player.name_origin = actor->second.name_origin;
                 player.name_resource_version = actor->second.resource_version;
             }
-            player.identity_key = "path:" + player.object_path;
+            player.identity_key = detail.summary.summons_only
+                ? "handle:" + std::to_string(player.handle.id) + ':' +
+                    std::to_string(player.handle.generation)
+                : "path:" + player.object_path;
             player.label = item.value("label", player.display_name.empty()
                 ? ShortName(player.object_path) : player.display_name);
             if (player.display_name.empty()) player.display_name = player.label;
@@ -668,7 +673,8 @@ std::optional<EncounterDetail> CombatLogReader::ReadEncounter(
             player_indices.emplace(actor_id, detail.players.size());
             detail.players.push_back(std::move(player));
         }
-        if (const auto incoming = selected.find("actor_incoming"); incoming != selected.end()) {
+        if (const auto incoming = selected.find("actor_incoming");
+            !detail.summary.summons_only && incoming != selected.end()) {
             for (const auto& item : *incoming) {
                 const auto actor_id = item.at("actor_id").get<std::uint32_t>();
                 const auto player = player_indices.find(actor_id);
@@ -686,7 +692,8 @@ std::optional<EncounterDetail> CombatLogReader::ReadEncounter(
         detail.events = ReadEvents(account_identity, report_id, encounter_id,
             normalize_for_display, !normalize_for_display,
             &detail.event_read_warnings, error, stop);
-        if (normalize_for_display && error.empty() && !detail.events.empty()) {
+        if (normalize_for_display && !detail.summary.summons_only &&
+            error.empty() && !detail.events.empty()) {
             CanonicalizePlayerEvents(detail.events, detail.players);
         }
         if (normalize_for_display && error.empty() &&

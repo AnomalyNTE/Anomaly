@@ -42,7 +42,9 @@
 
 ## 换肤器 Lite
 
-`换肤器 Lite`（`b1ank.skin-changer`）提供角色配饰、滑翔翼与觉醒外观预览、自定义车牌，以及当前驾驶车辆的外观切换。
+`换肤器 Lite`（`b1ank.skin-changer`）提供角色配饰、滑翔翼与觉醒外观预览、自定义车牌、当前驾驶车辆的外观切换以及 HUD 主题预览。
+
+在 **界面** 页开启 **启用曳尔沐「千年虫之谜」界面**，换场景后仍会自动应用该主题。关闭开关可恢复当前服装和场景对应的界面。插件会保存开关状态。
 车牌页开启 **应用车牌** 后，文字会跟随之后驾驶的受支持载具；关闭开关恢复原车牌。
 **动态车牌** 使用循环滚动，可调整滚动间隔。可用字符和车牌宽度显示在面板中。
 
@@ -160,13 +162,13 @@
 | --- | --- |
 | **ID** | `anomaly.nte-teleport` |
 | **作用** | 手动输入或读取当前坐标后传送玩家；支持准心方向传送、面朝方向定距传送，以及导入 JSON 点位分类管理。 |
-| **依赖服务** | `anomaly.ui`、`anomaly.config`；`anomaly.input`、`anomaly.json`、`anomaly.scheduler`、`anomaly.plugin-state`、`anomaly.nte.session/player/player-teleport`（均为 V1，可选） |
+| **依赖服务** | `anomaly.ui`、`anomaly.config`、`anomaly.scheduler`；`anomaly.input`、`anomaly.json`、`anomaly.plugin-state`、`anomaly.nte.session/player/player-teleport`（均为 V1，可选） |
 | **需要 Profile** | 是（玩家、会话与传送桥接依赖已验证符号） |
 
 准心传送沿当前相机朝向前进预设距离，并把目标 Z 轴钳制在相机高度加安全抬升之上，
 避免落到地下；向前传送沿水平朝向移动预设距离。两个快捷键都可以在插件窗口中重新捕获，
-捕获和选项改动在下一帧就写入 `anomaly.config`（宿主负责校验与原子替换），不需要等到停用；
-停用时还会再写一次兜底。
+捕获和选项改动通过 `anomaly.scheduler` 延迟合并后在 Worker 中写入 `anomaly.config`
+（宿主负责校验与原子替换），不需要等到停用；停用时会同步写入尚未落盘的改动。
 点击 **Import points** 会从 JSON 文件路径（相对路径基于插件私有状态目录）读取点位数组，
 支持 `color`、`name`、`x/y/z`，可选 `category`；缺少 `category` 时会按 `1. Name` 这类
 前缀派生分类。导入结果会在插件停用时随设置一起持久化。
@@ -177,7 +179,7 @@
 | --- | --- |
 | **ID** | `wawmew.night999` |
 | **作用** | 999夜副本全自动刷怪循环。 |
-| **依赖服务** | `anomaly.ui`；`anomaly.core`、`anomaly.nte.session/player/player-teleport/navigation/combat/skills/skill-invocation/actors/entities/pickup`、`anomaly.ue5.names/objects/world/framework`、`anomaly.interop.signature`（均为 V1，可选） |
+| **依赖服务** | `anomaly.ui`；`anomaly.core`、`anomaly.nte.session/player/player-teleport/navigation/combat/skills/skill-invocation/actors/entities/pickup/ui-buttons`、`anomaly.ue5.names/objects/world/framework`、`anomaly.interop.signature`（均为 V1，可选） |
 | **需要 Profile** | 是（会话与玩家快照、传送桥接、反射定位与自动战斗都依赖已验证符号） |
 
 **此脚本适用于999夜赤龙古堡地图**。窗口分 **开始** / **设置** 两个标签页。
@@ -185,12 +187,30 @@
 **开始**页：**循环次数** 输入框（**0 = 无限循环**）、**开始脚本 / 停止脚本** 两个按钮，以及下面的
 实时状态行（`第 N/M 轮 · 当前步骤`）。
 
-**设置**页：三个传送点（营地、1 号战斗点、2 号战斗点）各占三行坐标（X / Y / Z），可以直接改，
-也可以点 **读取当前坐标为营地** / **读取当前坐标为1号战斗点** / **读取当前坐标为2号战斗点** 把
-玩家当前坐标填进去（当帧即可看到）；再往下是预载延迟，以及自动战斗的开关与参数。
+**设置**页：最上方是 **刷新方式** 二选一——**内存刷新** 与 **按钮刷新**；往下是三个传送点（营地、
+1 号战斗点、2 号战斗点）各占三行坐标（X / Y / Z），可以直接改，也可以点 **读取当前坐标为营地** /
+**读取当前坐标为1号战斗点** / **读取当前坐标为2号战斗点** 把玩家当前坐标填进去（当帧即可看到）；
+再往下是预载延迟，以及自动战斗的开关与参数。
 
 一轮循环固定六步：传送至营地 → 刷新怪物 → 传送至 1 号战斗点 → 自动战斗 → 传送至 2 号战斗点 →
 自动战斗，然后回到营地开始下一轮（按设定次数循环，**0 = 无限**；每次传送落地后先稳定 2 秒）。
+
+**内存刷新**直接调用游戏自己的刷新函数
+`FinalTowerCampResetMonsterSpawners`，不需要打开任何界面。这一步先看冷却：冷却为 0 秒时直接发送；
+1–10 秒时先等「冷却 + 1 秒」再发送；超过 10 秒时视为刚被刷新过（多半是玩家手动点过），**跳过刷新**
+直接前往 1 号战斗点。请求发出后还会确认冷却确实被写上来：4 秒内冷却仍是 0 就重发，最多 3 轮。
+冷却读数在个别环境下取不到时不拦截刷新，只把这次当作已发出。
+
+**按钮刷新**不碰内存，改为按界面按钮走游戏自己的流程：先点 `InteractButton`（有几个点几个，用来
+打开营火面板），再点 `BtnResetMonsterSpawners`，如果这一步弹出确认框就点 `BtnSure`（确认框不出现则
+跳过），最后点 `BtnReset`。每两次扫描或点击之间至少隔
+200 毫秒；点完之后按钮消失、隐藏或变成不可点击就算这次点击成功，否则重试，最多重试 2 次。
+`BtnReset` 点成功后立即停止扫描。如果打开面板后 `BtnResetMonsterSpawners` 处于不可点击（置灰）状态，或者 5 轮扫描内一直没出现，插件会点 `BtnClose` 退出面板、等待 10 秒后重新点 `InteractButton`，最多重试 6 次；6 次都拿不到可点的刷新按钮就报错并停止脚本。按钮刷新需要玩家先站在营火旁。
+
+刷新失败若不属于冷却问题（找不到 `FinalTowerCampResetMonsterSpawners`、找不到本地玩家状态、
+`ProcessEvent` 拒绝调用、读不到营火 ID、重试 3 轮后冷却仍为 0；按钮刷新则是没有出现可点的
+`InteractButton` / `BtnResetMonsterSpawners` / `BtnReset`，或按钮点完仍然可点），**开始**页会多出
+一行 `刷新失败：<原因>`，同时脚本停止，不会在营地没刷出怪的情况下继续跑去战斗点。
 
 自动战斗的结束判据（命中任意一条即结束，然后进入下一轮）：
 
@@ -467,17 +487,19 @@ JSON Schema 校验、原子替换与版本迁移全部由宿主完成，插件�
 | --- | --- |
 | **ID** | `wawmew.deserted` |
 | **作用** | 一个勾选框：勾选后人群与车流都不再生成（街上空无一人），取消勾选恢复勾选前的数值。不影响站桩 NPC。 |
-| **依赖服务** | `anomaly.ui`；`anomaly.core`、`anomaly.interop.signature`、`anomaly.ue5.names`、`anomaly.ue5.objects`、`anomaly.input`（均为 V1，可选） |
-| **需要 Profile** | 否（自行按 AOB 特征码定位人群/车辆生成器，依赖 `memory-read`/`memory-write` capability） |
+| **依赖服务** | `anomaly.ui`、`anomaly.localization`、`anomaly.nte.session`、`anomaly.profile`、`anomaly.json`；可选 `anomaly.core`、`anomaly.interop.signature`、`anomaly.ue5.names`、`anomaly.ue5.objects`、`anomaly.storage`、`anomaly.scheduler`（均为 V1） |
+| **需要 Profile** | 是（包内 `profile/compatibility.profile.json`，由宿主加载并校验兼容布局） |
 
 插件直接改两组已有的旋钮，不新增或替换游戏的生成逻辑：
 
 - 人群：`HTMassCrowdSpawner` 的默认密度档与其每个 Density Profile 上的**昼/夜/晴/雨/雪环境倍率**；
 - 车辆：`MassSpawner` 的生成数量倍率与生成上限，以及 `HTMassVehicleSpawner` 的保底在线车辆数。
 
-勾选时先读取这些字段的**当前值**作为初始值并落盘，再把它们压到最低；只有勾选、取消勾选各写一次，
-不做周期性检测与回写。停用或重载插件时同样恢复初始值，避免把世界留在空街上。窗口热键固定 F8，
-开关热键可改、默认未绑定；勾选状态与初始值持久化在插件存储目录。
+宿主报告世界就绪后才扫描生成器；进入新世界时重新发现，缺少目标时自动重试。
+可点击“重新扫描”手动重新发现，无需重载插件。插件不注册快捷键。
+
+勾选时先读取字段的**当前值**作为初始值，再压低生成参数；每秒检查一次，仅在值不一致时回写。
+取消勾选、停用或重载插件时恢复初始值。勾选状态与人群倍率初始值持久化在插件存储目录。
 
 ## NTE Vehicle
 
@@ -500,6 +522,13 @@ JSON Schema 校验、原子替换与版本迁移全部由宿主完成，插件�
 `Normal` 或 `SellingIndulgences` 传送。该插件只消费
 `anomaly.nte.map-landmarks`，不保存签名或偏移，也不自行扫描对象、解析 DataTable 或调用
 UE `ProcessEvent`；关闭开发者模式后不会出现在已安装插件视图中，也不会执行传送请求。
+
+### 载具飞行
+
+在「平台设置 → 高级」开启开发者模式后，启用 `VehicleFlight`（`b1ank.vehicle-flight`）。
+坐进驾驶位，在插件窗口勾选「启用载具飞行」。键盘模式用 WASD 水平移动、空格上升、Ctrl 下降。
+鼠标模式用视角控制朝向，按 W 前进、S 后退，松开后悬停。飞行速度可设为 3–1000 米/秒。
+关闭开发者模式会退出飞行并隐藏窗口。
 
 ### Movement Hold Probe
 

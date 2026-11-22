@@ -18,18 +18,16 @@ Anomaly 的内建战斗统计插件：只读实时伤害/治疗统计、独立 O
 plugins/NteCombatTracker/
   manifest.json           插件 manifest（name/description 用英文回退）
   locales/zh-CN.json      中文目录（window.title / plugin.description）
-  profile/                compatibility.profile.json：签名、布局偏移与虚表槽位
+  profile/                compatibility.profile.json：对象注册表签名与角色属性布局
   src/                    插件 DLL、Overlay 与采集引擎的源码
-  tests/                  15 个离线夹具，随 -DANOMALY_BUILD_TEST_FIXTURES=ON 构建
+  tests/                  离线夹具，随 -DANOMALY_BUILD_TEST_FIXTURES=ON 构建
   assets/                 仅属性配色表（角色属性在运行时从 DT_Character 读取）
   cmake/plugin_version.hpp.in
 ```
 
 `assets/` 与 `profile/` 由 `anomaly_add_plugin` 自动镜像进包目录并随 GameRuntime 组件安装。
-`profile/compatibility.profile.json` 是唯一的兼容数据来源：签名、入口字节、对象/反射/DataTable
-偏移、虚表槽位与记录步长都在那里，代码只保留 `struct_size`/指令解码与范围、对齐校验。宿主在
-Lifecycle 阶段通过 `anomaly.profile` 校验并加载，缺项或签名失配时停用 UID 探测与属性配色，
-不回退到代码内偏移。
+`profile/compatibility.profile.json` 是唯一的兼容数据来源：包含对象注册表签名、入口字节和角色属性读取所需的结构偏移及步长。插件在 Lifecycle 阶段通过
+`anomaly.profile` 校验并加载。无法验证时，角色行使用身份配色。
 
 ## 名称来源
 
@@ -41,8 +39,8 @@ Lifecycle 阶段通过 `anomaly.profile` 校验并加载，缺项或签名失配
 | 参与者名 | `anomaly.nte.combat` → `participant_display_name_utf8` |
 | 技能名（开发者页） | `anomaly.nte.skills` → `ability_display_name_utf8` |
 
-宿主负责 GE→GA→文本、怪物配置→显示名的映射，并在 Game 更新中延后补全；未就绪时
-`NOT_FOUND`，插件退回对象路径或 `#<name_id>` 占位符，并按 64 个事件的节奏重试。
+宿主在 Game 更新中查找伤害来源、技能、Buff 和参与者的显示名。待解析的条目先显示来源标识，
+插件按时间重试，并把已解析的名称补到当前统计、最大单次伤害和近期事件。
 
 对象路径只作临时标签、**不进名称缓存**，否则真名到位后会被路径长期占位。
 
@@ -73,6 +71,20 @@ Lifecycle 阶段通过 `anomaly.profile` 校验并加载，缺项或签名失配
 
 新增角色**不需要改插件**——表里加了行就能读到。只有游戏新增属性种类时才需要补配色。
 
+## OBS 采集
+
+在插件的 Overlay 设置里点击「开启 OBS 采集」，再在 OBS 添加「窗口采集」，选择
+`[NteCombatTracker.exe]: NTE Combat Tracker`，采集方法选择 Windows Graphics Capture。
+采集模式沿用 Overlay 的透明度设置，并在无战斗时保持窗口可见。
+
+## 自定义战斗
+
+在插件面板开启「仅统计 Summon Lab 召唤伤害」后，统计按召唤实例记录输出伤害和 DPS。
+「战斗名称」会显示在 Overlay 标题栏、历史和导出数据里。切换模式会保存当前战斗并重新统计。
+
+插件面板的「清空当前战斗」和 Overlay 标题栏的「清空」都会重置当前统计。进行中的战斗先保存到历史，
+清空后的下一次命中会开始新的统计。
+
 ## 构建与验证
 
 ```powershell
@@ -100,8 +112,7 @@ pwsh -NoProfile -File tools/check_plugin_i18n.ps1 -Plugin NteCombatTracker
   包目录把 CRT 模块解析进当前进程，子进程再继承，避免默认搜索顺序造成的加载器弹窗。
 - **日志**：schema v3，`events-NNNNNN.jsonl` 按 1024 事件 / 1 MiB 分段，`index.json` 记录
   逐段 SHA-256；所有写入都是临时文件 + `MoveFileExW`。
-- **账号隔离**：只读抓取 `TextBlock_RoleID` 控件文本得到 UID，按 UID 分目录；识别不到时写
-  `_unknown`。
+- **账号隔离**使用 `anomaly.nte.account` 提供的本机 UID。日志按 UID 分目录，等待样本时使用 `_unknown`。
 
 ## 已知限制
 

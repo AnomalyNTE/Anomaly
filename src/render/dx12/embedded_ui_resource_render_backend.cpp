@@ -317,18 +317,18 @@ public:
                 return;
             }
             // Copy the payload only for a new, stale, or missing atlas entry.
-            const auto state = registry.FontState(scope, handle);
+            auto state = registry.FontState(scope, handle);
             if (!state || state->resource.resource_id != resource_id ||
                 state->resource.state == anomaly::UiResourceState::Failed) {
                 return;
             }
-            const anomaly::UiFontRequest& request = state->request;
+            anomaly::UiFontRequest& request = state->request;
             if (request.encoded_bytes.empty()) return;
 
             if (found == fonts_.end()) {
                 FontEntry entry;
                 TrackLease(entry.leases, scope, handle);
-                entry.bytes = request.encoded_bytes;
+                entry.bytes = std::move(request.encoded_bytes);
                 entry.size_pixels = state->effective_size_pixels;
                 entry.glyph_range = request.glyph_range;
                 fonts_.emplace(resource_id, std::move(entry));
@@ -338,7 +338,7 @@ public:
                        found->second.glyph_range != request.glyph_range ||
                        state->resource.state != anomaly::UiResourceState::Ready ||
                        found->second.failed) {
-                found->second.bytes = request.encoded_bytes;
+                found->second.bytes = std::move(request.encoded_bytes);
                 found->second.size_pixels = state->effective_size_pixels;
                 found->second.glyph_range = request.glyph_range;
                 found->second.font = nullptr;
@@ -483,7 +483,8 @@ public:
     bool OnDeviceRebuilt(const std::uint64_t device_generation) noexcept override {
         if (device_generation == 0 || !CanTouchImGui()) return false;
         device_generation_ = device_generation;
-        font_atlas_dirty_ = true;
+        // A new backend already has the host fonts configured. OnDeviceLost
+        // marks an existing atlas dirty when its device actually changes.
         return true;
     }
 

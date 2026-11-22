@@ -9,7 +9,9 @@
 - `FakeUID`
 - `CameraTools`
 - `CameraBlurFix`
+- `FpsUnlocker`
 - `BetterPose`
+- `BetterMap`
 - `HiFiVehicleMusic`
 - `BoxAuto`
 - `CombatBox`
@@ -34,6 +36,7 @@
 - `DllLoader`
 - `TimeAccel`
 - `MemoryDump`
+- `VehicleFlight`
 
 开发者测试插件：默认不构建、不安装，只有 `build.cmd testplugins`（或
 `-DANOMALY_BUILD_TEST_PLUGINS=ON` 加 `--component TestPlugins` 安装）才会构建并放进运行包；

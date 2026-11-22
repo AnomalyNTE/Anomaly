@@ -217,7 +217,19 @@ struct Container {
             const auto& c = chunks[i];
             if (c.id.back() == 1) {
                 const auto id = Reader{c.id}.Get<std::uint64_t>();
-                if (!packages.emplace(id, i).second) throw Invalid("duplicate package chunk");
+                const auto [existing, inserted] = packages.emplace(id, i);
+                if (!inserted) {
+                    const auto& previous = chunks[existing->second];
+                    // Some mod packers emit identical package chunks at different offsets.
+                    // Any engine lookup choice must expose the same complete package, not
+                    // merely the same header or an untrusted hash from the TOC.
+                    if (previous.id != c.id || previous.size != c.size)
+                        throw Invalid("conflicting duplicate package chunk identity or size");
+                    if (c.size > MaxMetadata)
+                        throw Invalid("duplicate package chunk exceeds comparison limit");
+                    if (Read(existing->second, codecs) != Read(i, codecs))
+                        throw Invalid("conflicting duplicate package chunk contents");
+                }
             } else if (c.id.back() == 6) {
                 if (header != count) throw Invalid("multiple container headers");
                 header = i;

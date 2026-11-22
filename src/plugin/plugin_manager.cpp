@@ -736,6 +736,17 @@ int ANOMALY_CALL ProxyCheckbox(void* user, AnomalyStringViewV1 label, int* value
         ? context->service->checkbox(context->service->user, label, value) : 0;
 }
 
+int ANOMALY_CALL ProxyCheckboxSquare(void* user, AnomalyStringViewV1 label, int* value) {
+    const auto* context = UiProxyContext(user);
+    auto callback = AcquireUiCallback(context);
+    if (context != nullptr && context->scope != nullptr && !callback) return 0;
+    return context != nullptr &&
+            HasUiField<decltype(AnomalyUiServiceV1::checkbox_square)>(
+                context->service, offsetof(AnomalyUiServiceV1, checkbox_square)) &&
+            context->service->checkbox_square != nullptr
+        ? context->service->checkbox_square(context->service->user, label, value) : 0;
+}
+
 int ANOMALY_CALL ProxySliderFloat(
     void* user, AnomalyStringViewV1 label, float* value, float minimum, float maximum) {
     const auto* context = UiProxyContext(user);
@@ -1447,6 +1458,9 @@ AnomalyUiServiceV1 MakeUiProxy(PluginUiProxyContext* context) noexcept {
         advertised_size = (std::min)(
             advertised_size,
             offsetof(AnomalyUiServiceV1, draw_screen_primitives));
+    }
+    if (advertised_size >= sizeof(proxy) && context->service->checkbox_square != nullptr) {
+        proxy.checkbox_square = ProxyCheckboxSquare;
     }
     proxy.struct_size = static_cast<std::uint32_t>(advertised_size);
     return proxy;
@@ -6081,7 +6095,7 @@ void PluginManager::SetImGuiContext(void* imgui_context) noexcept {
 void PluginManager::SetUiService(const AnomalyUiServiceV1* service) {
     ui_service_ = service != nullptr &&
             service->service_version == ANOMALY_UI_SERVICE_V1_VERSION &&
-            service->struct_size >= sizeof(AnomalyUiServiceV1)
+            service->struct_size >= offsetof(AnomalyUiServiceV1, checkbox_square)
         ? service
         : nullptr;
     for (const auto& plugin : plugins_) {

@@ -6,8 +6,6 @@
 
 **稳定、灵活、开放的《异环》插件平台**
 
-qq交流群: 1037114140
-
 <a href="https://discord.gg/tfeh8QQ9Vy"><img src="https://img.shields.io/badge/Discord-Join%20the%20community-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Join the Anomaly Discord" /></a>
 
 <p align="center">
@@ -104,7 +102,7 @@ qq交流群: 1037114140
 | **奶龙** | 用 UE 原生模型替换玩家与附近 NPC，36 骨源蒙皮，超出距离自动还原 |
 | **果冻** | 让镜头内的人物、载具与动态模型持续挤压拉伸，可调强度、频率、停止间隔与自转 |
 | **更好的动作** | 调整动作速率、暂停与位移缩放，编辑关节姿态，导入 MMD 动作与镜头，并可联动 Blender 骨架 |
-| **角色模型工作室** | 按完整角色目录在本地生成模型，支持中文名、重复召唤、待机动作与逐个销毁 |
+| **角色模型工作室** | 按完整角色目录在本地生成模型，名称跟随游戏语言，支持重复召唤、待机动作与逐个销毁 |
 | **Mod 管理** | Mod 开关、分类、原地刷新外观与重新加载世界 |
 | **自定义 UID** | 自定义客户端界面上显示的 UID、颜色与动态效果，不改账号数据 |
 

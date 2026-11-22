@@ -2,10 +2,10 @@
   "schemaVersion": 2,
   "id": "wawmew.deserted",
   "name": "Deserted",
-  "description": "Deserted: once enabled, crowd and vehicle spawning stops, without affecting the stationary NPCs.",
+  "description": "Reduces Mass crowd and traffic spawning by adjusting spawner settings.",
   "author": "WawMew",
   "license": "AGPL-3.0-only",
-  "version": "0.6.4",
+  "version": "0.6.10",
   "entry": "plugin.dll",
   "api": {
     "major": 1,
@@ -49,9 +49,8 @@
       "optional": true
     },
     {
-      "id": "anomaly.input",
-      "minVersion": 1,
-      "optional": true
+      "id": "anomaly.nte.session",
+      "minVersion": 1
     },
     {
       "id": "anomaly.storage",
@@ -79,7 +78,7 @@
     "interop-signature",
     "ue5-names",
     "ue5-objects",
-    "input",
+    "nte-session-snapshot",
     "storage",
     "scheduler",
     "json"

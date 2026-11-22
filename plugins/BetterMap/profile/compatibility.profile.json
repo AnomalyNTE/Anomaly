@@ -1,0 +1,160 @@
+{
+  "schemaVersion": 1,
+  "game": "nte",
+  "module": "HTGame.exe",
+  "section": ".text",
+  "contract": "b1ank-collectible-map-v1",
+  "layout": {
+    "ObjectIndex": 12,
+    "ObjectClass": 16,
+    "ObjectName": 24,
+    "Super": 64,
+    "PropertyLink": 112,
+    "FieldClass": 8,
+    "FieldClassName": 0,
+    "FieldName": 32,
+    "PropertySize": 52,
+    "PropertyOffset": 68,
+    "PropertyNext": 72,
+    "FunctionFlags": 176,
+    "FunctionCount": 180,
+    "FunctionSize": 182,
+    "RegistryCount": 36,
+    "RegistryItems": 16,
+    "ItemStride": 24,
+    "Serial": 16,
+    "ChunkSize": 65536,
+    "RegistryLoad": 0,
+    "RegistrySubtract": 16,
+    "DataTableRowStruct": 40,
+    "DataTableRowMap": 48,
+    "StructSize": 88,
+    "DataTableAddRowSlot": 760,
+    "ClickMapLevel": 4488,
+    "ClickMapContext": 4504,
+    "ClickMapFloorArea": 4520,
+    "ClickMapFloor": 4528,
+    "ClickMapBounds": 80,
+    "ClickMapDataSlot": 2280,
+    "ClickMapExtentSlot": 2160,
+    "ClickMapCenterSlot": 2120,
+    "PinDialogTagOffset": 384,
+    "MapIconRowSize": 816,
+    "MapIconImageSize": 120
+  },
+  "symbols": [
+    {
+      "name": "Objects",
+      "candidates": [
+        {
+          "pattern": "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3 33 C0 48 8B 00 C3",
+          "entry": "48 8B 05",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "FreeString",
+      "candidates": [
+        {
+          "pattern": "48 85 C9 74 2E 53 48 83 EC 20 48 8B D9 48 8B 0D ?? ?? ?? ?? 48 85 C9 75 0C E8 ?? ?? ?? ?? 48 8B 0D ?? ?? ?? ?? 48 8B 01 48 8B D3 FF 50 48 48 83 C4 20 5B C3",
+          "entry": "48 85 C9 74 2E 53 48 83 EC 20 48 8B D9 48 8B 0D",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "ReadOracleProgress",
+      "candidates": [
+        {
+          "pattern": "48 8D 88 68 3D 00 00 48 89 74 24 30 48 8D 93 BC 0B 00 00 E8 ?? ?? ?? ?? 48 8B CB 85 C0",
+          "callOffset": 19,
+          "entry": "48 89 5C 24 20 57 48 81 EC E0 00 00 00 48 8B 05",
+          "values": {"OracleRecordOwner": 15720}
+        }
+      ]
+    },
+    {
+      "name": "MapClickToWorld",
+      "candidates": [
+        {
+          "pattern": "4C 8B C0 48 8D 4D 90 48 89 4C 24 30 48 8D 4D 10 48 89 4C 24 28 48 8B 4D 88 89 7C 24 20 E8 ?? ?? ?? ?? 0F B6 05 ?? ?? ?? ?? 84 C0",
+          "callOffset": 29,
+          "entry": "40 53 48 83 EC 60 48 8B DA 4D 85 C0 0F 84",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "MapPinCreateCall",
+      "candidates": [
+        {
+          "pattern": "49 8B 8F A8 0F 00 00 E8 ?? ?? ?? ?? 49 8B 8F A8 0F 00 00 48 8B D8 E8 ?? ?? ?? ?? 4C 8B C3 48 8B D0 49 8B CD E8 ?? ?? ?? ?? 84 C0 0F 84",
+          "entry": "49 8B 8F A8 0F 00 00 E8",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "MapPinCreateTarget",
+      "candidates": [
+        {
+          "pattern": "49 8B 8F A8 0F 00 00 E8 ?? ?? ?? ?? 49 8B 8F A8 0F 00 00 48 8B D8 E8 ?? ?? ?? ?? 4C 8B C3 48 8B D0 49 8B CD E8 ?? ?? ?? ?? 84 C0 0F 84",
+          "callOffset": 36,
+          "entry": "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 30 49 8B F0",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "BigMapLayout",
+      "candidates": [
+        {
+          "pattern": "8B 81 B0 11 00 00 C3 CC CC CC CC CC CC CC CC CC 48 8D 81 A8 11 00 00 C3 CC CC CC CC CC CC CC CC 48 8D 81 A0 11 00 00 C3 CC CC CC CC CC CC CC CC 48 8B 81 98 11 00 00 C3 CC CC CC CC CC CC CC CC 48 8D 81 88 11 00 00 C3",
+          "entry": "8B 81 B0 11 00 00 C3",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "BigMapData",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 08 57 48 83 EC 20 48 8B 81 C8 11 00 00 48 8B D9 48 85 C0 74 09 80 B9 D0 11 00 00 00 74 41",
+          "entry": "48 89 5C 24 08 57 48 83 EC 20 48 8B 81 C8 11 00 00",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "BigMapExtent",
+      "candidates": [
+        {
+          "pattern": "40 53 48 83 EC 20 48 8B 01 48 8B DA FF 90 F8 08 00 00 48 8B C3 48 83 C4 20 5B C3",
+          "entry": "40 53 48 83 EC 20 48 8B 01 48 8B DA FF 90 F8 08 00 00",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "BigMapCenter",
+      "candidates": [
+        {
+          "pattern": "0F 10 81 D8 11 00 00 48 8B C2 F2 0F 10 89 E8 11 00 00 0F 11 02 F2 0F 11 4A 10 C3",
+          "entry": "0F 10 81 D8 11 00 00 48 8B C2",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "AddMapIconTableRow",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 56 48 83 EC 30 4C 8B F1 48 89 4C 24 20 33 C0 48 8D 0D ?? ?? ?? ?? 48 89 44 24 28 49 8B E8 48 8B DA",
+          "entry": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 56 48 83 EC 30 4C 8B F1",
+          "values": {}
+        }
+      ]
+    }
+  ]
+}

@@ -699,6 +699,8 @@ typedef struct AnomalyNteCombatServiceV1 {
     AnomalyStatusV1 (ANOMALY_CALL *next_event)(void*, uint64_t, AnomalyNteCombatEventV1*);
     AnomalyStatusV1 (ANOMALY_CALL *event_name_utf8)(void*, const AnomalyNteCombatEventV1*, char*, size_t*);
     AnomalyStatusV1 (ANOMALY_CALL *participant_display_name_utf8)(void*, AnomalyGenerationHandleV1, char*, size_t*);
+    AnomalyStatusV1 (ANOMALY_CALL *latest_applied_damage_sequence)(void*, uint64_t*);
+    AnomalyStatusV1 (ANOMALY_CALL *next_applied_damage_event)(void*, uint64_t, AnomalyNteCombatEventV1*);
 } AnomalyNteCombatServiceV1;
 ```
 
@@ -708,9 +710,17 @@ typedef struct AnomalyNteCombatServiceV1 {
 
 FText 解码遵循 [UE5 名称服务](ue5-services.md) 的可选 `ue5.ftext` 校验与只读规则，读取已有显示缓存或已加载文本表的源文字，不调用 `Conv_TextToString`。完整名称查找仍保留角色 ID、怪物静态数据及文本表引用的已验证反射查询，因此不能把整个名称查找流程视为纯内存读取。
 
+`latest_applied_damage_sequence` / `next_applied_damage_event` 提供独立的实际扣血事件流。`final_value` 是原生扣血函数执行前后取整后的 HP 差，连续命中的小数舍入不会逐击累积。该流按实际扣血事件推进自己的游标，并共用来源和参与者名称接口。活动 Profile 无法观测扣血函数时，两项接口均返回 `UNAVAILABLE`。
+
 消费端应在 Game 域 `on_update` 中查询 combat 服务：先比较 `latest_damage_sequence`，只在序列变化时有界调用 `next_damage_event`，并在接纳新事件时各解析一次 source、attacker 和 victim。HP、统计和解析结果应立即转换为插件自有、可直接绘制的不可变快照。Render 域 `on_draw` 只复制该本地快照并调用 UI 服务，不查询 combat 服务、不推进 cursor，也不解析名称。完整消费边界见 [`examples/nte_combat_demo`](../../examples/nte_combat_demo/plugin.cpp)。
 
 ---
+
+## `anomaly.nte.account`
+
+- **ID** `anomaly.nte.account` · **版本** 1 · **capability** `nte-account-read`
+
+通过 `uid_utf8` 复制最新的本机账号 UID。优先使用复制的账号状态，其次读取已验证的 HUD 文本。无新鲜样本时返回 `NOT_FOUND`。字符串使用标准 UTF-8 缓冲区协议，长度包含结尾的 NUL。
 
 ## `anomaly.nte.skills`
 

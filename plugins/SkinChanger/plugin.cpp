@@ -4,6 +4,7 @@
 #include "awakening.hpp"
 #include "plates.hpp"
 #include "vehicle.hpp"
+#include "hud_theme.hpp"
 #include "awakening_profile.hpp"
 #include <chrono>
 
@@ -65,6 +66,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
     lite_awakening::Load(host);
     lite_plates::Load(host);
     lite_vehicle::Load(host);
+    lite_hud_theme::Load(host);
     return CosmeticsLoad(host, context);
 }
 
@@ -80,6 +82,8 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* context) noexcept {
 }
 
 AnomalyStatusV1 ANOMALY_CALL Stop(void* context, uint32_t reason) noexcept {
+    const auto hud_status = lite_hud_theme::Stop();
+    if (hud_status.code != ANOMALY_STATUS_V1_OK) return hud_status;
     lite_awakening::SetVisible(false);
     lite_vehicle::SetVisible(false);
     ReleaseWindow();
@@ -104,6 +108,7 @@ void ANOMALY_CALL Update(void* context, double delta) noexcept {
     lite_awakening::Update();
     lite_plates::Update();
     lite_vehicle::Update();
+    lite_hud_theme::Update();
     const auto now = Clock::now();
     if (cosmetics_started && now >= next_update) {
         next_update = now + std::chrono::milliseconds(100);
@@ -131,10 +136,12 @@ bool DrawContent(void* context, const AnomalyUiServiceV1* ui) {
         {2, "tab.glider", "Glider", "category-glider"},
         {3, "tab.awakening", "Awakening", "category-awakening"},
         {4, "tab.plates", "Plates", "category-plates"},
-        {5, "tab.vehicle", "Vehicle", "category-vehicle"}
+        {5, "tab.vehicle", "Vehicle", "category-vehicle"},
+        {6, "tab.hud", "HUD", "category-hud"}
     };
     bool visible{};
     for (const auto& page : pages) {
+        if (page.category == 6 && !lite_hud_theme::Available()) continue;
         const auto label = lite_i18n::localizer.Label(page.key, page.fallback, page.id);
         if (!ui->begin_tab_item(ui->user, StringView(label), nullptr, 0, 1)) continue;
         struct EndTabItem {
@@ -143,7 +150,8 @@ bool DrawContent(void* context, const AnomalyUiServiceV1* ui) {
         } end_item{ui};
         category = page.category;
         visible = true;
-        if (category == 5) lite_vehicle::Draw(ui);
+        if (category == 6) lite_hud_theme::Draw(ui);
+        else if (category == 5) lite_vehicle::Draw(ui);
         else if (category == 4) lite_plates::Draw(ui);
         else if (category == 3) lite_awakening::Draw(ui);
         else if (cosmetics_started) CosmeticsDraw(context, ui, category);

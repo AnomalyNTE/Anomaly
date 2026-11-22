@@ -108,6 +108,7 @@ typedef struct AnomalyUiServiceV1 {
     void (ANOMALY_CALL *overlay_text)(void* user, float x, float y, AnomalyStringViewV1 text, uint32_t color_rgba, float font_size);
     int  (ANOMALY_CALL *overlay_glass_ring_sector)(void* user, float center_x, float center_y, float inner_radius, float outer_radius, float angle_start, float angle_end, const AnomalyUiGlassStyleV1* style);
     int  (ANOMALY_CALL *draw_screen_primitives)(void* user, const AnomalyUiScreenPrimitiveV1* primitives, size_t count);
+    int  (ANOMALY_CALL *checkbox_square)(void* user, AnomalyStringViewV1 label, int* value);
 } AnomalyUiServiceV1;
 ```
 
@@ -116,6 +117,7 @@ typedef struct AnomalyUiServiceV1 {
 | `set_next_window_size(w, h, condition)` | 设置下一个窗口尺寸 |
 | `begin_window(title, open, flags)` / `end_window()` | 开始 / 结束窗口，返回是否展开 |
 | `text` / `button` / `button_enabled` / `checkbox` / `slider_float` / `color_edit4` / `input_*` | 基础控件与有界输入 |
+| `checkbox_square` | 可选的方形勾选框。勾选时将 `*value` 设为 1，取消勾选时设为 0。值变化时返回 1。调用前检查 `struct_size` 和函数指针 |
 | `same_line` / `set_cursor_pos_x` | 紧凑的内联控件和局部水平定位 |
 | `text_link(label, url)` | 显示左键可点的文本链接；仅接受 `http://` 或 `https://`，点击后由宿主在绘制结束后请求默认浏览器打开 |
 | `begin_child` / `begin_table` / `begin_menu` / `begin_popup_modal` 及对应 `end_*` | 作用域 UI 容器 |

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "locale": "zh-CN",
   "messages": {
-    "plugin.description": "本地生成角色模型：完整角色目录与中文名、不限数量和重复、循环待机、移动与销毁。",
+    "plugin.description": "本地生成角色模型：完整角色目录，名称跟随游戏语言，支持不限数量的重复生成、循环待机、移动与销毁。",
     "window.title": "角色模型工作室",
     "status.engine_ready": "引擎接口初始化完成，等待大世界更新",
     "status.init_missing": "初始化缺少：{0}；请在大世界就绪后重载插件",

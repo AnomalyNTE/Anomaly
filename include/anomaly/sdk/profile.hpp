@@ -239,12 +239,20 @@ template <typename Resolve>
     for (const auto& item : profile.symbols) if (item.name == name) { symbol = &item; break; }
     if (symbol == nullptr) return {0, nullptr, "undeclared profile symbol"};
     ProfileSymbolResult result;
+    std::string last_candidate_error;
     for (const auto& candidate : symbol->candidates) {
         std::uintptr_t address{};
         const auto scan_status = resolve(candidate, &address);
         if (scan_status.code == ANOMALY_STATUS_V1_CONFLICT)
             return {0, nullptr, "profile signature is ambiguous"};
-        if (!Succeeded(scan_status) || address == 0) continue;
+        if (!Succeeded(scan_status)) {
+            last_candidate_error = "signature scan status=" + std::to_string(scan_status.code);
+            continue;
+        }
+        if (address == 0) {
+            last_candidate_error = "signature scan returned an empty address";
+            continue;
+        }
         if (candidate.call_offset) {
             std::array<std::uint8_t, 5> call{};
             if (!Succeeded(core->read_memory(core->user, address + *candidate.call_offset,
@@ -253,15 +261,26 @@ template <typename Resolve>
             std::memcpy(&displacement, call.data() + 1, sizeof(displacement));
             address += *candidate.call_offset + call.size() + displacement;
         }
-        if (candidate.entry.empty()) continue;
+        if (candidate.entry.empty()) {
+            last_candidate_error = "profile candidate has no entry bytes";
+            continue;
+        }
         std::vector<std::uint8_t> actual(candidate.entry.size());
-        if (!Succeeded(core->read_memory(core->user, address, {actual.data(), actual.size()})) ||
-            actual != candidate.entry) continue;
+        if (!Succeeded(core->read_memory(core->user, address, {actual.data(), actual.size()}))) {
+            last_candidate_error = "candidate entry bytes could not be read";
+            continue;
+        }
+        if (actual != candidate.entry) {
+            last_candidate_error = "candidate entry bytes do not match";
+            continue;
+        }
         if (result.address != 0) return {0, nullptr, "multiple profile candidates matched"};
         result.address = address;
         result.candidate = &candidate;
     }
-    if (!result) result.error = "no profile candidate passed validation";
+    if (!result) result.error = last_candidate_error.empty()
+        ? "no profile candidate passed validation"
+        : std::move(last_candidate_error);
     return result;
 }
 
@@ -378,11 +397,20 @@ public:
                             const ProfileContract& expected,
                             std::initializer_list<std::string_view> known_entries = {},
                             bool batch_signatures = false,
-                            std::string_view layout_symbol = {}) noexcept {
+                            std::string_view layout_symbol = {},
+                            std::string* diagnostic = nullptr,
+                            bool require_layout_symbol = true) noexcept {
+        const auto set_diagnostic = [diagnostic](const std::string_view message) noexcept {
+            if (diagnostic == nullptr) return;
+            try { diagnostic->assign(message); } catch (...) {}
+        };
         try {
             const Host host(api);
             auto loaded = LoadProfile(host, filename, expected);
-            if (!loaded) return false;
+            if (!loaded) {
+                set_diagnostic(loaded.error());
+                return false;
+            }
             auto parsed = std::move(loaded).value();
             std::vector<std::string_view> scanned_symbols;
             for (const auto& symbol : parsed.symbols) {
@@ -391,7 +419,8 @@ public:
             }
             if (!layout_symbol.empty()) {
                 static_cast<void>(parsed.symbol(layout_symbol)); // Require the declared discriminator.
-                if (std::find(scanned_symbols.begin(), scanned_symbols.end(), layout_symbol) == scanned_symbols.end())
+                if (require_layout_symbol &&
+                    std::find(scanned_symbols.begin(), scanned_symbols.end(), layout_symbol) == scanned_symbols.end())
                     return false;
             }
             ProfileScanCache scans;
@@ -401,7 +430,14 @@ public:
             std::map<std::string, std::size_t, std::less<>> selections;
             for (const auto name : scanned_symbols) {
                 const auto resolved = scans.Resolve(core.get(), parsed, name);
-                if (name == layout_symbol && !resolved) return false;
+                if (name == layout_symbol && !resolved && require_layout_symbol) {
+                    std::string message = "required profile layout symbol did not resolve: ";
+                    message.append(name);
+                    message += "; ";
+                    message += resolved.error;
+                    set_diagnostic(message);
+                    return false;
+                }
                 addresses.emplace(name, resolved.address);
                 if (resolved) selections.emplace(name,
                     static_cast<std::size_t>(resolved.candidate - parsed.symbol(name).candidates.data()));
@@ -412,8 +448,13 @@ public:
             profile_ = std::move(parsed);
             addresses_ = std::move(addresses);
             selections_ = std::move(selections);
+            set_diagnostic({});
             return true;
+        } catch (const std::exception& error) {
+            set_diagnostic(error.what());
+            return false;
         } catch (...) {
+            set_diagnostic("unknown profile snapshot load failure");
             return false;
         }
     }

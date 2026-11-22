@@ -7,9 +7,12 @@
   "layout": {
     "kClassPrivateOffset": 16,
     "kNamePrivateOffset": 24,
+    "kDefaultProfileOffset": 1112,
+    "kDensityProfilesOffset": 1144,
     "kProfileStride": 32,
     "kSpawnCountOffset": 744,
     "kSpawnScaleOffset": 808,
+    "kVehMinActiveOffset": 1196,
     "kObjectChunkSize": 65536,
     "kObjectItemStride": 24,
     "kArrayNumOffset": 8,
@@ -20,29 +23,6 @@
     "scale4": 28
   },
   "symbols": [
-    {
-      "name": "layout",
-      "candidates": [
-        {
-          "pattern": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 56 48 83 EC 20 80 B9 50 2A 00 00 00 48 8B F2 48 8B F9 0F 84 A4 00 00 00",
-          "entry": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 56 48 83 EC 20",
-          "values": {
-            "kDefaultProfileOffset": 1032,
-            "kDensityProfilesOffset": 1064,
-            "kVehMinActiveOffset": 1116
-          }
-        },
-        {
-          "pattern": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 56 48 83 EC 20 80 B9 48 2B 00 00 00 48 8B F2 48 8B F9 0F 84 A4 00 00 00",
-          "entry": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 56 48 83 EC 20",
-          "values": {
-            "kDefaultProfileOffset": 1112,
-            "kDensityProfilesOffset": 1144,
-            "kVehMinActiveOffset": 1196
-          }
-        }
-      ]
-    },
     {
       "name": "objects",
       "candidates": [

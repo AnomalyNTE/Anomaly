@@ -584,7 +584,6 @@ constexpr float kPlatformShellViewportMargin = 12.0f;
 struct ContactInformation final {
     std::string repository_label;
     std::string repository_url;
-    std::string qq_group;
 };
 
 [[nodiscard]] std::optional<ContactInformation> LoadContactInformation(
@@ -598,10 +597,8 @@ struct ContactInformation final {
         ContactInformation contact{
             repository.at("label").get<std::string>(),
             repository.at("url").get<std::string>(),
-            document.at("qqGroup").get<std::string>(),
         };
-        if (contact.repository_label.empty() || contact.repository_url.empty() ||
-            contact.qq_group.empty()) {
+        if (contact.repository_label.empty() || contact.repository_url.empty()) {
             return std::nullopt;
         }
         return contact;
@@ -5731,9 +5728,9 @@ private:
 
     void DrawDeveloperPluginOverview(const anomaly::InstalledPluginView& plugin) {
         std::string dependencies;
-        for (const auto& dependency : plugin.dependency_ids) {
+        for (const auto& dependency : plugin.dependencies) {
             if (!dependencies.empty()) dependencies += ", ";
-            dependencies += dependency;
+            dependencies += dependency.id;
         }
         if (dependencies.empty()) dependencies = Text(anomaly::MessageId::CommonNone);
         const std::string generation = std::to_string(plugin.generation);
@@ -6741,7 +6738,7 @@ private:
         case SettingsSection::About:
             if (SettingMatches(Text(anomaly::MessageId::SettingsRuntimeIdentity),
                     Text(anomaly::MessageId::SettingsBuildVersions),
-                    "about version sdk profile github contact qq")) {
+                    "about version sdk profile github contact")) {
                 heading();
                 if (ImGui::BeginTable("##about", 2,
                         ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH |
@@ -6768,13 +6765,6 @@ private:
                     } else if (!contact_) {
                         ImGui::TextUnformatted(Text(anomaly::MessageId::CommonUnavailable));
                     }
-                    ImGui::TableNextRow(ImGuiTableRowFlags_None, 38.0f);
-                    ImGui::TableNextColumn();
-                    ImGui::TextDisabled("%s", Text(anomaly::MessageId::SettingsQqGroup));
-                    ImGui::TableNextColumn();
-                    ImGui::TextUnformatted(contact_
-                            ? contact_->qq_group.c_str()
-                            : Text(anomaly::MessageId::CommonUnavailable));
                     ImGui::EndTable();
                 }
             }
@@ -9366,6 +9356,9 @@ void RunPlatform(
         }
 
         ImGui_ImplDX11_NewFrame();
+        if (io.Fonts->TexID != 0 && io.Fonts->TexPixelsRGBA32 != nullptr) {
+            ReleasePlatformUiFontAtlas(PlatformUiFontRetention::Rebuildable);
+        }
         ImGui_ImplWin32_NewFrame();
         {
             std::scoped_lock lock(*plugin_mutex);

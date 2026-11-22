@@ -253,6 +253,43 @@
         "anomaly.nte.combat"
       ]
     },
+    "nte.HTAttributeSet.ApplyDamageToHealth": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "48 89 5C 24 18 55 56 57 41 55 41 56 48 8D AC 24 20 FF FF FF 48 81 EC E0 01 00 00 48 8B 9D 40 01 00 00 49 8B F0",
+      "resolve": { "kind": "direct" },
+      "validators": [ "address-in-module", "executable" ],
+      "requiredBy": [ "anomaly.nte.combat" ]
+    },
+    "nte.HTAttributeComponent.SetCurrentHealth": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "40 53 48 83 EC 50 0F 29 7C 24 30 48 8B D9 0F 28 F9 E8 ?? ?? ?? ?? 48 85 C0 0F 84 93 00 00 00 8B 40 08 C1 E8 1E F6 D0 A8 01",
+      "resolve": { "kind": "direct" },
+      "validators": [ "address-in-module", "executable" ],
+      "requiredBy": []
+    },
+    "nte.HTPlayerController.TakePendingFightHit": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "40 53 55 56 57 48 83 EC 28 0F B6 05 ?? ?? ?? ?? 48 8B DA 48 8B F1 84 C0 74 14 48 85 D2 74 0F 48 8B CA E8 ?? ?? ?? ?? 0F B6 05 ?? ?? ?? ?? 33 ED",
+      "resolve": { "kind": "direct" },
+      "validators": [ "address-in-module", "executable" ],
+      "requiredBy": []
+    },
+    "nte.HTPlayerController.ApplyReplicatedFightResult": {
+      "module": "HTGame.exe",
+      "section": ".text",
+      "pattern": "40 55 53 56 57 41 55 41 56 48 8D AC 24 D8 FB FF FF 48 81 EC 28 05 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 F0 03 00 00 48 8B 01 49 8B D8 48 89 5C 24 30",
+      "resolve": { "kind": "direct" },
+      "validators": [
+        "address-in-module",
+        "executable",
+        "call-target:nte.HTPlayerController.TakePendingFightHit:replicatedFightResult.takePendingHitCall",
+        "call-target:nte.HTAttributeComponent.SetCurrentHealth:replicatedFightResult.setCurrentHealthCall"
+      ],
+      "requiredBy": []
+    },
     "nte.HTUI_MenuExtension.AddMenuPage": {
       "module": "HTGame.exe",
       "section": ".text",
@@ -1008,6 +1045,12 @@
     "damageEvent.damage": 16,
     "damageEvent.damageGEDef": 312,
     "damageEvent.damageTags": 328,
+    "replicatedFightResult.setCurrentHealthCall": 318,
+    "replicatedFightResult.takePendingHitCall": 223,
+    "replicatedFightResult.instigatorWeak": 20,
+    "replicatedFightResult.causerWeak": 28,
+    "replicatedFightHit.size": 472,
+    "replicatedFightHit.damageEvent": 80,
     "abilitySpawnActor.triggerAbilityHandle": 1160,
     "abilitySpawnActor.savedTriggerSkillCDO": 1168,
     "abilitySystem.tryActivateAbilityStack": 8280,
@@ -1231,6 +1274,8 @@
         "abilitySystem.currentDamageCauserOrInstigator": 9104,
         "abilitySystem.currentDamageGameplayEffect": 9112,
         "abilitySystem.size": 9816,
+        "abilitySystem.currentHp": 6712,
+        "abilitySystem.ownerAbilityCharacter": 7184,
         "aiCharacter.size": 10464,
         "controller.getPlayerCharacterVtableOffset": 5272,
         "gameData.abilityDataAsset": 952,
@@ -1264,6 +1309,8 @@
         "abilitySystem.currentDamageCauserOrInstigator": 9144,
         "abilitySystem.currentDamageGameplayEffect": 9152,
         "abilitySystem.size": 9856,
+        "abilitySystem.currentHp": 6736,
+        "abilitySystem.ownerAbilityCharacter": 7208,
         "aiCharacter.size": 10528,
         "controller.getPlayerCharacterVtableOffset": 5320,
         "gameData.abilityDataAsset": 1040,

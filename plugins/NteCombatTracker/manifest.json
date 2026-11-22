@@ -12,15 +12,22 @@
   "games": ["nte"],
   "builds": ["nte-*"],
   "loadPhase": "game-ready",
+  "dependencies": [
+    {"id": "anomaly.summon-lab", "version": ">=1.0.0", "optional": true}
+  ],
   "services": [
     {"id": "anomaly.ui", "minVersion": 1},
     {"id": "anomaly.localization", "minVersion": 1},
+    {"id": "anomaly.config", "minVersion": 1},
+    {"id": "anomaly.scheduler", "minVersion": 1},
+    {"id": "anomaly.ipc", "minVersion": 1, "optional": true},
     {"id": "anomaly.json", "minVersion": 1},
     {"id": "anomaly.profile", "minVersion": 1},
     {"id": "anomaly.core", "minVersion": 1},
     {"id": "anomaly.runtime-info", "minVersion": 1, "optional": true},
     {"id": "anomaly.nte.build", "minVersion": 1, "optional": true},
     {"id": "anomaly.nte.combat", "minVersion": 1},
+    {"id": "anomaly.nte.account", "minVersion": 1, "optional": true},
     {"id": "anomaly.nte.skills", "minVersion": 1, "optional": true},
     {"id": "anomaly.websocket", "minVersion": 1, "optional": true},
     {"id": "anomaly.interop.signature", "minVersion": 1},
@@ -28,6 +35,6 @@
     {"id": "anomaly.ue5.objects", "minVersion": 1},
     {"id": "anomaly.ue5.world", "minVersion": 1, "optional": true}
   ],
-  "capabilities": ["ui", "json", "memory-read", "runtime-info", "nte-build", "nte-combat-read",
+  "capabilities": ["ui", "configuration", "scheduler", "ipc", "json", "memory-read", "runtime-info", "nte-build", "nte-combat-read", "nte-account-read",
     "nte-skills-read", "websocket", "interop-signature", "ue5-names", "ue5-objects", "ue5-world"]
 }

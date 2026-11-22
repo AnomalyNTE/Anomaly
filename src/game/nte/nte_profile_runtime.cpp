@@ -65,6 +65,12 @@ inline constexpr std::string_view kPickupLayoutValidator = "nte-pickup-layout-v1
 inline constexpr std::string_view kCombatFeature = "nte.combat";
 inline constexpr std::string_view kDamageEventSymbol =
     "nte.HTAbilityCharacter.BroadcastCharacterOnDamaged";
+inline constexpr std::string_view kApplyDamageSymbol = "nte.HTAttributeSet.ApplyDamageToHealth";
+inline constexpr std::string_view kFightResultSymbol =
+    "nte.HTPlayerController.ApplyReplicatedFightResult";
+inline constexpr std::string_view kPendingFightHitSymbol =
+    "nte.HTPlayerController.TakePendingFightHit";
+inline constexpr std::string_view kSetHealthSymbol = "nte.HTAttributeComponent.SetCurrentHealth";
 inline constexpr std::string_view kSkillsFeature = "nte.skills";
 inline constexpr std::string_view kSkillInvocationFeature = "nte.skill-invocation";
 inline constexpr std::string_view kCombatReflectionValidator =
@@ -1161,10 +1167,10 @@ public:
     }
 
     GameTickHook::Callback MakeTickCallback(
-        Ue5DamageFunctionHook* damage_hook, const void* event_target) {
+        Ue5DamageFunctionHook* damage_hook, Ue5DamageFunctionTargets damage_targets) {
         return [weak = std::weak_ptr<Ue5NteAdapter>(adapter_),
                 evidence = tick_evidence_gate_, damage_hook,
-                event_target](double delta) {
+                damage_targets](double delta) {
             const auto started_at = std::chrono::steady_clock::now();
             // Keep the adapter generation alive through evidence
             // observation. This also protects the service tables if
@@ -1173,11 +1179,10 @@ public:
             if (adapter) {
                 adapter->OnGameTick(delta);
                 if (damage_hook != nullptr && !damage_hook->Attempted() &&
-                    event_target != nullptr && adapter->CombatFeatureAvailable()) {
+                    damage_targets.character_on_damaged != nullptr && adapter->CombatFeatureAvailable()) {
                     const auto exec_targets = adapter->CombatExecFunctionTargets();
                     if (exec_targets.discovery_complete) {
-                        Ue5DamageFunctionTargets targets;
-                        targets.character_on_damaged = const_cast<void*>(event_target);
+                        auto targets = damage_targets;
                         targets.combat_exec_function_count = exec_targets.count;
                         for (std::size_t index{}; index < exec_targets.count; ++index) {
                             targets.combat_exec_functions[index] = {
@@ -1187,6 +1192,7 @@ public:
                                     exec_targets.entries[index].target)};
                         }
                         static_cast<void>(damage_hook->Start(targets));
+                        adapter->SetAppliedDamageAvailable(damage_hook->AppliedDamageStarted());
                     }
                 }
             }
@@ -1326,8 +1332,7 @@ public:
                 if (!tick_hook_ || tick_retry_attempts_ % kTickRetryRebuildAfter == 0) {
                     tick_hook_.reset();
                     tick_hook_ = std::make_unique<GameTickHook>(MakeTickCallback(
-                        damage_function_hook_.get(),
-                        reinterpret_cast<const void*>(tick_retry_event_target_)));
+                        damage_function_hook_.get(), tick_retry_damage_targets_));
                 }
                 ++tick_retry_attempts_;
                 if (!tick_hook_->Start(reinterpret_cast<void*>(tick_retry_target_))) {
@@ -1411,7 +1416,7 @@ public:
         process_event_hook_ready_ = false;
         actor_process_event_ready_ = false;
         tick_retry_target_ = 0;
-        tick_retry_event_target_ = 0;
+        tick_retry_damage_targets_ = {};
         republication_failure_reported_ = false;
         quarantined_ = false;
         module_path_ = ModulePath(options_.game_module);
@@ -1522,6 +1527,24 @@ public:
                     if (adapter) {
                         adapter->OnCombatExecFunction(receiver, function, stack);
                     }
+                },
+                [weak = std::weak_ptr<Ue5NteAdapter>(adapter_)](
+                    std::uintptr_t attributes, std::uintptr_t victim) -> std::optional<float> {
+                    const auto adapter = weak.lock();
+                    return adapter ? adapter->ReadDamageHealth(attributes, victim) : std::nullopt;
+                },
+                [weak = std::weak_ptr<Ue5NteAdapter>(adapter_)](
+                    std::uintptr_t event, std::uintptr_t victim, std::uintptr_t attacker, float amount) {
+                    if (const auto adapter = weak.lock()) {
+                        adapter->OnAppliedDamage(event, victim, attacker, amount);
+                    }
+                },
+                [weak = std::weak_ptr<Ue5NteAdapter>(adapter_)](
+                    std::uintptr_t component, std::uintptr_t context, std::uintptr_t pending_hit,
+                    std::uintptr_t victim, float amount) {
+                    if (const auto adapter = weak.lock()) {
+                        adapter->OnReplicatedDamage(component, context, pending_hit, victim, amount);
+                    }
                 });
         } catch (...) {
             diagnostics_.push_back("damage native hook allocation failed");
@@ -1529,10 +1552,56 @@ public:
         bool hook_ready{};
         const auto* const damage_event_target =
             resolution_->FindSymbol(kDamageEventSymbol);
-        const void* const event_target =
+        Ue5DamageFunctionTargets damage_targets;
+        damage_targets.character_on_damaged =
             damage_event_target != nullptr && damage_event_target->Available()
             ? reinterpret_cast<void*>(damage_event_target->address)
             : nullptr;
+        const auto validated_damage_target = [this](const std::string_view name) -> void* {
+            const auto* symbol = resolution_->FindSymbol(name);
+            if (symbol == nullptr || !symbol->Available()) return nullptr;
+            const auto module = memory_->FindModule(symbol->module);
+            return module && HasMatchingUnwindEntry(*module, *symbol)
+                ? reinterpret_cast<void*>(symbol->address) : nullptr;
+        };
+        std::uint64_t hp_offset{}, component_size{};
+        if (profile_ &&
+            ProfileLayoutValue(*profile_, "abilitySystem.currentHp", &hp_offset) &&
+            ProfileLayoutValue(*profile_, "abilitySystem.size", &component_size) &&
+            hp_offset != 0 && hp_offset % alignof(float) == 0 && hp_offset < component_size &&
+            sizeof(float) <= component_size - hp_offset) {
+            damage_targets.apply_damage = validated_damage_target(kApplyDamageSymbol);
+            std::uint64_t owner_offset{}, instigator_offset{}, causer_offset{};
+            std::uint64_t hit_size{}, event_offset{}, event_size{};
+            std::uint64_t pending_hit_call{}, set_health_call{};
+            if (ProfileLayoutValue(*profile_, "abilitySystem.ownerAbilityCharacter", &owner_offset) &&
+                owner_offset != 0 && owner_offset % alignof(std::uintptr_t) == 0 &&
+                owner_offset < component_size && sizeof(std::uintptr_t) <= component_size - owner_offset &&
+                ProfileLayoutValue(*profile_, "replicatedFightResult.instigatorWeak", &instigator_offset) &&
+                instigator_offset != 0 && instigator_offset % alignof(std::int32_t) == 0 &&
+                ProfileLayoutValue(*profile_, "replicatedFightResult.causerWeak", &causer_offset) &&
+                causer_offset >= instigator_offset && causer_offset - instigator_offset >= 2 * sizeof(std::int32_t) &&
+                causer_offset % alignof(std::int32_t) == 0 &&
+                ProfileLayoutValue(*profile_, "replicatedFightHit.size", &hit_size) &&
+                ProfileLayoutValue(*profile_, "replicatedFightHit.damageEvent", &event_offset) &&
+                ProfileLayoutValue(*profile_, "damageEvent.size", &event_size) &&
+                event_offset != 0 && event_offset % alignof(std::uintptr_t) == 0 &&
+                event_offset < hit_size && event_size != 0 && event_size <= hit_size - event_offset &&
+                ProfileLayoutValue(*profile_, "replicatedFightResult.takePendingHitCall", &pending_hit_call) &&
+                ProfileLayoutValue(*profile_, "replicatedFightResult.setCurrentHealthCall", &set_health_call) &&
+                pending_hit_call < set_health_call) {
+                damage_targets.set_current_health = validated_damage_target(kSetHealthSymbol);
+                damage_targets.take_pending_fight_hit = validated_damage_target(kPendingFightHitSymbol);
+                damage_targets.replicated_fight_result = validated_damage_target(kFightResultSymbol);
+                if (damage_targets.replicated_fight_result != nullptr) {
+                    // The Profile's call-target validators verified both instructions are E8 rel32.
+                    constexpr std::uintptr_t kRelativeCallLength = 5;
+                    const auto handler = reinterpret_cast<std::uintptr_t>(damage_targets.replicated_fight_result);
+                    damage_targets.pending_hit_return = handler + pending_hit_call + kRelativeCallLength;
+                    damage_targets.set_health_return = handler + set_health_call + kRelativeCallLength;
+                }
+            }
+        }
         const auto damage_hook = damage_function_hook_.get();
         const auto* tick = resolution_->FindSymbol("ue5.GameTick");
         if (tick != nullptr && tick->Available() &&
@@ -1541,14 +1610,13 @@ public:
                 tick_evidence_gate_ = std::make_shared<TickEvidenceObserverGate>(
                     options_.tick_evidence_observer);
             }
-            tick_hook_ = std::make_unique<GameTickHook>(
-                MakeTickCallback(damage_hook, event_target));
+            tick_hook_ = std::make_unique<GameTickHook>(MakeTickCallback(damage_hook, damage_targets));
             hook_ready = tick_hook_->Start(reinterpret_cast<void*>(tick->address));
             if (!hook_ready) {
                 // Keep the target so a later maintenance pass can install the hook without
                 // restarting the runtime; nothing else publishes the framework services.
                 tick_retry_target_ = tick->address;
-                tick_retry_event_target_ = reinterpret_cast<std::uintptr_t>(event_target);
+                tick_retry_damage_targets_ = damage_targets;
                 diagnostics_.push_back("game tick hook activation failed");
             }
         }
@@ -1616,7 +1684,7 @@ public:
             ahud_hook_ready_ = ahud_hook_ready;
             process_event_hook_ready_ = process_event_hook_ready;
             actor_process_event_ready_ = ahud_hook_ready;
-            if (damage_hook != nullptr && event_target == nullptr) {
+            if (damage_hook != nullptr && damage_targets.character_on_damaged == nullptr) {
                 diagnostics_.push_back(
                     "character damage event hook target unavailable");
             }
@@ -2149,7 +2217,7 @@ private:
     Ue5NteAdapter::ProcessEventInvoker process_event_invoker_{};
     // Game tick hook target kept when installation failed, so a maintenance pass can retry.
     std::uintptr_t tick_retry_target_{};
-    std::uintptr_t tick_retry_event_target_{};
+    Ue5DamageFunctionTargets tick_retry_damage_targets_{};
     static constexpr std::chrono::milliseconds kTickRetryInitialBackoff{1000};
     static constexpr std::chrono::milliseconds kTickRetryMaximumBackoff{30000};
     // A hook generation that cannot be rolled back blocks its own target, so the retry

@@ -652,6 +652,8 @@ typedef struct AnomalyNteCombatServiceV1 {
     AnomalyStatusV1 (ANOMALY_CALL *next_event)(void*, uint64_t, AnomalyNteCombatEventV1*);
     AnomalyStatusV1 (ANOMALY_CALL *event_name_utf8)(void*, const AnomalyNteCombatEventV1*, char*, size_t*);
     AnomalyStatusV1 (ANOMALY_CALL *participant_display_name_utf8)(void*, AnomalyGenerationHandleV1, char*, size_t*);
+    AnomalyStatusV1 (ANOMALY_CALL *latest_applied_damage_sequence)(void*, uint64_t*);
+    AnomalyStatusV1 (ANOMALY_CALL *next_applied_damage_event)(void*, uint64_t, AnomalyNteCombatEventV1*);
 } AnomalyNteCombatServiceV1;
 ```
 
@@ -661,9 +663,17 @@ Monster names prefer a specific scene entry and its dedicated text key, and only
 
 FText decoding follows the optional `ue5.ftext` validation and read-only rules of the [UE5 name services](ue5-services.md); it reads the source text from an existing display cache or a loaded text table and does not call `Conv_TextToString`. Full name lookup still keeps the validated reflection queries for the character ID, monster static data, and text table references, so the whole name lookup path cannot be treated as a pure memory read.
 
+`latest_applied_damage_sequence` and `next_applied_damage_event` provide a separate stream of observed HP loss. `final_value` is the difference between the rounded HP readings before and after the native health damage call. This prevents rounding errors from accumulating across successive hits. This stream uses its own cursor and shares the combat name and participant lookups. Both calls return `UNAVAILABLE` when the active Profile cannot observe the native health damage call.
+
 Consumers should query the combat service from `on_update` in the Game domain: compare `latest_damage_sequence` first, call `next_damage_event` a bounded number of times only when the sequence changed, and resolve source, attacker, and victim once each when accepting a new event. HP, statistics, and resolution results should be converted immediately into an immutable snapshot owned by the plugin and directly drawable. The Render domain `on_draw` only copies that local snapshot and calls UI services; it does not query the combat service, does not advance the cursor, and does not resolve names. For the full consumption boundary, see [`examples/nte_combat_demo`](../../../examples/nte_combat_demo/plugin.cpp).
 
 ---
+
+## `anomaly.nte.account`
+
+- **ID** `anomaly.nte.account` · **Version** 1 · **capability** `nte-account-read`
+
+Use `uid_utf8` to copy the latest local account UID. The runtime prefers replicated account state and falls back to validated HUD text. Without a fresh sample, the service returns `NOT_FOUND`. The UTF-8 buffer size includes the terminating NUL.
 
 ## `anomaly.nte.skills`
 

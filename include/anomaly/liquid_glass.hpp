@@ -3,13 +3,17 @@
 #include <imgui.h>
 #include <imgui_internal.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <span>
+#include <vector>
 
 #include <dxgiformat.h>
 
 struct ID3D11Device;
 struct ID3D11DeviceContext;
+struct ID3D11RenderTargetView;
+struct tagRECT;
 struct ID3D12Device;
 struct ID3D12GraphicsCommandList;
 struct ID3D12Resource;
@@ -140,8 +144,19 @@ void DrawSectorSurface(ImDrawList* list, ImVec2 center, float inner_radius, floa
 // and tooltips receive one automatically while glass is active.
 void RegisterWindowSurface(const SurfaceOptions& options) noexcept;
 // Call between ImGui::Render() and the renderer backend: inserts the window
-// surfaces registered this frame under their windows.
-void PrepareDrawData(ImDrawData* data) noexcept;
+// surfaces registered this frame under their windows and bounds captures to the
+// current frame's readers. A desktop layer retained for future frames needs its full backdrop.
+void PrepareDrawData(ImDrawData* data, bool retain_desktop_layer = false) noexcept;
+
+// Records the inputs that determine the pixels of a prepared draw list, including glass
+// uniforms. An unknown callback may draw from external state and cannot be reused.
+[[nodiscard]] bool AppendDrawListSnapshot(const ImDrawList& list, std::vector<std::byte>& bytes);
+
+// Retains a desktop layer together with the sharp and blurred inputs its later controls sample.
+[[nodiscard]] bool SaveDesktopLayer(ID3D11RenderTargetView* target) noexcept;
+void RestoreDesktopLayer(ID3D11RenderTargetView* target, const tagRECT& area) noexcept;
+// Bounds sharp captures and returns the pixels the desktop draw calls can read or change.
+[[nodiscard]] ImRect BoundDesktopCaptures(const ImDrawData& data) noexcept;
 
 // Eases a per-item value toward `target`; instant under Reduce Motion.
 [[nodiscard]] float Animate(ImGuiID id, float target, float speed = 16.0f) noexcept;

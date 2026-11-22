@@ -23,7 +23,8 @@ std::optional<AccountIdentity> FromUidText(const std::string_view text) {
 bool IsValid(const AccountIdentity& account) noexcept {
     if (!account.known()) return account.source == Source::Unavailable;
     const auto parsed = FromUidText(account.uid);
-    return parsed && *parsed == account;
+    return parsed && parsed->uid == account.uid &&
+        account.source != Source::Unavailable;
 }
 
 std::string DirectoryName(const AccountIdentity& account) {
@@ -38,12 +39,16 @@ std::optional<AccountIdentity> FromDirectoryName(const std::string_view name) {
 }
 
 std::string_view SourceName(const Source source) noexcept {
-    return source == Source::UiRoleId ? "ui-role-id" : "unavailable";
+    switch (source) {
+    case Source::UiRoleId: return "ui-role-id";
+    case Source::Runtime: return "runtime";
+    default: return "unavailable";
+    }
 }
 
 bool ShouldTransition(const AccountIdentity& current,
     const std::optional<AccountIdentity>& detected) noexcept {
-    return detected && IsValid(*detected) && *detected != current;
+    return detected && IsValid(*detected) && detected->uid != current.uid;
 }
 
 }  // namespace nte::account

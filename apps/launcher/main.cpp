@@ -725,6 +725,15 @@ public:
         {
             std::scoped_lock lock(state_mutex_);
             if (state_.busy) return;
+            if (anomaly::launcher::IsNteGameDirectory(directory)) {
+                auto& other_client = configuration_.selected_client ==
+                        anomaly::launcher::NteClient::Global
+                    ? configuration_.mainland_china
+                    : configuration_.global;
+                if (PathsEqual(directory, other_client.game_directory)) {
+                    other_client.game_directory.clear();
+                }
+            }
             state_.game_directory = std::move(directory);
             configuration_.Selected().game_directory = state_.game_directory;
         }
@@ -893,7 +902,7 @@ public:
             options.manual_map.runtime_root = selected.runtime_root;
             options.manual_map.log_directory = options.manual_map.runtime_root / L"logs";
             const auto result =
-                anomaly::launcher::LaunchAndManualMapRuntimeCore(options);
+                anomaly::launcher::LaunchAndManualMapRuntimeCore(options, worker_.get_stop_token());
             if (result.Ok()) RefreshProcessesImpl();
 
             std::scoped_lock lock(state_mutex_);
@@ -1115,6 +1124,13 @@ public:
             state_.view = configuration_.view;
             settings_dirty_ = true;
         }
+    }
+
+    void SetFrameRateLimit(const int limit) {
+        std::scoped_lock lock(state_mutex_);
+        configuration_.view.frame_rate_limit = limit;
+        state_.view.frame_rate_limit = limit;
+        settings_dirty_ = true;
     }
 
     void SetModsGroupByFolder(const bool by_folder) {
@@ -1388,7 +1404,6 @@ private:
 
     void InitializePathsImpl() {
         const auto loaded = anomaly::launcher::LoadLauncherConfiguration(configuration_path_);
-        const auto game_processes = anomaly::launcher::EnumerateAttachableProcesses();
         const auto mainland_launcher_processes =
             anomaly::launcher::EnumerateAttachableProcesses(L"NTELauncher.exe");
         const auto global_launcher_processes =
@@ -1404,22 +1419,14 @@ private:
                     anomaly::launcher::NteClient::Global);
             (keep_mainland ? configuration.global : configuration.mainland_china).game_directory.clear();
         }
-        const auto discover = [this, &game_processes, &configuration](
+        const auto discover = [this, &configuration](
                                   const anomaly::launcher::NteClient client,
                                   const auto& launcher_processes) {
             anomaly::launcher::LauncherDiscoveryOptions options;
             options.client = client;
             options.payload_root = payload_root_;
-            options.allow_unpaired_game_discovery = true;
             options.other_game_directory = client == anomaly::launcher::NteClient::Global
                 ? configuration.mainland_china.game_directory : configuration.global.game_directory;
-            if (configuration.selected_client == client) {
-                for (const auto& process : game_processes) {
-                    if (!process.executable_path.empty()) {
-                        options.running_game_executables.push_back(process.executable_path);
-                    }
-                }
-            }
             for (const auto& process : launcher_processes) {
                 if (!process.executable_path.empty()) {
                     options.running_launcher_executables.push_back(process.executable_path);
@@ -1486,16 +1493,7 @@ private:
         anomaly::launcher::LauncherDiscoveryOptions options;
         options.client = client;
         options.payload_root = payload_root_;
-        options.allow_unpaired_game_discovery = true;
         options.other_game_directory = std::move(other_game_directory);
-        // A game that is already running is the surest pairing there is: its own directory is where the client
-        // the user is switching to is installed, and it is the directory the process list filters on next. It
-        // only fills a directory that is not known yet -- a stored one always wins in the discovery below.
-        for (const auto& process : anomaly::launcher::EnumerateAttachableProcesses()) {
-            if (!process.executable_path.empty()) {
-                options.running_game_executables.push_back(process.executable_path);
-            }
-        }
         const auto discovered = anomaly::launcher::DiscoverLauncherConfiguration(
             preferred, options);
         std::scoped_lock lock(state_mutex_);
@@ -1892,7 +1890,7 @@ struct Graphics final {
     // own: the swap chain is bound to a composition visual, and that visual is the
     // window's content. The indirection is what lets the back buffer's alpha reach
     // the desktop, which is what its rounded corners are cut out of.
-    ComPtr<IDXGISwapChain> swap_chain;
+    ComPtr<IDXGISwapChain1> swap_chain;
     ComPtr<IDCompositionDevice> composition_device;
     ComPtr<IDCompositionTarget> composition_target;
     ComPtr<IDCompositionVisual> composition_visual;
@@ -1913,9 +1911,80 @@ struct Graphics final {
     std::vector<ComPtr<ID3D11ShaderResourceView>> theme_stickers;
     std::vector<ImVec2> theme_sticker_sizes;
     std::uint64_t theme_version{};
+    bool redraw_required{true};
 };
 
 Graphics* g_graphics{};
+
+// List order is paint order. A changing page can reuse everything underneath its first
+// changed list, including the precise backdrop that its glass controls will sample.
+struct LauncherDrawing final {
+    std::vector<std::vector<std::byte>> lists;
+    std::vector<std::byte> scratch;
+    int saved_lists{};
+    ImRect previous_overlay{};
+
+    int Compare(const ImDrawData& data, const bool force) {
+        const int count = data.CmdListsCount;
+        const int previous = static_cast<int>(lists.size());
+        int first_change = force ? 0 : (std::min)(previous, count);
+        lists.resize(count);
+        for (int i = 0; i < count; ++i) {
+            scratch.clear();
+            const bool reusable = anomaly::glass::AppendDrawListSnapshot(*data.CmdLists[i], scratch);
+            if (!reusable || scratch != lists[i]) {
+                first_change = (std::min)(first_change, i);
+                if (!reusable) scratch.clear();
+                lists[i].swap(scratch);
+            }
+        }
+        if (first_change < saved_lists) saved_lists = 0;
+        if (!force && previous == count && first_change == count) return -1;
+        return first_change;
+    }
+
+    static void BuildRange(ImDrawData& batch, const ImDrawData& data, const int first, const int end) {
+        batch.Valid = true;
+        batch.DisplayPos = data.DisplayPos;
+        batch.DisplaySize = data.DisplaySize;
+        batch.FramebufferScale = data.FramebufferScale;
+        batch.OwnerViewport = data.OwnerViewport;
+        for (int i = first; i < end; ++i) batch.AddDrawList(data.CmdLists[i]);
+    }
+
+    std::optional<RECT> Render(Graphics& graphics, const ImDrawData& data, const int first_change) {
+        graphics.context->OMSetRenderTargets(1, graphics.render_target.GetAddressOf(), nullptr);
+        const bool restore = saved_lists > 0 &&
+            (saved_lists == first_change || first_change == data.CmdListsCount);
+        if (!restore) {
+            // The composition swap chain uses premultiplied alpha, including the rounded corners.
+            const float transparent_clear[4]{};
+            graphics.context->ClearRenderTargetView(graphics.render_target.Get(), transparent_clear);
+            if (first_change > 0) {
+                ImDrawData underlay;
+                BuildRange(underlay, data, 0, first_change);
+                ImGui_ImplDX11_RenderDrawData(&underlay);
+                saved_lists = anomaly::glass::SaveDesktopLayer(graphics.render_target.Get()) ? first_change : 0;
+            }
+        }
+        ImDrawData overlay;
+        BuildRange(overlay, data, restore ? saved_lists : first_change, data.CmdListsCount);
+        const ImRect bounds = anomaly::glass::BoundDesktopCaptures(overlay);
+        std::optional<RECT> damage;
+        if (restore) {
+            ImRect changed = previous_overlay;
+            changed.Add(bounds);
+            if (changed.IsInverted()) changed = ImRect(0, 0, data.DisplaySize.x, data.DisplaySize.y);
+            damage = RECT{static_cast<LONG>(std::floor(changed.Min.x)), static_cast<LONG>(std::floor(changed.Min.y)),
+                static_cast<LONG>(std::ceil(changed.Max.x)), static_cast<LONG>(std::ceil(changed.Max.y))};
+            anomaly::glass::RestoreDesktopLayer(graphics.render_target.Get(), *damage);
+        }
+        previous_overlay = bounds;
+        if (overlay.CmdListsCount > 0) ImGui_ImplDX11_RenderDrawData(&overlay);
+        return damage;
+    }
+};
+
 float g_launcher_dpi_scale{1.0f};
 bool g_launcher_dpi_changed{};
 bool g_launcher_hotkey_capture{};
@@ -2012,6 +2081,7 @@ void ApplyLauncherDpiScale() noexcept {
 }
 
 bool CreateRenderTarget(Graphics& graphics) {
+    graphics.redraw_required = true;
     ComPtr<ID3D11Texture2D> back_buffer;
     if (FAILED(graphics.swap_chain->GetBuffer(0, IID_PPV_ARGS(&back_buffer)))) return false;
     return SUCCEEDED(graphics.device->CreateRenderTargetView(
@@ -2074,7 +2144,7 @@ bool CreateGraphics(HWND window, Graphics& graphics) {
         return false;
     }
     if (FAILED(graphics.composition_device->Commit())) return false;
-    if (FAILED(swap_chain.As(&graphics.swap_chain))) return false;
+    graphics.swap_chain = std::move(swap_chain);
     return CreateRenderTarget(graphics);
 }
 
@@ -2105,6 +2175,7 @@ ComPtr<ID3D11ShaderResourceView> CreateTextureFromPixels(
     if (FAILED(graphics.device->CreateShaderResourceView(texture.Get(), nullptr, &view))) {
         return {};
     }
+    graphics.redraw_required = true;
     return view;
 }
 
@@ -2179,6 +2250,7 @@ void UploadLauncherTheme(
     Graphics& graphics, const std::shared_ptr<const LauncherTheme>& theme) {
     if (theme == nullptr || theme->version == graphics.theme_version) return;
     graphics.theme_version = theme->version;
+    graphics.redraw_required = true;
     graphics.theme_background.Reset();
     graphics.theme_background_width = 0;
     graphics.theme_background_height = 0;
@@ -5615,6 +5687,7 @@ void DrawBrowseMode(
     g_decode_budget = 1;  // one image per frame
     struct PageResult final {
         int page{};
+        int generation{};
         bool ok{}, exhausted{};
         std::vector<LauncherGbItem> items;
     };
@@ -5627,6 +5700,18 @@ void DrawBrowseMode(
     static std::mutex browse_mutex;
     static bool browse_loading{};
     static std::optional<PageResult> browse_outcome;
+    // A page that failed stays unfetched, and an automatic request would ask for it again on the
+    // very next frame. This holds that request back instead of looping on a feed that is down.
+    static double load_retry_hold{};
+    // When the loading indicator goes out again. It is not the same moment the request ends: a feed
+    // that fills itself page by page lands one page and asks for the next within the same frame, so
+    // an indicator bound strictly to `browse_loading` dropped out for the frame in between and read
+    // as a blink on every page.
+    static double loading_until{};
+    // Changing the filter while a page is on the wire starts the new request immediately and lets it
+    // supersede the old one, so a control never has to be dimmed (or a click swallowed) to keep the
+    // two results from being applied in the wrong order.
+    static int load_generation{};
     static std::mutex install_mutex;
     static std::atomic<bool> install_running{false};
     static std::string install_result;
@@ -5649,11 +5734,16 @@ void DrawBrowseMode(
 
     const auto load_page = [&](const int page) {
         browse_loading = true;
-        status.clear();
+        // The status text of the previous page stays until the next one lands: clearing it here made
+        // the line disappear for the length of every request, which moved the whole list up and down
+        // while a feed filled itself page by page.
         if (page == 1) replace_pending = true;
-        std::thread([page, query = active_query, sort = active_sort, category = active_category] {
+        const int generation = ++load_generation;
+        std::thread([page, generation, query = active_query, sort = active_sort,
+                        category = active_category] {
             PageResult result;
             result.page = page;
+            result.generation = generation;
             try {
                 result.ok = LauncherLoadGbPage(page, query, sort, category, result.items, result.exhausted);
             } catch (...) {
@@ -5678,58 +5768,66 @@ void DrawBrowseMode(
         if (browse_outcome) {
             auto result = std::move(*browse_outcome);
             browse_outcome.reset();
-            browse_loading = false;
-            if (!result.ok) {
-                status = Tr(anomaly::MessageId::LauncherMsgLoadFailedNetwork);
-            } else {
-                for (const auto& item : result.items) {
-                    if (!item.category_id.empty() && !item.category.empty())
-                        g_gb_categories[item.category_id] = item.category;
-                }
-                exhausted = result.exhausted;
-                loaded_pages = result.page;
-                if (result.page == 1) {
-                    items = std::move(result.items);
-                    replace_pending = false;
-                    // A new feed is ordered on the next frame; the pages appended to it never are.
-                    applied_sort_mode = -1;
+            // A result the current request has superseded answers a feed that is no longer on screen:
+            // dropping it keeps the newest filter from being overwritten by an older page.
+            if (result.generation == load_generation) {
+                browse_loading = false;
+                if (!result.ok) {
+                    status = Tr(anomaly::MessageId::LauncherMsgLoadFailedNetwork);
+                    load_retry_hold = ImGui::GetTime() + 5.0;
                 } else {
-                    items.insert(items.end(), std::make_move_iterator(result.items.begin()),
-                        std::make_move_iterator(result.items.end()));
+                    for (const auto& item : result.items) {
+                        if (!item.category_id.empty() && !item.category.empty())
+                            g_gb_categories[item.category_id] = item.category;
+                    }
+                    exhausted = result.exhausted;
+                    loaded_pages = result.page;
+                    if (result.page == 1) {
+                        items = std::move(result.items);
+                        replace_pending = false;
+                        // A new feed is ordered on the next frame; the pages appended to it never are.
+                        applied_sort_mode = -1;
+                    } else {
+                        items.insert(items.end(), std::make_move_iterator(result.items.begin()),
+                            std::make_move_iterator(result.items.end()));
+                    }
+                    status = exhausted
+                        ? Tr(items.empty() ? anomaly::MessageId::LauncherMsgNoResults
+                                           : anomaly::MessageId::LauncherMsgLastPage)
+                        : Tr(anomaly::MessageId::LauncherMsgLoadedCount, {std::to_string(items.size())});
                 }
-                status = exhausted
-                    ? Tr(items.empty() ? anomaly::MessageId::LauncherMsgNoResults
-                                       : anomaly::MessageId::LauncherMsgLastPage)
-                    : Tr(anomaly::MessageId::LauncherMsgLoadedCount, {std::to_string(items.size())});
             }
         }
     }
     // The controls stay put and only the rows scroll, the way the mods page works: the toolbar is
     // part of the page, and the list below it is the one thing that moves.
-    ImGui::BeginDisabled(browse_loading);
+    //
+    // A background page load only fills the list. The controls keep their look and their state while
+    // one runs: nothing is drawn inside a disabled scope that opens and closes for the length of a
+    // request, and a command the user gives meanwhile starts the request it names and supersedes the
+    // one on the wire. Only the automatic page fetch below waits for `browse_loading`, because it
+    // would otherwise ask again on every frame it is drawn.
     const bool refresh_clicked = LauncherChip(Text(translator, anomaly::MessageId::LauncherModsRefreshList));
-    ImGui::EndDisabled();
     if (refresh_clicked) load_page(1);
     ImGui::SameLine();
-    if (browse_loading) {
-        // Text that shares a line with a chip aligns to the frame padding, the same way a label
-        // beside a framed widget does; left on the line's top edge it reads as misaligned.
+    ImGui::BeginDisabled(exhausted && !replace_pending);
+    const bool more_clicked = LauncherChip(exhausted && !replace_pending
+        ? Text(translator, anomaly::MessageId::LauncherBrowseAllLoaded)
+        : Text(translator, anomaly::MessageId::LauncherBrowseLoadMore));
+    ImGui::EndDisabled();
+    // If a new feed failed, retry its first page instead of appending it to the old feed.
+    if (more_clicked) load_page(replace_pending ? 1 : loaded_pages + 1);
+    if (browse_loading) loading_until = ImGui::GetTime() + 0.25;
+    if (browse_loading || ImGui::GetTime() < loading_until) {
+        // The indicator joins the row rather than replacing the command beside it: a row that swaps
+        // its widget out on every request moves the target the pointer was already on.
+        ImGui::SameLine();
         ImGui::AlignTextToFramePadding();
         ImGui::TextDisabled("%s", Tr(anomaly::MessageId::LauncherMsgLoading).c_str());
-    } else {
-        ImGui::BeginDisabled(exhausted && !replace_pending);
-        const bool more_clicked = LauncherChip(exhausted && !replace_pending
-            ? Text(translator, anomaly::MessageId::LauncherBrowseAllLoaded)
-            : Text(translator, anomaly::MessageId::LauncherBrowseLoadMore));
-        ImGui::EndDisabled();
-        // If a new feed failed, retry its first page instead of appending it to the old feed.
-        if (more_clicked) load_page(replace_pending ? 1 : loaded_pages + 1);
     }
-    ImGui::BeginDisabled(browse_loading);
     ImGui::SetNextItemWidth(Scale(280.0f));
     ImGui::InputTextWithHint("##gb-filter",
         Text(translator, anomaly::MessageId::LauncherBrowseSearchHint), search, sizeof(search));
-    ImGui::EndDisabled();
     {
         std::scoped_lock lock(install_mutex);
         if (install_ready) {
@@ -5750,7 +5848,13 @@ void DrawBrowseMode(
         ImGui::TextDisabled("%s",
             Tr(anomaly::MessageId::LauncherBrowseCjkHint).c_str());
     }
-    if (!status.empty()) ImGui::TextDisabled("%s", status.c_str());
+    // The status row holds its line even while it is empty: the feed replaces the text when a page
+    // lands, and a line that appeared and disappeared under it would shift everything below.
+    if (!status.empty()) {
+        ImGui::TextDisabled("%s", status.c_str());
+    } else {
+        ImGui::Dummy(ImVec2(0.0f, ImGui::GetTextLineHeight()));
+    }
     ImGui::Separator();
 
     std::string needle = search;
@@ -5774,11 +5878,9 @@ void DrawBrowseMode(
     const bool searching = !active_query.empty();
     bool category_changed = false;
     if (!searching) {
-        ImGui::BeginDisabled(browse_loading);
         ImGui::SetNextItemWidth(Scale(130.0f));
         category_changed = ImGui::Combo("##category", &category_index,
             category_labels.data(), static_cast<int>(category_labels.size()));
-        ImGui::EndDisabled();
         ImGui::SameLine();
     }
     if (category_changed) {
@@ -5805,12 +5907,10 @@ void DrawBrowseMode(
     for (int i = 0; i < 5; ++i) {
         if (active_sort == server_sort_values[i]) server_sort_index = i;
     }
-    ImGui::BeginDisabled(browse_loading);
     ImGui::SetNextItemWidth(Scale(140.0f));
     const char* server_sort_text[5]{};
     for (int i = 0; i < 5; ++i) server_sort_text[i] = Text(translator, server_sort_labels[i]);
     const bool server_sort_changed = ImGui::Combo("##server-sort", &server_sort_index, server_sort_text, 5);
-    ImGui::EndDisabled();
     if (server_sort_changed) {
         const std::string chosen = server_sort_values[server_sort_index];
         if (chosen != active_sort) {
@@ -6017,6 +6117,7 @@ void DrawBrowseMode(
                 ImGui::ProgressBar(static_cast<float>(done / total), ImVec2(Scale(240.0f), 0.0f),
                     overlay.c_str());
             } else {
+                ImGui::AlignTextToFramePadding();
                 ImGui::TextDisabled("%s",
                     Tr(anomaly::MessageId::LauncherBrowseInstalling,
                         {Tr(anomaly::MessageId::LauncherBrowseProgressBytes,
@@ -6050,6 +6151,8 @@ void DrawBrowseMode(
         }
         if (installed && !(install_running && install_target == item.id)) {
             ImGui::SameLine();
+            // Beside a chip the label rides the chip's baseline, like the facts that follow it.
+            ImGui::AlignTextToFramePadding();
             ImGui::TextDisabled("%s", Text(translator, anomaly::MessageId::LauncherModsInstalled));
         }
         // The row's facts end the line, to the right of the commands, on the same baseline a label
@@ -6071,7 +6174,9 @@ void DrawBrowseMode(
     // Reading to the bottom of the list loads the next page. A list shorter than its own viewport has
     // no scroll range at all, so it also loads while there is nothing to scroll: otherwise the first
     // page of a short feed sat there with no scrollbar and therefore no way to ask for the rest.
-    if (!browse_loading && !exhausted &&
+    // A page that just failed is held back for a moment: asking for it again on the next frame turned
+    // a feed that was down into a request loop, and the list repainted for each attempt.
+    if (!browse_loading && !exhausted && ImGui::GetTime() >= load_retry_hold &&
         (ImGui::GetScrollMaxY() <= 0.0f ||
             ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - Scale(4.0f))) {
         load_page(replace_pending ? 1 : loaded_pages + 1);
@@ -6369,7 +6474,7 @@ void DrawModsMode(
     static std::string notes_error;
     static std::string pending_uninstall;   // single uninstall awaiting confirmation
     static std::set<std::string> selected_names;  // batch selection by mod key: one per mod, also across categories
-    static bool bulk_uninstall_pending{};
+    static std::set<std::string> pending_bulk_uninstall;
     static std::map<anomaly::launcher::ModGroupPath, bool> group_collapsed;
     static std::string update_status;
     static std::mutex check_mutex;
@@ -6409,6 +6514,7 @@ void DrawModsMode(
             page = 0;
             grid_path.clear();
             selected_names.clear();
+            pending_bulk_uninstall.clear();
             group_collapsed.clear();
             import_message.clear();
             update_status.clear();
@@ -6475,6 +6581,7 @@ void DrawModsMode(
     // commands below stays with the list it acts on.
     ImGui::SameLine();
     if (check_running) {
+        ImGui::AlignTextToFramePadding();
         ImGui::TextDisabled("%s", Text(translator, anomaly::MessageId::LauncherModsChecking));
     } else if (LauncherChip(Text(translator, anomaly::MessageId::LauncherModsCheckUpdates))) {
         check_running = true;
@@ -6568,8 +6675,8 @@ void DrawModsMode(
             [](const unsigned char c) { return static_cast<char>(std::tolower(c)); });
         return haystack.find(needle) != std::string::npos;
     };
-    std::vector<const LauncherModEntry*> filtered;
-    for (const auto& entry : mods) {
+    std::vector<LauncherModEntry*> filtered;
+    for (auto& entry : mods) {
         if (matches(entry)) filtered.push_back(&entry);
     }
     // Both views use the same tree and placement ranges, including custom paths up to five levels.
@@ -6585,12 +6692,17 @@ void DrawModsMode(
     }
     const auto layout = anomaly::launcher::BuildModGrouping(classified, by_folder);
     const auto open_node = anomaly::launcher::FindModGroup(layout, grid_path);
-    if (grid_path != layout.nodes[open_node].path) {
+    // A filter can empty the active category while matching mods elsewhere.
+    const bool group_missing = grid_path != layout.nodes[open_node].path;
+    const bool group_filtered_out = group_missing && (!needle.empty() || status_filter != 0);
+    if (group_missing && !group_filtered_out) {
         grid_path = layout.nodes[open_node].path;
         page = 0;
         scroll_to_top = true;
     }
-    const auto& open_group = layout.nodes[anomaly::launcher::ModGroupContent(layout, open_node)];
+    const anomaly::launcher::ModGroupingNode empty_group;
+    const auto& open_group = group_filtered_out ? empty_group
+        : layout.nodes[anomaly::launcher::ModGroupContent(layout, open_node)];
     const std::size_t page_items = !view.mods_grid ? layout.placements.size()
         : open_group.children.size() + open_group.direct_count;
     const std::size_t page_size = view.mods_pagination
@@ -6600,18 +6712,35 @@ void DrawModsMode(
         (page_items + page_size - 1) / page_size);
     page = (std::min)(page, pages - 1);
     {
-        // Batch operations act on the selection across the whole set, not just the rows on screen.
-        std::size_t selected_count{};
-        bool any_unselected{};
-        for (const auto& entry : mods) {
-            if (entry.selected) ++selected_count;
-            else any_unselected = true;
+        std::vector<bool> in_scope(filtered.size());
+        if (view.mods_grid) {
+            for (auto i = open_group.first; i < open_group.first + open_group.count; ++i)
+                in_scope[layout.placements[i]] = true;
+        } else {
+            std::vector<bool> hidden(layout.nodes.size());
+            for (std::size_t node = 1; node < layout.nodes.size(); ++node) {
+                const auto& group = layout.nodes[node];
+                const auto collapsed = group_collapsed.find(group.path);
+                hidden[node] = hidden[group.parent] ||
+                    (collapsed != group_collapsed.end() && collapsed->second &&
+                        anomaly::launcher::ModGroupContent(layout, group.parent) != node);
+            }
+            for (std::size_t i = 0; i < layout.placements.size(); ++i) {
+                if (!hidden[layout.placement_nodes[i]]) in_scope[layout.placements[i]] = true;
+            }
         }
-        // Same lock the per-row switch uses; that variable is declared further down.
-        ImGui::BeginDisabled(!snapshot.processes.empty() && mod_settings.compatibility);
+        // A mod can be placed under several categories. Keep one entry in catalog order.
+        std::vector<LauncherModEntry*> batch_scope;
+        for (std::size_t i = 0; i < filtered.size(); ++i) {
+            if (in_scope[i]) batch_scope.push_back(filtered[i]);
+        }
+        const auto selected_count = std::count_if(batch_scope.begin(), batch_scope.end(),
+            [](const auto* entry) { return entry->selected; });
+        const bool any_unselected = selected_count < std::ssize(batch_scope);
+        ImGui::BeginDisabled(toggles_locked || batch_scope.empty());
         // The button says what the next click does, one label at a time, and keeps the width of the
         // longer of the two so the buttons beside it never shift when the selection flips.
-        const char* const select_label = Text(translator, any_unselected
+        const char* const select_label = Text(translator, any_unselected || batch_scope.empty()
             ? anomaly::MessageId::LauncherModsSelectAll
             : anomaly::MessageId::LauncherModsDeselectAll);
         const float select_width =
@@ -6620,30 +6749,33 @@ void DrawModsMode(
             Scale(30.0f);
         if (LauncherChip((std::string(select_label) + "##select-all").c_str(),
                 ImVec2(select_width, 0.0f))) {
-            for (auto& entry : mods) entry.selected = any_unselected;
-            selected_names.clear();
-            if (any_unselected) {
-                for (const auto& entry : mods) selected_names.insert(LauncherModStateKey(entry));
+            for (auto* entry : batch_scope) {
+                entry->selected = any_unselected;
+                if (any_unselected) selected_names.insert(LauncherModStateKey(*entry));
+                else selected_names.erase(LauncherModStateKey(*entry));
             }
         }
         ImGui::SameLine();
         ImGui::BeginDisabled(selected_count == 0);
         if (LauncherChip(Text(translator, anomaly::MessageId::LauncherModsBulkEnable))) {
-            for (const auto& entry : mods) {
-                if (entry.selected && !entry.enabled) LauncherSetModEnabled(snapshot, entry, true);
+            for (const auto* entry : batch_scope) {
+                if (entry->selected && !entry->enabled) LauncherSetModEnabled(snapshot, *entry, true);
             }
             refreshed = false;
         }
         ImGui::SameLine();
         if (LauncherChip(Text(translator, anomaly::MessageId::LauncherModsBulkDisable))) {
-            for (const auto& entry : mods) {
-                if (entry.selected && entry.enabled) LauncherSetModEnabled(snapshot, entry, false);
+            for (const auto* entry : batch_scope) {
+                if (entry->selected && entry->enabled) LauncherSetModEnabled(snapshot, *entry, false);
             }
             refreshed = false;
         }
         ImGui::SameLine();
         if (LauncherChip(Text(translator, anomaly::MessageId::LauncherModsBulkUninstall))) {
-            bulk_uninstall_pending = true;
+            pending_bulk_uninstall.clear();
+            for (const auto* entry : batch_scope) {
+                if (entry->selected) pending_bulk_uninstall.insert(LauncherModStateKey(*entry));
+            }
             ImGui::OpenPopup(modal_name(anomaly::MessageId::LauncherModsBulkUninstall, "bulk-uninstall").c_str());
         }
         ImGui::EndDisabled();
@@ -7052,7 +7184,7 @@ void DrawModsMode(
             ImGui::Spacing();
         }
     }
-    if (filtered.empty()) {
+    if (filtered.empty() || (view.mods_grid && group_filtered_out)) {
         ImGui::TextDisabled("%s", Text(translator, anomaly::MessageId::LauncherModsNoMatches));
     }
     // The pager floats over the bottom of the list rather than sitting above it: the covers can
@@ -7105,23 +7237,20 @@ void DrawModsMode(
         ImGui::EndPopup();
     }
     if (ImGui::BeginPopupModal(modal_name(anomaly::MessageId::LauncherModsBulkUninstall, "bulk-uninstall").c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        std::size_t count{};
-        for (const auto& entry : mods) {
-            if (entry.selected) ++count;
-        }
         ImGui::Text("%s", Format(translator, anomaly::MessageId::LauncherModsConfirmUninstallMany,
-            {std::to_string(count)}).c_str());
+            {std::to_string(pending_bulk_uninstall.size())}).c_str());
         const auto answer = DrawLauncherModConfirmationButtons();
         if (answer == LauncherModConfirmationResult::Confirm) {
             for (const auto& entry : mods) {
-                if (entry.selected) LauncherRemoveMod(snapshot, entry);
+                const auto key = LauncherModStateKey(entry);
+                if (pending_bulk_uninstall.contains(key) && LauncherRemoveMod(snapshot, entry))
+                    selected_names.erase(key);
             }
-            selected_names.clear();
-            bulk_uninstall_pending = false;
+            pending_bulk_uninstall.clear();
             refresh_mods();
         }
         if (answer == LauncherModConfirmationResult::Cancel) {
-            bulk_uninstall_pending = false;
+            pending_bulk_uninstall.clear();
         }
         ImGui::EndPopup();
     }
@@ -7572,6 +7701,7 @@ void LauncherDrawDownloadProgress(const anomaly::Translator& translator) {
         ImGui::ProgressBar(static_cast<float>(done / total), ImVec2(Scale(260.0f), 0.0f),
             overlay.c_str());
     } else {
+        ImGui::AlignTextToFramePadding();
         ImGui::TextDisabled("%s", Format(translator,
             anomaly::MessageId::LauncherBrowseProgressBytes,
             {Num(megabytes, 1), Num(seconds, 0)}).c_str());
@@ -8216,6 +8346,10 @@ void DrawSettingsMode(
     int transparency = static_cast<int>(std::lround((1.0f - std::clamp(
         held_opacity.value_or(applied_opacity),
         anomaly::kPlatformUiLayoutSurfaceOpacityMinimum, 1.0f)) * 100.0f));
+    // The thumb and percentage can change on every input tick. Give this row its own
+    // draw list so dragging it reuses the settings behind it, including their glass.
+    ImGui::BeginChild("BackgroundVisibilityControl", ImVec2(controls_width, ImGui::GetFrameHeight()),
+        ImGuiChildFlags_NavFlattened, ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar);
     ImGui::SetNextItemWidth(controls_width);
     if (anomaly::glass::SliderInt("##launcher-background-visible", &transparency, 0, 100, "%d%%")) {
         held_opacity = 1.0f - static_cast<float>(transparency) / 100.0f;
@@ -8229,6 +8363,7 @@ void DrawSettingsMode(
         held_version = theme_version;
         controller.SetLauncherSurfaceOpacity(*held_opacity);
     }
+    ImGui::EndChild();
 
     // Language: the same three choices the in-game settings offer, but this one dresses the
     // launcher alone and applies on the next frame.
@@ -8263,6 +8398,26 @@ void DrawSettingsMode(
     if (anomaly::glass::SegmentedControl(
             "launcher-language", language_labels, language_index, language_options)) {
         controller.SetLanguage(languages[static_cast<std::size_t>(language_index)]);
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    ImGui::TextDisabled("%s", Text(translator, anomaly::MessageId::LauncherSectionPerformance));
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(Text(translator, anomaly::MessageId::LauncherSettingFrameRateLimit));
+    const float rate_width = Scale(200.0f);
+    ImGui::SameLine(right_edge - rate_width - Scale(10.0f));
+    ImGui::SetNextItemWidth(rate_width);
+    const std::string rate_preview = std::to_string(snapshot.view.frame_rate_limit) + " FPS";
+    if (anomaly::glass::BeginCombo("##launcher-frame-rate", rate_preview.c_str())) {
+        for (const int rate : anomaly::launcher::kLauncherFrameRates) {
+            const bool selected_rate = rate == snapshot.view.frame_rate_limit;
+            const std::string label = std::to_string(rate) + " FPS";
+            if (ImGui::Selectable(label.c_str(), selected_rate)) controller.SetFrameRateLimit(rate);
+            if (selected_rate) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
     }
 
     // The mods page options. The grid is the view it opens with, and pagination is off until
@@ -8478,7 +8633,7 @@ void DrawLauncherTitleBar(Graphics& graphics) {
     ImGui::PopStyleVar(2);
 }
 
-void DrawLauncher(
+int DrawLauncher(
     HWND window, Graphics& graphics, LauncherController& controller, LauncherMode& mode) {
     // Runs every frame whatever page is showing: a game that starts after this window is up has to appear
     // in the list without the user pressing anything, and the poll throttles itself to one scan every couple
@@ -8574,6 +8729,30 @@ void DrawLauncher(
     DrawUpdatePrompt(controller, snapshot, translator);
     ImGui::End();
     ImGui::PopStyleVar();
+    return snapshot.view.frame_rate_limit;
+}
+
+bool IsLauncherInteraction(const UINT message) noexcept {
+    return (message >= WM_MOUSEFIRST && message <= WM_MOUSELAST) ||
+        (message >= WM_KEYFIRST && message <= WM_KEYLAST) ||
+        message == WM_MOUSELEAVE || message == WM_SETFOCUS || message == WM_KILLFOCUS ||
+        message == WM_SIZE || message == WM_DPICHANGED || message == WM_PAINT;
+}
+
+// Both a frame deadline and new window messages can wake the UI thread. Process input
+// immediately even at the idle cadence, then recheck the active limit before drawing.
+void WaitForLauncherFrame(HANDLE timer, const std::chrono::steady_clock::duration remaining) {
+    using namespace std::chrono;
+    if (timer != nullptr) {
+        LARGE_INTEGER due{};
+        due.QuadPart = -ceil<duration<long long, std::ratio<1, 10000000>>>(remaining).count();
+        if (SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE)) {
+            MsgWaitForMultipleObjectsEx(1, &timer, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            return;
+        }
+    }
+    MsgWaitForMultipleObjectsEx(0, nullptr, static_cast<DWORD>(ceil<milliseconds>(remaining).count()),
+        QS_ALLINPUT, MWMO_INPUTAVAILABLE);
 }
 
 }  // namespace
@@ -8726,9 +8905,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
 
     bool running = true;
     bool window_shown = false;
+    using Clock = std::chrono::steady_clock;
+    const HANDLE frame_timer = CreateWaitableTimerExW(nullptr, nullptr,
+        CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_MODIFY_STATE | SYNCHRONIZE);
+    auto previous_frame = Clock::now();
+    constexpr auto interaction_tail = std::chrono::milliseconds(500);
+    auto active_until = previous_frame + interaction_tail;
+    int frame_rate_limit = anomaly::launcher::kLauncherDefaultFrameRate;
+    LauncherDrawing drawing;
     while (running) {
         MSG message{};
         while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+            if (IsLauncherInteraction(message.message)) active_until = Clock::now() + interaction_tail;
             TranslateMessage(&message);
             DispatchMessageW(&message);
             if (message.message == WM_QUIT) running = false;
@@ -8736,23 +8924,42 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
         if (!running) break;
         if (g_launcher_dpi_changed) ApplyLauncherDpiScale();
         if (IsIconic(window)) {
-            Sleep(16);
+            MsgWaitForMultipleObjectsEx(0, nullptr, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
             continue;
         }
+        const auto now = Clock::now();
+        const auto period = now < active_until
+            ? std::chrono::nanoseconds(1'000'000'000 / frame_rate_limit)
+            : std::chrono::milliseconds(125);
+        const auto due = previous_frame + period;
+        if (window_shown && now < due) {
+            WaitForLauncherFrame(frame_timer, due - now);
+            continue;
+        }
+        // Anchor successive frames to the deadline so timer jitter does not
+        // accumulate. Start a fresh cadence after a missed frame or restore.
+        previous_frame = window_shown && now - due < period ? due : now;
         ImGui_ImplDX11_NewFrame();
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
-        DrawLauncher(window, graphics, controller, mode);
+        frame_rate_limit = DrawLauncher(window, graphics, controller, mode);
+        if (ImGui::IsAnyMouseDown()) active_until = now + interaction_tail;
         ImGui::Render();
-        // What the shell leaves untouched has to be fully transparent -- and under premultiplied
-        // alpha that means colour zero as well, or the rounded corners would composite as a tinted
-        // margin.
-        graphics.context->OMSetRenderTargets(1, graphics.render_target.GetAddressOf(), nullptr);
-        const float transparent_clear[4]{0.0f, 0.0f, 0.0f, 0.0f};
-        graphics.context->ClearRenderTargetView(graphics.render_target.Get(), transparent_clear);
-        anomaly::glass::PrepareDrawData(ImGui::GetDrawData());
-        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
-        graphics.swap_chain->Present(1, 0);
+        ImDrawData* const data = ImGui::GetDrawData();
+        anomaly::glass::PrepareDrawData(data, /*retain_desktop_layer=*/true);
+        // DirectComposition retains the last present. Keep ticking input, animations and worker
+        // results at the configured cadence, and submit only when their visible output changes.
+        const int first_change = drawing.Compare(*data, graphics.redraw_required);
+        if (first_change >= 0) {
+            auto damage = drawing.Render(graphics, *data, first_change);
+            DXGI_PRESENT_PARAMETERS update{};
+            if (damage) {
+                update.DirtyRectsCount = 1;
+                update.pDirtyRects = &*damage;
+            }
+            const HRESULT presented = graphics.swap_chain->Present1(0, 0, &update);
+            graphics.redraw_required = presented != S_OK;
+        }
         if (!window_shown) {
             // The window stays hidden until a themed frame has been presented. It has no
             // redirection bitmap, so until the composition visual holds a frame the
@@ -8769,6 +8976,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
         }
     }
 
+    if (frame_timer != nullptr) CloseHandle(frame_timer);
     anomaly::glass::ShutdownRenderer();
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();

@@ -30,6 +30,8 @@ struct NteOverlaySnapshot {
         account::AccountIdentity account;
         std::string report_id;
         std::string encounter_id;
+        std::string encounter_name;
+        bool summons_only{};
         std::string primary_target;
         std::uint16_t websocket_port{};
         std::uint32_t connected_clients{};
@@ -56,6 +58,8 @@ struct NteOverlaySnapshot {
     const account::AccountIdentity account;
     const std::string report_id;
     const std::string encounter_id;
+    const std::string encounter_name;
+    const bool summons_only{};
     const std::string primary_target;
     const std::uint16_t websocket_port{};
     const std::uint32_t connected_clients{};

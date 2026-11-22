@@ -18,7 +18,7 @@ on:
         type: boolean
         default: false
       announce:
-        description: Send the latest release notes to Discord as a webhook test (creates no release)
+        description: Test Discord pagination with release notes over 4096 characters (creates no release)
         type: boolean
         default: false
 
@@ -126,16 +126,12 @@ jobs:
           OUTPUT: CHANGES.md
           GITHUB_REPO: ${{ github.repository }}
       - name: Check release notes
-        id: notes
         shell: pwsh
         run: |
           if (!(Test-Path CHANGES.md) -or (Get-Item CHANGES.md).Length -eq 0) {
             throw 'git-cliff did not generate release notes.'
           }
           Get-Content CHANGES.md
-          "body<<ANOMALY_NOTES_EOF" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          Get-Content CHANGES.md -Raw | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "ANOMALY_NOTES_EOF" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
       - name: Download release archives
         uses: actions/download-artifact@v4
         with:
@@ -158,22 +154,17 @@ jobs:
           fail_on_unmatched_files: true
           body_path: CHANGES.md
       - name: Announce release on Discord
-        uses: SethCohen/github-releases-to-discord@v1.20
+        uses: actions/github-script@v7
         continue-on-error: true
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_RELEASE_NAME: Anomaly ${{ github.ref_name }}
+          DISCORD_RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}
         with:
-          webhook_url: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          release_name: Anomaly ${{ github.ref_name }}
-          release_body: ${{ steps.notes.outputs.body }}
-          release_html_url: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}
-          color: '11052455'
-          username: Anomaly
-          avatar_url: https://raw.githubusercontent.com/AnomalyNTE/Anomaly/main/logo.png
-          footer_title: Anomaly
-          footer_icon_url: https://raw.githubusercontent.com/AnomalyNTE/Anomaly/main/logo.png
-          footer_timestamp: true
+          script: await require('./.github/scripts/announce-discord.cjs')();
   discord-test:
-    # Manual "Run workflow" check of the Discord webhook: rebuilds the notes of
-    # the last released tag and posts them again. Nothing is published.
+    # Manual "Run workflow" check: send numbered sample notes long enough for
+    # two messages, so page boundaries and the final entry can be checked.
     if: github.event_name == 'workflow_dispatch' && inputs.announce == true
     permissions:
       contents: read
@@ -181,39 +172,37 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Generate long test release notes
+        uses: actions/github-script@v7
         with:
-          fetch-depth: 0
-      - name: Generate release notes
-        uses: orhun/git-cliff-action@v4
-        with:
-          config: .github/cliff.toml
-          args: -vv --latest --strip header
-        env:
-          OUTPUT: CHANGES.md
-          GITHUB_REPO: ${{ github.repository }}
-      - name: Read release notes
-        id: notes
-        run: |
-          if [ ! -s CHANGES.md ]; then
-            echo '::error::git-cliff produced no release notes to send.'
-            exit 1
-          fi
-          {
-            echo 'body<<ANOMALY_NOTES_EOF'
-            cat CHANGES.md
-            echo 'ANOMALY_NOTES_EOF'
-          } >> "$GITHUB_OUTPUT"
+          script: |
+            const fs = require('node:fs/promises');
+            const lines = Array.from({ length: 80 }, (_, index) => {
+              const number = String(index + 1).padStart(3, '0');
+              return `- [${number}/080] 这是完整的更新日志条目，用于验证超长日志按整行分段发送，中文和 emoji 😀 保持完整。[END-${number}]`;
+            });
+            const notes = [
+              '## Discord 超长日志分段测试',
+              '',
+              '以下 80 条均有编号和结束标记，请检查分页交界处以及最后一条是否完整。',
+              '',
+              ...lines,
+              '',
+              '**测试结束：应能看到第 080 条及其 [END-080] 标记。**',
+            ].join('\n');
+            await fs.mkdir('.local/discord-test', { recursive: true });
+            await fs.writeFile('.local/discord-test/CHANGES.md', notes, 'utf8');
+            core.info(`Generated ${notes.length} characters with ${lines.length} numbered entries; expect two Discord messages.`);
       - name: Announce test release on Discord
-        uses: SethCohen/github-releases-to-discord@v1.20
+        uses: actions/github-script@v7
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_RELEASE_NAME: '[测试] Anomaly ${{ github.ref_name }}'
+          DISCORD_RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/latest
+          DISCORD_CONTENT: '`Discord webhook 测试消息，可忽略`'
+          DISCORD_FOOTER_TITLE: Anomaly (测试)
         with:
-          webhook_url: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          release_name: '[测试] Anomaly ${{ github.ref_name }}'
-          release_body: ${{ steps.notes.outputs.body }}
-          release_html_url: ${{ github.server_url }}/${{ github.repository }}/releases/latest
-          content: '`Discord webhook 测试消息，可忽略`'
-          color: '11052455'
-          username: Anomaly
-          avatar_url: https://raw.githubusercontent.com/AnomalyNTE/Anomaly/main/logo.png
-          footer_title: Anomaly (测试)
-          footer_icon_url: https://raw.githubusercontent.com/AnomalyNTE/Anomaly/main/logo.png
-          footer_timestamp: true
+          script: |
+            const announce = require('./.github/scripts/announce-discord.cjs');
+            process.chdir('.local/discord-test');
+            await announce();

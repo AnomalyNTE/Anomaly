@@ -133,6 +133,7 @@ Every required (non-optional) service needs the capability listed in the table b
 | `anomaly.nte.entities` | `nte-entity-snapshot` |
 | `anomaly.nte.actors` | `nte-actor-snapshot` |
 | `anomaly.nte.combat` | `nte-combat-read` |
+| `anomaly.nte.account` | `nte-account-read` |
 | `anomaly.nte.skills` | `nte-skills-read` |
 | `anomaly.nte.skill-invocation` | `nte-skill-invocation` |
 

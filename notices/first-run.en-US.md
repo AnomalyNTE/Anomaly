@@ -22,4 +22,4 @@ Anomaly enables basic usage statistics by default, solely for anonymous statisti
 
 ## When something breaks
 
-- If the game crashes, export the log from **Diagnostics** before reporting it; that is what makes the failing step identifiable.
+If the game crashes, export the log from **Diagnostics** before reporting it; that is what makes the failing step identifiable.

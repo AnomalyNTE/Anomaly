@@ -832,6 +832,11 @@ struct Ue5NteAdapter::State {
     std::size_t combat_event_start{};
     std::size_t combat_event_count{};
     std::uint64_t combat_event_sequence{};
+    std::array<CombatEventRecord, kCombatEventCapacity> applied_damage_events{};
+    std::size_t applied_damage_start{};
+    std::size_t applied_damage_count{};
+    std::uint64_t applied_damage_sequence{};
+    std::atomic_bool applied_damage_available{};
     std::unordered_map<std::uint64_t, std::string> combat_event_names;
     std::unordered_map<std::uint64_t, std::uintptr_t> combat_event_objects;
     std::deque<std::uint64_t> pending_combat_event_names;
@@ -876,6 +881,7 @@ struct Ue5NteAdapter::State {
     std::unordered_map<std::string, std::string> localized_names_by_key;
     std::uint64_t display_table_generation{};
     bool display_table_scan_complete{};
+    std::uint64_t display_table_retry_sequence{};
     std::uint8_t display_table_loaded_mask{};
     std::uintptr_t display_game_data{};
     std::uint64_t display_game_data_generation{};
@@ -2385,6 +2391,9 @@ struct Ue5NteAdapter::State {
         if (combat_event_sequence != 0) ++combat_event_sequence;
         combat_event_start = 0;
         combat_event_count = 0;
+        if (applied_damage_sequence != 0) ++applied_damage_sequence;
+        applied_damage_start = 0;
+        applied_damage_count = 0;
         combat_events = {};
         combat_event_names.clear();
         combat_event_objects.clear();
@@ -2399,6 +2408,7 @@ struct Ue5NteAdapter::State {
         localized_names_by_key.clear();
         display_table_generation = 0;
         display_table_scan_complete = false;
+        display_table_retry_sequence = 0;
         display_table_loaded_mask = 0;
         display_game_data = 0;
         display_game_data_generation = 0;
@@ -3844,20 +3854,22 @@ struct Ue5NteAdapter::State {
         ++damage_event_count;
     }
 
-    void RecordCombatEventLocked(AnomalyNteCombatEventV1 event) noexcept {
+    void RecordCombatEventLocked(AnomalyNteCombatEventV1 event, const bool applied = false) noexcept {
+        auto& events = applied ? applied_damage_events : combat_events;
+        auto& sequence = applied ? applied_damage_sequence : combat_event_sequence;
+        auto& start = applied ? applied_damage_start : combat_event_start;
+        auto& count = applied ? applied_damage_count : combat_event_count;
         event.struct_size = sizeof(event);
-        event.sequence = ++combat_event_sequence;
+        event.sequence = ++sequence;
         QueueCombatParticipantNameLocked(event.source);
         QueueCombatParticipantNameLocked(event.target);
-        if (combat_event_count == kCombatEventCapacity) {
-            combat_events[combat_event_start].event = event;
-            combat_event_start = (combat_event_start + 1U) % kCombatEventCapacity;
+        if (count == kCombatEventCapacity) {
+            events[start].event = event;
+            start = (start + 1U) % kCombatEventCapacity;
             return;
         }
-        const std::size_t slot =
-            (combat_event_start + combat_event_count) % kCombatEventCapacity;
-        combat_events[slot].event = event;
-        ++combat_event_count;
+        events[(start + count) % kCombatEventCapacity].event = event;
+        ++count;
     }
 
     static void AppendParticipantNameCandidate(
@@ -4245,35 +4257,22 @@ struct Ue5NteAdapter::State {
     }
 
     void ResolveNextCombatEventNameLocked() noexcept {
-        if (!display_table_scan_complete || pending_combat_event_names.empty()) return;
+        if (pending_combat_event_names.empty()) return;
+        if ((display_table_loaded_mask & 0x0CU) != 0x0CU) {
+            display_name_demand.store(true, std::memory_order_release);
+            return;
+        }
         const std::uint64_t name_id = pending_combat_event_names.front();
         pending_combat_event_names.pop_front();
         queued_combat_event_names.erase(name_id);
         try {
             std::string value;
             const auto object = combat_event_objects.find(name_id);
-            if (object != combat_event_objects.end() && object->second != 0) {
-                std::uint32_t comparison_index{};
-                std::uint32_t number{};
-                const auto name_offset = Layout(profile, "object.nameOffset", -1);
-                if (name_offset >= 0 &&
-                    ReadValue(*memory,
-                        object->second + static_cast<std::uintptr_t>(name_offset),
-                        comparison_index) &&
-                    ReadValue(*memory,
-                        object->second + static_cast<std::uintptr_t>(name_offset) +
-                            sizeof(comparison_index),
-                        number)) {
-                    const auto object_key = static_cast<std::uint64_t>(comparison_index) |
-                        (static_cast<std::uint64_t>(number) << 32U);
-                    std::string object_name;
-                    static_cast<void>(ResolveFNameLocked(
-                        comparison_index, number, object_name));
-                    static_cast<void>(ResolveIndexedDisplayNameLocked(
-                        object_key, object_name, value));
-                }
-            } else {
-                static_cast<void>(ResolveIndexedDisplayNameLocked(name_id, {}, value));
+            // InjurySourceName is stored separately from the associated effect
+            // object. A valid key must survive either capture order.
+            if (!ResolveIndexedDisplayNameLocked(name_id, {}, value) &&
+                object != combat_event_objects.end()) {
+                static_cast<void>(ResolveCombatDefinitionNameLocked(object->second, value));
             }
             if (!value.empty()) {
                 combat_event_names.emplace(name_id, std::move(value));
@@ -4833,18 +4832,20 @@ struct Ue5NteAdapter::State {
         if (display_table_generation != object_generation) {
             display_table_generation = object_generation;
             display_table_scan_complete = false;
+            display_table_retry_sequence = 0;
             display_table_loaded_mask = 0;
             display_game_data = 0;
             display_game_data_generation = object_generation;
             display_table_indexes = {};
             damage_skill_index = {};
         }
-        static_cast<void>(sequence);
-        if (!display_name_demand.exchange(false, std::memory_order_acq_rel) ||
+        if (sequence < display_table_retry_sequence ||
+            !display_name_demand.exchange(false, std::memory_order_acq_rel) ||
             display_table_scan_complete ||
             object_registry.items == 0 || object_registry.count == 0) {
             return;
         }
+        display_table_retry_sequence = sequence + 15U;
         try {
             if (display_game_data_generation != object_generation) {
                 display_game_data = 0;
@@ -5494,8 +5495,9 @@ struct Ue5NteAdapter::State {
         const std::uintptr_t damage_event,
         const std::uintptr_t victim,
         const std::uintptr_t attacker,
-        const std::uintptr_t damage_causer) noexcept {
-        damage_native_call_count.fetch_add(1, std::memory_order_relaxed);
+        const std::uintptr_t damage_causer,
+        const std::optional<float> applied = std::nullopt) noexcept {
+        if (!applied) damage_native_call_count.fetch_add(1, std::memory_order_relaxed);
         const auto drop = [this]() noexcept {
             damage_capture_drop_count.fetch_add(1, std::memory_order_relaxed);
         };
@@ -5548,7 +5550,12 @@ struct Ue5NteAdapter::State {
         NteCharacterDamageCapture damage;
         const auto* const source = static_cast<const std::uint8_t*>(
             reinterpret_cast<const void*>(damage_event));
-        std::memcpy(&damage.damage, source + bindings.damage_value_offset, sizeof(float));
+        if (applied) {
+            damage.damage = *applied;
+        } else {
+            std::memcpy(&damage.damage, source + bindings.damage_value_offset, sizeof(float));
+        }
+        damage.applied_health_loss = applied.has_value();
         std::memcpy(&damage.source_index, source + bindings.damage_source_offset, 4);
         std::memcpy(&damage.source_serial, source + bindings.damage_source_offset + 4, 4);
         damage.victim = victim;
@@ -5626,20 +5633,15 @@ struct Ue5NteAdapter::State {
         return empty;
     }
 
-    [[nodiscard]] bool ResolveDamageDefinitionDisplayNameLocked(
-        const std::uint64_t source_id) noexcept {
-        if (source_id == 0 || combat_event_names.contains(source_id) ||
-            !display_table_scan_complete || damage_skill_index.table == 0) {
-            return combat_event_names.contains(source_id);
-        }
-        const auto source = damage_source_objects.find(source_id);
-        if (source == damage_source_objects.end() || source->second == 0) return false;
+    [[nodiscard]] bool ResolveCombatDefinitionNameLocked(
+        const std::uintptr_t definition, std::string& value) noexcept {
+        if (definition == 0) return false;
         try {
             const auto name_offset = Layout(profile, "object.nameOffset", -1);
             if (name_offset < 0) return false;
             const auto try_object = [this, name_offset](
                                         const std::uintptr_t object,
-                                        std::string& value) {
+                                        std::string& result) {
                 std::uint32_t comparison_index{};
                 std::uint32_t number{};
                 if (object == 0 ||
@@ -5658,31 +5660,20 @@ struct Ue5NteAdapter::State {
                 static_cast<void>(ResolveFNameLocked(
                     comparison_index, number, effect_name));
                 std::uint64_t ability_key{};
-                if (!FindDamageSkillAbilityLocked(
-                        effect_key, effect_name, ability_key) || ability_key == 0) {
-                    return false;
+                if (FindDamageSkillAbilityLocked(effect_key, effect_name, ability_key)) {
+                    if (ResolveIndexedDisplayNameLocked(ability_key, {}, result)) return true;
                 }
-                std::string ability_name;
-                static_cast<void>(ResolveFNameLocked(
-                    static_cast<std::uint32_t>(ability_key & 0xFFFFFFFFU),
-                    static_cast<std::uint32_t>(ability_key >> 32U), ability_name));
-                return ResolveIndexedDisplayNameLocked(
-                    ability_key, ability_name, value) && !value.empty();
+                return ResolveIndexedDisplayNameLocked(effect_key, effect_name, result);
             };
 
-            std::string value;
-            std::uintptr_t source_class{};
-            if ((ReadPointerAt(*memory, source->second,
-                     Layout(profile, "object.class"), source_class) &&
-                    try_object(source_class, value)) ||
-                try_object(source->second, value)) {
-                combat_event_names.emplace(source_id, std::move(value));
-                MarkCombatEventNameResolvedLocked(source_id);
-                return true;
-            }
+            std::uintptr_t definition_class{};
+            return (ReadPointerAt(*memory, definition,
+                        Layout(profile, "object.class"), definition_class) &&
+                    try_object(definition_class, value)) || try_object(definition, value);
         } catch (...) {
+            value.clear();
+            return false;
         }
-        return false;
     }
 
     [[nodiscard]] bool ResolveAbilityDisplayNameForClassLocked(
@@ -5821,7 +5812,16 @@ struct Ue5NteAdapter::State {
         for (std::size_t mapping_index{}; mapping_index < mapping_count;
              ++mapping_index) {
             auto pending = pending_damage_source_mappings.front();
-            if (ResolveDamageDefinitionDisplayNameLocked(pending.source_id)) {
+            if ((display_table_loaded_mask & 0x1CU) != 0x1CU) {
+                display_name_demand.store(true, std::memory_order_release);
+                return;
+            }
+            const auto source = damage_source_objects.find(pending.source_id);
+            std::string display_name;
+            if (source != damage_source_objects.end() &&
+                ResolveCombatDefinitionNameLocked(source->second, display_name)) {
+                combat_event_names.emplace(pending.source_id, std::move(display_name));
+                MarkCombatEventNameResolvedLocked(pending.source_id);
                 pending_damage_source_mappings.pop_front();
                 continue;
             }
@@ -5829,12 +5829,12 @@ struct Ue5NteAdapter::State {
             DamageSourceMappingKind mapping_kind{};
             if (!ResolveDamageSourceAbilityClassLocked(
                     pending, ability_class, mapping_kind)) {
-                // A player hit may arrive before the first skill frame. Keep the
-                // source queued until that frame supplies the handle-to-class map;
-                // NPC hits do not depend on the player's skill cache.
-                if (pending.attacker_is_player && !skills_available) return;
                 pending_damage_source_mappings.pop_front();
-                if (pending.attempts + 1U < kMaximumMappingAttempts) {
+                if (pending.attacker_is_player && !skills_available &&
+                    NteSkillsProfileAvailable()) {
+                    skill_demand.store(true, std::memory_order_release);
+                    pending_damage_source_mappings.push_back(pending);
+                } else if (pending.attempts + 1U < kMaximumMappingAttempts) {
                     ++pending.attempts;
                     pending_damage_source_mappings.push_back(pending);
                 } else {
@@ -5921,7 +5921,8 @@ struct Ue5NteAdapter::State {
         const bool critical,
         const bool critical_valid,
         const bool partial,
-        const std::uint64_t capture_tick_sequence) noexcept {
+        const std::uint64_t capture_tick_sequence,
+        const bool applied) noexcept {
         const auto drop = [this]() noexcept {
             ++damage_dropped_count;
             damage_capture_drop_count.fetch_add(1, std::memory_order_relaxed);
@@ -5961,7 +5962,7 @@ struct Ue5NteAdapter::State {
                     attacker == player_pawn);
             }
             event.final_damage = static_cast<std::int64_t>(std::llround(damage));
-            RecordDamageEventLocked(event);
+            if (!applied) RecordDamageEventLocked(event);
             AnomalyNteCombatEventV1 combat_event{};
             combat_event.kind = ANOMALY_NTE_COMBAT_EVENT_V1_DAMAGE;
             combat_event.tick_sequence = event.tick_sequence;
@@ -5981,10 +5982,10 @@ struct Ue5NteAdapter::State {
                     combat_event.flags |= ANOMALY_NTE_COMBAT_EVENT_V1_NAME_VALID;
                 }
             }
-            if (!MergeCombatDamageLocked(combat_event)) {
-                RecordCombatEventLocked(combat_event);
+            if (applied || !MergeCombatDamageLocked(combat_event)) {
+                RecordCombatEventLocked(combat_event, applied);
             }
-            ++damage_captured_event_count;
+            if (!applied) ++damage_captured_event_count;
         } catch (...) {
             drop();
         }
@@ -6005,7 +6006,7 @@ struct Ue5NteAdapter::State {
             damage.damage, damage.source_index, damage.source_serial,
             damage.victim, damage.attacker, damage.saved_skill_cdo, damage.active_spec_handle,
             critical, critical_valid, damage.tags.partial || !critical_valid,
-            capture_tick_sequence);
+            capture_tick_sequence, damage.applied_health_loss);
     }
 
     void RefreshEntityCache(
@@ -8130,11 +8131,6 @@ struct Ue5NteAdapter::State {
             if (combat_skill_discovery.object_generation != object_generation) {
                 InvalidateCombatSkillDiscoveryLocked();
             }
-            // Name-table indexing is demand-driven and generation-local. Each
-            // table's sparse element buffer is read once; FText row payloads
-            // are decoded later only for requested keys.
-            RefreshDisplayTablesLocked(tick_sequence.load(std::memory_order_relaxed));
-
             // The Dumper SDK supplies stable reflected paths for the native
             // functions used by combat and skills. Resolve those paths on a
             // generation-local retry interval, never by walking GObjects. The
@@ -11602,6 +11598,24 @@ struct Ue5NteAdapter::State {
         return CopyString(name, destination, size);
     }
 
+    [[nodiscard]] std::optional<std::string> AccountKeyLocked(
+        bool* sources_disagree = nullptr) const {
+        if (sources_disagree) *sources_disagree = false;
+        if (!started.load(std::memory_order_acquire) ||
+            std::chrono::steady_clock::now() - account_update_time > std::chrono::seconds(2)) {
+            return std::nullopt;
+        }
+        if (sources_disagree) *sources_disagree = account_sample.SourcesDisagree();
+        const auto digits = AccountDigits();
+        if (digits == 0) return std::nullopt;
+        const auto value = account_sample.replicated_value != 0
+            ? account_sample.replicated_value : account_sample.hud_value;
+        if (value == 0 || value >= TenToPower(digits)) return std::nullopt;
+        auto key = std::to_string(value);
+        key.insert(0, static_cast<std::size_t>(digits) - key.size(), '0');
+        return key;
+    }
+
     void RefreshAccountSampleLocked() noexcept {
         const auto now = std::chrono::steady_clock::now();
         if (account_world != world_pointer || account_object_generation != object_generation) {
@@ -12662,26 +12676,30 @@ struct Ue5NteAdapter::State {
 
     static AnomalyStatusV1 ANOMALY_CALL NextCombatEvent(
         void* user, const std::uint64_t after_sequence,
-        AnomalyNteCombatEventV1* event) noexcept {
+        AnomalyNteCombatEventV1* event, const bool applied = false) noexcept {
         if (event == nullptr || event->struct_size < sizeof(*event)) {
             return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
         }
         auto& state = *static_cast<State*>(user);
         state.combat_demand.store(true, std::memory_order_release);
         std::scoped_lock lock(state.mutex);
-        if (!state.SemanticFeatureRunning("nte.combat")) {
+        if (!state.SemanticFeatureRunning("nte.combat") ||
+            (applied && !state.applied_damage_available.load(std::memory_order_acquire))) {
             return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "NTE combat service is unavailable");
         }
-        if (state.combat_event_count == 0 || after_sequence >= state.combat_event_sequence) {
+        const auto& events = applied ? state.applied_damage_events : state.combat_events;
+        const auto start = applied ? state.applied_damage_start : state.combat_event_start;
+        const auto count = applied ? state.applied_damage_count : state.combat_event_count;
+        const auto latest = applied ? state.applied_damage_sequence : state.combat_event_sequence;
+        if (count == 0 || after_sequence >= latest) {
             return Status(ANOMALY_STATUS_V1_NOT_FOUND, "no newer combat event");
         }
-        const auto& first = state.combat_events[state.combat_event_start].event;
+        const auto& first = events[start].event;
         if (after_sequence != 0 && after_sequence < first.sequence - 1U) {
             return Status(ANOMALY_STATUS_V1_NOT_FOUND, "combat event cursor has expired");
         }
-        for (std::size_t index{}; index < state.combat_event_count; ++index) {
-            const auto& candidate = state.combat_events[
-                (state.combat_event_start + index) % kCombatEventCapacity].event;
+        for (std::size_t index{}; index < count; ++index) {
+            const auto& candidate = events[(start + index) % kCombatEventCapacity].event;
             if (candidate.sequence <= after_sequence) continue;
             *event = candidate;
             return Status(ANOMALY_STATUS_V1_OK);
@@ -12697,6 +12715,10 @@ struct Ue5NteAdapter::State {
         }
         auto& state = *static_cast<State*>(user);
         std::scoped_lock lock(state.mutex);
+        if (event->world.id != 0 &&
+            !SameHandle(event->world, {1, state.world_generation})) {
+            return Status(ANOMALY_STATUS_V1_NOT_FOUND, "combat event belongs to a previous world");
+        }
         auto found = state.combat_event_names.find(event->name_id);
         if (found == state.combat_event_names.end() || found->second.empty()) {
             return Status(ANOMALY_STATUS_V1_NOT_FOUND, "combat event name is unavailable");
@@ -12714,6 +12736,9 @@ struct Ue5NteAdapter::State {
         std::scoped_lock lock(state.mutex);
         if (!state.SemanticFeatureRunning("nte.combat")) {
             return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "NTE combat service is unavailable");
+        }
+        if (participant.generation != state.object_generation) {
+            return Status(ANOMALY_STATUS_V1_NOT_FOUND, "stale combat participant handle");
         }
         const auto cached = state.combat_participant_names.find(participant.id);
         if (cached != state.combat_participant_names.end()) {
@@ -13165,7 +13190,10 @@ struct Ue5NteAdapter::State::SemanticServiceEndpoint final {
             this, CombatantSnapshotThunk, LatestDamageSequenceThunk,
             NextDamageEventThunk, CombatStatisticsThunk, DamageSourceNameThunk,
             DamageParticipantPathThunk, LatestCombatEventSequenceThunk,
-            NextCombatEventThunk, CombatEventNameThunk, ParticipantDisplayNameThunk};
+            NextCombatEventThunk, CombatEventNameThunk, ParticipantDisplayNameThunk,
+            LatestAppliedDamageSequenceThunk, NextAppliedDamageEventThunk};
+        account_service = {sizeof(AnomalyNteAccountServiceV1),
+            ANOMALY_NTE_ACCOUNT_SERVICE_V1_VERSION, this, AccountUidThunk};
         skills_service = {
             sizeof(AnomalyNteSkillsServiceV1), ANOMALY_NTE_SKILLS_SERVICE_V1_VERSION,
             this, SkillFrameThunk, SkillSnapshotAtThunk, SkillPageThunk,
@@ -13215,6 +13243,7 @@ struct Ue5NteAdapter::State::SemanticServiceEndpoint final {
     AnomalyNteEntitiesServiceV1 entities_service{};
     AnomalyNteActorsServiceV1 actors_service{};
     AnomalyNteCombatServiceV1 combat_service{};
+    AnomalyNteAccountServiceV1 account_service{};
     AnomalyNteSkillsServiceV1 skills_service{};
     AnomalyNteSkillInvocationServiceV1 skill_invocation_service{};
     AnomalyNteMetricsServiceV1 metrics_service{};
@@ -13826,6 +13855,27 @@ private:
         return lease ? State::NextCombatEvent(lease.User(), after_sequence, event) : StoppedStatus();
     }
 
+    static AnomalyStatusV1 ANOMALY_CALL LatestAppliedDamageSequenceThunk(
+        void* user, std::uint64_t* sequence) noexcept {
+        if (sequence == nullptr) return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        if (!lease) return StoppedStatus();
+        auto& state = *static_cast<State*>(lease.User());
+        std::scoped_lock lock(state.mutex);
+        if (!state.SemanticFeatureRunning("nte.combat") ||
+            !state.applied_damage_available.load(std::memory_order_acquire)) {
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "applied damage capture is unavailable");
+        }
+        *sequence = state.applied_damage_sequence;
+        return Status(ANOMALY_STATUS_V1_OK);
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL NextAppliedDamageEventThunk(
+        void* user, std::uint64_t after_sequence, AnomalyNteCombatEventV1* event) noexcept {
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        return lease ? State::NextCombatEvent(lease.User(), after_sequence, event, true) : StoppedStatus();
+    }
+
     static AnomalyStatusV1 ANOMALY_CALL CombatEventNameThunk(
         void* user, const AnomalyNteCombatEventV1* event,
         char* destination, std::size_t* size) noexcept {
@@ -13838,6 +13888,22 @@ private:
         char* destination, std::size_t* size) noexcept {
         auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
         return lease ? State::ParticipantDisplayName(lease.User(), participant, destination, size) : StoppedStatus();
+    }
+
+    static AnomalyStatusV1 ANOMALY_CALL AccountUidThunk(
+        void* user, char* destination, std::size_t* size) noexcept {
+        if (size == nullptr) return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        if (!lease) return StoppedStatus();
+        try {
+            const auto& state = *static_cast<State*>(lease.User());
+            std::scoped_lock lock(state.mutex);
+            const auto uid = state.AccountKeyLocked();
+            return uid ? CopyString(*uid, destination, size)
+                       : Status(ANOMALY_STATUS_V1_NOT_FOUND, "local account UID is unavailable");
+        } catch (...) {
+            return Status(ANOMALY_STATUS_V1_FAILED, "local account UID lookup failed");
+        }
     }
 
     static AnomalyStatusV1 ANOMALY_CALL AbilityDisplayNameThunk(
@@ -14821,6 +14887,13 @@ bool Ue5NteAdapter::State::PublishAvailableServices(const std::weak_ptr<State>& 
             {}, semantic_lifetime)) {
         return false;
     }
+    if (framework_hook_ready && AccountDigits() != 0 &&
+        !PublishIfMissing(
+            ANOMALY_NTE_ACCOUNT_SERVICE_V1_ID,
+            ANOMALY_NTE_ACCOUNT_SERVICE_V1_VERSION,
+            &endpoint->account_service, {}, semantic_lifetime)) {
+        return false;
+    }
     const bool publish_combat_service = framework_hook_ready &&
         NteCombatProfileAvailable() &&
         !IsPublished(ANOMALY_NTE_COMBAT_SERVICE_V1_ID);
@@ -15308,11 +15381,11 @@ void Ue5NteAdapter::OnGameTick(double delta_seconds) noexcept {
         } else if (player_requested) {
             ++state->player_cache_hit_count;
         }
-            state->DrainCombatCaptureQueueLocked();
-            state->ResolveNextCombatEventNameLocked();
-            state->ResolveNextCombatParticipantNameLocked();
-            // One deferred name lookup per tick bounds game-thread FText work;
-        // event capture itself has already completed in the hook queue.
+        state->DrainCombatCaptureQueueLocked();
+        state->RefreshDisplayTablesLocked(sequence);
+        // Resolve a bounded amount of name work after capture on the Game domain.
+        state->ResolveNextCombatEventNameLocked();
+        state->ResolveNextCombatParticipantNameLocked();
         state->ResolveNextDamageSourceMappingLocked();
         state->ResolveNextPendingDamageSourceNameLocked(sequence);
         if (entity_due) {
@@ -15383,6 +15456,71 @@ void Ue5NteAdapter::OnDamageEvent(
     // Capture the synchronous critical query result with owned damage/tag values.
     state->EnqueueCharacterDamage(
         *bindings, damage_event, victim, attacker, damage_causer);
+}
+
+std::optional<float> Ue5NteAdapter::ReadDamageHealth(
+    const std::uintptr_t attributes, const std::uintptr_t target) const noexcept {
+    const auto& state = *state_;
+    if (target == 0 || !state.started.load(std::memory_order_acquire) ||
+        state.game_thread_id.load(std::memory_order_acquire) != GetCurrentThreadId()) {
+        return std::nullopt;
+    }
+    // The native application supplies attributes and a victim; the replicated
+    // health setter receives the component directly.
+    std::uintptr_t component = target;
+    if (attributes != 0) {
+        std::uintptr_t outer{};
+        if (!ReadPointerAt(*state.memory, target,
+                Layout(state.profile, "abilityCharacter.abilitySystemComponent"), component) ||
+            !ReadPointerAt(*state.memory, attributes, Layout(state.profile, "object.outer"), outer) ||
+            (outer != target && outer != component)) {
+            return std::nullopt;
+        }
+    }
+    const auto hp_offset = Layout(state.profile, "abilitySystem.currentHp", -1);
+    std::uintptr_t hp_address{};
+    float hp{};
+    if (!AddAddress(component, hp_offset, hp_address) ||
+        !ReadValue(*state.memory, hp_address, hp) ||
+        !std::isfinite(hp) || hp < 0.0F) {
+        return std::nullopt;
+    }
+    return hp;
+}
+
+void Ue5NteAdapter::OnAppliedDamage(const std::uintptr_t damage_event,
+    const std::uintptr_t victim, const std::uintptr_t attacker, const float amount) noexcept {
+    const auto* bindings = state_->combat_capture_bindings.load(std::memory_order_acquire);
+    if (bindings != nullptr) {
+        state_->EnqueueCharacterDamage(*bindings, damage_event, victim, attacker, 0, amount);
+    }
+}
+
+void Ue5NteAdapter::OnReplicatedDamage(const std::uintptr_t component,
+    const std::uintptr_t context, const std::uintptr_t pending_hit,
+    const std::uintptr_t victim, const float amount) noexcept {
+    auto& state = *state_;
+    const auto* bindings = state.combat_capture_bindings.load(std::memory_order_acquire);
+    if (bindings == nullptr) return;
+
+    std::uintptr_t owner{}, instigator_address{}, instigator{}, damage_event{};
+    if (!ReadPointerAt(*state.memory, component,
+            Layout(state.profile, "abilitySystem.ownerAbilityCharacter"), owner) ||
+        owner != victim ||
+        !AddAddress(context, Layout(state.profile, "replicatedFightResult.instigatorWeak"), instigator_address) ||
+        !state.ReadWeakObjectPointerLocked(instigator_address, instigator) ||
+        !AddAddress(pending_hit, Layout(state.profile, "replicatedFightHit.damageEvent"), damage_event)) {
+        return;
+    }
+    std::uintptr_t causer_address{}, causer{};
+    if (AddAddress(context, Layout(state.profile, "replicatedFightResult.causerWeak"), causer_address)) {
+        static_cast<void>(state.ReadWeakObjectPointerLocked(causer_address, causer));
+    }
+    state.EnqueueCharacterDamage(*bindings, damage_event, victim, instigator, causer, amount);
+}
+
+void Ue5NteAdapter::SetAppliedDamageAvailable(const bool available) noexcept {
+    state_->applied_damage_available.store(available, std::memory_order_release);
 }
 
 void Ue5NteAdapter::OnCombatExecFunction(
@@ -15511,21 +15649,7 @@ bool Ue5NteAdapter::CombatFeatureAvailable() const noexcept {
 std::optional<std::string> Ue5NteAdapter::AccountKey(bool* sources_disagree) const {
     const auto state = state_;
     std::scoped_lock lock(state->mutex);
-    if (sources_disagree) *sources_disagree = false;
-    if (!state->started.load(std::memory_order_acquire) ||
-        std::chrono::steady_clock::now() - state->account_update_time > std::chrono::seconds(2))
-        return std::nullopt;
-    if (sources_disagree) *sources_disagree = state->account_sample.SourcesDisagree();
-    const auto digits = state->AccountDigits();
-    if (digits == 0) return std::nullopt;
-    // The replicated account state is authoritative over editable HUD text.
-    const auto value = state->account_sample.replicated_value != 0
-        ? state->account_sample.replicated_value
-        : state->account_sample.hud_value;
-    if (value == 0 || value >= TenToPower(digits)) return std::nullopt;
-    auto key = std::to_string(value);
-    key.insert(0, static_cast<std::size_t>(digits) - key.size(), '0');
-    return key;
+    return state->AccountKeyLocked(sources_disagree);
 }
 
 NteCombatExecFunctionTargetsSnapshot
@@ -15594,6 +15718,9 @@ std::string Ue5NteAdapter::CombatEventsJson(const bool buffs_only) const {
         std::scoped_lock lock(state->mutex);
         std::string result{"{\"ok\":true,\"latest\":"};
         result += std::to_string(state->combat_event_sequence);
+        result += ",\"appliedDamageAvailable\":";
+        result += state->applied_damage_available.load(std::memory_order_acquire) ? "true" : "false";
+        result += ",\"latestAppliedDamage\":" + std::to_string(state->applied_damage_sequence);
         result += ",\"localizedNameCount\":" +
             std::to_string(state->localized_names_by_fname.size()) +
             ",\"participantNameCount\":" +

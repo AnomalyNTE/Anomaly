@@ -108,9 +108,8 @@ struct PlatformUiFontBake final {
     std::span<const float> scales{};
     // Icon glyphs from the icon font. Empty bakes the whole icon range.
     std::span<const char32_t> icons{};
-    // Lets the atlas keep a height that is not rounded up to a power of two, which is
-    // the empty band under the last row of glyphs. The glyph pixels and the texture
-    // coordinates derived from them are the same either way.
+    // Drop the empty rows below the glyphs. The host keeps the power-of-two height
+    // because changing the normalized UVs can shift filtered text by one color level.
     bool tight_atlas{false};
     // The symbol blocks shipped copy draws from: arrows, circled digits, box-drawing
     // rules, geometric shapes, stars and check marks. The host leaves it on because it

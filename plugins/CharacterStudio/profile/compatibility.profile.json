@@ -273,6 +273,16 @@
       ]
     },
     {
+      "name": "ue5.FText.ToString",
+      "candidates": [
+        {
+          "pattern": "40 53 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 48 8B 0B 48 8B 01 48 83 C4 20",
+          "entry": "40 53 48 83 EC 20 48 8B D9 E8",
+          "values": {}
+        }
+      ]
+    },
+    {
       "name": "ue5.ProcessEvent.prologue",
       "candidates": [
         {

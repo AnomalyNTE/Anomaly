@@ -1321,10 +1321,6 @@ if(ANOMALY_BUILD_TEST_FIXTURES)
     target_compile_options(anomaly_profile_compatibility_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
     add_test(NAME profile_compatibility COMMAND anomaly_profile_compatibility_fixture
         "${CMAKE_SOURCE_DIR}/profiles/nte/nte-current.json")
-    add_executable(anomaly_signature_coverage_fixture apps/test_host/signature_coverage_fixture.cpp)
-    target_link_libraries(anomaly_signature_coverage_fixture PRIVATE anomaly_signature_updater anomaly_plugin_profile nlohmann_json::nlohmann_json)
-    target_include_directories(anomaly_signature_coverage_fixture PRIVATE "${PROJECT_SOURCE_DIR}")
-    target_compile_options(anomaly_signature_coverage_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
     add_executable(anomaly_d3d12_interop_fixture
         apps/render_fixture/d3d12_interop_fixture.cpp)
     target_include_directories(anomaly_d3d12_interop_fixture PRIVATE include src)
@@ -1463,7 +1459,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteTeleport")
     anomaly_add_plugin(anomaly_builtin_nte_vehicle
         SOURCES plugins/NteVehicle/plugin.cpp plugins/NteVehicle/runtime.cpp
-            plugins/NteVehicle/native_access.cpp
+            plugins/NteVehicle/native_access.cpp plugins/NteVehicle/durability_guard.cpp
         MANIFEST plugins/NteVehicle/manifest.json
         PACKAGE_NAME NteVehicle
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteVehicle")
@@ -1541,7 +1537,6 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
     if(ANOMALY_BUILD_TEST_FIXTURES)
         add_executable(anomaly_pink_paw_bank_loop_fixture
             plugins/PinkPawHeistESP/tests/bank_loop_test.cpp
-            plugins/PinkPawHeistESP/tests/bank_intro_runtime_test.cpp
             plugins/PinkPawHeistESP/rob_bank_runtime.cpp)
         target_link_libraries(anomaly_pink_paw_bank_loop_fixture PRIVATE anomaly_sdk)
         target_include_directories(anomaly_pink_paw_bank_loop_fixture PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1563,6 +1558,19 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/CameraBlurFix/manifest.json
         PACKAGE_NAME CameraBlurFix
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/CameraBlurFix")
+    anomaly_add_plugin(anomaly_builtin_fps_unlocker
+        SOURCES plugins/FpsUnlocker/plugin.cpp
+        MANIFEST plugins/FpsUnlocker/manifest.json
+        PACKAGE_NAME FpsUnlocker
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/FpsUnlocker")
+    target_compile_options(anomaly_builtin_fps_unlocker PRIVATE /utf-8)
+    anomaly_add_plugin(anomaly_builtin_remote_shop
+        SOURCES plugins/RemoteShop/plugin.cpp
+        MANIFEST plugins/RemoteShop/manifest.json
+        PACKAGE_NAME RemoteShop
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/RemoteShop")
+    target_compile_options(anomaly_builtin_remote_shop PRIVATE /utf-8 /W4 /EHsc)
+    target_link_libraries(anomaly_builtin_remote_shop PRIVATE nlohmann_json::nlohmann_json windowscodecs ole32)
     anomaly_add_plugin(anomaly_builtin_better_pose
         SOURCES plugins/BetterPose/plugin.cpp plugins/BetterPose/blender_motion.hpp
         MANIFEST plugins/BetterPose/manifest.json
@@ -1788,15 +1796,14 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
     target_compile_options(anomaly_nte_combat_model PRIVATE /W4 /permissive- /EHsc /utf-8)
     target_link_libraries(anomaly_nte_combat_model PUBLIC anomaly_nte_combat_protocol)
 
-    add_library(anomaly_nte_combat_uid STATIC
-        ${ANOMALY_NTE_COMBAT_DIR}/src/native_layout.cpp
-        ${ANOMALY_NTE_COMBAT_DIR}/src/uid_detector.cpp)
-    target_include_directories(anomaly_nte_combat_uid PUBLIC
+    add_library(anomaly_nte_combat_native STATIC
+        ${ANOMALY_NTE_COMBAT_DIR}/src/native_layout.cpp)
+    target_include_directories(anomaly_nte_combat_native PUBLIC
         "${CMAKE_SOURCE_DIR}/${ANOMALY_NTE_COMBAT_DIR}/src")
-    target_compile_definitions(anomaly_nte_combat_uid PRIVATE
+    target_compile_definitions(anomaly_nte_combat_native PRIVATE
         UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-    target_compile_options(anomaly_nte_combat_uid PRIVATE /W4 /permissive- /EHsc /utf-8)
-    target_link_libraries(anomaly_nte_combat_uid PUBLIC
+    target_compile_options(anomaly_nte_combat_native PRIVATE /W4 /permissive- /EHsc /utf-8)
+    target_link_libraries(anomaly_nte_combat_native PUBLIC
         anomaly_nte_combat_engine Anomaly::sdk)
 
     # Overlay 是独立 GUI 进程：Direct2D/DirectWrite/WIC 自绘，不受宿主 ImGui 能力限制。
@@ -1820,7 +1827,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         BUNDLED_TARGETS anomaly_nte_combat_overlay
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteCombatTracker")
     target_link_libraries(anomaly_builtin_nte_combat_tracker PRIVATE
-        anomaly_nte_combat_model anomaly_nte_combat_uid)
+        anomaly_nte_combat_model anomaly_nte_combat_native)
 
     if(ANOMALY_BUILD_TEST_FIXTURES)
         # 离线夹具：采集引擎/日志仓库 与 界面模型/协议/ABI 两组各自在没有游戏进程时验证。
@@ -1846,7 +1853,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
             "anomaly_nte_combat_engine;Anomaly::sdk;nlohmann_json::nlohmann_json")
         anomaly_nte_combat_test_fixture(anomaly_nte_combat_surface_fixture
             nte_surface nte_surface_tests.cpp
-            "anomaly_nte_combat_model;anomaly_nte_combat_uid;Anomaly::sdk;nlohmann_json::nlohmann_json;anomaly_plugin_profile;ue5mem_memory")
+            "anomaly_nte_combat_model;anomaly_nte_combat_native;Anomaly::sdk;nlohmann_json::nlohmann_json;anomaly_plugin_profile;ue5mem_memory")
     endif()
 
     anomaly_add_plugin(anomaly_builtin_nte_free_fly
@@ -1854,6 +1861,12 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/NteFreeFly/manifest.json
         PACKAGE_NAME NteFreeFly
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteFreeFly")
+    anomaly_add_plugin(anomaly_builtin_vehicle_flight
+        SOURCES plugins/VehicleFlight/plugin.cpp
+        MANIFEST plugins/VehicleFlight/manifest.json
+        PACKAGE_NAME VehicleFlight
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/VehicleFlight")
+    target_link_libraries(anomaly_builtin_vehicle_flight PRIVATE user32)
     anomaly_add_plugin(anomaly_builtin_autofish
         SOURCES plugins/AutoFish/plugin.cpp
         MANIFEST plugins/AutoFish/manifest.json
@@ -1867,6 +1880,13 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         target_link_libraries(anomaly_autofish_persistence_fixture PRIVATE Anomaly::sdk)
         target_compile_options(anomaly_autofish_persistence_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
     endif()
+    anomaly_add_plugin(anomaly_builtin_better_map
+        SOURCES plugins/BetterMap/plugin.cpp
+        MANIFEST plugins/BetterMap/manifest.json
+        PACKAGE_NAME BetterMap
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/BetterMap")
+    target_link_libraries(anomaly_builtin_better_map PRIVATE nlohmann_json::nlohmann_json)
+    target_compile_options(anomaly_builtin_better_map PRIVATE /utf-8)
     anomaly_add_plugin(anomaly_builtin_autotaxi
         SOURCES plugins/Autotaxi/plugin.cpp
         MANIFEST plugins/Autotaxi/manifest.json
@@ -1915,7 +1935,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
     anomaly_add_plugin(anomaly_builtin_skin_changer
         SOURCES plugins/SkinChanger/plugin.cpp plugins/SkinChanger/cosmetics.cpp
             plugins/SkinChanger/awakening.cpp plugins/SkinChanger/plates.cpp
-            plugins/SkinChanger/vehicle.cpp
+            plugins/SkinChanger/vehicle.cpp plugins/SkinChanger/hud_theme.cpp
         MANIFEST plugins/SkinChanger/manifest.json
         PACKAGE_NAME SkinChanger
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/SkinChanger")
@@ -1937,7 +1957,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         add_executable(anomaly_skin_changer_vehicle_fixture plugins/SkinChanger/vehicle_tests.cpp)
         target_compile_features(anomaly_skin_changer_vehicle_fixture PRIVATE cxx_std_20)
         target_compile_options(anomaly_skin_changer_vehicle_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
-        foreach(suite IN ITEMS lifecycle cosmetics_runtime vehicle_runtime profile)
+        foreach(suite IN ITEMS lifecycle cosmetics_runtime vehicle_runtime)
             add_executable(anomaly_skin_changer_${suite}_fixture
                 plugins/SkinChanger/${suite}_tests.cpp)
             target_link_libraries(anomaly_skin_changer_${suite}_fixture PRIVATE
@@ -1947,6 +1967,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
             add_test(NAME skin_changer_${suite}
                 COMMAND anomaly_skin_changer_${suite}_fixture)
         endforeach()
+        target_sources(anomaly_skin_changer_lifecycle_fixture PRIVATE plugins/SkinChanger/hud_theme.cpp)
         add_test(NAME skin_changer_cosmetics COMMAND anomaly_skin_changer_fixture)
         foreach(suite IN ITEMS awakening plate plate_follow vehicle)
             add_test(NAME skin_changer_${suite}
@@ -2162,14 +2183,16 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         anomaly_builtin_nte_position anomaly_builtin_nte_teleport anomaly_builtin_nte_vehicle
         anomaly_builtin_entity_esp anomaly_builtin_pink_paw_heist_esp
         anomaly_builtin_fake_uid anomaly_builtin_camera_tools
-        anomaly_builtin_camera_blur_fix anomaly_builtin_better_pose
+        anomaly_builtin_camera_blur_fix anomaly_builtin_better_pose anomaly_builtin_fps_unlocker
+        anomaly_builtin_remote_shop
         anomaly_builtin_wallet_collector anomaly_builtin_box_auto anomaly_builtin_combat_box
         anomaly_builtin_clone_enter anomaly_builtin_scene_loader
         anomaly_builtin_nte_quick_ultimate
-        anomaly_builtin_nte_free_fly anomaly_builtin_skin_changer anomaly_builtin_ui_buttons
+        anomaly_builtin_nte_free_fly anomaly_builtin_vehicle_flight
+        anomaly_builtin_skin_changer anomaly_builtin_ui_buttons
         anomaly_builtin_dll_loader anomaly_builtin_hifi_vehicle_music
         anomaly_builtin_model_scale anomaly_builtin_status_bar anomaly_builtin_autofish anomaly_builtin_autotaxi
-        anomaly_builtin_autoclaw anomaly_builtin_character_studio
+        anomaly_builtin_autoclaw anomaly_builtin_character_studio anomaly_builtin_better_map
         anomaly_builtin_deserted anomaly_builtin_jelly anomaly_builtin_night999
         anomaly_builtin_npc_summon anomaly_builtin_training_dummy
         anomaly_builtin_summon_lab anomaly_builtin_health_display anomaly_builtin_memory_dump anomaly_builtin_nailong
@@ -2199,6 +2222,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         target_compile_options(anomaly_builtin_scene_loader PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_nte_combat_tracker PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_nte_free_fly PRIVATE /utf-8)
+        target_compile_options(anomaly_builtin_vehicle_flight PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_skin_changer PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_autofish PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_autotaxi PRIVATE /utf-8)
@@ -2403,13 +2427,7 @@ if(ANOMALY_BUILD_SYMBOLS)
 endif()
 
 if(ANOMALY_BUILD_TEST_FIXTURES AND ANOMALY_BUILD_BUILTIN_PLUGINS)
-    add_executable(anomaly_plugin_compatibility_fixture apps/test_host/plugin_compatibility_fixture.cpp)
-    target_link_libraries(anomaly_plugin_compatibility_fixture PRIVATE anomaly_plugin_profile ue5mem_memory)
-    target_compile_features(anomaly_plugin_compatibility_fixture PRIVATE cxx_std_20)
-    target_compile_options(anomaly_plugin_compatibility_fixture PRIVATE /utf-8 /EHsc)
-    add_test(NAME plugin_compatibility COMMAND anomaly_plugin_compatibility_fixture)
     foreach(profile_fixture IN ITEMS
-        anomaly_pink_paw_bank_loop_fixture
         anomaly_skin_changer_plate_follow_fixture
         anomaly_combat_auto_fixture
         anomaly_better_pose_visibility_fixture

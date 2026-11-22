@@ -95,7 +95,7 @@ struct InstalledPluginView final : ue5mem::PluginView {
     std::vector<PluginCatalogIssue> catalog_issues;
     std::optional<PluginCompatibilityResult> compatibility_result;
     std::vector<PluginCompatibilityIssue> compatibility_issues;
-    std::vector<std::string> dependency_ids;
+    std::vector<PluginDependencyManifest> dependencies;
 
     [[nodiscard]] PlatformUiPluginState UiState() const noexcept;
     [[nodiscard]] bool IsRunning() const noexcept;

@@ -102,7 +102,7 @@ The runtime package ships **35** user-facing built-in plugins, all disabled by d
 | **NaiLong** | Engine-native model replacement for the player and nearby NPCs with 36-bone source-rig skinning, restored when out of range |
 | **Jelly** | Keeps characters, vehicles, and dynamic models in view squashing and stretching, with adjustable strength, frequency, rest interval, and spin |
 | **Better Pose** | Animation rate, pause, and displacement scale, joint pose editing, MMD motion and camera import, and Blender skeleton linking |
-| **Character Studio** | Spawns local character models from a complete catalog with Chinese names, unlimited duplicates, idle loops, and per-model move/destroy |
+| **Character Studio** | Spawns local character models from a complete catalog with names in the game language, unlimited duplicates, idle loops, and per-model move/destroy |
 | **Mod Manager** | Mod toggles, classification, in-place appearance refresh, and world reload |
 | **Custom UID** | Custom UID, colors, and dynamic effects on the client UI, without touching account data |
 

@@ -224,7 +224,7 @@ void ReconcileLiveNavigation(
 [[nodiscard]] TitleBarLayout CalculateTitleBarLayout(
     float width, float scale, float title_height) noexcept;
 [[nodiscard]] ViewRect CalculateCellTextRect(
-    ViewRect cell, float scale, float leading_content_inset) noexcept;
+    ViewRect cell, float scale, float content_inset) noexcept;
 [[nodiscard]] ViewRect CalculatePlayerGlyphRect(
     ViewRect cell, float scale) noexcept;
 [[nodiscard]] FooterLayout CalculateFooterLayout(

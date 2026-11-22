@@ -99,7 +99,7 @@ bool ReadPlayableClones(std::vector<ClassEntry>& entries) {
         if (subpath.count != 0 || (package_name >> 32) || (asset_name >> 32) ||
             !ResolveName(static_cast<std::uint32_t>(package_name), package, sizeof(package)) ||
             !ResolveName(static_cast<std::uint32_t>(asset_name), asset, sizeof(asset))) return false;
-        if (!summon_lab::PlayableClonePath(true, package, asset)) continue;
+        if (!summon_lab::PlayableClonePath(package, asset)) continue;
         ClassEntry entry;
         entry.path = std::string(package) + "." + asset;
         entry.label = asset;

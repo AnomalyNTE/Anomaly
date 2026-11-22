@@ -30,8 +30,6 @@ struct Layout {
     std::uint32_t object_chunk_size{};
     std::uint32_t object_item_stride{};
     std::uint32_t object_item_serial_offset{};
-    std::uint32_t text_field_offset{};
-    std::uint32_t set_text_vtable_offset{};
     std::int32_t gobjects_addend{};
     std::uint32_t instanced_struct_data{};
     std::uint32_t struct_super_struct{};
@@ -56,9 +54,6 @@ struct Layout {
 // Addresses resolved from the profile's declared symbols and validated against
 // their entry bytes by the shared compatibility loader.
 struct Bindings {
-    std::uintptr_t set_text{};
-    std::uintptr_t free_string{};
-    std::uintptr_t text_to_string{};
     std::uintptr_t gobjects_accessor{};
 };
 

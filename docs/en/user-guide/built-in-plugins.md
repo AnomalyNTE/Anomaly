@@ -44,6 +44,8 @@ the keyframe motion files above.
 
 `Skin Swapper Lite` (`b1ank.skin-changer`) provides character accessories, glider and awakening appearance previews, and custom license plates. After you turn on **Apply plate** on the license plate page, the text follows the supported vehicles you drive afterwards; turning the switch off restores the original plate. **Animated plate** scrolls the text in a loop, and you can adjust the scroll interval. The panel shows the usable characters and the plate width. These changes only affect the local appearance, and awakening previews grant no combat bonuses.
 
+Turn on **Use Elyms's Y2K HUD** in the **HUD** tab to keep the theme active when changing scenes. Turn it off to restore the game’s HUD for the current outfit and scene. The plugin saves the setting.
+
 ## Coordinate Display
 
 | | |
@@ -61,10 +63,10 @@ The plugin only reads data and does not modify game state. Use it to quickly con
 | --- | --- |
 | **ID** | `anomaly.nte-teleport` |
 | **Purpose** | Teleport the player to manually entered or read-out coordinates; supports crosshair-direction teleport, fixed-distance travel along the facing direction, and imported JSON points with category management. |
-| **Required services** | `anomaly.ui`, `anomaly.config`; `anomaly.input`, `anomaly.json`, `anomaly.scheduler`, `anomaly.plugin-state`, `anomaly.nte.session/player/player-teleport` (all V1, optional) |
+| **Required services** | `anomaly.ui`, `anomaly.config`, `anomaly.scheduler`; `anomaly.input`, `anomaly.json`, `anomaly.plugin-state`, `anomaly.nte.session/player/player-teleport` (all V1, optional) |
 | **Requires Profile** | Yes (player, session and the teleport bridge depend on validated symbols) |
 
-Crosshair teleport advances a preset distance along the current camera direction and clamps the target Z axis above the camera height plus a safety lift, so you do not land underground; forward teleport moves a preset distance along the horizontal facing. You can re-capture both hotkeys in the plugin window; a capture or an option edit is written to `anomaly.config` on the next tick (the host owns validation and the atomic replace) instead of waiting for the plugin to be disabled, and `on_stop` writes once more as a backstop. Clicking **Import points** reads a point array from a JSON file path (relative paths resolve against the plugin's private state directory) and supports `color`, `name`, `x/y/z` and an optional `category`; when `category` is missing, the plugin derives the category from prefixes such as `1. Name`. The import result persists with the settings when the plugin is disabled.
+Crosshair teleport advances a preset distance along the current camera direction and clamps the target Z axis above the camera height plus a safety lift, so you do not land underground; forward teleport moves a preset distance along the horizontal facing. You can re-capture both hotkeys in the plugin window; captures and option edits are coalesced and written to `anomaly.config` on the scheduler's Worker (the host owns validation and the atomic replace) instead of waiting for the plugin to be disabled, and `on_stop` synchronously flushes any pending changes. Clicking **Import points** reads a point array from a JSON file path (relative paths resolve against the plugin's private state directory) and supports `color`, `name`, `x/y/z` and an optional `category`; when `category` is missing, the plugin derives the category from prefixes such as `1. Name`. The import result persists with the settings when the plugin is disabled.
 
 ## 999 Nights Script
 
@@ -72,16 +74,22 @@ Crosshair teleport advances a preset distance along the current camera direction
 | --- | --- |
 | **ID** | `wawmew.night999` |
 | **Purpose** | Fully automated monster farming loop for the 999 Nights instance. |
-| **Required services** | `anomaly.ui`; `anomaly.core`, `anomaly.nte.session/player/player-teleport/navigation/combat/skills/skill-invocation/actors/entities/pickup`, `anomaly.ue5.names/objects/world/framework`, `anomaly.interop.signature` (all V1, optional) |
+| **Required services** | `anomaly.ui`; `anomaly.core`, `anomaly.nte.session/player/player-teleport/navigation/combat/skills/skill-invocation/actors/entities/pickup/ui-buttons`, `anomaly.ue5.names/objects/world/framework`, `anomaly.interop.signature` (all V1, optional) |
 | **Requires Profile** | Yes (session and player snapshots, the teleport bridge, reflection lookup and auto combat all depend on validated symbols) |
 
 **This script is for the Red Dragon Castle map in 999 Nights**. The window has two tabs, **Start** and **Settings**.
 
 **Start** page: the **Loop count** input box (**0 = infinite loop**), the **Start script / Stop script** buttons, and the live status line below them (`Round N/M · current step`).
 
-**Settings** page: three teleport points (camp, combat point 1, combat point 2), each with three coordinate rows (X / Y / Z) that you can edit directly, or you can click **Read current position as camp** / **Read current position as combat point 1** / **Read current position as combat point 2** to fill in the player's current coordinates (visible in the same frame); below that come the preload delay, and the auto combat switches and parameters.
+**Settings** page: at the top, the **Refresh method** choice between **Memory refresh** and **Button refresh**; below that, three teleport points (camp, combat point 1, combat point 2), each with three coordinate rows (X / Y / Z) that you can edit directly, or you can click **Read current position as camp** / **Read current position as combat point 1** / **Read current position as combat point 2** to fill in the player's current coordinates (visible in the same frame); below that come the preload delay, and the auto combat switches and parameters.
 
 A loop always runs six steps: teleport to camp → refresh monsters → teleport to combat point 1 → auto combat → teleport to combat point 2 → auto combat, then back to camp for the next round (repeats the configured number of times, **0 = unlimited**; every teleport waits 2 seconds to settle after landing).
+
+**Memory refresh** calls the game's own refresh function `FinalTowerCampResetMonsterSpawners` and needs no UI open. It checks the cooldown first: at 0 seconds it sends the request right away; between 1 and 10 seconds it waits "cooldown + 1 second" and then sends; above 10 seconds it assumes the spawn was just refreshed (usually a manual click) and **skips the refresh**, going straight to combat point 1. After sending it also confirms the cooldown was actually written: if the cooldown is still 0 within 4 seconds it sends again, up to 3 rounds. When the cooldown reading is unavailable in a given environment the refresh is not blocked; the attempt is treated as sent.
+
+**Button refresh** does not touch memory: it presses the game's own buttons — `InteractButton` (every one that exists, which opens the campfire panel), then `BtnResetMonsterSpawners`, then `BtnSure` when that step opens a confirmation dialog (skipped when the dialog never shows), then `BtnReset`. Scans and clicks are at least 200 milliseconds apart; a click counts as successful once the button disappears, hides or becomes unclickable, otherwise it retries up to 2 more times. Scanning stops as soon as `BtnReset` was pressed. When the panel opens with a disabled (unclickable) `BtnResetMonsterSpawners`, or the button has not shown up after 5 scans, the plugin presses `BtnClose`, waits 10 seconds and presses `InteractButton` again, up to 6 retries; after 6 failed retries it reports the error and stops the script. Button refresh requires the player to stand next to a campfire.
+
+When a refresh failure is not a cooldown matter (the `FinalTowerCampResetMonsterSpawners` function cannot be found, the local player state is missing, `ProcessEvent` rejects the call, no campfire id is readable, the cooldown is still 0 after 3 rounds, or — for button refresh — no clickable `InteractButton` / `BtnResetMonsterSpawners` / `BtnReset` shows up or the button stays clickable after the retries), the **Start** page shows a `Refresh error: <reason>` line and the script stops instead of heading to the combat points with an empty camp.
 
 The auto combat end conditions (hitting any one of them ends it and moves on to the next round):
 

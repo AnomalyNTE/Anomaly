@@ -33,12 +33,26 @@ inline bool LoadCloneLayout(const anomaly::sdk::Profile& profile, CloneLayout& o
     } catch (const std::out_of_range&) { return false; }
 }
 
-// Only public, canonical character entries from DT_Character can enter this mode.
-inline bool PlayableClonePath(bool is_public, std::string_view package, std::string_view asset) {
-    if (!is_public || !package.starts_with("/Game/Blueprints/Character/Player/") ||
+inline bool EqualNoCase(std::string_view left, std::string_view right) {
+    if (left.size() != right.size()) return false;
+    for (std::size_t i = 0; i < left.size(); ++i) {
+        auto a = left[i], b = right[i];
+        if (a >= 'A' && a <= 'Z') a = static_cast<char>(a - 'A' + 'a');
+        if (b >= 'A' && b <= 'Z') b = static_cast<char>(b - 'A' + 'a');
+        if (a != b) return false;
+    }
+    return true;
+}
+
+// Only canonical character entries from DT_Character can enter this mode.
+// The names compare case-insensitively: FName display case is not normalized, so a
+// character can be spelled player_052_Jin in the package name and Player_052_Jin_C
+// in the asset name. A byte-exact comparison drops exactly those entries (Xun).
+inline bool PlayableClonePath(std::string_view package, std::string_view asset) {
+    if (!package.starts_with("/Game/Blueprints/Character/Player/") ||
         !asset.ends_with("_C")) return false;
     const auto leaf = package.substr(package.find_last_of('/') + 1);
-    return !leaf.empty() && asset.substr(0, asset.size() - 2) == leaf;
+    return !leaf.empty() && EqualNoCase(asset.substr(0, asset.size() - 2), leaf);
 }
 
 // TMap uses sparse slots. Never interpret a freed slot as a row pointer.

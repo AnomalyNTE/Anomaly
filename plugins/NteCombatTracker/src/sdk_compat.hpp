@@ -32,6 +32,12 @@ template <typename Struct, typename Field>
         service->event_name_utf8 != nullptr;
 }
 
+[[nodiscard]] inline bool AppliedDamageStreamAvailable(const AnomalyNteCombatServiceV1* service) noexcept {
+    return HasField<AnomalyNteCombatServiceV1, decltype(AnomalyNteCombatServiceV1::next_applied_damage_event)>(
+        service, offsetof(AnomalyNteCombatServiceV1, next_applied_damage_event)) &&
+        service->latest_applied_damage_sequence != nullptr && service->next_applied_damage_event != nullptr;
+}
+
 [[nodiscard]] inline bool ParticipantDisplayNameResolverAvailable(
     const AnomalyNteCombatServiceV1* service) noexcept {
     return HasField<AnomalyNteCombatServiceV1,

@@ -19,6 +19,8 @@
 #define ANOMALY_NTE_ACTORS_SERVICE_V1_ID "anomaly.nte.actors"
 #define ANOMALY_NTE_ACTORS_SERVICE_V1_VERSION 1u
 #define ANOMALY_NTE_COMBAT_SERVICE_V1_ID "anomaly.nte.combat"
+#define ANOMALY_NTE_ACCOUNT_SERVICE_V1_ID "anomaly.nte.account"
+#define ANOMALY_NTE_ACCOUNT_SERVICE_V1_VERSION 1u
 #define ANOMALY_NTE_COMBAT_SERVICE_V1_VERSION 1u
 #define ANOMALY_NTE_SKILLS_SERVICE_V1_ID "anomaly.nte.skills"
 #define ANOMALY_NTE_SKILLS_SERVICE_V1_VERSION 1u
@@ -771,7 +773,22 @@ typedef struct AnomalyNteCombatServiceV1 {
     AnomalyStatusV1 (ANOMALY_CALL *participant_display_name_utf8)(
         void* user, AnomalyGenerationHandleV1 participant,
         char* destination, size_t* inout_size);
+    // Optional extension. The applied stream has its own cursor and contains
+    // damage only. final_value is the HP actually lost to the hit.
+    // Both calls return UNAVAILABLE if the active Profile cannot observe it.
+    AnomalyStatusV1 (ANOMALY_CALL *latest_applied_damage_sequence)(void* user, uint64_t* sequence);
+    AnomalyStatusV1 (ANOMALY_CALL *next_applied_damage_event)(
+        void* user, uint64_t after_sequence, AnomalyNteCombatEventV1* event);
 } AnomalyNteCombatServiceV1;
+
+typedef struct AnomalyNteAccountServiceV1 {
+    uint32_t struct_size;
+    uint32_t service_version;
+    void* user;
+    // Copies the latest local account UID as UTF-8. Uses the replicated value
+    // first and HUD text as a fallback. Returns NOT_FOUND without a fresh sample.
+    AnomalyStatusV1 (ANOMALY_CALL *uid_utf8)(void*, char*, size_t*);
+} AnomalyNteAccountServiceV1;
 
 typedef struct AnomalyNteSkillFrameV1 {
     uint32_t struct_size; uint32_t flags;

@@ -10,7 +10,7 @@ struct Fashion {
 };
 struct Character {
     Name id{};
-    std::string code, chinese;
+    std::string code, display_name;
     std::vector<Fashion> fashions;
 };
 struct CatalogRow {
@@ -40,8 +40,8 @@ inline std::vector<Character> BuildCatalog(
             if (!has_matching_default && (options == fashion_options.end() ||
                 options->second.empty())) continue;
         }
-        if (item.chinese.empty())
-            item.chinese = item.code;
+        if (item.display_name.empty())
+            item.display_name = item.code;
         item.fashions = std::move(row.fashions);
         result.push_back(std::move(item));
     }

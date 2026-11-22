@@ -25,15 +25,19 @@ HookTargets DiscoverD3D12HookTargets() {
     ID3D12CommandAllocator* allocator{};
     ID3D12GraphicsCommandList* commands{};
     IDXGIFactory4* factory{};
+    IDXGIAdapter* warp_adapter{};
     IDXGISwapChain1* swap_chain{};
     IDXGISwapChain3* swap_chain3{};
+    // D3D12 shares a device per adapter within a process. The discovery probe can
+    // run before the host creates its device, so keep it on the software adapter.
     bool ready = window != nullptr &&
-        SUCCEEDED(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+        SUCCEEDED(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory))) &&
+        SUCCEEDED(factory->EnumWarpAdapter(IID_PPV_ARGS(&warp_adapter))) &&
+        SUCCEEDED(D3D12CreateDevice(warp_adapter, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
     if (ready) {
         D3D12_COMMAND_QUEUE_DESC queue_description{};
         queue_description.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-        ready = SUCCEEDED(device->CreateCommandQueue(&queue_description, IID_PPV_ARGS(&queue))) &&
-            SUCCEEDED(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)));
+        ready = SUCCEEDED(device->CreateCommandQueue(&queue_description, IID_PPV_ARGS(&queue)));
     }
     if (ready) {
         DXGI_SWAP_CHAIN_DESC1 swap_description{};
@@ -77,9 +81,10 @@ HookTargets DiscoverD3D12HookTargets() {
     Release(allocator);
     Release(swap_chain3);
     Release(swap_chain);
-    Release(factory);
     Release(queue);
     Release(device);
+    Release(warp_adapter);
+    Release(factory);
     if (window != nullptr) DestroyWindow(window);
     if (atom != 0) UnregisterClassW(class_name, instance);
     return targets;

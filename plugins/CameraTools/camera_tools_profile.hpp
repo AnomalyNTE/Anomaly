@@ -16,6 +16,10 @@ struct Layout {
     std::uint32_t kCameraPovFovOffset{};
     std::uint32_t kPlayerInputKeyVtableOffset{};
     std::uint32_t kInputKeyEventArgsKeyOffset{};
+    std::uint32_t kCameraManagerViewPitchMinOffset{};
+    std::uint32_t kCameraManagerViewPitchMaxOffset{};
+    std::uint32_t kCameraManagerViewYawMinOffset{};
+    std::uint32_t kCameraManagerViewYawMaxOffset{};
     std::uint32_t kNamePoolBlocksOffset{};
     std::uint32_t kNameBlockBits{};
     std::uint32_t kNameEntryStride{};
@@ -27,8 +31,6 @@ struct Layout {
 inline Layout native_layout;
 inline anomaly::sdk::ProfileSnapshot compatibility;
 // Optional: a missing/unsupported rotation path must not disable the existing tools.
-// The 1.4b and 1.5a native bodies share the rotation ABI and vtable slot, but
-// have different prologues. Resolve their separate Profile candidates uniquely.
 inline std::uint32_t process_view_rotation_slot{};
 inline constexpr std::string_view kProcessViewRotation = "processViewRotation";
 inline bool LoadCompatibility(const AnomalyHostApiV1* host) noexcept {
@@ -45,6 +47,10 @@ inline bool LoadCompatibility(const AnomalyHostApiV1* host) noexcept {
         parsed.kCameraPovFovOffset = compatibility.Value("kCameraPovFovOffset", 16384);
         parsed.kPlayerInputKeyVtableOffset = compatibility.Value("kPlayerInputKeyVtableOffset", 16384);
         parsed.kInputKeyEventArgsKeyOffset = compatibility.Value("kInputKeyEventArgsKeyOffset", 16384);
+        parsed.kCameraManagerViewPitchMinOffset = compatibility.Value("kCameraManagerViewPitchMinOffset", 262144, 4);
+        parsed.kCameraManagerViewPitchMaxOffset = compatibility.Value("kCameraManagerViewPitchMaxOffset", 262144, 4);
+        parsed.kCameraManagerViewYawMinOffset = compatibility.Value("kCameraManagerViewYawMinOffset", 262144, 4);
+        parsed.kCameraManagerViewYawMaxOffset = compatibility.Value("kCameraManagerViewYawMaxOffset", 262144, 4);
         parsed.kNamePoolBlocksOffset = compatibility.Value("kNamePoolBlocksOffset", 16384);
         parsed.kNameBlockBits = compatibility.Value("kNameBlockBits", 16384);
         parsed.kNameEntryStride = compatibility.Value("kNameEntryStride", 16384);

@@ -24,6 +24,7 @@
 #include "platform_host.hpp"
 #include "plugin_manager.hpp"
 #include "build_provenance.hpp"
+#include "core_instance_claim.hpp"
 
 #include <Windows.h>
 
@@ -94,6 +95,7 @@ std::string EscapeJson(std::string_view value);
 
 struct RuntimeControl {
     std::mutex mutex;
+    anomaly::CoreInstanceClaim process_claim;
     std::optional<bool> pak_compatibility_mode;
     // Cache routing and the signature gate remain patched across sessions in this process.
     // Keep the original validated binding with them; rescanning patched prologues cannot recover it.
@@ -525,9 +527,15 @@ DWORD InitializeCore(const std::shared_ptr<CoreContext>& context, std::stop_toke
     if (!WriteDiagnosticsSummary(context, "starting")) {
         LogDiagnosticsSummaryFailure(context);
     }
+    const auto session = context->session.lock();
     RuntimeLog(
         context, anomaly::LogLevel::Info, "runtime.start",
-        "runtime=start version=" ANOMALY_SDK_VERSION_STRING);
+        "runtime=start version=" ANOMALY_SDK_VERSION_STRING +
+            std::string(" core_image=") +
+            std::to_string(reinterpret_cast<std::uintptr_t>(g_core_module)) +
+            " bootstrap_type=" + std::to_string(session
+                ? static_cast<unsigned>(session->StartContext().bootstrap_type)
+                : static_cast<unsigned>(ANOMALY_BOOTSTRAP_TYPE_UNKNOWN)));
     return stop_token.stop_requested() ? ERROR_CANCELLED : ERROR_SUCCESS;
 }
 
@@ -1768,6 +1776,8 @@ extern "C" __declspec(dllexport) DWORD WINAPI AnomalyStart(
         std::scoped_lock lock(control.mutex);
         ArchiveStoppedSessionLocked(control);
         if (control.session != nullptr) return ERROR_ALREADY_INITIALIZED;
+        const DWORD ownership = control.process_claim.Acquire();
+        if (ownership != ERROR_SUCCESS) return ownership;
         const auto start_context = BuildStartContext(*start_info);
         auto core_context = std::make_shared<CoreContext>();
         core_context->runtime_root = start_context.runtime_root;
