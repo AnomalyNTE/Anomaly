@@ -2,17 +2,8 @@
 // Anomaly 插件：空无一人（一键把人群密度环境倍率压到近乎为 0）
 //    勾选：读取当前 昼/夜/晴/雨/雪 环境倍率作为初值 → 全部置 0.01
 //    取消：恢复初值
-// 目标字段：HTMassCrowdSpawner（默认档 +kDefaultProfileOffset、数组 +kDensityProfilesOffset）
-//          内 HTMassCrowdDensityProfile 的 +0x0C/+0x10/+0x14/+0x18/+0x1C（1.4b 起未变）。
-// 等待世界就绪后扫描；界面可请求重新扫描。
-//
-// 兼容策略（游戏每次更新只会动这几处）：
-//   1. 版本无关的字段全部来自 Profile 的 layout 块；随版本变化的三处偏移放在 layout 符号的
-//      candidates[].values 里，签名命中时优先采用。
-//   2. 签名全部失配（补丁改了函数体）时，改由真实生成器对象的形状判定唯一候选：数组 TArray
-//      头、默认档 5 个倍率、车辆保底数量都必须自洽，且只有一个候选成立才生效；否则整插件
-//      停用并显示原因，绝不回退到代码里的数字。
-//   3. 天气切换/关卡刷新会让游戏重算密度，所以勾选期间按慢周期重新对齐（读-比-写）。
+// 世界就绪后通过对象表定位生成器，校验人群生成器的密度数组和默认档倍率后应用 Profile 布局。
+// 勾选期间按慢周期重新对齐，处理天气切换和关卡刷新引起的密度重算。
 
 #include "anomaly/sdk/cpp.hpp"
 #include "anomaly/sdk/services/platform.h"
@@ -21,6 +12,7 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -42,17 +34,6 @@ using anomaly::sdk::StringView;
 
 constexpr std::uint32_t kCondFirstUseEver = 4u;
 
-// UObject 布局
-
-
-
-// HTMassCrowdSpawner 上的密度字段（NTE 1.5a：DefaultDensityProfile 0x458、DensityProfiles 0x478，
-// 相比 1.4b 的 0x408/0x428 整体后移 0x50 —— 基类 HTMassSpawnerBase 由 0x80 长到 0xD0 所致；
-// AMassSpawner.Count(+0x2E8)/SpawningCountScale(+0x328) 并未移动）
-
-  // TArray
-
-
 constexpr std::uint32_t kMaxProfiles = 16;
 constexpr int kMaxSpawners = 256;
 // 勾选期间按慢周期重新对齐：游戏在天气切换/关卡刷新时会重算密度。
@@ -62,18 +43,9 @@ constexpr double kRetrySeconds = 2.0;
 const float kEmptyScales[5] = {0.01F, 0.01F, 0.01F, 0.01F, 0.01F};  // 空街值（昼/夜/晴/雨/雪）
 const float kDefaultScales[5] = {1.0F, 1.0F, 1.0F, 1.0F, 1.0F};     // 游戏默认环境倍率（兜底初值）
 
-// 车辆生成器（HTMassVehicleSpawner）上的字段
-//   MassSpawner 基类：Count(+0x2E8, int32) 生成上限、SpawningCountScale(+0x328, f32) 数量倍率
-//   HTMassVehicleSpawner 自己：MinActiveVehiclesNum(+0x4AC, int32) 保底在线车辆数（1.4b 为 0x45C）
-
-
-
 constexpr int kDefaultVehCount = 3000;
 constexpr float kDefaultVehScale = 0.8F;
 constexpr int kDefaultVehMinActive = 50;
-
-// 游戏自带「索引 → 对象地址」助手签名（HTGame.exe .text 唯一命中）
-
 
 constexpr int kConfVersion = 5;
 constexpr const char* kConfFile = "deserted.conf";
@@ -150,6 +122,7 @@ struct State {
     std::uint64_t writes{};
     std::uint64_t faults{};
     char status[192]{};
+    bool layout_verified{};
 };
 State g_state;
 
@@ -352,51 +325,46 @@ bool IsSpawnerName(const char* name) {
     return std::strstr(name, "MassCrowdSpawner") != nullptr;
 }
 
-// ------------------------- 布局候选与对象形状 -----------------------------
-const deserted_profile::Candidate& ActiveCandidate() {
-    return deserted_profile::candidates[static_cast<std::size_t>(deserted_profile::selected_candidate)];
-}
-
-// 默认档的 5 个倍率：有限、0..1000。判定候选时还要求至少一个明显非零，因为写入后的空街值
-// （0.01）不能当作“这组偏移是对的”的证据。
-bool DefaultScalesSane(std::uintptr_t addr, std::uint32_t profile_offset, bool require_active_values) {
-    bool any = false;
+// --------------------------- 布局与对象校验 -----------------------------------
+bool ReadScales(std::uintptr_t addr, float out[5]) {
+    const auto& layout = deserted_profile::native_layout;
     for (int i = 0; i < 5; ++i) {
-        float value = -1.0F;
-        if (!SafeReadF32(addr + profile_offset + deserted_profile::base_layout.kScaleOffsets[i], &value)) return false;
-        if (!(value >= 0.0F) || value > 1000.0F) return false;  // NaN 在这里被拒
-        if (value > 0.2F) any = true;
+        if (!SafeReadF32(addr + layout.kDefaultProfileOffset + layout.kScaleOffsets[i], &out[i])) return false;
+        if (!(out[i] >= 0.0F) || out[i] > 1000.0F) return false;
     }
-    return require_active_values ? any : true;
+    return true;
 }
 
-// 密度 Profile 数组：空数组必须是空指针，非空必须是 1..kMaxProfiles 且数据指针可读。
-bool DensityArraySane(std::uintptr_t addr, std::uint32_t profiles_offset) {
+// 初始布局验证和恢复值均需要至少一个大于空街值的倍率。
+bool BaselineSane(const float* values) {
+    return std::any_of(values, values + 5, [](float value) { return value > 0.2F; });
+}
+
+bool DensityArraySane(std::uintptr_t addr) {
+    const auto& layout = deserted_profile::native_layout;
+    const auto array = addr + layout.kDensityProfilesOffset;
     std::uintptr_t data = 0;
-    if (!SafeReadPtr(addr + profiles_offset, &data)) return false;
-    const std::uint32_t num = SafeReadU32(addr + profiles_offset + deserted_profile::base_layout.kArrayNumOffset);
+    if (!SafeReadPtr(array, &data)) return false;
+    const std::uint32_t num = SafeReadU32(array + layout.kArrayNumOffset);
     if (num == 0) return data == 0;
     return num <= kMaxProfiles && LooksLikePointer(data);
 }
 
-bool ShapeMatchesCrowd(std::uintptr_t addr, const deserted_profile::Candidate& candidate,
-                       bool require_active_values) {
-    if (!LooksLikePointer(addr)) return false;
-    if (!DensityArraySane(addr, candidate.kDensityProfilesOffset)) return false;
-    return DefaultScalesSane(addr, candidate.kDefaultProfileOffset, require_active_values);
+bool ShapeMatchesCrowd(std::uintptr_t addr, bool require_active_values) {
+    float scales[5]{};
+    return DensityArraySane(addr) && ReadScales(addr, scales) &&
+           (!require_active_values || BaselineSane(scales));
 }
 
-bool ShapeMatchesVehicle(std::uintptr_t addr, const deserted_profile::Candidate& candidate,
-                         bool has_min_active) {
-    if (!LooksLikePointer(addr)) return false;
-    const std::int32_t count = static_cast<std::int32_t>(
-        SafeReadU32(addr + deserted_profile::base_layout.kSpawnCountOffset));
+bool ShapeMatchesVehicle(std::uintptr_t addr, bool has_min_active) {
+    const auto& layout = deserted_profile::native_layout;
+    const std::int32_t count = static_cast<std::int32_t>(SafeReadU32(addr + layout.kSpawnCountOffset));
     float scale = 0.0F;
-    if (!SafeReadF32(addr + deserted_profile::base_layout.kSpawnScaleOffset, &scale)) return false;
+    if (!SafeReadF32(addr + layout.kSpawnScaleOffset, &scale)) return false;
     if (count < 0 || count > 1000000) return false;
     if (!(scale >= 0.0F) || scale > 100.0F) return false;
     if (!has_min_active) return true;
-    const std::int32_t min_active = static_cast<std::int32_t>(SafeReadU32(addr + candidate.kVehMinActiveOffset));
+    const std::int32_t min_active = static_cast<std::int32_t>(SafeReadU32(addr + layout.kVehMinActiveOffset));
     return min_active >= 0 && min_active <= 10000;
 }
 
@@ -405,12 +373,9 @@ bool IsCrowdSpawnerCandidate(std::uintptr_t addr) {
     return LooksLikePointer(addr) && ClassNameContains(addr, "MassCrowdSpawner");
 }
 
-// 结构校验：布局选定后，用该候选的偏移核对真实对象，防止索引过期指向别的对象。
+// 用已验证的布局核对归类后的实例，包含插件已写入空街值的生成器。
 bool IsSpawnerObject(std::uintptr_t addr) {
-    if (!deserted_profile::LayoutSelected()) return false;
-    if (!IsCrowdSpawnerCandidate(addr)) return false;
-    // 本插件写入空街值后这里必须仍然成立，否则勾选后目标会自己失效。
-    return ShapeMatchesCrowd(addr, ActiveCandidate(), false);
+    return g_state.layout_verified && IsCrowdSpawnerCandidate(addr) && ShapeMatchesCrowd(addr, false);
 }
 
 // --------------------------- 车辆生成器 --------------------------------------
@@ -441,9 +406,8 @@ bool VehicleSpawnerHasMinActive(std::uintptr_t addr) {
 }
 
 bool IsVehicleSpawnerObject(std::uintptr_t addr) {
-    if (!deserted_profile::LayoutSelected()) return false;
-    if (!IsVehicleSpawnerCandidate(addr)) return false;
-    return ShapeMatchesVehicle(addr, ActiveCandidate(), VehicleSpawnerHasMinActive(addr));
+    return g_state.layout_verified && IsVehicleSpawnerCandidate(addr) &&
+           ShapeMatchesVehicle(addr, VehicleSpawnerHasMinActive(addr));
 }
 
 void ReadVehicleParams(std::uintptr_t addr, int* count, float* scale, int* min_active,
@@ -526,25 +490,6 @@ void CaptureVehicleBaseline() {
 }
 
 // --------------------------- 读写倍率 ----------------------------------------
-// 读默认档上的 5 个环境倍率（作为初值）
-bool ReadScales(std::uintptr_t sp, float out[5]) {
-    for (int i = 0; i < 5; ++i) {
-        float v = 0.0F;
-        if (!SafeReadF32(sp + deserted_profile::native_layout.kDefaultProfileOffset + deserted_profile::native_layout.kScaleOffsets[i], &v)) return false;
-        if (!(v >= 0.0F) || v > 1000.0F) return false;
-        out[i] = v;
-    }
-    return true;
-}
-
-// 初值合理性：接近 0（0 或本插件的空街值）不能作为初值，否则恢复后仍是空街
-bool BaselineSane(const float* v) {
-    for (int i = 0; i < 5; ++i) {
-        if (v[i] > 0.2F) return true;
-    }
-    return false;
-}
-
 // 把所有生成器（默认档 + 每个 Profile）的 5 个环境倍率写成 values
 // 把所有生成器（默认档 + 每个 Profile）的 5 个环境倍率对齐到 values。
 // 先读后比：值已经对就不写（游戏不回写时几乎零开销，被回写了就在下一个周期纠正）。
@@ -638,30 +583,6 @@ bool UpdateWorld() {
     return true;
 }
 
-// 候选布局判定：签名全失配时用真实对象做证据，只有唯一候选自洽才采用，否则不猜。
-bool SelectLayoutFromObjects(const std::uintptr_t* crowd, int crowd_count,
-                             const std::uintptr_t* vehicles, int vehicle_count) {
-    int winner = -1;
-    int matches = 0;
-    for (std::size_t i = 0; i < deserted_profile::candidate_count; ++i) {
-        const deserted_profile::Candidate& candidate = deserted_profile::candidates[i];
-        int score = 0;
-        for (int k = 0; k < crowd_count; ++k) {
-            // 判定候选时要求默认档仍是游戏原始值，空街值不能反过来当作证据。
-            if (ShapeMatchesCrowd(crowd[k], candidate, true)) ++score;
-        }
-        for (int k = 0; k < vehicle_count; ++k) {
-            if (ShapeMatchesVehicle(vehicles[k], candidate,
-                                    VehicleSpawnerHasMinActive(vehicles[k]))) ++score;
-        }
-        if (score == 0) continue;
-        ++matches;
-        winner = static_cast<int>(i);
-    }
-    if (matches != 1 || winner < 0) return false;
-    return deserted_profile::SelectCandidate(static_cast<std::size_t>(winner));
-}
-
 void ResolveFoundObjects() {
     State& s = g_state;
     struct Target {
@@ -690,6 +611,16 @@ void ResolveFoundObjects() {
         crowd_targets[crowd_found] = {index, handle, addr};
         crowd[crowd_found++] = addr;
     }
+    if (!s.layout_verified) {
+        if (crowd_found == 0) return;
+        s.layout_verified = std::any_of(crowd, crowd + crowd_found,
+            [](std::uintptr_t addr) { return ShapeMatchesCrowd(addr, true); });
+        if (!s.layout_verified) {
+            SetStatus(g_localizer.Text("status.layout_unverified",
+                "The crowd density layout could not be verified for this game build").c_str());
+            return;
+        }
+    }
     for (int i = 0; i < s.veh_found && vehicles_found < kMaxSpawners; ++i) {
         const auto index = s.veh_found_index[i];
         const auto handle = s.veh_found_handle[i];
@@ -709,15 +640,6 @@ void ResolveFoundObjects() {
             break;
         }
         vehicles[vehicles_found++] = addr;
-    }
-    if (!deserted_profile::LayoutSelected() &&
-        !SelectLayoutFromObjects(crowd, crowd_found, vehicles, vehicles_found)) {
-        s.spawner_count = 0;
-        s.veh_count = 0;
-        s.need_apply = 0;
-        SetStatus(g_localizer.Text("status.layout_unverified",
-            "The crowd density layout could not be verified for this game build").c_str());
-        return;
     }
     int n = 0;
     for (int i = 0; i < crowd_found; ++i) {
@@ -809,7 +731,7 @@ void AdvanceScan(double dt) {
     if (s.walk_cursor >= s.walk_total) {
         s.walk_done = 1;
         ResolveFoundObjects();
-    } else if (deserted_profile::LayoutSelected() &&
+    } else if (s.layout_verified &&
                (s.spawner_found != previous_crowd_found || s.veh_found != previous_vehicle_found)) {
         ResolveFoundObjects();
     }
@@ -1216,7 +1138,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     }
     *descriptor = {sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
                    StringView("wawmew.deserted"), StringView("Deserted"),
-                   StringView("WawMew"), StringView("0.6.8"), Load, Start, Stop, Unload, Update,
+                   StringView("WawMew"), StringView("0.6.10"), Load, Start, Stop, Unload, Update,
                    Draw};
     return anomaly::sdk::Ok();
 }
