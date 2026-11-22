@@ -28,6 +28,8 @@ struct CrashDumpResult {
 // full process memory and handle data are excluded from the default artifact. Metadata
 // is limited to fixed diagnostic fields and a caller-supplied, non-sensitive reason code;
 // it does not include paths, command lines, environment data, logs, or plugin settings.
+// The optional dump provider is prepared at construction, outside exception handling.
+// Install and WriteDump report its load error if it is unavailable.
 class CrashReporter final {
 public:
     explicit CrashReporter(CrashReporterOptions options);
@@ -47,6 +49,9 @@ private:
     static LONG WINAPI UnhandledFilter(EXCEPTION_POINTERS* exception) noexcept;
 
     CrashReporterOptions options_;
+    HMODULE dump_module_{};
+    FARPROC write_dump_{};
+    DWORD dump_load_error_{ERROR_SUCCESS};
     mutable std::mutex mutex_;
     std::atomic<LPTOP_LEVEL_EXCEPTION_FILTER> previous_filter_{};
     std::atomic<bool> dump_in_progress_{};

@@ -139,7 +139,9 @@ capability 与 service 的对应关系见[插件开发](../developer-guide/plugi
 
 ## 崩溃
 
-- 未处理异常会生成 `MiniDumpNormal` 与旁路 metadata。
+- 崩溃报告器可用时，未处理异常会生成 `MiniDumpNormal` 与旁路 metadata。
+- 系统转储库 `DbgHelp` / `DbgCore` 不可用时，只禁用崩溃转储，Runtime 继续启动；
+  日志中的 `crash_reporter.disabled` 会记录加载错误码。
 
 > [!CAUTION]
 > 诊断包、崩溃转储与 Profile 数据可能含敏感信息，分享前请审查并脱敏。

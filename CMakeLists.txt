@@ -709,7 +709,6 @@ target_include_directories(anomaly_crash_reporter PUBLIC include)
 target_compile_definitions(
     anomaly_crash_reporter PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_compile_options(anomaly_crash_reporter PRIVATE /W4 /permissive- /EHsc)
-target_link_libraries(anomaly_crash_reporter PUBLIC Dbghelp)
 
 add_library(anomaly_reliable_storage STATIC src/services/reliable_storage.cpp)
 add_library(anomaly_pak_mod_catalog STATIC

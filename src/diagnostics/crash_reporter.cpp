@@ -73,10 +73,25 @@ std::wstring TimestampUtc() noexcept {
 }  // namespace
 
 CrashReporter::CrashReporter(CrashReporterOptions options)
-    : options_(std::move(options)) {}
+    : options_(std::move(options)) {
+    // Crash reporting is optional. A static import would make DbgHelp (and its
+    // DbgCore forwarders) mandatory before Runtime can handle Install failure.
+    // Prepare the provider here so an exception never triggers DLL loading.
+    dump_module_ = LoadLibraryExW(L"dbghelp.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (dump_module_ == nullptr) {
+        dump_load_error_ = GetLastError();
+        return;
+    }
+    write_dump_ = GetProcAddress(dump_module_, "MiniDumpWriteDump");
+    if (write_dump_ == nullptr) {
+        dump_load_error_ = GetLastError();
+        FreeLibrary(std::exchange(dump_module_, nullptr));
+    }
+}
 
 CrashReporter::~CrashReporter() {
     Uninstall();
+    if (dump_module_ != nullptr) FreeLibrary(dump_module_);
 }
 
 bool CrashReporter::Install(std::string* error) noexcept {
@@ -84,6 +99,11 @@ bool CrashReporter::Install(std::string* error) noexcept {
         std::scoped_lock registration_lock(g_registration_mutex);
         std::scoped_lock lock(mutex_);
         if (installed_) return true;
+        if (write_dump_ == nullptr) {
+            if (error) *error = "MiniDumpWriteDump is unavailable (error " +
+                std::to_string(dump_load_error_) + ")";
+            return false;
+        }
         std::error_code directory_error;
         std::filesystem::create_directories(options_.dump_directory, directory_error);
         if (directory_error) {
@@ -150,6 +170,10 @@ CrashDumpResult CrashReporter::WriteDump(
     result.exception_code = exception != nullptr && exception->ExceptionRecord != nullptr
         ? exception->ExceptionRecord->ExceptionCode
         : 0U;
+    if (write_dump_ == nullptr) {
+        result.error = dump_load_error_;
+        return result;
+    }
     bool expected{};
     if (!dump_in_progress_.compare_exchange_strong(
             expected, true, std::memory_order_acq_rel, std::memory_order_acquire)) {
@@ -188,7 +212,7 @@ CrashDumpResult CrashReporter::WriteDump(
             exception_information.ClientPointers = FALSE;
             exception_information_pointer = &exception_information;
         }
-        const BOOL written = MiniDumpWriteDump(
+        const BOOL written = reinterpret_cast<decltype(&MiniDumpWriteDump)>(write_dump_)(
             GetCurrentProcess(), GetCurrentProcessId(), file, MiniDumpNormal,
             exception_information_pointer, nullptr, nullptr);
         result.error = written ? ERROR_SUCCESS : GetLastError();

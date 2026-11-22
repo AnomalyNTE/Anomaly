@@ -1085,9 +1085,6 @@ std::string NarrowPath(const std::filesystem::path& path) {
     return result;
 }
 
-// A remote loader thread exits with the module handle it produced, so its exit code is reported in
-// hex where the surrounding diagnostics are read.
-
 std::filesystem::path LocalModulePath(HMODULE module) {
     if (module == nullptr) return {};
     std::wstring path(32768, L'\0');
@@ -2095,9 +2092,9 @@ bool RemoteLoadLibrary(
         return false;
     }
 
-    // A thread this process creates is given LoadLibraryW as its start routine and the path as its argument,
-    // which is everything the loader needs. What the loader accepted is then read from the target itself: the
-    // module handle is the thread's exit code and the module list is the record of the load.
+    // GetExitCodeThread returns a DWORD termination status, not an x64 HMODULE or the loader's
+    // GetLastError. The thread may also exit before LoadLibraryW returns. Only the module list
+    // confirms that the requested dependency is present.
     if (delivery == ManualMapDelivery::RemoteThread) {
         Handle thread(CreateRemoteThread(
             process, nullptr, 0,
@@ -2115,8 +2112,8 @@ bool RemoteLoadLibrary(
             failure = "the dependency loader thread did not complete before the timeout";
             return false;
         }
-        DWORD loaded{};
-        const bool exit_available = GetExitCodeThread(thread.Get(), &loaded) != FALSE;
+        DWORD thread_exit_code{};
+        const bool exit_available = GetExitCodeThread(thread.Get(), &thread_exit_code) != FALSE;
         DWORD snapshot_error{};
         modules = SnapshotModules(process, snapshot_error);
         if (snapshot_error != ERROR_SUCCESS) {
@@ -2124,9 +2121,12 @@ bool RemoteLoadLibrary(
             return false;
         }
         if (FindRemoteModule(modules, path) == modules.end()) {
-            failure = "the target did not load " + NarrowPath(path) + ": LoadLibraryW returned " +
-                (exit_available ? Hex64(loaded) : std::string{"no exit code"}) +
-                " on the thread created for it (" + DeliveryName(delivery) + ")";
+            failure = "the target did not load " + NarrowPath(path) +
+                ": dependency thread exited (" + DeliveryName(delivery) + "); " +
+                (exit_available
+                    ? "thread exit code " + Hex64(thread_exit_code)
+                    : std::string{"thread exit code unavailable"}) +
+                ". The loader's GetLastError is unavailable; this does not confirm a missing DLL";
             return false;
         }
         return true;
