@@ -1727,19 +1727,21 @@ void RenderEmbedded(IDXGISwapChain* swap_chain, UINT flags) {
     }
 
     unsigned toggle_key = state->config.platform_toggle_key;
+    unsigned hide_all_key = state->config.platform_hide_all_key;
     if (state->diagnostics.settings_snapshot) {
         const auto settings = state->diagnostics.settings_snapshot();
-        if (settings.ready) toggle_key = settings.values.input_menu_toggle;
+        if (settings.ready) {
+            toggle_key = settings.values.input_menu_toggle;
+            hide_all_key = settings.values.input_hide_all_toggle;
+        }
     }
-    // The menu hotkey must only react while the game window owns focus, not
-    // while the user is typing in an unrelated application.
-    const bool game_focused =
-        state->window != nullptr && GetForegroundWindow() == state->window;
-    const int toggle_state = game_focused
-        ? GetAsyncKeyState(static_cast<int>(toggle_key))
-        : 0;
-    if (anomaly::ShouldTogglePlatformMenus(
-            PlatformUiCapturingHotkey(), toggle_state)) {
+    const auto hotkeys = ConsumeEmbeddedMenuHotkeys(
+        *state, toggle_key, hide_all_key, PlatformUiCapturingHotkey());
+    if (hotkeys.toggle_hide_all) {
+        anomaly::SetHostUiAllHidden(!anomaly::HostUiAllHidden());
+        if (anomaly::HostUiAllHidden()) state->ime.Reset();
+    }
+    if (hotkeys.toggle_menu) {
         const bool expanding = anomaly::HostUiMenusCollapsed();
         anomaly::SetHostUiMenusCollapsed(!expanding);
         // The shell's own close button marks the management window closed, and

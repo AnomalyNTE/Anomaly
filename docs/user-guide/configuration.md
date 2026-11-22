@@ -15,6 +15,7 @@ Visible=0
 Embedded=1
 AttachToProcessWindow=1
 ToggleKey=45
+HideAllKey=46
 Language=auto
 PluginDirectory=plugins
 
@@ -48,6 +49,7 @@ ManagedDirectory=state/profiles/managed
 | `Embedded` | `1` 启用 D3D12 交换链内嵌模式（游戏内界面）。 |
 | `AttachToProcessWindow` | 仅在关闭内嵌模式、使用 Win32 回退后端时生效；独立演示程序始终使用普通窗口。 |
 | `ToggleKey` | 呼出 / 折叠界面的 Win32 虚拟键码。默认 `45` 即 `VK_INSERT`；推荐直接在 **Anomaly Launcher > 启动设置** 中按键修改。 |
+| `HideAllKey` | 隐藏 / 恢复全部 Anomaly 窗口和叠加内容，包含锁定窗口与 ESP。默认 `46` 即 `Delete`；可在启动器设置中修改，不能与 `ToggleKey` 相同。 |
 | `Language` | UI 语言，见下文。 |
 | `PluginDirectory` | 插件目录（相对 `Anomaly\`），默认 `plugins`。 |
 
@@ -105,6 +107,7 @@ Runtime 的选择顺序是：本地覆盖 > 更新源下发 > 运行包自带。
 - 首次显示时居中为 `1040×700`。
 - 主管理窗口不提供关闭按钮，旧版本留下的关闭状态会在启动时自动修复。
 - `Insert` 折叠 / 展开未锁定菜单；标题栏锁按钮可让单个窗口保持展开。
+- `Delete` 独立隐藏 / 恢复全部界面，不改变菜单展开状态；全隐藏时按 `Insert` 只改变菜单状态，按 `Delete` 恢复后显示最新状态。两键同时按下时分别切换各自的状态。手动配置成相同按键时，优先执行菜单切换。
 
 ### 主题与背景图
 

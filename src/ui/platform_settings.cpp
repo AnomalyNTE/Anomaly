@@ -25,11 +25,11 @@ constexpr std::uint32_t kLegacyInterfaceScaleMinimumPercent = 75;
 
 bool IsMenuKeyValid(std::uint32_t key) noexcept;
 
-std::optional<std::uint32_t> ReadMenuToggle(
-    const std::filesystem::path& path) noexcept {
+std::optional<std::uint32_t> ReadMenuKey(
+    const std::filesystem::path& path, const wchar_t* key) noexcept {
     std::array<wchar_t, 32> buffer{};
     GetPrivateProfileStringW(
-        L"Platform", L"ToggleKey", L"", buffer.data(),
+        L"Platform", key, L"", buffer.data(),
         static_cast<DWORD>(buffer.size()), path.c_str());
     const std::wstring_view text(buffer.data());
     if (text.empty()) return std::nullopt;
@@ -68,11 +68,11 @@ bool WriteLanguagePreference(
         WritePrivateProfileStringW(L"Platform", L"Language", text, path.c_str()) != FALSE;
 }
 
-bool WriteMenuToggle(
-    const std::filesystem::path& path, const std::uint32_t value) noexcept {
+bool WriteMenuKey(
+    const std::filesystem::path& path, const wchar_t* key, const std::uint32_t value) noexcept {
     const std::wstring text = std::to_wstring(value);
     return WritePrivateProfileStringW(
-        L"Platform", L"ToggleKey", text.c_str(), path.c_str()) != FALSE;
+        L"Platform", key, text.c_str(), path.c_str()) != FALSE;
 }
 
 bool IsMenuKeyValid(const std::uint32_t key) noexcept {
@@ -153,6 +153,7 @@ nlohmann::json Serialize(
             {"interface.remember_last_route", values.interface_remember_last_route},
             {"interface.notice_accepted_version", values.interface_notice_accepted_version},
             {"input.menu_toggle", values.input_menu_toggle},
+            {"input.hide_all_toggle", values.input_hide_all_toggle},
             {"input.capture_policy", PlatformInputCapturePolicyName(values.input_capture_policy)},
             {"input.gamepad_navigation", values.input_gamepad_navigation},
             {"updates.channel", PlatformUpdateChannelName(values.updates_channel)},
@@ -215,6 +216,12 @@ std::vector<PlatformSettingsValidationError> ValidatePlatformSettings(
         errors.push_back({"input.menu_toggle",
             "Choose a keyboard key that is not Escape, a modifier, or a mouse button."});
     }
+    if (!IsMenuKeyValid(values.input_hide_all_toggle)) {
+        errors.push_back({"input.hide_all_toggle",
+            "Choose a keyboard key that is not Escape, a modifier, or a mouse button."});
+    } else if (values.input_hide_all_toggle == values.input_menu_toggle) {
+        errors.push_back({"input.hide_all_toggle", "Choose different keys for menu toggle and hide all."});
+    }
     range_step("diagnostics.ring_capacity", values.diagnostics_ring_capacity,
         1000, 100000, 1000, "Use 1,000 to 100,000 records in steps of 1,000.");
     return errors;
@@ -261,8 +268,10 @@ public:
         const LanguagePreference configured_language = ReadLanguagePreference(
             runtime_root_ / kAnalyzerConfigPath);
         snapshot_.values.interface_language = configured_language;
-        const auto configured_toggle = ReadMenuToggle(runtime_root_ / kAnalyzerConfigPath);
+        const auto configured_toggle = ReadMenuKey(runtime_root_ / kAnalyzerConfigPath, L"ToggleKey");
         if (configured_toggle) snapshot_.values.input_menu_toggle = *configured_toggle;
+        const auto configured_hide_all = ReadMenuKey(runtime_root_ / kAnalyzerConfigPath, L"HideAllKey");
+        if (configured_hide_all) snapshot_.values.input_hide_all_toggle = *configured_hide_all;
         snapshot_.revision = 1;
         snapshot_.reason.clear();
         const StorageResult initialized = storage_.InitializationResult();
@@ -333,6 +342,9 @@ public:
                     snapshot_.values.input_menu_toggle = json_toggle;
                 }
             }
+            if (!configured_hide_all) {
+                ReadValue(values, "input.hide_all_toggle", snapshot_.values.input_hide_all_toggle);
+            }
             ReadValue(values, "input.gamepad_navigation", snapshot_.values.input_gamepad_navigation);
             ReadValue(values, "updates.automatic_check", snapshot_.values.updates_automatic_check);
             ReadValue(values, "updates.include_disabled", snapshot_.values.updates_include_disabled);
@@ -359,6 +371,7 @@ public:
             snapshot_.values = {};
             snapshot_.values.interface_language = configured_language;
             if (configured_toggle) snapshot_.values.input_menu_toggle = *configured_toggle;
+            if (configured_hide_all) snapshot_.values.input_hide_all_toggle = *configured_hide_all;
             snapshot_.revision = 1;
             snapshot_.last_route = "plugins";
             snapshot_.ready = true;
@@ -400,6 +413,8 @@ public:
             request.values.interface_language != snapshot_.values.interface_language;
         const bool toggle_changed =
             request.values.input_menu_toggle != snapshot_.values.input_menu_toggle;
+        const bool hide_all_changed =
+            request.values.input_hide_all_toggle != snapshot_.values.input_hide_all_toggle;
         const std::filesystem::path config_path = runtime_root_ / kAnalyzerConfigPath;
         if (language_changed &&
             !WriteLanguagePreference(config_path, request.values.interface_language)) {
@@ -407,7 +422,7 @@ public:
             result.message = "language preference could not be written";
             return result;
         }
-        if (toggle_changed && !WriteMenuToggle(config_path, request.values.input_menu_toggle)) {
+        if (toggle_changed && !WriteMenuKey(config_path, L"ToggleKey", request.values.input_menu_toggle)) {
             if (language_changed) {
                 static_cast<void>(WriteLanguagePreference(
                     config_path, snapshot_.values.interface_language));
@@ -416,14 +431,28 @@ public:
             result.message = "menu toggle preference could not be written";
             return result;
         }
+        if (hide_all_changed &&
+            !WriteMenuKey(config_path, L"HideAllKey", request.values.input_hide_all_toggle)) {
+            if (language_changed) {
+                static_cast<void>(WriteLanguagePreference(config_path, snapshot_.values.interface_language));
+            }
+            if (toggle_changed) {
+                static_cast<void>(WriteMenuKey(config_path, L"ToggleKey", snapshot_.values.input_menu_toggle));
+            }
+            result.code = PlatformSettingsApplyCode::IoFailure;
+            result.message = "hide all preference could not be written";
+            return result;
+        }
         const StorageResult write = storage_.WriteAtomic(kSettingsPath, bytes);
         if (!write) {
             const bool language_rolled_back = !language_changed ||
                 WriteLanguagePreference(config_path, snapshot_.values.interface_language);
             const bool toggle_rolled_back = !toggle_changed ||
-                WriteMenuToggle(config_path, snapshot_.values.input_menu_toggle);
+                WriteMenuKey(config_path, L"ToggleKey", snapshot_.values.input_menu_toggle);
+            const bool hide_all_rolled_back = !hide_all_changed ||
+                WriteMenuKey(config_path, L"HideAllKey", snapshot_.values.input_hide_all_toggle);
             result.code = PlatformSettingsApplyCode::IoFailure;
-            result.message = language_rolled_back && toggle_rolled_back
+            result.message = language_rolled_back && toggle_rolled_back && hide_all_rolled_back
                 ? "settings could not be written atomically"
                 : "settings write failed and the INI rollback also failed";
             return result;

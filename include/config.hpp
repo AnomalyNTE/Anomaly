@@ -34,6 +34,7 @@ struct AnalyzerConfig {
     bool platform_embedded{true};
     bool platform_attach_to_process_window{true};
     unsigned platform_toggle_key{0x2d};
+    unsigned platform_hide_all_key{0x2e};
     anomaly::LanguagePreference platform_language{anomaly::LanguagePreference::Auto};
     std::filesystem::path plugin_directory{L"plugins"};
     bool telemetry_enabled{true};

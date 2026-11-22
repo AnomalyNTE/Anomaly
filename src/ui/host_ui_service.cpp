@@ -25,6 +25,7 @@ namespace anomaly {
 namespace {
 
 std::atomic_bool g_menus_collapsed{};
+std::atomic_bool g_all_hidden{};
 std::atomic_bool g_menu_state_pending{true};
 std::atomic_bool g_management_expansion_requested{};
 std::atomic_bool g_developer_mode{};
@@ -1460,6 +1461,10 @@ void SetHostUiMenusCollapsed(bool collapsed) noexcept {
 
 bool HostUiMenusCollapsed() noexcept { return g_menus_collapsed.load(); }
 
+void SetHostUiAllHidden(bool hidden) noexcept { g_all_hidden.store(hidden); }
+
+bool HostUiAllHidden() noexcept { return g_all_hidden.load(); }
+
 void RequestHostUiManagementExpansion() noexcept {
     g_management_expansion_requested.store(true);
     SetHostUiMenusCollapsed(false);
@@ -1475,7 +1480,7 @@ bool HostUiMenusCaptureMouse() noexcept {
     // when the game hides the cursor it never lands on an ImGui window, so
     // capture stays false, NoMouse is set, ImGui ignores the mouse, and
     // WantCaptureMouse can never become true again.
-    return !g_menus_collapsed.load();
+    return !g_all_hidden.load() && !g_menus_collapsed.load();
 }
 
 void SetHostUiInputCapturePolicy(const PlatformInputCapturePolicy policy) noexcept {
@@ -1492,7 +1497,9 @@ void SetHostUiPluginDrawSuppressed(const bool suppressed) noexcept {
     g_plugin_draw_suppressed.store(suppressed);
 }
 
-bool HostUiPluginDrawSuppressed() noexcept { return g_plugin_draw_suppressed.load(); }
+bool HostUiPluginDrawSuppressed() noexcept {
+    return g_all_hidden.load() || g_plugin_draw_suppressed.load();
+}
 
 std::optional<std::string> ConsumeHostUiExternalUrlRequest() noexcept {
     std::scoped_lock lock(g_external_url_mutex);
@@ -1515,7 +1522,7 @@ void SetHostUiCurrentWindowLocked(const bool locked) noexcept {
 }
 
 void PrepareHostUiFrame() noexcept {
-    g_apply_menu_state.Set(g_menu_state_pending.exchange(false));
+    g_apply_menu_state.Set(!g_all_hidden.load() && g_menu_state_pending.exchange(false));
     g_frame_menus_collapsed.Set(g_menus_collapsed.load());
 }
 

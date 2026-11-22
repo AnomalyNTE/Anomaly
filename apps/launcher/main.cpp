@@ -284,6 +284,8 @@ enum class MessageScope { Both, Proxy, Attach };
 // outcome, but it does have to correct a status that has become untrue.
 enum class ProcessAnnounce { Never, Always, OnChange };
 
+enum class LauncherHotkey { Menu, HideAll };
+
 struct LauncherSnapshot final {
     anomaly::launcher::NteClient selected_client{
         anomaly::launcher::NteClient::MainlandChina};
@@ -296,6 +298,7 @@ struct LauncherSnapshot final {
     std::string runtime_version;
     std::string runtime_message;
     std::uint32_t toggle_key{VK_INSERT};
+    std::uint32_t hide_all_key{VK_DELETE};
     // The launcher's own language and page preferences, straight from its configuration.
     std::string language{"auto"};
     // The pictures and the custom colours this window was dressed with: the theme carries the
@@ -966,15 +969,25 @@ public:
         });
     }
 
-    void SetToggleKey(const std::uint32_t key) {
-        Queue(anomaly::MessageId::LauncherStatusSavingSettings, MessageScope::Both, [this, key] {
-            if (!SaveToggleKeyImpl(key)) {
+    void SetHotkey(const LauncherHotkey hotkey, const std::uint32_t key) {
+        Queue(anomaly::MessageId::LauncherStatusSavingSettings, MessageScope::Both, [this, hotkey, key] {
+            bool conflict{};
+            {
+                std::scoped_lock lock(state_mutex_);
+                conflict = key == (hotkey == LauncherHotkey::Menu ? state_.hide_all_key : state_.toggle_key);
+            }
+            if (conflict) {
+                PublishMessage(anomaly::MessageId::LauncherSettingHotkeyConflict, MessageKind::Error);
+                return;
+            }
+            if (!SaveHotkeyImpl(hotkey, key)) {
                 PublishMessage(anomaly::MessageId::LauncherStatusUnexpectedFailure,
-                    MessageKind::Error, "menu toggle preference could not be written");
+                    MessageKind::Error, "hotkey preference could not be written");
                 return;
             }
             std::scoped_lock lock(state_mutex_);
-            state_.toggle_key = key;
+            if (hotkey == LauncherHotkey::Menu) state_.toggle_key = key;
+            else state_.hide_all_key = key;
             state_.message = MakeLauncherMessage(
                 anomaly::MessageId::LauncherStatusSettingsSaved);
             state_.message_kind = MessageKind::Success;
@@ -1290,9 +1303,10 @@ private:
         const auto config = ue5mem::AnalyzerConfig::Load(root / L"anomaly.ini");
         std::scoped_lock lock(state_mutex_);
         state_.toggle_key = config.platform_toggle_key;
+        state_.hide_all_key = config.platform_hide_all_key;
     }
 
-    [[nodiscard]] bool SaveToggleKeyImpl(const std::uint32_t key) const {
+    [[nodiscard]] bool SaveHotkeyImpl(const LauncherHotkey hotkey, const std::uint32_t key) const {
         const std::wstring value = std::to_wstring(key);
         const auto roots = RuntimeSettingsRoots();
         // Nothing written is not a saved preference, so an empty list starts out failed instead of
@@ -1300,7 +1314,7 @@ private:
         bool saved = !roots.empty();
         for (const auto& root : roots) {
             const bool written = WritePrivateProfileStringW(
-                L"Platform", L"ToggleKey", value.c_str(),
+                L"Platform", hotkey == LauncherHotkey::Menu ? L"ToggleKey" : L"HideAllKey", value.c_str(),
                 (root / L"anomaly.ini").c_str()) != FALSE;
             saved = written && saved;
         }
@@ -1989,6 +2003,7 @@ struct LauncherDrawing final {
 float g_launcher_dpi_scale{1.0f};
 bool g_launcher_dpi_changed{};
 bool g_launcher_hotkey_capture{};
+LauncherHotkey g_launcher_hotkey_action{LauncherHotkey::Menu};
 std::array<bool, 256> g_launcher_hotkey_down{};
 
 bool IsLauncherHotkeyModifier(const std::uint32_t key) noexcept {
@@ -1997,7 +2012,8 @@ bool IsLauncherHotkeyModifier(const std::uint32_t key) noexcept {
         key == VK_RCONTROL || key == VK_LMENU || key == VK_RMENU;
 }
 
-void BeginLauncherHotkeyCapture() {
+void BeginLauncherHotkeyCapture(LauncherHotkey hotkey) {
+    g_launcher_hotkey_action = hotkey;
     g_launcher_hotkey_capture = true;
     for (std::uint32_t key = 0; key <= 0xff; ++key) {
         g_launcher_hotkey_down[key] =
@@ -2872,19 +2888,26 @@ void DrawStartupSettings(
     ImGui::Separator();
     ImGui::Spacing();
     ImGui::TextDisabled("%s", Text(translator, anomaly::MessageId::LauncherSectionSettings));
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(Text(translator, anomaly::MessageId::LauncherSettingMenuToggle));
-    ImGui::SameLine(ImGui::GetContentRegionMax().x - Scale(190.0f));
     const auto captured = CaptureLauncherHotkey();
-    if (captured) controller.SetToggleKey(*captured);
-    const std::string label = g_launcher_hotkey_capture
-        ? std::string(Text(translator, anomaly::MessageId::LauncherSettingPressKey))
-        : VirtualKeyName(snapshot.toggle_key);
-    ImGui::BeginDisabled(snapshot.busy);
-    if (LauncherChip(label.c_str(), ImVec2(Scale(180.0f), ButtonHeight(38.0f)))) {
-        BeginLauncherHotkeyCapture();
-    }
-    ImGui::EndDisabled();
+    if (captured) controller.SetHotkey(g_launcher_hotkey_action, *captured);
+    const auto hotkey_row = [&](LauncherHotkey hotkey, anomaly::MessageId title, std::uint32_t key) {
+        ImGui::PushID(static_cast<int>(hotkey));
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(Text(translator, title));
+        ImGui::SameLine(ImGui::GetContentRegionMax().x - Scale(190.0f));
+        const bool recording = g_launcher_hotkey_capture && g_launcher_hotkey_action == hotkey;
+        const std::string label = recording
+            ? std::string(Text(translator, anomaly::MessageId::LauncherSettingPressKey))
+            : VirtualKeyName(key);
+        ImGui::BeginDisabled(snapshot.busy);
+        if (LauncherChip(label.c_str(), ImVec2(Scale(180.0f), ButtonHeight(38.0f)))) {
+            BeginLauncherHotkeyCapture(hotkey);
+        }
+        ImGui::EndDisabled();
+        ImGui::PopID();
+    };
+    hotkey_row(LauncherHotkey::Menu, anomaly::MessageId::LauncherSettingMenuToggle, snapshot.toggle_key);
+    hotkey_row(LauncherHotkey::HideAll, anomaly::MessageId::LauncherSettingHideAll, snapshot.hide_all_key);
     if (g_launcher_hotkey_capture) {
         ImGui::TextDisabled("%s", Text(translator, anomaly::MessageId::LauncherSettingEscapeHint));
     }

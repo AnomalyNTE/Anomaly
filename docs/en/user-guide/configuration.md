@@ -15,6 +15,7 @@ Visible=0
 Embedded=1
 AttachToProcessWindow=1
 ToggleKey=45
+HideAllKey=46
 Language=auto
 PluginDirectory=plugins
 
@@ -48,6 +49,7 @@ ManagedDirectory=state/profiles/managed
 | `Embedded` | `1` enables D3D12 swapchain embedded mode (the in-game interface). |
 | `AttachToProcessWindow` | Takes effect only when embedded mode is off and the Win32 fallback backend is used; the standalone demo program always uses a normal window. |
 | `ToggleKey` | Win32 virtual-key code that summons / collapses the interface. The default `45` is `VK_INSERT`; changing the key directly in **Anomaly Launcher > Startup settings** is recommended. |
+| `HideAllKey` | Hides / restores all Anomaly windows and overlays, including locked windows and ESP. Defaults to `46` (`Delete`); customizable in launcher settings and must differ from `ToggleKey`. |
 | `Language` | UI language, see below. |
 | `PluginDirectory` | Plugin directory (relative to `Anomaly\`), defaults to `plugins`. |
 
@@ -105,6 +107,7 @@ The in-game main interface is a draggable, resizable ImGui floating window; its 
 - Centered at `1040×700` on first display.
 - The main management window has no close button; a closed state left behind by an older version is repaired automatically at startup.
 - `Insert` collapses / expands unlocked menus; the lock button in the title bar lets a single window stay expanded.
+- `Delete` independently hides / restores every interface. While hidden, `Insert` only changes the menu state; restoring with `Delete` shows that latest state. Pressing both keys toggles both states. If a manually edited configuration binds both actions to the same key, menu toggle takes priority.
 
 ### Theme and background image
 

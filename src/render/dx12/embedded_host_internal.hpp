@@ -8,6 +8,7 @@
 
 #include "anomaly/hook_manager.hpp"
 #include "anomaly/input_service.hpp"
+#include "anomaly/platform_ui_input_policy.hpp"
 #include "anomaly/ui_service_registry.hpp"
 #include "plugin_manager.hpp"
 
@@ -252,11 +253,12 @@ struct PixelProbeState {
     bool pending{};
 };
 
-// WndProc only records host input here. Render consumes the mailbox after
-// ImGui::NewFrame, which keeps hotkey dispatch and PluginManager access out of
-// the window-procedure thread.
+// WndProc only records input. Render consumes menu hotkeys before drawing and
+// plugin input after NewFrame, keeping UI actions off the window thread.
 struct EmbeddedInputMailbox {
     std::mutex mutex;
+    anomaly::PlatformMenuHotkey menu_hotkey;
+    anomaly::PlatformMenuHotkey hide_all_hotkey;
     anomaly::InputFrameState frame;
     float last_published_mouse_x{};
     float last_published_mouse_y{};
@@ -421,6 +423,12 @@ inline constexpr std::uint64_t kRendererHookGeneration = 1;
 [[nodiscard]] bool RestoreEmbeddedInput(EmbeddedState& state) noexcept;
 void RecordEmbeddedInputMessage(
     EmbeddedState& state, UINT message, WPARAM wparam, LPARAM lparam) noexcept;
+struct EmbeddedMenuHotkeyActions {
+    bool toggle_menu{};
+    bool toggle_hide_all{};
+};
+[[nodiscard]] EmbeddedMenuHotkeyActions ConsumeEmbeddedMenuHotkeys(
+    EmbeddedState& state, unsigned menu_key, unsigned hide_all_key, bool recording_menu_key);
 // These are called on Render while the existing PluginManager mutex is held.
 // The mailbox keeps their input collection independent from WndProc.
 [[nodiscard]] bool PublishEmbeddedInputFrame(EmbeddedState& state) noexcept;

@@ -78,6 +78,7 @@ struct HostWindow {
     // on it: a window that failed to become transparent must stay a small panel
     // rather than an opaque sheet over the whole game.
     bool alpha_composited{};
+    bool all_hidden_region{};
     // The panel rectangles the window region was last built from. Rebuilding it
     // every frame would be wasted work; this is what says when it changed.
     std::vector<std::array<LONG, 4>> region_panels;
@@ -86,6 +87,9 @@ struct HostWindow {
     std::shared_ptr<PluginManager> plugin_owner;
     bool visible{};
     unsigned toggle_key{VK_INSERT};
+    anomaly::PlatformMenuHotkey menu_hotkey;
+    unsigned hide_all_key{VK_DELETE};
+    anomaly::PlatformMenuHotkey hide_all_hotkey;
     bool attached{};
 };
 
@@ -177,6 +181,21 @@ HWND FindProcessWindow() {
 // Drags survive this because the backend takes the mouse capture on button
 // down, and a captured window keeps receiving input regardless of its region.
 void UpdateHostWindowRegion(HostWindow& host) {
+    if (anomaly::HostUiAllHidden()) {
+        if (!host.all_hidden_region) {
+            HRGN region = CreateRectRgn(0, 0, 0, 0);
+            if (region != nullptr) {
+                if (SetWindowRgn(host.window, region, TRUE) != 0) host.all_hidden_region = true;
+                else DeleteObject(region);
+            }
+        }
+        return;
+    }
+    if (host.all_hidden_region) {
+        SetWindowRgn(host.window, nullptr, TRUE);
+        host.all_hidden_region = false;
+        host.region_panels.clear();
+    }
     if (!host.attached) return;
     const ImGuiContext* context = ImGui::GetCurrentContext();
     if (context == nullptr) return;
@@ -256,7 +275,23 @@ bool CreateRenderTarget(HostWindow& host) {
 }
 
 LRESULT WINAPI WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
-    if (ImGui_ImplWin32_WndProcHandler(window, message, wparam, lparam)) return TRUE;
+    if (g_window != nullptr && window == g_window->window) {
+        if (message == WM_KEYDOWN || message == WM_SYSKEYDOWN) {
+            const unsigned virtual_key = wparam == VK_SHIFT
+                ? MapVirtualKeyW(static_cast<UINT>((lparam >> 16U) & 0xffU), MAPVK_VSC_TO_VK_EX)
+                : static_cast<unsigned>(wparam);
+            g_window->menu_hotkey.RecordKeyDown(
+                virtual_key, (lparam & 0x40000000L) != 0);
+            g_window->hide_all_hotkey.RecordKeyDown(
+                virtual_key, (lparam & 0x40000000L) != 0);
+        } else if (message == WM_KILLFOCUS ||
+                   (message == WM_ACTIVATEAPP && wparam == FALSE)) {
+            g_window->menu_hotkey.Reset();
+            g_window->hide_all_hotkey.Reset();
+        }
+    }
+    if (!anomaly::HostUiAllHidden() &&
+        ImGui_ImplWin32_WndProcHandler(window, message, wparam, lparam)) return TRUE;
     switch (message) {
     case WM_COMMAND:
         if (lparam == 0 && g_window != nullptr && g_window->appearance.menu_command) {
@@ -6017,7 +6052,11 @@ private:
         if (id == "interface.opacity_percent") {
             return Text(anomaly::MessageId::SettingsValidationOpacity);
         }
-        if (id == "input.menu_toggle") {
+        if (id == "input.hide_all_toggle" && settings_draft_ &&
+            settings_draft_->input_hide_all_toggle == settings_draft_->input_menu_toggle) {
+            return Text(anomaly::MessageId::SettingsValidationHotkeyConflict);
+        }
+        if (id == "input.menu_toggle" || id == "input.hide_all_toggle") {
             return Text(anomaly::MessageId::SettingsValidationMenuToggle);
         }
         if (id == "diagnostics.ring_capacity") {
@@ -6162,7 +6201,8 @@ private:
     // detect a fresh press by its rising edge. The async-input reconciler polls
     // GetAsyncKeyState every frame, which clears the "pressed since last call"
     // low-order bit, so that bit cannot be used to detect key presses here.
-    void BeginSettingsHotkeyCapture() {
+    void BeginSettingsHotkeyCapture(bool hide_all) {
+        settings_hotkey_hide_all_ = hide_all;
         settings_hotkey_capture_ = true;
         for (std::uint32_t key = 0; key <= 0xff; ++key) {
             settings_hotkey_down_[key] = (GetAsyncKeyState(static_cast<int>(key)) & 0x8000) != 0;
@@ -6189,7 +6229,8 @@ private:
                 settings_hotkey_capture_ = false;
                 return;
             }
-            settings_draft_->input_menu_toggle = key;
+            if (settings_hotkey_hide_all_) settings_draft_->input_hide_all_toggle = key;
+            else settings_draft_->input_menu_toggle = key;
             settings_hotkey_capture_ = false;
             return;
         }
@@ -6638,15 +6679,25 @@ private:
                 });
             break;
         case SettingsSection::Input:
+            CaptureSettingsHotkey();
             row("input.menu_toggle", Text(anomaly::MessageId::SettingsMenuToggle),
                 Text(anomaly::MessageId::SettingsMenuToggleHint),
                 "hotkey keyboard insert", [&] {
-                    CaptureSettingsHotkey();
-                    const std::string label = settings_hotkey_capture_
+                    const std::string label = settings_hotkey_capture_ && !settings_hotkey_hide_all_
                         ? Text(anomaly::MessageId::SettingsPressKey)
                         : VirtualKeyName(values.input_menu_toggle);
                     if (ImGui::Button(label.c_str(), FillAvailableSize(0.0f))) {
-                        BeginSettingsHotkeyCapture();
+                        BeginSettingsHotkeyCapture(false);
+                    }
+                });
+            row("input.hide_all_toggle", Text(anomaly::MessageId::SettingsHideAllToggle),
+                Text(anomaly::MessageId::SettingsHideAllToggleHint),
+                "hotkey keyboard delete hide all overlay", [&] {
+                    const std::string label = settings_hotkey_capture_ && settings_hotkey_hide_all_
+                        ? Text(anomaly::MessageId::SettingsPressKey)
+                        : VirtualKeyName(values.input_hide_all_toggle);
+                    if (ImGui::Button(label.c_str(), FillAvailableSize(0.0f))) {
+                        BeginSettingsHotkeyCapture(true);
                     }
                 });
             row("input.gamepad_navigation", Text(anomaly::MessageId::SettingsGamepadNavigation),
@@ -8690,6 +8741,7 @@ private:
         std::make_shared<NoticeAcceptMailbox>()};
     std::optional<std::string> pending_external_url_;
     bool settings_hotkey_capture_{};
+    bool settings_hotkey_hide_all_{};
     std::array<bool, 256> settings_hotkey_down_{};
     bool settings_leave_popup_requested_{};
     bool repo_editor_loaded_{};
@@ -8860,6 +8912,7 @@ void PreparePlatformUiResources() noexcept {
 }
 
 void DrawPlatformUi() {
+    if (anomaly::HostUiAllHidden()) return;
     std::shared_ptr<PlatformUi> ui;
     {
         std::scoped_lock lock(g_platform_ui_lifecycle_mutex);
@@ -9137,11 +9190,19 @@ void RunPlatform(
     };
     host.visible = config.platform_visible;
     host.toggle_key = config.platform_toggle_key;
+    host.hide_all_key = config.platform_hide_all_key;
     const auto settings_snapshot = diagnostics.settings_snapshot;
     if (settings_snapshot) {
         const auto settings = settings_snapshot();
-        if (settings.ready) host.toggle_key = settings.values.input_menu_toggle;
+        if (settings.ready) {
+            host.toggle_key = settings.values.input_menu_toggle;
+            host.hide_all_key = settings.values.input_hide_all_toggle;
+        }
     }
+    host.menu_hotkey.Configure(
+        host.toggle_key, GetAsyncKeyState(static_cast<int>(host.toggle_key)));
+    host.hide_all_hotkey.Configure(
+        host.hide_all_key, GetAsyncKeyState(static_cast<int>(host.hide_all_key)));
     if (config.platform_attach_to_process_window) {
         for (int attempt = 0;
              attempt < 100 && host.target == nullptr && !stop_token.stop_requested();
@@ -9272,7 +9333,7 @@ void RunPlatform(
     }
     // Match the embedded renderer: the native host remains available while
     // Insert collapses the management and plugin surfaces into their chrome.
-    anomaly::SetHostUiMenusCollapsed(false);
+    anomaly::SetHostUiMenusCollapsed(!host.visible);
     if (host.attached) PlaceAttachedWindow(host);
     ShowWindow(host.window, host.visible ? (host.attached ? SW_SHOWNOACTIVATE : SW_SHOWDEFAULT) : SW_HIDE);
     UpdateWindow(host.window);
@@ -9288,7 +9349,10 @@ void RunPlatform(
         }
         if (settings_snapshot) {
             const auto settings = settings_snapshot();
-            if (settings.ready) host.toggle_key = settings.values.input_menu_toggle;
+            if (settings.ready) {
+                host.toggle_key = settings.values.input_menu_toggle;
+                host.hide_all_key = settings.values.input_hide_all_toggle;
+            }
         }
         // The menu hotkey must only react while the game (or, in attached mode,
         // the overlay host itself) owns focus, not while the user is typing in
@@ -9300,33 +9364,26 @@ void RunPlatform(
             host.attached && host.target != nullptr &&
             foreground_window == host.target;
         const bool menu_focus = host_window_focused || game_window_focused;
-        const int toggle_state = menu_focus
-            ? GetAsyncKeyState(static_cast<int>(host.toggle_key))
-            : 0;
-        if (anomaly::ShouldTogglePlatformMenus(
-                PlatformUiCapturingHotkey(), toggle_state)) {
+        const int toggle_state = GetAsyncKeyState(static_cast<int>(host.toggle_key));
+        const int hide_all_state = GetAsyncKeyState(static_cast<int>(host.hide_all_key));
+        const bool recording_hotkey = PlatformUiCapturingHotkey();
+        host.menu_hotkey.Configure(host.toggle_key, toggle_state);
+        host.hide_all_hotkey.Configure(host.hide_all_key, hide_all_state);
+        const bool toggle_hide_all = host.hide_all_hotkey.Consume(
+            recording_hotkey, menu_focus, hide_all_state, host_window_focused);
+        if (toggle_hide_all && host.hide_all_key != host.toggle_key) {
+            anomaly::SetHostUiAllHidden(!anomaly::HostUiAllHidden());
+        }
+        if (host.menu_hotkey.Consume(
+                recording_hotkey, menu_focus, toggle_state, host_window_focused)) {
+            const bool expanding = !host.visible || anomaly::HostUiMenusCollapsed();
+            anomaly::SetHostUiMenusCollapsed(!expanding);
             if (!host.visible) {
                 host.visible = true;
                 if (host.attached) PlaceAttachedWindow(host);
                 ShowWindow(host.window, host.attached ? SW_SHOWNOACTIVATE : SW_SHOW);
-                anomaly::SetHostUiMenusCollapsed(false);
-                // The shell's own close button marks the management window
-                // closed and that state is persisted, so without reopening it
-                // here the hotkey would show an empty window forever -- in this
-                // session and in every later one.
-                static_cast<void>(RevealPlatformUi());
-            } else if (!anomaly::HostUiMenusCollapsed()) {
-                anomaly::SetHostUiMenusCollapsed(true);
-            } else {
-                // Third state: the window is up but collapsed, so the only thing
-                // left on screen is its own opaque background sitting over the
-                // game. This used to be a dead end -- the hotkey could collapse
-                // the menus but never take the window back down, so the window
-                // stayed on top of the game until it was closed by hand. The
-                // hotkey now completes the cycle.
-                host.visible = false;
-                ShowWindow(host.window, SW_HIDE);
             }
+            if (expanding) static_cast<void>(RevealPlatformUi());
         }
         if (ApplyHostUiManagementExpansionRequest() && !host.visible) {
             host.visible = true;
@@ -9346,6 +9403,11 @@ void RunPlatform(
         plugins.PersistUiWindowState();
         if (host.attached && !IsWindow(host.target)) running = false;
         if (host.visible && host.attached && !IsIconic(host.target)) PlaceAttachedWindow(host);
+        if (anomaly::HostUiAllHidden()) {
+            UpdateHostWindowRegion(host);
+            Sleep(10);
+            continue;
+        }
         if (!host.visible || IsIconic(host.window) || (host.attached && IsIconic(host.target))) {
             Sleep(50);
             continue;

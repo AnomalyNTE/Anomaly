@@ -16,13 +16,17 @@ namespace anomaly {
 // of a frame. ESP foreground drawing remains independent from this menu state.
 void SetHostUiMenusCollapsed(bool collapsed) noexcept;
 [[nodiscard]] bool HostUiMenusCollapsed() noexcept;
+// Independent from menu collapse: hides every host/plugin surface and overlay
+// without changing window visibility, locks, or the saved menu state.
+void SetHostUiAllHidden(bool hidden) noexcept;
+[[nodiscard]] bool HostUiAllHidden() noexcept;
 void RequestHostUiManagementExpansion() noexcept;
 [[nodiscard]] bool ConsumeHostUiManagementExpansionRequest() noexcept;
 [[nodiscard]] bool HostUiMenusCaptureMouse() noexcept;
 void SetHostUiInputCapturePolicy(PlatformInputCapturePolicy policy) noexcept;
 void SetHostUiDeveloperMode(bool enabled) noexcept;
 [[nodiscard]] bool HostUiDeveloperModeEnabled() noexcept;
-// Suspends plugin draw callbacks while a blocking host notice is up.
+// Suspends plugin draw callbacks while a blocking notice or global hide is active.
 void SetHostUiPluginDrawSuppressed(bool suppressed) noexcept;
 [[nodiscard]] bool HostUiPluginDrawSuppressed() noexcept;
 // UI link clicks are collected during Render and consumed by the Platform UI

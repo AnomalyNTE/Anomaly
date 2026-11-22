@@ -65,6 +65,8 @@ AnalyzerConfig AnalyzerConfig::Load(const std::filesystem::path& path) {
         ReadBool(path, L"Platform", L"AttachToProcessWindow", true);
     result.platform_toggle_key = static_cast<unsigned>(
         ReadSize(path, L"Platform", L"ToggleKey", VK_INSERT));
+    result.platform_hide_all_key = static_cast<unsigned>(
+        ReadSize(path, L"Platform", L"HideAllKey", VK_DELETE));
     const std::string language =
         NarrowAscii(ReadWide(path, L"Platform", L"Language", L"auto"));
     const auto parsed_language = anomaly::ParseLanguagePreference(language);
