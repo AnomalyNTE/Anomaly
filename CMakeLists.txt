@@ -2176,6 +2176,12 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         target_compile_options(anomaly_jelly_logic_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
     endif()
 
+    anomaly_add_plugin(anomaly_builtin_haunted_house
+        SOURCES plugins/HauntedHouse/plugin.cpp
+        MANIFEST plugins/HauntedHouse/manifest.json
+        PACKAGE_NAME HauntedHouse
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/HauntedHouse")
+    target_link_libraries(anomaly_builtin_haunted_house PRIVATE nlohmann_json::nlohmann_json)
     # Test packages exist only when ANOMALY_BUILD_TEST_PLUGINS is on, so every list that
     # reaches their targets is built from the targets that actually exist.
     set(ANOMALY_BUILTIN_PLUGIN_TARGETS
@@ -2185,6 +2191,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         anomaly_builtin_fake_uid anomaly_builtin_camera_tools
         anomaly_builtin_camera_blur_fix anomaly_builtin_better_pose anomaly_builtin_fps_unlocker
         anomaly_builtin_remote_shop
+        anomaly_builtin_haunted_house
         anomaly_builtin_wallet_collector anomaly_builtin_box_auto anomaly_builtin_combat_box
         anomaly_builtin_clone_enter anomaly_builtin_scene_loader
         anomaly_builtin_nte_quick_ultimate
@@ -2234,6 +2241,8 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         target_compile_options(anomaly_builtin_night999 PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_npc_summon PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_nailong PRIVATE /utf-8)
+        # 源码里的中文注释要求按 UTF-8 读取，否则 936 代码页会吞掉注释后的代码。
+        target_compile_options(anomaly_builtin_haunted_house PRIVATE /utf-8)
     endif()
     add_dependencies(anomaly_test_host ${ANOMALY_BUILTIN_PLUGIN_TARGETS})
 endif()
