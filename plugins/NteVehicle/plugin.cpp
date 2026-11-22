@@ -13,16 +13,20 @@
 #include <array>
 #include <cmath>
 #include <atomic>
+#include <cctype>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <mutex>
-#include <string>
-#include <cctype>
-#include <string_view>
-#include <vector>
-#include <utility>
+#include <ctime>
+#include <filesystem>
 #include <fstream>
-#include <chrono>
+#include <map>
+#include <mutex>
+#include <random>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -90,6 +94,7 @@ struct Context {
     std::uint64_t customization_catalog_tick{};
     std::atomic_bool refresh_customization_requested{};
     std::atomic_bool refresh_catalog_requested{};
+    std::atomic_bool apply_speed_target_requested{};
     std::atomic_bool apply_speed{};
     std::atomic_bool apply_torque{};
     std::atomic_bool apply_other_speed{};
@@ -114,6 +119,110 @@ struct Context {
     float other_speed_floor_ratio{0.6024F};
     float other_torque_ratio{1.0F};
     bool friction_enabled{true};
+
+    // ==== Local feature (community port): per-vehicle memory / live tuning ====
+    // Per-vehicle customization memory: skin + module overrides recorded per
+    // catalog ID, restored when the customization catalog loads and when the
+    // vehicle is summoned. Persisted as customization-memory.cfg (V/M/H lines).
+    struct SavedCustomization {
+        std::string skin_id;
+        std::vector<std::pair<std::uint32_t, std::string>> module_overrides;
+    };
+    std::map<std::string, SavedCustomization> saved_customizations;
+    // Per-vehicle summon hotkeys (virtual key -> catalog ID), shared file with
+    // the customization memory (H lines).
+    std::map<std::uint32_t, std::string> hotkey_vehicle_bindings;
+    bool hotkey_binding_mode{};
+    std::string hotkey_summon_vehicle_id;
+    std::array<std::uint8_t, 256> prev_key_state{};
+    std::atomic_bool hotkey_summon_requested{};
+    // Per-vehicle advanced tuning memory: 16 floats per catalog ID, persisted
+    // as tuning-memory.cfg (T2 lines). See LoadTuningMemory for the layout.
+    std::map<std::string, std::array<float, 16>> saved_tunes;
+    // Dirty flags: config/memory file writes only happen in the lifecycle
+    // callbacks (Load/Stop/Unload), never inside Game/Render callbacks.
+    std::atomic_bool memory_dirty{};
+    std::atomic_bool tuning_dirty{};
+    std::atomic_bool drift_dirty{};
+    std::atomic_bool extras_dirty{};
+    std::atomic_bool durability_auto_full_requested{};
+    bool durability_auto_full{true};
+    // Live (driven-vehicle) customization.
+    std::atomic_bool apply_current_modules_requested{};
+    std::atomic_bool apply_skin_requested{};
+    std::atomic_bool read_modules_requested{};
+    std::atomic_bool realtime_sync_requested{};
+    std::atomic_bool save_modules_to_memory_requested{};
+    std::atomic_bool capture_effects_requested{};
+    std::string realtime_vehicle_id;
+    std::string realtime_skin_id;
+    std::vector<std::pair<std::uint32_t, std::string>> current_vehicle_modules;
+    bool current_vehicle_modules_valid{};
+    std::vector<std::pair<std::uint32_t, std::string>> allowed_extra_modules;
+    // Advanced powertrain tuning. The shared MaxLinearVelocity write is kept
+    // disabled (-1 = skip): the game clamps it server-side around 349 km/h, so
+    // the ratio path covers the real cap. Memory entries may still carry it.
+    std::uintptr_t adv_synced_movement{};
+    float adv_stock_top_speed_kmh{};
+    bool adv_stock_top_speed_valid{};
+    float adv_speed_target_kmh{0.0F};
+    float adv_linear_top_speed{-1.0F};
+    float adv_reverse_top_speed{-1.0F};
+    float adv_change_up_rpm{-1.0F};
+    float adv_down_rpm{-1.0F};
+    float adv_gear_change_time{-1.0F};
+    float adv_final_ratio{-1.0F};
+    float adv_transmission_efficiency{-1.0F};
+    float adv_c_up_rpm{-1.0F};
+    float adv_c_down_rpm{-1.0F};
+    float adv_c_gear_change_time{-1.0F};
+    float adv_c_final_ratio{-1.0F};
+    float adv_c_transmission_efficiency{-1.0F};
+    bool adv_comfort_mode{};
+    float adv_live_linear_kmh{};
+    float adv_live_reverse_kmh{};
+    float adv_live_up_rpm{};
+    float adv_live_down_rpm{};
+    float adv_live_gear_time{};
+    float adv_live_final_ratio{};
+    float adv_live_efficiency{};
+    float adv_live_c_up_rpm{};
+    float adv_live_c_down_rpm{};
+    float adv_live_c_gear_time{};
+    float adv_live_c_final_ratio{};
+    float adv_live_c_efficiency{};
+    float adv_baseline_up_rpm{-1.0F};
+    float adv_baseline_down_rpm{-1.0F};
+    float adv_baseline_gear_time{-1.0F};
+    float adv_baseline_final_ratio{-1.0F};
+    float adv_baseline_efficiency{-1.0F};
+    float adv_baseline_c_up_rpm{-1.0F};
+    float adv_baseline_c_down_rpm{-1.0F};
+    float adv_baseline_c_gear_time{-1.0F};
+    float adv_baseline_c_final_ratio{-1.0F};
+    float adv_baseline_c_efficiency{-1.0F};
+    bool adv_baseline_valid{};
+    std::atomic_bool adv_apply_requested{};
+    std::atomic_bool adv_read_requested{};
+    std::atomic_bool save_tune_requested{};
+    std::atomic_bool reset_tune_requested{};
+    // Drift smoke/track rotation, global across vehicles (press Left Shift).
+    bool drift_smoke_on{};
+    bool drift_mark_on{};
+    std::vector<std::string> drift_smoke_scope;
+    std::vector<std::string> drift_mark_scope;
+    std::size_t drift_smoke_index{};
+    std::size_t drift_mark_index{};
+    std::uint8_t drift_prev_shift{};
+    bool drift_smoke_random{};
+    bool drift_mark_random{};
+    bool drift_smoke_ui_open{};
+    bool drift_mark_ui_open{};
+    // Diagnostics log ring + export.
+    std::atomic_bool export_log_requested{};
+    std::vector<std::string> log_lines;
+    std::atomic_bool probe_requested{};
+    std::atomic_bool sweep_requested{};
 } g_context;
 
 template <typename Struct, typename Field>
@@ -189,6 +298,320 @@ void SaveSelection(const std::string& vehicle_id) {
     if (out) out << vehicle_id << "\n";
 }
 
+// ---- Local feature (community port): plugin-state files --------------------
+// Per-vehicle memory and feature configuration live in the plugin state
+// directory next to vehicle-selection.cfg. All writes happen in the lifecycle
+// callbacks (Load/Stop/Unload) behind dirty flags — Game/Render callbacks only
+// mutate the in-memory state and mark the matching flag.
+std::string StatePath(const std::string_view file_name) {
+    if (g_context.state_directory.empty()) return {};
+    std::string path = g_context.state_directory;
+    if (path.back() != '\\' && path.back() != '/') path.push_back('\\');
+    path.append(file_name);
+    return path;
+}
+
+std::string CustomizationMemoryPath() { return StatePath("customization-memory.cfg"); }
+std::string TuningMemoryPath() { return StatePath("tuning-memory.cfg"); }
+std::string DriftConfigPath() { return StatePath("drift-config.cfg"); }
+std::string AllowedExtraModulesPath() { return StatePath("allowed-extra-modules.cfg"); }
+
+std::string TrimLine(std::string line) {
+    while (!line.empty() &&
+           (line.back() == '\r' || line.back() == '\n' || line.back() == ' ' ||
+            line.back() == '\t')) {
+        line.pop_back();
+    }
+    while (!line.empty() && (line.front() == ' ' || line.front() == '\t')) {
+        line.erase(line.begin());
+    }
+    return line;
+}
+
+std::vector<std::string> SplitLine(const std::string& line, const char separator) {
+    std::vector<std::string> parts;
+    std::size_t begin = 0;
+    while (true) {
+        const std::size_t pos = line.find(separator, begin);
+        if (pos == std::string::npos) {
+            parts.push_back(line.substr(begin));
+            break;
+        }
+        parts.push_back(line.substr(begin, pos - begin));
+        begin = pos + 1;
+    }
+    return parts;
+}
+
+// customization-memory.cfg lines:
+//   V|<vehicle_id>|<skin_id or empty>            remembered skin
+//   M|<vehicle_id>|<module_type>:<module_id>     remembered module override
+//   H|<vehicle_id>|<virtual_key>                 per-vehicle summon hotkey
+// module_id may carry an explicit "#N" FName-number suffix.
+void LoadCustomizationMemory() {
+    const std::string path = CustomizationMemoryPath();
+    if (path.empty()) return;
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return;
+    std::string line;
+    while (std::getline(in, line)) {
+        line = TrimLine(std::move(line));
+        if (line.size() < 4) continue;
+        const auto parts = SplitLine(line, '|');
+        if (parts.size() < 3 || parts[1].empty()) continue;
+        if (parts[0] == "V") {
+            g_context.saved_customizations[parts[1]].skin_id = parts[2];
+        } else if (parts[0] == "M") {
+            const auto entry = SplitLine(parts[2], ':');
+            if (entry.size() != 2 || entry[0].empty() || entry[1].empty()) continue;
+            std::uint32_t module_type = 0;
+            try {
+                module_type = static_cast<std::uint32_t>(std::stoul(entry[0]));
+            } catch (...) { continue; }
+            if (module_type == 0 || module_type >= 28) continue;
+            g_context.saved_customizations[parts[1]].module_overrides.emplace_back(
+                module_type, entry[1]);
+        } else if (parts[0] == "H") {
+            std::uint32_t key = 0;
+            try {
+                key = static_cast<std::uint32_t>(std::stoul(parts[2]));
+            } catch (...) { continue; }
+            if (key != 0) g_context.hotkey_vehicle_bindings[key] = parts[1];
+        }
+    }
+}
+
+void SaveCustomizationMemory() {
+    const std::string path = CustomizationMemoryPath();
+    if (path.empty()) return;
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) return;
+    for (const auto& [vehicle_id, saved] : g_context.saved_customizations) {
+        if (!saved.skin_id.empty()) out << "V|" << vehicle_id << "|" << saved.skin_id << "\n";
+        for (const auto& entry : saved.module_overrides) {
+            out << "M|" << vehicle_id << "|" << entry.first << ":" << entry.second << "\n";
+        }
+    }
+    for (const auto& [key, vehicle_id] : g_context.hotkey_vehicle_bindings) {
+        out << "H|" << vehicle_id << "|" << key << "\n";
+    }
+}
+
+// tuning-memory.cfg lines (T2): 16 floats per vehicle.
+//   [0] MaxLinearVelocity km/h   [1] normal shift-up RPM  [2] normal shift-down RPM
+//   [3] normal gear time         [4] normal final ratio   [5] normal efficiency
+//   [6] comfort shift-up RPM     [7] comfort shift-down   [8] comfort gear time
+//   [9] comfort final ratio      [10] comfort efficiency  [11] speed ratio
+//   [12] torque ratio            [13] other speed ratio   [14] other torque ratio
+//   [15] reverse top speed km/h
+// A value of -1 means "not set / leave unchanged". Older 5- and 13-float
+// layouts (T| and short T2|) are still accepted.
+void LoadTuningMemory() {
+    const std::string path = TuningMemoryPath();
+    if (path.empty()) return;
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return;
+    std::string line;
+    while (std::getline(in, line)) {
+        line = TrimLine(std::move(line));
+        if (line.size() < 6) continue;
+        const auto parts = SplitLine(line, '|');
+        if (parts.size() < 3 || parts[1].empty()) continue;
+        const bool legacy_t = parts[0] == "T";
+        if (!legacy_t && parts[0] != "T2") continue;
+        std::array<float, 16> tune{};
+        tune.fill(-1.0F);
+        std::size_t count = 0;
+        bool valid = true;
+        for (std::size_t i = 2; i < parts.size() && count < tune.size(); ++i) {
+            if (parts[i].empty()) continue;
+            try {
+                tune[count++] = std::stof(parts[i]);
+            } catch (...) { valid = false; break; }
+        }
+        if (!valid || count == 0) continue;
+        if (legacy_t && count == 5) {
+            // v1 layout: normal transmission group only; shift the slots into
+            // the T2 positions ([1]..[5]).
+            std::array<float, 16> mapped{};
+            mapped.fill(-1.0F);
+            for (std::size_t i = 0; i < 5; ++i) mapped[1 + i] = tune[i];
+            tune = mapped;
+        } else if (!legacy_t && count == 13) {
+            // Short T2 layout without the legacy speed/torque slots.
+            std::array<float, 16> mapped{};
+            mapped.fill(-1.0F);
+            for (std::size_t i = 0; i < 11; ++i) mapped[i] = tune[i];
+            mapped[15] = tune[11];
+            tune = mapped;
+        }
+        g_context.saved_tunes[parts[1]] = tune;
+    }
+}
+
+void SaveTuningMemory() {
+    const std::string path = TuningMemoryPath();
+    if (path.empty()) return;
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) return;
+    for (const auto& [vehicle_id, tune] : g_context.saved_tunes) {
+        out << "T2|" << vehicle_id;
+        for (const float value : tune) out << "|" << value;
+        out << "\n";
+    }
+}
+
+// drift-config.cfg lines:
+//   S|<on 0/1>|<random 0/1>|<tier1,tier2,...>   tyre smoke rotation
+//   M|<on 0/1>|<random 0/1>|<tier1,tier2,...>   tyre track rotation
+// An empty tier list means "all tiers participate". Older files without the
+// random column are accepted.
+void LoadDriftConfig() {
+    const std::string path = DriftConfigPath();
+    if (path.empty()) return;
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return;
+    std::string line;
+    while (std::getline(in, line)) {
+        line = TrimLine(std::move(line));
+        if (line.size() < 5) continue;
+        const auto parts = SplitLine(line, '|');
+        if (parts.empty()) continue;
+        const bool smoke = parts[0] == "S";
+        const bool mark = parts[0] == "M";
+        if (!smoke && !mark) continue;
+        if (parts.size() < 2) continue;
+        const bool enabled = parts[1] == "1";
+        const bool random_mode = parts.size() >= 3 && parts[2] == "1";
+        std::vector<std::string> tiers;
+        if (parts.size() >= 4 && !parts[3].empty()) {
+            for (auto& tier : SplitLine(parts[3], ',')) {
+                tier = TrimLine(std::move(tier));
+                if (!tier.empty()) tiers.push_back(std::move(tier));
+            }
+        }
+        if (smoke) {
+            g_context.drift_smoke_on = enabled;
+            g_context.drift_smoke_random = random_mode;
+            g_context.drift_smoke_scope = std::move(tiers);
+        } else {
+            g_context.drift_mark_on = enabled;
+            g_context.drift_mark_random = random_mode;
+            g_context.drift_mark_scope = std::move(tiers);
+        }
+    }
+}
+
+void SaveDriftConfig() {
+    const std::string path = DriftConfigPath();
+    if (path.empty()) return;
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) return;
+    const auto write_line = [&](const char kind, const bool enabled,
+                                const bool random_mode,
+                                const std::vector<std::string>& tiers) {
+        out << kind << "|" << (enabled ? 1 : 0) << "|" << (random_mode ? 1 : 0) << "|";
+        for (std::size_t i = 0; i < tiers.size(); ++i) {
+            if (i != 0) out << ",";
+            out << tiers[i];
+        }
+        out << "\n";
+    };
+    write_line('S', g_context.drift_smoke_on, g_context.drift_smoke_random,
+        g_context.drift_smoke_scope);
+    write_line('M', g_context.drift_mark_on, g_context.drift_mark_random,
+        g_context.drift_mark_scope);
+}
+
+// allowed-extra-modules.cfg lines: <module_type>|<module_id[#N]>.
+// Whitelisted effect parts (e.g. cloud-applied premium wheel effects) can be
+// selected, rotated and summoned even though the local catalog lacks them.
+void LoadAllowedExtraModules() {
+    const std::string path = AllowedExtraModulesPath();
+    if (path.empty()) return;
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return;
+    std::vector<std::pair<std::uint32_t, std::string>> entries;
+    std::string line;
+    while (std::getline(in, line)) {
+        line = TrimLine(std::move(line));
+        if (line.size() < 3) continue;
+        const auto parts = SplitLine(line, '|');
+        if (parts.size() < 2 || parts[0].empty() || parts[1].empty()) continue;
+        std::uint32_t module_type = 0;
+        try {
+            module_type = static_cast<std::uint32_t>(std::stoul(parts[0]));
+        } catch (...) { continue; }
+        if (module_type == 0 || module_type >= 28) continue;
+        entries.emplace_back(module_type, parts[1]);
+    }
+    g_context.allowed_extra_modules = std::move(entries);
+    if (g_context.vehicle != nullptr) {
+        g_context.vehicle->SetAllowedExtraModules(g_context.allowed_extra_modules);
+    }
+}
+
+void SaveAllowedExtraModules() {
+    const std::string path = AllowedExtraModulesPath();
+    if (path.empty()) return;
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) return;
+    for (const auto& entry : g_context.allowed_extra_modules) {
+        out << entry.first << "|" << entry.second << "\n";
+    }
+}
+
+// Persist every dirty plugin-state file. Lifecycle callbacks only.
+void SaveAllPluginState() {
+    if (g_context.memory_dirty.exchange(false, std::memory_order_acq_rel)) {
+        SaveCustomizationMemory();
+    }
+    if (g_context.tuning_dirty.exchange(false, std::memory_order_acq_rel)) {
+        SaveTuningMemory();
+    }
+    if (g_context.drift_dirty.exchange(false, std::memory_order_acq_rel)) {
+        SaveDriftConfig();
+    }
+    if (g_context.extras_dirty.exchange(false, std::memory_order_acq_rel)) {
+        SaveAllowedExtraModules();
+    }
+}
+
+std::string LocalStamp() {
+    std::time_t now = std::time(nullptr);
+    std::tm local{};
+    if (localtime_s(&local, &now) != 0) return "unknown-time";
+    std::array<char, 32> buffer{};
+    const std::size_t size = std::strftime(buffer.data(), buffer.size(),
+        "%Y%m%d-%H%M%S", &local);
+    return size != 0 ? std::string(buffer.data(), size) : std::string("unknown-time");
+}
+
+std::string StampSidecarPath(const std::string_view stem) {
+    const std::string base = StatePath(stem);
+    if (base.empty()) return {};
+    return base + "-" + LocalStamp() + ".txt";
+}
+
+bool WriteTextFileAtomic(const std::string& path, const std::string& content) {
+    if (path.empty()) return false;
+    const std::string temporary = path + ".tmp";
+    {
+        std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
+        if (!out) return false;
+        out.write(content.data(), static_cast<std::streamsize>(content.size()));
+        if (!out) return false;
+    }
+    std::error_code error;
+    std::filesystem::rename(std::filesystem::path(temporary),
+        std::filesystem::path(path), error);
+    if (error) {
+        std::filesystem::remove(std::filesystem::path(temporary), error);
+        return false;
+    }
+    return true;
+}
+
 // 载具耐久保护开关由宿主 anomaly.config 持久化：Game 回调只置 dirty 位，
 // 文档读写全部留在生命周期回调（Load/Stop/Unload）里，避免在渲染/游戏回调做 I/O。
 constexpr std::string_view kSettingsSchemaId = "settings";
@@ -196,7 +619,8 @@ constexpr std::uint32_t kSettingsSchemaVersion = 1;
 constexpr std::size_t kMaximumSettingsBytes = 512;
 constexpr std::string_view kSettingsSchema = R"json(
 {"type":"object","additionalProperties":false,"required":["durabilityGuard"],
- "properties":{"durabilityGuard":{"type":"boolean"}}}
+ "properties":{"durabilityGuard":{"type":"boolean"},
+               "durabilityAutoFull":{"type":"boolean"}}}
 )json";
 
 bool ConfigReady() noexcept {
@@ -209,8 +633,10 @@ bool ConfigReady() noexcept {
         config->write_atomic != nullptr;
 }
 
-bool ParseDurabilityGuardFlag(std::string_view document, bool& value) noexcept {
-    const auto key = document.find("\"durabilityGuard\"");
+bool ParseSettingsFlag(
+    const std::string_view document, const std::string_view key_name, bool& value) noexcept {
+    std::string needle = "\"" + std::string(key_name) + "\"";
+    const auto key = document.find(needle);
     if (key == std::string_view::npos) return false;
     const auto colon = document.find(':', key);
     if (colon == std::string_view::npos) return false;
@@ -233,6 +659,7 @@ bool ParseDurabilityGuardFlag(std::string_view document, bool& value) noexcept {
 
 void LoadSettings() {
     g_context.durability_guard_enabled = true;
+    g_context.durability_auto_full = true;
     g_context.settings_dirty.store(false, std::memory_order_release);
     if (!ConfigReady()) return;
     std::uint32_t schema_version{};
@@ -251,20 +678,24 @@ void LoadSettings() {
         copied == 0 || copied > document.size()) {
         return;
     }
+    const std::string_view text{reinterpret_cast<const char*>(document.data()), copied};
     bool enabled = true;
-    if (ParseDurabilityGuardFlag(
-            {reinterpret_cast<const char*>(document.data()), copied}, enabled)) {
+    if (ParseSettingsFlag(text, "durabilityGuard", enabled)) {
         g_context.durability_guard_enabled = enabled;
+    }
+    bool auto_full = true;
+    if (ParseSettingsFlag(text, "durabilityAutoFull", auto_full)) {
+        g_context.durability_auto_full = auto_full;
     }
 }
 
 void SaveSettings() {
     if (!ConfigReady() || !g_context.settings_dirty.exchange(false, std::memory_order_acq_rel))
         return;
-    constexpr std::string_view kEnabledDocument = R"json({"durabilityGuard":true})json";
-    constexpr std::string_view kDisabledDocument = R"json({"durabilityGuard":false})json";
-    const auto document =
-        g_context.durability_guard_enabled ? kEnabledDocument : kDisabledDocument;
+    const std::string document = std::string("{\"durabilityGuard\":") +
+        (g_context.durability_guard_enabled ? "true" : "false") +
+        ",\"durabilityAutoFull\":" +
+        (g_context.durability_auto_full ? "true" : "false") + "}";
     static_cast<void>(g_context.config->write_atomic(
         g_context.config->user, anomaly::sdk::StringView(kSettingsSchemaId),
         kSettingsSchemaVersion,
@@ -385,7 +816,22 @@ void InstallDurabilityGuardOnStart() {
 
 void SetStatus(std::string text) {
     std::scoped_lock lock(g_context.mutex);
-    g_context.status = std::move(text);
+    g_context.status = text;
+    // Local feature: every status message also lands in a bounded log ring so
+    // the diagnostics page can export the recent history for bug reports.
+    std::time_t now = std::time(nullptr);
+    std::tm local{};
+    std::array<char, 16> stamp{};
+    if (localtime_s(&local, &now) == 0 &&
+        std::strftime(stamp.data(), stamp.size(), "%H:%M:%S", &local) != 0) {
+        g_context.log_lines.emplace_back(std::string(stamp.data()) + "] " + text);
+    } else {
+        g_context.log_lines.emplace_back(std::move(text));
+    }
+    constexpr std::size_t kMaximumLogLines = 500;
+    while (g_context.log_lines.size() > kMaximumLogLines) {
+        g_context.log_lines.erase(g_context.log_lines.begin());
+    }
 }
 
 void DrawText(const AnomalyUiServiceV1* ui, std::string_view text) {
@@ -667,7 +1113,48 @@ void RefreshCustomizationCatalogOnGameThread() {
         g_context.customization_options = std::move(options);
         g_context.customization_vehicle_id = selected_id;
         g_context.customization_skin_id = std::move(default_skin);
-        g_context.selected_module_overrides.clear();
+        // Local feature: restore this vehicle's saved customization instead of
+        // clearing the selection. Skin and module entries only restore when
+        // they exist in the freshly loaded catalog or in the effects whitelist;
+        // entries recorded with an explicit "#N" FName suffix match by base ID.
+        const auto saved = g_context.saved_customizations.find(selected_id);
+        if (saved != g_context.saved_customizations.end()) {
+            const std::string& remembered_skin = saved->second.skin_id;
+            if (!remembered_skin.empty() &&
+                std::ranges::any_of(g_context.customization_options,
+                    [&](const CustomizationOption& option) {
+                        return option.kind == nte_vehicle::kCustomizationSkin &&
+                            option.id == remembered_skin;
+                    })) {
+                g_context.customization_skin_id = remembered_skin;
+            }
+            std::vector<std::pair<std::uint32_t, std::string>> restored;
+            for (const auto& entry : saved->second.module_overrides) {
+                if (entry.first == 0 || entry.first >= 28 || entry.second.empty()) continue;
+                std::string base = entry.second;
+                const auto hash = base.find('#');
+                if (hash != std::string::npos) base.resize(hash);
+                const bool known = std::ranges::any_of(
+                    g_context.customization_options,
+                    [&](const CustomizationOption& option) {
+                        return option.kind == nte_vehicle::kCustomizationModule &&
+                            option.module_type == entry.first &&
+                            (option.id == entry.second || option.id == base);
+                    }) || std::ranges::any_of(
+                    g_context.allowed_extra_modules,
+                    [&](const std::pair<std::uint32_t, std::string>& extra) {
+                        std::string extra_base = extra.second;
+                        const auto extra_hash = extra_base.find('#');
+                        if (extra_hash != std::string::npos) extra_base.resize(extra_hash);
+                        return extra.first == entry.first &&
+                            (extra.second == entry.second || extra_base == base);
+                    });
+                if (known) restored.emplace_back(entry);
+            }
+            g_context.selected_module_overrides = std::move(restored);
+        } else {
+            g_context.selected_module_overrides.clear();
+        }
         g_context.customization_catalog_tick = after.sequence;
         const auto module_count = std::ranges::count_if(
             g_context.customization_options, [](const CustomizationOption& option) {
@@ -703,6 +1190,867 @@ void RefreshCustomizationCatalogOnGameThread() {
     }
 }
 
+// ---- Local feature (community port): live helpers --------------------------
+
+// Module IDs carry the vehicle prefix (V026_* belongs to Vehicle026). Derive
+// the prefix from a vehicle id so whitelist entries of other vehicles never
+// render or apply on the wrong car.
+std::string VehicleModulePrefixFromId(const std::string& vehicle_id) {
+    const std::string_view id{vehicle_id};
+    if (id.size() <= 7) return {};
+    static constexpr std::string_view kVehicleTag{"vehicle"};
+    const auto lower = [](const char c) {
+        return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+    };
+    for (std::size_t i = 0; i < kVehicleTag.size(); ++i) {
+        if (lower(id[i]) != kVehicleTag[i]) return {};
+    }
+    std::string prefix = "V";
+    prefix.append(id.substr(kVehicleTag.size()));
+    return prefix;
+}
+
+bool WhitelistExtraForVehicle(const std::string& extra_id, const std::string& prefix) {
+    if (prefix.empty()) return true;
+    return extra_id.size() > prefix.size() + 1 &&
+        extra_id.compare(0, prefix.size(), prefix) == 0 &&
+        extra_id[prefix.size()] == '_';
+}
+
+// Only premium-effect whitelist entries render as named buttons; ordinary
+// whitelisted parts are memory-backfill-only and never clutter option lists.
+std::string WhitelistExtraEffectDisplay(const std::string& extra_id) {
+    std::string base = extra_id;
+    const auto hash_pos = base.find('#');
+    if (hash_pos != std::string::npos) base.resize(hash_pos);
+    if (base.find("WheelSmoke_10") != std::string::npos) {
+        return g_context.localizer.Text("label.effect_neon_smoke", "Neon Realm smoke");
+    }
+    if (base.find("WheelMark_10") != std::string::npos) {
+        return g_context.localizer.Text("label.effect_flame_mark", "Realistic Flame mark");
+    }
+    return {};
+}
+
+// Candidate display name: catalog label first, official effect display name for
+// whitelisted premiums, raw ID (without the #number) as the last resort.
+std::string CandidateDisplayName(const std::string& id) {
+    std::string base = id;
+    const auto hash_pos = base.find('#');
+    if (hash_pos != std::string::npos) base.resize(hash_pos);
+    const std::string effect = WhitelistExtraEffectDisplay(id);
+    if (!effect.empty()) return effect;
+    std::scoped_lock lock(g_context.mutex);
+    for (const auto& option : g_context.customization_options) {
+        if (option.kind == nte_vehicle::kCustomizationModule &&
+            (option.id == id || option.id == base)) {
+            return option.label.empty() ? option.id : option.label;
+        }
+    }
+    return base;
+}
+
+// Candidate tier pattern: the tier segment starting at "Wheel" (e.g.
+// "WheelSmoke_10"), shared across vehicles so one global scope selection
+// fits every car's own option IDs.
+std::string CandidateTierPattern(const std::string& id) {
+    std::string base = id;
+    const auto hash_pos = base.find('#');
+    if (hash_pos != std::string::npos) base.resize(hash_pos);
+    const auto wheel_pos = base.find("Wheel");
+    if (wheel_pos == std::string::npos) return base;
+    return base.substr(wheel_pos);
+}
+
+// Per-vehicle summon hotkeys: scan rising edges of the bound virtual keys.
+// The binding mode captures the next key press for the currently selected
+// vehicle. Runs on the Game thread inside Update.
+void CheckHotkeyKeys() {
+    if (!g_context.started.load(std::memory_order_acquire)) return;
+    for (std::uint32_t vk = 0x08U; vk < 0xFEU; ++vk) {
+        const SHORT state = GetAsyncKeyState(static_cast<int>(vk));
+        const bool pressed = (state & 0x8000) != 0;
+        const bool was = g_context.prev_key_state[vk & 0xFFU] != 0;
+        g_context.prev_key_state[vk & 0xFFU] = pressed ? 1U : 0U;
+        if (!pressed || was) continue;
+        if (g_context.hotkey_binding_mode) {
+            // Bind whatever vehicle is currently selected to this key.
+            std::string selected;
+            {
+                std::scoped_lock lock(g_context.mutex);
+                selected = g_context.selected_vehicle_id;
+            }
+            if (!selected.empty()) {
+                std::scoped_lock lock(g_context.mutex);
+                g_context.hotkey_vehicle_bindings[vk] = selected;
+                const std::string key_text = std::to_string(vk);
+                const std::array arguments{std::string_view(key_text)};
+                g_context.status = g_context.localizer.Format("status.hotkey_bound",
+                    "Bound summon hotkey (key {0}) to this vehicle.", arguments);
+            }
+            g_context.hotkey_binding_mode = false;
+            g_context.memory_dirty.store(true, std::memory_order_release);
+            continue;
+        }
+        std::string bound;
+        {
+            std::scoped_lock lock(g_context.mutex);
+            const auto found = g_context.hotkey_vehicle_bindings.find(vk);
+            if (found != g_context.hotkey_vehicle_bindings.end()) bound = found->second;
+        }
+        if (bound.empty()) continue;
+        std::string selected;
+        {
+            std::scoped_lock lock(g_context.mutex);
+            selected = g_context.selected_vehicle_id;
+        }
+        if (bound == selected) {
+            g_context.hotkey_summon_vehicle_id = std::move(bound);
+            g_context.hotkey_summon_requested.store(true, std::memory_order_release);
+        } else {
+            // Different vehicle: switch the selection first; press again to summon.
+            std::scoped_lock lock(g_context.mutex);
+            g_context.pending_vehicle_id = std::move(bound);
+        }
+    }
+}
+
+// Drift smoke/track rotation: Left Shift rising edge rotates the whitelisted
+// or catalog tyre-effect slots and applies them to the driven vehicle.
+void CheckDriftRotation() {
+    if (!g_context.started.load(std::memory_order_acquire)) return;
+    const SHORT shift_state = GetAsyncKeyState(VK_SHIFT);
+    const bool pressed = (shift_state & 0x8000) != 0;
+    const bool was = (g_context.drift_prev_shift & 0x80) != 0;
+    g_context.drift_prev_shift = pressed ? 0x80 : 0x00;
+    if (!pressed || was || (!g_context.drift_smoke_on && !g_context.drift_mark_on)) return;
+    std::string applied_smoke;
+    std::string applied_mark;
+    {
+        std::scoped_lock lock(g_context.mutex);
+        const auto build_candidates = [&](const std::uint32_t type,
+                                          std::vector<std::string>& out) {
+            for (const auto& option : g_context.customization_options) {
+                if (option.kind == nte_vehicle::kCustomizationModule &&
+                    option.module_type == type) {
+                    out.push_back(option.id);
+                }
+            }
+            const std::string key = !g_context.realtime_vehicle_id.empty()
+                ? g_context.realtime_vehicle_id
+                : g_context.selected_vehicle_id;
+            const std::string prefix = VehicleModulePrefixFromId(key);
+            for (const auto& extra : g_context.allowed_extra_modules) {
+                if (extra.first != type) continue;
+                if (!WhitelistExtraForVehicle(extra.second, prefix)) continue;
+                std::string base = extra.second;
+                const auto hash_pos = base.find('#');
+                if (hash_pos != std::string::npos) base.resize(hash_pos);
+                bool listed = false;
+                for (const auto& id : out) {
+                    if (id == base) {
+                        listed = true;
+                        break;
+                    }
+                }
+                if (!listed) out.push_back(extra.second);
+            }
+        };
+        // Global scope: checked tier patterns fit every car's own IDs; an empty
+        // scope means every candidate participates.
+        const auto rotate_type = [&](const std::uint32_t type, const bool enabled,
+                                     const bool random_mode,
+                                     const std::vector<std::string>& scope,
+                                     std::size_t& index, std::string& applied) {
+            if (!enabled) return;
+            std::vector<std::string> candidates;
+            build_candidates(type, candidates);
+            if (candidates.empty()) return;
+            std::vector<std::string> rotation;
+            for (const auto& id : candidates) {
+                if (scope.empty()) {
+                    rotation.push_back(id);
+                    continue;
+                }
+                const std::string pattern = CandidateTierPattern(id);
+                for (const auto& checked : scope) {
+                    if (checked == pattern) {
+                        rotation.push_back(id);
+                        break;
+                    }
+                }
+            }
+            if (rotation.empty()) return;
+            std::string current;
+            for (const auto& entry : g_context.selected_module_overrides) {
+                if (entry.first == type) {
+                    current = entry.second;
+                    break;
+                }
+            }
+            // Rotation mode: sequential (loop from the equipped item) or pure
+            // random (uniform, avoiding immediate repeats when possible).
+            std::size_t pick = 0;
+            if (random_mode) {
+                static std::mt19937 random_engine{std::random_device{}()};
+                std::uniform_int_distribution<std::size_t> pick_distribution(
+                    0, rotation.size() - 1);
+                pick = pick_distribution(random_engine);
+                if (rotation.size() > 1 && rotation[pick] == current) {
+                    pick = pick_distribution(random_engine);
+                }
+            } else {
+                std::size_t pos = index % rotation.size();
+                if (!current.empty()) {
+                    for (std::size_t k = 0; k < rotation.size(); ++k) {
+                        if (rotation[k] == current) {
+                            pos = (k + 1) % rotation.size();
+                            break;
+                        }
+                    }
+                }
+                pick = pos;
+                index = (pos + 1) % rotation.size();
+            }
+            const std::string next_id = rotation[pick];
+            auto& overrides = g_context.selected_module_overrides;
+            const auto found = std::ranges::find_if(overrides,
+                [type](const auto& entry) { return entry.first == type; });
+            if (found == overrides.end()) {
+                overrides.emplace_back(type, next_id);
+            } else {
+                found->second = next_id;
+            }
+            applied = next_id;
+        };
+        rotate_type(23, g_context.drift_smoke_on, g_context.drift_smoke_random,
+            g_context.drift_smoke_scope, g_context.drift_smoke_index, applied_smoke);
+        rotate_type(24, g_context.drift_mark_on, g_context.drift_mark_random,
+            g_context.drift_mark_scope, g_context.drift_mark_index, applied_mark);
+        g_context.memory_dirty.store(true, std::memory_order_release);
+    }
+    if (!applied_smoke.empty() || !applied_mark.empty()) {
+        g_context.apply_current_modules_requested.store(true, std::memory_order_release);
+        const std::string smoke_name = applied_smoke.empty()
+            ? std::string("-") : CandidateDisplayName(applied_smoke);
+        const std::string mark_name = applied_mark.empty()
+            ? std::string("-") : CandidateDisplayName(applied_mark);
+        const std::array arguments{
+            std::string_view(smoke_name), std::string_view(mark_name)};
+        SetStatus(g_context.localizer.Format("status.drift_applied",
+            "Drift rotation -> smoke: {0} / mark: {1}", arguments));
+    }
+}
+
+// Per-tick driven-vehicle adoption: read the advanced tuning (live slider
+// values), detect boarding a different vehicle by its movement component, and
+// on change capture the factory top speed, sync the plugin vehicle selection
+// and queue the live module list read.
+void AdoptDrivenVehicle() {
+    if (!g_context.started.load(std::memory_order_acquire)) return;
+    auto* vehicle = g_context.vehicle;
+    if (vehicle == nullptr) return;
+
+    nte_vehicle::Runtime::VehicleAdvancedTuning live{};
+    const auto read_status = vehicle->VehicleReadAdvancedTuning(&live);
+    if (read_status.code == ANOMALY_STATUS_V1_OK && live.valid) {
+        std::scoped_lock lock(g_context.mutex);
+        g_context.adv_live_linear_kmh = live.max_linear_velocity_kmh;
+        g_context.adv_live_reverse_kmh = live.reverse_top_speed_kmh;
+        g_context.adv_live_up_rpm = live.change_up_rpm;
+        g_context.adv_live_down_rpm = live.change_down_rpm;
+        g_context.adv_live_gear_time = live.gear_change_time;
+        g_context.adv_live_final_ratio = live.final_ratio;
+        g_context.adv_live_efficiency = live.transmission_efficiency;
+        g_context.adv_live_c_up_rpm = live.comfort_change_up_rpm;
+        g_context.adv_live_c_down_rpm = live.comfort_change_down_rpm;
+        g_context.adv_live_c_gear_time = live.comfort_gear_change_time;
+        g_context.adv_live_c_final_ratio = live.comfort_final_ratio;
+        g_context.adv_live_c_efficiency = live.comfort_transmission_efficiency;
+        if (g_context.adv_baseline_up_rpm < 0.0F && !g_context.adv_baseline_valid) {
+            // First valid read for this vehicle: remember the factory tuning as
+            // the reset baseline.
+            g_context.adv_baseline_up_rpm = live.change_up_rpm;
+            g_context.adv_baseline_down_rpm = live.change_down_rpm;
+            g_context.adv_baseline_gear_time = live.gear_change_time;
+            g_context.adv_baseline_final_ratio = live.final_ratio;
+            g_context.adv_baseline_efficiency = live.transmission_efficiency;
+            g_context.adv_baseline_c_up_rpm = live.comfort_change_up_rpm;
+            g_context.adv_baseline_c_down_rpm = live.comfort_change_down_rpm;
+            g_context.adv_baseline_c_gear_time = live.comfort_gear_change_time;
+            g_context.adv_baseline_c_final_ratio = live.comfort_final_ratio;
+            g_context.adv_baseline_c_efficiency = live.comfort_transmission_efficiency;
+            g_context.adv_baseline_valid = true;
+        }
+    } else {
+        std::scoped_lock lock(g_context.mutex);
+        g_context.adv_live_linear_kmh = 0.0F;
+        g_context.adv_live_reverse_kmh = 0.0F;
+    }
+
+    // Boarding / vehicle change detection: the movement component pointer
+    // changes whenever the player enters a different vehicle.
+    if (live.valid && live.movement != 0 && live.movement != g_context.adv_synced_movement) {
+        g_context.adv_synced_movement = live.movement;
+        // Factory top speed anchor: capture before any plugin write.
+        if (vehicle->VehicleCaptureStockTopSpeed()) {
+            float stock = 0.0F;
+            if (vehicle->VehicleGetStockTopSpeedKmh(&stock)) {
+                std::scoped_lock lock(g_context.mutex);
+                g_context.adv_stock_top_speed_kmh = stock;
+                g_context.adv_stock_top_speed_valid = true;
+                if (g_context.adv_speed_target_kmh <= 0.0F) {
+                    g_context.adv_speed_target_kmh = stock;
+                }
+            }
+        } else {
+            std::scoped_lock lock(g_context.mutex);
+            g_context.adv_stock_top_speed_valid = false;
+        }
+        // Queue the live module read and the vehicle-selection sync; the
+        // customization catalog reload restores this car's saved memory.
+        g_context.read_modules_requested.store(true, std::memory_order_release);
+        g_context.realtime_sync_requested.store(true, std::memory_order_release);
+        // Auto-load this vehicle's saved tuning.
+        std::string vehicle_key;
+        {
+            std::string catalog_id;
+            if (vehicle->VehicleReadCurrentCatalogId(&catalog_id).code ==
+                ANOMALY_STATUS_V1_OK && !catalog_id.empty()) {
+                vehicle_key = catalog_id;
+            } else {
+                std::scoped_lock lock(g_context.mutex);
+                vehicle_key = g_context.selected_vehicle_id;
+            }
+            std::scoped_lock lock(g_context.mutex);
+            g_context.realtime_vehicle_id = vehicle_key;
+            const auto tune = g_context.saved_tunes.find(vehicle_key);
+            if (tune != g_context.saved_tunes.end()) {
+                const auto& t = tune->second;
+                g_context.adv_linear_top_speed = t[0];
+                g_context.adv_change_up_rpm = t[1];
+                g_context.adv_down_rpm = t[2];
+                g_context.adv_gear_change_time = t[3];
+                g_context.adv_final_ratio = t[4];
+                g_context.adv_transmission_efficiency = t[5];
+                g_context.adv_c_up_rpm = t[6];
+                g_context.adv_c_down_rpm = t[7];
+                g_context.adv_c_gear_change_time = t[8];
+                g_context.adv_c_final_ratio = t[9];
+                g_context.adv_c_transmission_efficiency = t[10];
+                if (t[11] > 0.0F) g_context.speed_ratio = std::clamp(t[11],
+                    kMinimumSpeedRatio, kMaximumSpeedRatio);
+                if (t[12] > 0.0F) g_context.engine_torque_ratio = t[12];
+                if (t[13] > 0.0F) g_context.other_speed_ratio = t[13];
+                if (t[14] > 0.0F) g_context.other_torque_ratio = t[14];
+                g_context.adv_reverse_top_speed = t[15];
+                g_context.apply_speed.store(true, std::memory_order_release);
+                g_context.apply_torque.store(true, std::memory_order_release);
+                g_context.apply_other_speed.store(true, std::memory_order_release);
+                g_context.apply_other_torque.store(true, std::memory_order_release);
+            }
+        }
+    } else if (!live.valid && g_context.adv_synced_movement != 0) {
+        // Left the vehicle.
+        g_context.adv_synced_movement = 0;
+        std::scoped_lock lock(g_context.mutex);
+        g_context.adv_stock_top_speed_valid = false;
+    }
+}
+
+// Consume every live-feature request flag. Runs on the Game thread inside
+// Update, after AdoptDrivenVehicle.
+void TickLiveFeatures() {
+    auto* vehicle = g_context.vehicle;
+    if (vehicle == nullptr) return;
+
+    // Sync the plugin vehicle selection to the driven vehicle.
+    if (g_context.realtime_sync_requested.exchange(false, std::memory_order_acq_rel)) {
+        std::string catalog_id;
+        const auto id_status = vehicle->VehicleReadCurrentCatalogId(&catalog_id);
+        if (id_status.code == ANOMALY_STATUS_V1_OK && !catalog_id.empty()) {
+            bool in_catalog = false;
+            {
+                std::scoped_lock lock(g_context.mutex);
+                in_catalog = std::ranges::find(g_context.vehicle_ids, catalog_id) !=
+                    g_context.vehicle_ids.end();
+            }
+            if (in_catalog) {
+                {
+                    std::scoped_lock lock(g_context.mutex);
+                    g_context.pending_vehicle_id = catalog_id;
+                    g_context.realtime_vehicle_id = catalog_id;
+                }
+                const std::array arguments{std::string_view(catalog_id)};
+                SetStatus(g_context.localizer.Format("status.synced_to_vehicle",
+                    "Synced selection to the driven vehicle: {0}", arguments));
+            } else {
+                SetStatus(g_context.localizer.Text("status.sync_vehicle_unknown",
+                    "The driven vehicle is not in the catalog; open its customization shop once in game first."));
+            }
+        } else if (id_status.code != ANOMALY_STATUS_V1_OK &&
+                   id_status.code != ANOMALY_STATUS_V1_NOT_FOUND) {
+            SetStatus(StatusDescription(
+                g_context.localizer.Text("status.sync_vehicle_failed",
+                    "Reading the driven vehicle's VehicleID failed"),
+                id_status));
+        }
+    }
+
+    // Read the driven vehicle's applied modules (and optionally store them as
+    // this vehicle's plugin memory).
+    const bool read_requested =
+        g_context.read_modules_requested.exchange(false, std::memory_order_acq_rel);
+    const bool save_requested =
+        g_context.save_modules_to_memory_requested.exchange(false, std::memory_order_acq_rel);
+    if (read_requested || save_requested) {
+        std::vector<std::pair<std::uint32_t, std::string>> pairs;
+        const auto status = vehicle->VehicleReadCurrentModules(&pairs);
+        if (status.code == ANOMALY_STATUS_V1_OK) {
+            {
+                std::scoped_lock lock(g_context.mutex);
+                g_context.current_vehicle_modules = pairs;
+                g_context.current_vehicle_modules_valid = true;
+            }
+            if (save_requested) {
+                std::string vehicle_key;
+                {
+                    std::scoped_lock lock(g_context.mutex);
+                    vehicle_key = !g_context.realtime_vehicle_id.empty()
+                        ? g_context.realtime_vehicle_id
+                        : g_context.selected_vehicle_id;
+                }
+                if (!vehicle_key.empty()) {
+                    std::scoped_lock lock(g_context.mutex);
+                    auto& saved = g_context.saved_customizations[vehicle_key];
+                    saved.module_overrides.clear();
+                    for (const auto& entry : pairs) {
+                        if (entry.first == 0) continue;
+                        saved.module_overrides.emplace_back(entry);
+                    }
+                    g_context.memory_dirty.store(true, std::memory_order_release);
+                }
+                SetStatus(g_context.localizer.Text("status.modules_saved",
+                    "Saved the current vehicle's module list to its memory."));
+            } else {
+                const std::string count = std::to_string(pairs.size());
+                const std::array arguments{std::string_view(count)};
+                SetStatus(g_context.localizer.Format("status.modules_read",
+                    "Read the driven vehicle's modules: {0}", arguments));
+                // Export the read list for bug reports.
+                std::string content = "modules=" + std::to_string(pairs.size()) + "\n";
+                for (const auto& entry : pairs) {
+                    content += "  " + entry.second + "\n";
+                }
+                const std::string path = StampSidecarPath("current-vehicle-modules");
+                if (!path.empty() && WriteTextFileAtomic(path, content)) {
+                    const std::array export_arguments{std::string_view(path)};
+                    SetStatus(g_context.localizer.Format("status.modules_exported",
+                        "Module list exported: {0}", export_arguments));
+                }
+            }
+        } else {
+            SetStatus(StatusDescription(
+                g_context.localizer.Text("status.modules_read_failed",
+                    "Reading the driven vehicle's modules failed"),
+                status));
+        }
+    }
+
+    // Capture the driven vehicle's premium-effect FNames into the whitelist.
+    if (g_context.capture_effects_requested.exchange(false, std::memory_order_acq_rel)) {
+        std::vector<nte_vehicle::Runtime::VehicleEffectEntry> entries;
+        const auto status = vehicle->VehicleCaptureEffects(&entries);
+        if (status.code == ANOMALY_STATUS_V1_OK) {
+            std::size_t added = 0;
+            {
+                std::scoped_lock lock(g_context.mutex);
+                for (const auto& entry : entries) {
+                    // Pair the smoke and mark variants: the same FName base with
+                    // WheelSmoke/WheelMark swapped shares the tier.
+                    std::string partner_base = entry.base;
+                    std::uint32_t partner_type = entry.type;
+                    if (entry.type == 23) {
+                        const auto pos = partner_base.find("WheelSmoke");
+                        if (pos != std::string::npos)
+                            partner_base.replace(pos, 10, "WheelMark");
+                        partner_type = 24;
+                    } else if (entry.type == 24) {
+                        const auto pos = partner_base.find("WheelMark");
+                        if (pos != std::string::npos)
+                            partner_base.replace(pos, 9, "WheelSmoke");
+                        partner_type = 23;
+                    }
+                    const auto ensure_entry = [&](const std::uint32_t type,
+                                                  const std::string& text) {
+                        for (const auto& existing : g_context.allowed_extra_modules) {
+                            if (existing.first == type &&
+                                existing.second.substr(0, existing.second.find('#')) == text) {
+                                return;
+                            }
+                        }
+                        g_context.allowed_extra_modules.emplace_back(type, text);
+                        ++added;
+                    };
+                    const std::string text = entry.number != 0
+                        ? entry.base + "#" + std::to_string(entry.number - 1U)
+                        : entry.base;
+                    const std::string partner_text = entry.number != 0
+                        ? partner_base + "#" + std::to_string(entry.number - 1U)
+                        : partner_base;
+                    ensure_entry(entry.type, text);
+                    ensure_entry(partner_type, partner_text);
+                }
+                if (g_context.vehicle != nullptr) {
+                    g_context.vehicle->SetAllowedExtraModules(g_context.allowed_extra_modules);
+                }
+                g_context.extras_dirty.store(true, std::memory_order_release);
+            }
+            SetStatus(added != 0
+                ? g_context.localizer.Text("status.effects_captured",
+                      "Captured effect FName entries and updated the whitelist.")
+                : g_context.localizer.Text("status.effects_none",
+                      "No capturable premium effects on the current vehicle."));
+        } else {
+            SetStatus(StatusDescription(
+                g_context.localizer.Text("status.effects_capture_failed",
+                    "Capturing the current vehicle's effects failed"),
+                status));
+        }
+    }
+
+    // Absolute top-speed target (km/h): the official backend derives the native
+    // ratio from the vehicle's factory top speed and maintains the cap.
+    if (g_context.apply_speed_target_requested.exchange(false, std::memory_order_acq_rel)) {
+        float kmh = 0.0F;
+        {
+            std::scoped_lock lock(g_context.mutex);
+            kmh = g_context.adv_speed_target_kmh;
+        }
+        if (kmh > 0.0F) {
+            nte_vehicle::SpeedTarget request{};
+            request.scope = nte_vehicle::SpeedScope::Current;
+            request.top_speed_kmh = std::clamp(kmh, 1.0F, 350.0F);
+            request.minimum_speed_kmh = 0.0F;
+            const auto status = vehicle->VehicleSetSpeedTarget(&request);
+            if (status.code == ANOMALY_STATUS_V1_OK) {
+                const std::string target_text = std::to_string(
+                    static_cast<std::uint32_t>(request.top_speed_kmh));
+                const std::array arguments{std::string_view(target_text)};
+                SetStatus(g_context.localizer.Format("status.speed_target_applied",
+                    "Top speed target applied: {0} km/h", arguments));
+            } else {
+                SetStatus(StatusDescription(
+                    g_context.localizer.Text("status.speed_target_failed",
+                        "Applying the top speed target failed"),
+                    status));
+            }
+        }
+    }
+
+    // Apply the typed module overrides to the driven vehicle (implicit: drift
+    // rotation and the live selector both set this flag).
+    if (g_context.apply_current_modules_requested.exchange(false, std::memory_order_acq_rel)) {
+        std::vector<std::pair<std::uint32_t, std::string>> overrides;
+        std::string fallback_id;
+        std::string skin_id;
+        {
+            std::scoped_lock lock(g_context.mutex);
+            overrides = g_context.selected_module_overrides;
+            fallback_id = !g_context.realtime_vehicle_id.empty()
+                ? g_context.realtime_vehicle_id
+                : g_context.selected_vehicle_id;
+            skin_id = g_context.realtime_skin_id;
+        }
+        std::size_t applied_count = 0;
+        const auto status = vehicle->VehicleApplyCustomizationToCurrent(
+            &overrides, fallback_id, skin_id, &applied_count);
+        if (status.code == ANOMALY_STATUS_V1_OK) {
+            const std::string count = std::to_string(applied_count);
+            const std::array arguments{std::string_view(count)};
+            SetStatus(g_context.localizer.Format("status.live_applied",
+                "Applied {0} modules to the current vehicle.", arguments));
+        } else {
+            SetStatus(StatusDescription(
+                g_context.localizer.Text("status.live_apply_failed",
+                    "Applying to the current vehicle failed"),
+                status));
+        }
+    }
+
+    // Apply a skin to the driven vehicle (paint area click).
+    if (g_context.apply_skin_requested.exchange(false, std::memory_order_acq_rel)) {
+        std::string skin_id;
+        {
+            std::scoped_lock lock(g_context.mutex);
+            skin_id = g_context.realtime_skin_id;
+        }
+        if (!skin_id.empty()) {
+            const auto status = vehicle->VehicleApplySkinToCurrent(skin_id);
+            SetStatus(status.code == ANOMALY_STATUS_V1_OK
+                ? g_context.localizer.Text("status.skin_live_applied",
+                      "Skin applied to the current vehicle.")
+                : StatusDescription(
+                      g_context.localizer.Text("status.live_apply_failed",
+                          "Applying to the current vehicle failed"),
+                      status));
+        }
+    }
+
+    // Advanced tuning: apply the edited values (sliders write on drag).
+    if (g_context.adv_apply_requested.exchange(false, std::memory_order_acq_rel)) {
+        nte_vehicle::Runtime::VehicleAdvancedTuning value{};
+        bool comfort = false;
+        {
+            std::scoped_lock lock(g_context.mutex);
+            value.max_linear_velocity_kmh = g_context.adv_linear_top_speed;
+            value.reverse_top_speed_kmh = g_context.adv_reverse_top_speed;
+            value.change_up_rpm = g_context.adv_change_up_rpm;
+            value.change_down_rpm = g_context.adv_down_rpm;
+            value.gear_change_time = g_context.adv_gear_change_time;
+            value.final_ratio = g_context.adv_final_ratio;
+            value.transmission_efficiency = g_context.adv_transmission_efficiency;
+            value.comfort_change_up_rpm = g_context.adv_c_up_rpm;
+            value.comfort_change_down_rpm = g_context.adv_c_down_rpm;
+            value.comfort_gear_change_time = g_context.adv_c_gear_change_time;
+            value.comfort_final_ratio = g_context.adv_c_final_ratio;
+            value.comfort_transmission_efficiency = g_context.adv_c_transmission_efficiency;
+            comfort = g_context.adv_comfort_mode;
+        }
+        const auto status = vehicle->VehicleWriteAdvancedTuning(value, comfort);
+        if (status.code != ANOMALY_STATUS_V1_OK &&
+            status.code != ANOMALY_STATUS_V1_NOT_FOUND) {
+            SetStatus(StatusDescription(
+                g_context.localizer.Text("status.tune_apply_failed",
+                    "Applying the advanced tuning failed"),
+                status));
+        }
+    }
+
+    // Save the current tuning values as this vehicle's memory.
+    if (g_context.save_tune_requested.exchange(false, std::memory_order_acq_rel)) {
+        std::string vehicle_key;
+        std::array<float, 16> tune{};
+        tune.fill(-1.0F);
+        {
+            std::scoped_lock lock(g_context.mutex);
+            vehicle_key = !g_context.realtime_vehicle_id.empty()
+                ? g_context.realtime_vehicle_id
+                : g_context.selected_vehicle_id;
+            tune[0] = g_context.adv_linear_top_speed;
+            tune[1] = g_context.adv_live_up_rpm;
+            tune[2] = g_context.adv_live_down_rpm;
+            tune[3] = g_context.adv_live_gear_time;
+            tune[4] = g_context.adv_live_final_ratio;
+            tune[5] = g_context.adv_live_efficiency;
+            tune[6] = g_context.adv_live_c_up_rpm;
+            tune[7] = g_context.adv_live_c_down_rpm;
+            tune[8] = g_context.adv_live_c_gear_time;
+            tune[9] = g_context.adv_live_c_final_ratio;
+            tune[10] = g_context.adv_live_c_efficiency;
+            tune[11] = g_context.speed_ratio;
+            tune[12] = g_context.engine_torque_ratio;
+            tune[13] = g_context.other_speed_ratio;
+            tune[14] = g_context.other_torque_ratio;
+            tune[15] = g_context.adv_live_reverse_kmh > 0.0F
+                ? g_context.adv_live_reverse_kmh : g_context.adv_reverse_top_speed;
+            if (tune[11] <= 1.001F && tune[11] >= 0.999F) tune[11] = -1.0F;
+            if (tune[12] <= 1.001F && tune[12] >= 0.999F) tune[12] = -1.0F;
+            if (tune[13] <= 1.001F && tune[13] >= 0.999F) tune[13] = -1.0F;
+            if (tune[14] <= 1.001F && tune[14] >= 0.999F) tune[14] = -1.0F;
+        }
+        if (!vehicle_key.empty()) {
+            {
+                std::scoped_lock lock(g_context.mutex);
+                g_context.saved_tunes[vehicle_key] = tune;
+                g_context.tuning_dirty.store(true, std::memory_order_release);
+            }
+            SetStatus(g_context.localizer.Text("status.tune_saved",
+                "Saved the current tuning to this vehicle's memory."));
+        }
+    }
+
+    // Restore this vehicle's tuning baseline (the first-read factory values).
+    if (g_context.reset_tune_requested.exchange(false, std::memory_order_acq_rel)) {
+        nte_vehicle::Runtime::VehicleAdvancedTuning value{};
+        bool has_baseline = false;
+        {
+            std::scoped_lock lock(g_context.mutex);
+            has_baseline = g_context.adv_baseline_valid;
+            value.max_linear_velocity_kmh = g_context.adv_linear_top_speed;
+            value.reverse_top_speed_kmh = -1.0F;
+            value.change_up_rpm = g_context.adv_baseline_up_rpm;
+            value.change_down_rpm = g_context.adv_baseline_down_rpm;
+            value.gear_change_time = g_context.adv_baseline_gear_time;
+            value.final_ratio = g_context.adv_baseline_final_ratio;
+            value.transmission_efficiency = g_context.adv_baseline_efficiency;
+            value.comfort_change_up_rpm = g_context.adv_baseline_c_up_rpm;
+            value.comfort_change_down_rpm = g_context.adv_baseline_c_down_rpm;
+            value.comfort_gear_change_time = g_context.adv_baseline_c_gear_time;
+            value.comfort_final_ratio = g_context.adv_baseline_c_final_ratio;
+            value.comfort_transmission_efficiency = g_context.adv_baseline_c_efficiency;
+        }
+        if (!has_baseline) {
+            SetStatus(g_context.localizer.Text("status.tune_none",
+                "No saved tuning for this vehicle yet."));
+        } else {
+            const auto normal = vehicle->VehicleWriteAdvancedTuning(value, false);
+            const auto comfort = vehicle->VehicleWriteAdvancedTuning(value, true);
+            if (normal.code == ANOMALY_STATUS_V1_OK && comfort.code == ANOMALY_STATUS_V1_OK) {
+                {
+                    std::scoped_lock lock(g_context.mutex);
+                    g_context.speed_ratio = kDefaultSpeedRatio;
+                    g_context.engine_torque_ratio = 1.0F;
+                    g_context.other_speed_ratio = 1.0F;
+                    g_context.other_torque_ratio = 1.0F;
+                    g_context.other_speed_floor_ratio = 0.6024F;
+                    g_context.adv_change_up_rpm = -1.0F;
+                    g_context.adv_down_rpm = -1.0F;
+                    g_context.adv_gear_change_time = -1.0F;
+                    g_context.adv_final_ratio = -1.0F;
+                    g_context.adv_transmission_efficiency = -1.0F;
+                    g_context.adv_c_up_rpm = -1.0F;
+                    g_context.adv_c_down_rpm = -1.0F;
+                    g_context.adv_c_gear_change_time = -1.0F;
+                    g_context.adv_c_final_ratio = -1.0F;
+                    g_context.adv_c_transmission_efficiency = -1.0F;
+                }
+                g_context.apply_speed.store(true, std::memory_order_release);
+                g_context.apply_torque.store(true, std::memory_order_release);
+                g_context.apply_other_speed.store(true, std::memory_order_release);
+                g_context.apply_other_torque.store(true, std::memory_order_release);
+                SetStatus(g_context.localizer.Text("status.tune_restored",
+                    "Restored this vehicle's tuning baseline."));
+            } else {
+                SetStatus(StatusDescription(
+                    g_context.localizer.Text("status.tune_apply_failed",
+                        "Applying the advanced tuning failed"),
+                    normal.code != ANOMALY_STATUS_V1_OK ? normal : comfort));
+            }
+        }
+    }
+
+    // Per-vehicle summon hotkey: restore the bound vehicle's memory and summon.
+    if (g_context.hotkey_summon_requested.exchange(false, std::memory_order_acq_rel)) {
+        std::string vehicle_key;
+        {
+            std::scoped_lock lock(g_context.mutex);
+            vehicle_key = std::move(g_context.hotkey_summon_vehicle_id);
+            g_context.hotkey_summon_vehicle_id.clear();
+        }
+        if (!vehicle_key.empty()) {
+            const auto saved = [&]() -> bool {
+                std::scoped_lock lock(g_context.mutex);
+                const auto found = g_context.saved_customizations.find(vehicle_key);
+                if (found == g_context.saved_customizations.end()) return false;
+                g_context.customization_skin_id = found->second.skin_id.empty()
+                    ? g_context.customization_skin_id : found->second.skin_id;
+                g_context.selected_module_overrides = found->second.module_overrides;
+                return true;
+            }();
+            if (saved) {
+                std::scoped_lock lock(g_context.mutex);
+                g_context.customization_vehicle_id = vehicle_key;
+                g_context.summon_customized.store(true, std::memory_order_release);
+            } else {
+                std::scoped_lock lock(g_context.mutex);
+                g_context.selected_module_overrides.clear();
+                g_context.summon.store(true, std::memory_order_release);
+            }
+        }
+    }
+
+    // Diagnostics: export the status log ring.
+    if (g_context.export_log_requested.exchange(false, std::memory_order_acq_rel)) {
+        std::string content = "\xEF\xBB\xBF";
+        content += "plugin-log " + LocalStamp() + " lines=" +
+            std::to_string(g_context.log_lines.size()) + "\n";
+        {
+            std::scoped_lock lock(g_context.mutex);
+            for (const auto& line : g_context.log_lines) {
+                content += line + "\n";
+            }
+        }
+        const std::string path = StampSidecarPath("plugin-log");
+        if (!path.empty() && WriteTextFileAtomic(path, content)) {
+            const std::array arguments{std::string_view(path)};
+            SetStatus(g_context.localizer.Format("status.log_exported",
+                "Log exported: {0}", arguments));
+        } else {
+            SetStatus(g_context.localizer.Text("status.log_export_failed",
+                "Writing the log file failed."));
+        }
+    }
+
+    // Diagnostics: probe candidate premium-effect IDs against the FName pool.
+    if (g_context.probe_requested.exchange(false, std::memory_order_acq_rel)) {
+        static constexpr std::array<std::string_view, 18> kProbeIds{
+            "V016_WheelSmoke_10", "V017_WheelSmoke_10", "V021_WheelSmoke_10",
+            "V026_WheelSmoke_10", "V037_WheelSmoke_10", "V038_WheelSmoke_10",
+            "V016_WheelMark_10", "V017_WheelMark_10", "V021_WheelMark_10",
+            "V026_WheelMark_10", "V037_WheelMark_10", "V038_WheelMark_10",
+            "Vehicle_Common_WheelSmoke_09", "Vehicle_Common_WheelSmoke_10",
+            "Vehicle_Common_WheelMark_09", "Vehicle_Common_WheelMark_10",
+            "V060a_WheelSmoke_10", "V060a_WheelMark_10"};
+        std::string content = "fname-probe " + LocalStamp() + "\n";
+        std::size_t hits = 0;
+        for (const auto& id : kProbeIds) {
+            std::uint32_t name_id = 0;
+            const std::string candidate(id);
+            // The names service pointer lives inside the backend; probe through
+            // a catalog-free find via the runtime's resolve path.
+            const bool found = vehicle->ProbeFNameText(candidate, &name_id);
+            content += candidate + " -> " + (found ? ("id=" + std::to_string(name_id)) : "not found") + "\n";
+            if (found) ++hits;
+        }
+        content += "hits=" + std::to_string(hits) + "/" + std::to_string(kProbeIds.size()) + "\n";
+        const std::string path = StampSidecarPath("fname-probe");
+        if (!path.empty() && WriteTextFileAtomic(path, content)) {
+            const std::array arguments{std::string_view(path)};
+            SetStatus(g_context.localizer.Format("status.probe_exported",
+                "FName probe written: {0}", arguments));
+        }
+    }
+
+    // Diagnostics: sweep every DataTable in the registry.
+    if (g_context.sweep_requested.exchange(false, std::memory_order_acq_rel)) {
+        std::string content;
+        const auto status = vehicle->SweepAllDataTables(&content);
+        if (status.code == ANOMALY_STATUS_V1_OK && !content.empty()) {
+            const std::string path = StampSidecarPath("datatables-inventory");
+            if (!path.empty() && WriteTextFileAtomic(path, content)) {
+                const std::array arguments{std::string_view(path)};
+                SetStatus(g_context.localizer.Format("status.sweep_exported",
+                    "DataTable sweep written: {0}", arguments));
+            } else {
+                SetStatus(g_context.localizer.Text("status.sweep_write_failed",
+                    "Writing the DataTable sweep file failed."));
+            }
+        } else {
+            SetStatus(StatusDescription(
+                g_context.localizer.Text("status.sweep_failed",
+                    "The DataTable sweep failed"),
+                status));
+        }
+    }
+
+    // Durability auto-full toggle.
+    if (g_context.durability_auto_full_requested.exchange(false, std::memory_order_acq_rel)) {
+        bool enabled;
+        {
+            std::scoped_lock lock(g_context.mutex);
+            g_context.durability_auto_full = !g_context.durability_auto_full;
+            enabled = g_context.durability_auto_full;
+        }
+        SetStatus(enabled
+            ? g_context.localizer.Text("status.durability_auto_full_on",
+                  "Automatic durability repair enabled.")
+            : g_context.localizer.Text("status.durability_auto_full_off",
+                  "Automatic durability repair disabled."));
+        g_context.settings_dirty.store(true, std::memory_order_release);
+    }
+}
+
 void Update() {
     if (!g_context.vehicle || !g_context.started.load(std::memory_order_acquire)) return;
 
@@ -729,14 +2077,17 @@ void Update() {
         }
     }
 
-    // 钩子装好时碰撞伤害已在扣耐久前被中止，无需再 RepairSelf 写入。
-    // 只有装不上钩子的环境才回退到旧的补满路径。
+    // 钩子装好时碰撞伤害已在扣耐久前被中止；Local feature:耐久自动保持开关
+    // 打开时每帧补满（钩子环境下通常无事可做，未装钩子时是经典回退路径）。
+    // 开关关闭且钩子未装时不做任何 RepairSelf 写入。
     bool durability_guard_installed = false;
+    bool durability_auto_full = false;
     {
         std::scoped_lock lock(g_context.mutex);
         durability_guard_installed = g_context.durability_guard_installed;
+        durability_auto_full = g_context.durability_auto_full;
     }
-    if (!durability_guard_installed) {
+    if (durability_auto_full) {
         const auto durability_status = g_context.vehicle->VehicleRepairCurrentDurability();
         const auto previous_code = g_context.durability_last_status_code.exchange(
             durability_status.code, std::memory_order_acq_rel);
@@ -1081,6 +2432,16 @@ void Update() {
                     : std::string{};
                 std::string result;
                 if (summon_customized_requested) {
+                    // Local feature: remember this configuration as the vehicle's
+                    // summon memory so per-vehicle hotkeys and later catalog
+                    // loads restore it automatically.
+                    {
+                        std::scoped_lock lock(g_context.mutex);
+                        auto& saved = g_context.saved_customizations[selected_id];
+                        saved.skin_id = selected_skin_id;
+                        saved.module_overrides = module_overrides;
+                        g_context.memory_dirty.store(true, std::memory_order_release);
+                    }
                     const std::array arguments{std::string_view(detail)};
                     result = g_context.localizer.Format("status.summon_customized_ok",
                         "Customized vehicle summoned: {0}", arguments);
@@ -1138,6 +2499,13 @@ void Update() {
         }
         g_context.settings_dirty.store(true, std::memory_order_release);
     }
+
+    // Local feature: per-tick live-feature processing. Boarding detection and
+    // the request handlers run here, on the Game thread.
+    AdoptDrivenVehicle();
+    CheckHotkeyKeys();
+    CheckDriftRotation();
+    TickLiveFeatures();
 
     nte_vehicle::StateSnapshot snapshot{};
     const auto status = g_context.vehicle->VehicleSnapshot(&snapshot);
@@ -1773,6 +3141,38 @@ void DrawCustomizationDetail(
                 g_context.customization_status_failure = false;
             }
         }
+        // Local feature: whitelisted premium-effect entries (captured from a
+        // driven vehicle's cloud-applied modules) render as extra buttons for
+        // the tyre smoke / track slots and apply to customized summons too.
+        if (type == 23 || type == 24) {
+            std::vector<std::pair<std::uint32_t, std::string>> extras;
+            {
+                std::scoped_lock lock(g_context.mutex);
+                extras = g_context.allowed_extra_modules;
+            }
+            for (const auto& extra : extras) {
+                if (extra.first != type) continue;
+                const std::string display = WhitelistExtraEffectDisplay(extra.second);
+                if (display.empty()) continue;
+                const bool selected_extra = override_for_type(type) == extra.second;
+                std::string label = (selected_extra ? "[x] " : "") + display +
+                    "##whitelist-extra-" + extra.second;
+                if (ui->button(ui->user, anomaly::sdk::StringView(label), list_width, 0.0F)) {
+                    std::scoped_lock lock(g_context.mutex);
+                    auto& overrides = g_context.selected_module_overrides;
+                    const auto found = std::ranges::find_if(overrides,
+                        [type](const auto& entry) { return entry.first == type; });
+                    if (found == overrides.end()) overrides.emplace_back(type, extra.second);
+                    else found->second = extra.second;
+                    const std::string category = g_context.localizer.Text(
+                        module_type_keys[type], module_type_english[type]);
+                    const std::array arguments{std::string_view(category)};
+                    g_context.customization_status = g_context.localizer.Format(
+                        "status.module_updated", "Updated the {0} selection", arguments);
+                    g_context.customization_status_failure = false;
+                }
+            }
+        }
         const std::string_view selected_option_id = override_for_type(type);
         if (has_default && !selected_option_id.empty()) {
             const std::string category = g_context.localizer.Text(
@@ -1849,6 +3249,63 @@ void DrawCustomizationDetail(
         DrawText(ui, g_context.localizer.Text("text.customization_not_ready",
             "The customization catalog for this vehicle is not ready; reload the "
             "customization data."));
+    }
+
+    // Local feature: save the driven vehicle's current module list as this
+    // vehicle's plugin memory (restored on catalog reload and summon).
+    {
+        const auto save_label =
+            g_context.localizer.Text("action.save_current_modules", "Save current vehicle modules") +
+            "##save-current-modules";
+        if (DrawButtonEnabled(ui, save_label, true)) {
+            g_context.read_modules_requested.store(true, std::memory_order_release);
+            g_context.save_modules_to_memory_requested.store(true, std::memory_order_release);
+            SetStatus(g_context.localizer.Text("status.modules_save_requested",
+                "Saving the current vehicle's module list to its memory..."));
+        }
+    }
+    // Local feature: per-vehicle summon hotkey binding.
+    {
+        DrawDivider(ui);
+        std::map<std::uint32_t, std::string> bindings;
+        bool binding_mode = false;
+        {
+            std::scoped_lock lock(g_context.mutex);
+            bindings = g_context.hotkey_vehicle_bindings;
+            binding_mode = g_context.hotkey_binding_mode;
+        }
+        if (binding_mode) {
+            const auto wait_label = g_context.localizer.Text(
+                "action.binding_wait", ">> press any key to bind... <<");
+            if (DrawButtonEnabled(ui, wait_label + "##bind-hotkey", true)) {
+                std::scoped_lock lock(g_context.mutex);
+                g_context.hotkey_binding_mode = false;
+            }
+        } else {
+            const auto bind_label = g_context.localizer.Text(
+                "action.bind_summon_hotkey", "Bind summon hotkey") + "##bind-hotkey";
+            if (DrawButtonEnabled(ui, bind_label, true)) {
+                std::scoped_lock lock(g_context.mutex);
+                g_context.hotkey_binding_mode = true;
+            }
+        }
+        DrawInlineGap(ui);
+        const auto clear_label = g_context.localizer.Text(
+            "action.clear_summon_hotkey", "Clear this vehicle's hotkey") + "##clear-hotkey";
+        if (DrawButtonEnabled(ui, clear_label, true)) {
+            std::scoped_lock lock(g_context.mutex);
+            std::erase_if(g_context.hotkey_vehicle_bindings,
+                [&selected](const auto& entry) { return entry.second == selected; });
+            g_context.memory_dirty.store(true, std::memory_order_release);
+            g_context.status = g_context.localizer.Text("status.hotkey_cleared",
+                "Cleared this vehicle's summon hotkey.");
+        }
+        if (!bindings.empty()) {
+            DrawText(ui, g_context.localizer.Text("text.hotkey_bindings", "Summon hotkeys"));
+            for (const auto& [key, vehicle_id] : bindings) {
+                DrawText(ui, "[key " + std::to_string(key) + "] -> " + vehicle_id);
+            }
+        }
     }
 
     DrawDivider(ui);
@@ -2063,6 +3520,321 @@ void DrawPerformanceTab(
             "text.current_top_speed_ratio", "Current top speed ratio / {0}x", ratio_arguments));
     }
 
+    // ==== Local feature: live customization of the driven vehicle ====
+    DrawDivider(ui);
+    DrawText(ui, g_context.localizer.Text("section.live_customization",
+        "Live customization (driven vehicle)"));
+    DrawText(ui, g_context.localizer.Text("hint.live_customization",
+        "Read the driven vehicle, then pick options below; every click applies to "
+        "the current vehicle immediately (best while stationary)."));
+    {
+        const auto read_label =
+            g_context.localizer.Text("action.read_live_modules",
+                "Read driven vehicle (sync selection)") + "##read-live-modules";
+        if (DrawButtonEnabled(ui, read_label, true)) {
+            g_context.read_modules_requested.store(true, std::memory_order_release);
+            g_context.realtime_sync_requested.store(true, std::memory_order_release);
+        }
+    }
+    // Drift rotation buttons (global, Left Shift applies the rotation in game).
+    {
+        std::string realtime_id;
+        std::string selected_id;
+        bool smoke_on, mark_on, smoke_random, mark_random, smoke_ui, mark_ui;
+        std::size_t smoke_count, mark_count;
+        std::vector<std::pair<std::uint32_t, std::string>> extras;
+        {
+            std::scoped_lock lock(g_context.mutex);
+            realtime_id = g_context.realtime_vehicle_id;
+            selected_id = g_context.selected_vehicle_id;
+            smoke_on = g_context.drift_smoke_on;
+            mark_on = g_context.drift_mark_on;
+            smoke_random = g_context.drift_smoke_random;
+            mark_random = g_context.drift_mark_random;
+            smoke_ui = g_context.drift_smoke_ui_open;
+            mark_ui = g_context.drift_mark_ui_open;
+            smoke_count = g_context.drift_smoke_scope.size();
+            mark_count = g_context.drift_mark_scope.size();
+            extras = g_context.allowed_extra_modules;
+        }
+        const std::string key = !realtime_id.empty() ? realtime_id : selected_id;
+        const std::string prefix = VehicleModulePrefixFromId(key);
+        const auto on_off = [&](const bool value) {
+            return std::string(value ? "On" : "Off");
+        };
+        const std::string smoke_label =
+            g_context.localizer.Format("action.drift_smoke", "Tyre smoke rotation: {0}",
+                std::array<std::string_view, 1>{on_off(smoke_on)}) + "##drift-smoke";
+        if (DrawButtonEnabled(ui, smoke_label, true)) {
+            std::scoped_lock lock(g_context.mutex);
+            g_context.drift_smoke_on = !g_context.drift_smoke_on;
+            g_context.drift_dirty.store(true, std::memory_order_release);
+        }
+        DrawInlineGap(ui);
+        const std::string smoke_scope_label =
+            g_context.localizer.Format("action.drift_smoke_scope", "Smoke scope ({0})",
+                std::array<std::string_view, 1>{std::to_string(smoke_count)}) +
+            "##drift-smoke-scope";
+        if (DrawButtonEnabled(ui, smoke_scope_label, true)) {
+            std::scoped_lock lock(g_context.mutex);
+            g_context.drift_smoke_ui_open = !g_context.drift_smoke_ui_open;
+        }
+        DrawInlineGap(ui);
+        const std::string smoke_mode_label =
+            g_context.localizer.Format("action.drift_smoke_mode", "Smoke mode: {0}",
+                std::array<std::string_view, 1>{
+                    std::string(smoke_random ? "Random" : "Sequential")}) +
+            "##drift-smoke-mode";
+        if (DrawButtonEnabled(ui, smoke_mode_label, true)) {
+            std::scoped_lock lock(g_context.mutex);
+            g_context.drift_smoke_random = !g_context.drift_smoke_random;
+            g_context.drift_dirty.store(true, std::memory_order_release);
+        }
+        DrawInlineGap(ui);
+        const std::string mark_label =
+            g_context.localizer.Format("action.drift_mark", "Tyre track rotation: {0}",
+                std::array<std::string_view, 1>{on_off(mark_on)}) + "##drift-mark";
+        if (DrawButtonEnabled(ui, mark_label, true)) {
+            std::scoped_lock lock(g_context.mutex);
+            g_context.drift_mark_on = !g_context.drift_mark_on;
+            g_context.drift_dirty.store(true, std::memory_order_release);
+        }
+        DrawInlineGap(ui);
+        const std::string mark_scope_label =
+            g_context.localizer.Format("action.drift_mark_scope", "Track scope ({0})",
+                std::array<std::string_view, 1>{std::to_string(mark_count)}) +
+            "##drift-mark-scope";
+        if (DrawButtonEnabled(ui, mark_scope_label, true)) {
+            std::scoped_lock lock(g_context.mutex);
+            g_context.drift_mark_ui_open = !g_context.drift_mark_ui_open;
+        }
+        DrawInlineGap(ui);
+        const std::string mark_mode_label =
+            g_context.localizer.Format("action.drift_mark_mode", "Track mode: {0}",
+                std::array<std::string_view, 1>{
+                    std::string(mark_random ? "Random" : "Sequential")}) +
+            "##drift-mark-mode";
+        if (DrawButtonEnabled(ui, mark_mode_label, true)) {
+            std::scoped_lock lock(g_context.mutex);
+            g_context.drift_mark_random = !g_context.drift_mark_random;
+            g_context.drift_dirty.store(true, std::memory_order_release);
+        }
+        DrawInlineGap(ui);
+        const auto capture_label =
+            g_context.localizer.Text("action.capture_effects",
+                "Add current vehicle's effects to whitelist") + "##capture-effects";
+        if (DrawButtonEnabled(ui, capture_label, true)) {
+            g_context.capture_effects_requested.store(true, std::memory_order_release);
+        }
+        DrawText(ui, g_context.localizer.Text("hint.drift_rotation",
+            "Enable a rotation, then press Left Shift in game to cycle the tyre "
+            "smoke / track effects; scope narrows the tiers that participate."));
+        // Scope tick lists (collapsed by default).
+        const auto draw_scope_list = [&](const bool open, const std::uint32_t type,
+                                         const std::vector<std::string>& scope,
+                                         const char* child_id) {
+            if (!open) return;
+            std::vector<std::string> candidates;
+            {
+                std::scoped_lock lock(g_context.mutex);
+                for (const auto& option : g_context.customization_options) {
+                    if (option.kind == nte_vehicle::kCustomizationModule &&
+                        option.module_type == type) {
+                        candidates.push_back(option.id);
+                    }
+                }
+                for (const auto& extra : extras) {
+                    if (extra.first != type) continue;
+                    if (!WhitelistExtraForVehicle(extra.second, prefix)) continue;
+                    std::string base = extra.second;
+                    const auto hash_pos = base.find('#');
+                    if (hash_pos != std::string::npos) base.resize(hash_pos);
+                    bool listed = false;
+                    for (const auto& id : candidates) {
+                        if (id == base) { listed = true; break; }
+                    }
+                    if (!listed) candidates.push_back(extra.second);
+                }
+            }
+            std::vector<std::string> patterns;
+            for (const auto& id : candidates) {
+                const std::string pattern = CandidateTierPattern(id);
+                bool listed = false;
+                for (const auto& existing : patterns) {
+                    if (existing == pattern) { listed = true; break; }
+                }
+                if (!listed) patterns.push_back(pattern);
+            }
+            std::sort(patterns.begin(), patterns.end());
+            const bool child_available =
+                UiFieldAvailable(ui, offsetof(AnomalyUiServiceV1, end_child),
+                    sizeof(decltype(AnomalyUiServiceV1::end_child))) &&
+                ui->begin_child && ui->end_child;
+            bool visible = true;
+            if (child_available) {
+                visible = ui->begin_child(ui->user,
+                    anomaly::sdk::StringView(child_id), 0.0F, 120.0F, 1U) != 0;
+            }
+            if (visible) {
+                for (const auto& pattern : patterns) {
+                    bool checked = false;
+                    for (const auto& tier : scope) {
+                        if (tier == pattern) { checked = true; break; }
+                    }
+                    int flag = checked ? 1 : 0;
+                    const std::string checkbox_label =
+                        "[" + std::string(checked ? "x" : " ") + "] " + pattern +
+                        "##drift-scope-" + std::to_string(type) + "-" + pattern;
+                    if (ui->checkbox(ui->user,
+                            anomaly::sdk::StringView(checkbox_label), &flag) != 0) {
+                        std::scoped_lock lock(g_context.mutex);
+                        auto& target = type == 23
+                            ? g_context.drift_smoke_scope : g_context.drift_mark_scope;
+                        if (flag != 0) {
+                            if (std::ranges::find(target, pattern) == target.end())
+                                target.push_back(pattern);
+                        } else {
+                            std::erase(target, pattern);
+                        }
+                        g_context.drift_dirty.store(true, std::memory_order_release);
+                    }
+                }
+            }
+            if (child_available) ui->end_child(ui->user);
+        };
+        draw_scope_list(smoke_ui, 23, [&]{
+            std::scoped_lock lock(g_context.mutex);
+            return g_context.drift_smoke_scope; }(), "##drift-smoke-scope-list");
+        draw_scope_list(mark_ui, 24, [&]{
+            std::scoped_lock lock(g_context.mutex);
+            return g_context.drift_mark_scope; }(), "##drift-mark-scope-list");
+    }
+    // Live option picker: per-category buttons that apply immediately.
+    {
+        std::string realtime_id;
+        std::string customization_vehicle;
+        std::string skin_id;
+        std::vector<CustomizationOption> options;
+        std::vector<std::pair<std::uint32_t, std::string>> overrides;
+        std::vector<std::pair<std::uint32_t, std::string>> extras;
+        {
+            std::scoped_lock lock(g_context.mutex);
+            realtime_id = g_context.realtime_vehicle_id;
+            customization_vehicle = g_context.customization_vehicle_id;
+            skin_id = g_context.realtime_skin_id;
+            options = g_context.customization_options;
+            overrides = g_context.selected_module_overrides;
+            extras = g_context.allowed_extra_modules;
+        }
+        if (realtime_id.empty() || customization_vehicle != realtime_id) {
+            DrawText(ui, g_context.localizer.Text("hint.live_read_first",
+                "Click \"Read driven vehicle\" first; the picker appears once this "
+                "car's customization catalog is loaded."));
+        } else {
+            static constexpr std::array<std::uint32_t, 26> kLiveCategories{
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+                20, 21, 22, 23, 24, 25, 26, 27};
+            static constexpr std::array<std::string_view, 28> live_type_keys{
+                "label.module.none", "label.module.engine", "label.module.gearbox",
+                "label.module.brake", "label.module.suspension", "label.module.body_color",
+                "label.module.front_bumper", "label.module.side_skirt",
+                "label.module.rear_bumper", "label.module.rear_wing", "label.module.decal",
+                "label.module.wheel", "label.module.hood", "label.module.plate",
+                "label.module.roof", "label.module.tire", "label.module.accessory",
+                "label.module.lsd", "label.module.stiffness", "label.module.skin",
+                "label.module.interior_leather", "label.module.interior_stitch",
+                "label.module.vehicle_badge", "label.module.tire_smoke",
+                "label.module.tire_track", "label.module.tow_hook", "label.module.ecu",
+                "label.module.exhaust_smoke"};
+            static constexpr std::array<std::string_view, 28> live_type_english{
+                "None", "Engine", "Gearbox", "Brakes", "Suspension", "Body color module",
+                "Front bumper", "Side skirt", "Rear bumper", "Rear wing", "Decal",
+                "Wheels", "Hood", "License plate", "Roof", "Tires", "Accessories",
+                "Limited-slip differential LSD", "Body rigidity", "Skin module",
+                "Interior leather color", "Interior stitching color", "Vehicle badge",
+                "Tire smoke", "Tire tracks", "Tow hook", "ECU", "Exhaust smoke"};
+            for (const auto type : kLiveCategories) {
+                const std::string category = g_context.localizer.Text(
+                    live_type_keys[type], live_type_english[type]);
+                // Current override for this slot.
+                std::string current;
+                for (const auto& entry : overrides) {
+                    if (entry.first == type) { current = entry.second; break; }
+                }
+                bool any_button = false;
+                for (const auto& option : options) {
+                    if (option.kind != nte_vehicle::kCustomizationModule ||
+                        option.module_type != type) continue;
+                    const bool chosen = current == option.id;
+                    std::string label =
+                        (chosen ? "[x] " : "") +
+                        (option.label.empty() ? option.id : option.label) +
+                        "##live-" + std::to_string(type) + "-" + option.id;
+                    any_button = true;
+                    if (ui->button(ui->user, anomaly::sdk::StringView(label), 0.0F, 0.0F)) {
+                        {
+                            std::scoped_lock lock(g_context.mutex);
+                            auto& target = g_context.selected_module_overrides;
+                            const auto found = std::ranges::find_if(target,
+                                [type](const auto& entry) { return entry.first == type; });
+                            if (found == target.end()) target.emplace_back(type, option.id);
+                            else found->second = option.id;
+                        }
+                        g_context.apply_current_modules_requested.store(
+                            true, std::memory_order_release);
+                    }
+                }
+                // Whitelisted premium effects for the tyre slots.
+                if (type == 23 || type == 24) {
+                    for (const auto& extra : extras) {
+                        if (extra.first != type) continue;
+                        const std::string display = WhitelistExtraEffectDisplay(extra.second);
+                        if (display.empty()) continue;
+                        const bool chosen = current == extra.second;
+                        const std::string label =
+                            (chosen ? "[x] " : "") + display +
+                            "##live-wl-" + std::to_string(type) + "-" + extra.second;
+                        any_button = true;
+                        if (ui->button(ui->user, anomaly::sdk::StringView(label), 0.0F, 0.0F)) {
+                            {
+                                std::scoped_lock lock(g_context.mutex);
+                                auto& target = g_context.selected_module_overrides;
+                                const auto found = std::ranges::find_if(target,
+                                    [type](const auto& entry) { return entry.first == type; });
+                                if (found == target.end())
+                                    target.emplace_back(type, extra.second);
+                                else found->second = extra.second;
+                            }
+                            g_context.apply_current_modules_requested.store(
+                                true, std::memory_order_release);
+                        }
+                    }
+                }
+                if (any_button) {
+                    DrawText(ui, category);
+                }
+            }
+            // Paint area: clicking a skin applies it to the driven vehicle.
+            DrawText(ui, g_context.localizer.Text("label.paint_live",
+                "Paint (click to apply)"));
+            for (const auto& option : options) {
+                if (option.kind != nte_vehicle::kCustomizationSkin) continue;
+                const bool chosen = skin_id == option.id;
+                std::string label =
+                    (chosen ? "[x] " : "") +
+                    (option.label.empty() ? option.id : option.label) +
+                    "##live-skin-" + option.id;
+                if (ui->button(ui->user, anomaly::sdk::StringView(label), 0.0F, 0.0F)) {
+                    {
+                        std::scoped_lock lock(g_context.mutex);
+                        g_context.realtime_skin_id = option.id;
+                    }
+                    g_context.apply_skin_requested.store(true, std::memory_order_release);
+                }
+            }
+        }
+    }
+
     DrawDivider(ui);
     DrawText(ui, g_context.localizer.Text("hint.speed_slider",
         "Speed ratio of the current vehicle (applied right after dragging, 0.05x-100.0x)"));
@@ -2076,6 +3848,157 @@ void DrawPerformanceTab(
                 speed_ratio, kMinimumSpeedRatio, kMaximumSpeedRatio);
         }
         g_context.apply_speed.store(true, std::memory_order_release);
+    }
+
+    // ==== Local feature: absolute km/h target + advanced powertrain tuning ====
+    {
+        float stock = 0.0F;
+        bool stock_valid = false;
+        float target_kmh = 0.0F;
+        {
+            std::scoped_lock lock(g_context.mutex);
+            stock = g_context.adv_stock_top_speed_kmh;
+            stock_valid = g_context.adv_stock_top_speed_valid;
+            target_kmh = g_context.adv_speed_target_kmh;
+        }
+        if (stock_valid && stock > 0.0F) {
+            DrawText(ui, g_context.localizer.Text("hint.speed_target",
+                "Absolute top speed target, anchored at the vehicle's factory top "
+                "speed (applied while dragging)."));
+            const std::string stock_text = std::to_string(
+                static_cast<std::uint32_t>(stock));
+            const std::array stock_arguments{std::string_view(stock_text)};
+            DrawText(ui, g_context.localizer.Format("text.stock_speed_anchor",
+                "Factory top speed anchor: {0} km/h", stock_arguments));
+            if (ui->slider_float(ui->user,
+                    anomaly::sdk::StringView(g_context.localizer.Text(
+                        "label.speed_target", "Top speed target (km/h)")),
+                    &target_kmh, 0.0F, 350.0F)) {
+                // Apply only when the slider value actually changed (drag),
+                // never on every rendered frame.
+                {
+                    std::scoped_lock lock(g_context.mutex);
+                    g_context.adv_speed_target_kmh = target_kmh;
+                }
+                if (target_kmh > 0.0F) {
+                    g_context.apply_speed_target_requested.store(
+                        true, std::memory_order_release);
+                }
+            }
+        }
+    }
+    DrawDivider(ui);
+    DrawText(ui, g_context.localizer.Text("section.advanced_tuning",
+        "Advanced powertrain tuning (per vehicle)"));
+    {
+        float reverse = -1.0F;
+        {
+            std::scoped_lock lock(g_context.mutex);
+            reverse = g_context.adv_reverse_top_speed < 0.0F
+                ? 0.0F : g_context.adv_reverse_top_speed;
+        }
+        const std::string reverse_label =
+            g_context.localizer.Text("label.reverse_speed", "Reverse top speed (km/h)") +
+            "##reverse-speed";
+        if (ui->slider_float(ui->user, anomaly::sdk::StringView(reverse_label),
+                &reverse, 0.0F, 2000.0F)) {
+            std::scoped_lock lock(g_context.mutex);
+            g_context.adv_reverse_top_speed = reverse;
+            g_context.adv_apply_requested.store(true, std::memory_order_release);
+        }
+        DrawText(ui, g_context.localizer.Text("hint.reverse_speed",
+            "Writes ReverseTopSpeedInKmH; takes effect after re-entering the vehicle "
+            "(the stock value may not equal the real reverse limit)."));
+    }
+    {
+        bool comfort = false;
+        float up = -1.0F, down = -1.0F, gear_time = -1.0F, ratio = -1.0F, eff = -1.0F;
+        float live_up = 0, live_down = 0, live_time = 0, live_ratio = 0, live_eff = 0;
+        {
+            std::scoped_lock lock(g_context.mutex);
+            comfort = g_context.adv_comfort_mode;
+            up = g_context.adv_change_up_rpm;
+            down = g_context.adv_down_rpm;
+            gear_time = g_context.adv_gear_change_time;
+            ratio = g_context.adv_final_ratio;
+            eff = g_context.adv_transmission_efficiency;
+            live_up = g_context.adv_live_up_rpm;
+            live_down = g_context.adv_live_down_rpm;
+            live_time = g_context.adv_live_gear_time;
+            live_ratio = g_context.adv_live_final_ratio;
+            live_eff = g_context.adv_live_efficiency;
+            if (comfort) {
+                up = g_context.adv_c_up_rpm;
+                down = g_context.adv_c_down_rpm;
+                gear_time = g_context.adv_c_gear_change_time;
+                ratio = g_context.adv_c_final_ratio;
+                eff = g_context.adv_c_transmission_efficiency;
+                live_up = g_context.adv_live_c_up_rpm;
+                live_down = g_context.adv_live_c_down_rpm;
+                live_time = g_context.adv_live_c_gear_time;
+                live_ratio = g_context.adv_live_c_final_ratio;
+                live_eff = g_context.adv_live_c_efficiency;
+            }
+        }
+        const std::string mode_label =
+            comfort
+                ? g_context.localizer.Text("label.transmission_mode_comfort",
+                      "Editing: comfort transmission (click to switch to normal)")
+                : g_context.localizer.Text("label.transmission_mode_normal",
+                      "Editing: normal transmission (click to switch to comfort)");
+        if (DrawButtonEnabled(ui, mode_label + "##tune-mode", true)) {
+            std::scoped_lock lock(g_context.mutex);
+            g_context.adv_comfort_mode = !g_context.adv_comfort_mode;
+        }
+        DrawInlineGap(ui);
+        const auto save_label =
+            g_context.localizer.Text("action.save_tune", "Save current tuning") +
+            "##save-tune";
+        if (DrawButtonEnabled(ui, save_label, true)) {
+            g_context.save_tune_requested.store(true, std::memory_order_release);
+        }
+        DrawInlineGap(ui);
+        const auto reset_label =
+            g_context.localizer.Text("action.reset_tune", "Restore tuning baseline") +
+            "##reset-tune";
+        if (DrawButtonEnabled(ui, reset_label, true)) {
+            g_context.reset_tune_requested.store(true, std::memory_order_release);
+        }
+        // Negative edit values mean "not edited this session": seed the slider
+        // with the live value so dragging starts from the current state.
+        const auto locked_slider = [&](const char* key, const char* english,
+                                       float* edited, const float live,
+                                       const float minimum, const float maximum) {
+            float value = 0.0F;
+            {
+                std::scoped_lock lock(g_context.mutex);
+                value = *edited >= 0.0F ? *edited : (live > 0.0F ? live : 0.0F);
+            }
+            const std::string label = std::string(g_context.localizer.Text(key, english)) +
+                "##adv-" + key;
+            if (ui->slider_float(ui->user, anomaly::sdk::StringView(label),
+                    &value, minimum, maximum)) {
+                std::scoped_lock lock(g_context.mutex);
+                *edited = value;
+                g_context.adv_apply_requested.store(true, std::memory_order_release);
+            }
+        };
+        locked_slider("label.change_up_rpm", "Shift-up RPM", comfort
+            ? &g_context.adv_c_up_rpm : &g_context.adv_change_up_rpm,
+            live_up, 500.0F, 12000.0F);
+        locked_slider("label.change_down_rpm", "Shift-down RPM", comfort
+            ? &g_context.adv_c_down_rpm : &g_context.adv_down_rpm,
+            live_down, 0.0F, 12000.0F);
+        locked_slider("label.gear_change_time", "Gear change time (s)", comfort
+            ? &g_context.adv_c_gear_change_time : &g_context.adv_gear_change_time,
+            live_time, 0.0F, 2.0F);
+        locked_slider("label.final_ratio", "Final drive ratio", comfort
+            ? &g_context.adv_c_final_ratio : &g_context.adv_final_ratio,
+            live_ratio, 0.5F, 10.0F);
+        locked_slider("label.transmission_efficiency", "Transmission efficiency", comfort
+            ? &g_context.adv_c_transmission_efficiency
+            : &g_context.adv_transmission_efficiency,
+            live_eff, 0.1F, 3.0F);
     }
 
     DrawDivider(ui);
@@ -2151,13 +4074,29 @@ void DrawPerformanceTab(
 }
 
 void DrawChassisTab(const AnomalyUiServiceV1* ui, bool friction, bool durability_guard,
-                    bool durability_guard_installed, const std::string& durability_guard_detail) {
+                    bool durability_guard_installed, const std::string& durability_guard_detail,
+                    const bool durability_auto_full) {
     DrawText(ui, g_context.localizer.Text("section.wheel_friction", "Wheel friction"));
     DrawInlineGap(ui);
     int friction_flag = friction ? 1 : 0;
     if (ui->checkbox(ui->user, anomaly::sdk::StringView("##friction"), &friction_flag) != 0) {
         g_context.friction_toggle.store(true, std::memory_order_release);
     }
+
+    DrawDivider(ui);
+    // Local feature: automatic durability repair toggle (keeps the current land
+    // vehicle at full durability; complements the damage-event guard below).
+    DrawText(ui, g_context.localizer.Text("label.durability_auto_full",
+        "Keep durability full"));
+    DrawInlineGap(ui);
+    int auto_full_flag = durability_auto_full ? 1 : 0;
+    if (ui->checkbox(ui->user,
+            anomaly::sdk::StringView("##durability_auto_full"), &auto_full_flag) != 0) {
+        g_context.durability_auto_full_requested.store(true, std::memory_order_release);
+    }
+    DrawText(ui, g_context.localizer.Text("hint.durability_auto_full",
+        "Repairs the current land vehicle to full durability every tick "
+        "(RepairSelf); works with or without the guard hooks below."));
 
     DrawDivider(ui);
     DrawText(ui, g_context.localizer.Text("label.durability_guard", "Durability guard"));
@@ -2180,7 +4119,7 @@ void DrawDebugPanel(
     const std::string& status, const std::string& selected,
     std::size_t catalog_size, bool player_position_valid) {
     DrawText(ui, g_context.localizer.Text("detail.build_marker",
-        "Build marker: NTE Vehicle 0.13.0"));
+        "Build marker: NTE Vehicle 0.14.0"));
     DrawText(ui, g_context.localizer.Text("detail.build_marker_abi",
         "Build marker: manifest schema v2 / Plugin API v1"));
     const std::array plugin_id_arguments{
@@ -2260,6 +4199,34 @@ void DrawDebugPanel(
     DrawText(ui, g_context.localizer.Format("detail.catalog",
         "Vehicle catalog: {0} entries; current selection: {1}", catalog_arguments));
 
+    // Local feature: diagnostic actions writing timestamped evidence files into
+    // the plugin state directory (for bug reports).
+    DrawDivider(ui);
+    const auto read_label =
+        g_context.localizer.Text("action.read_live_modules",
+            "Read driven vehicle (sync selection)") + "##diag-read-modules";
+    if (ui->button(ui->user, anomaly::sdk::StringView(read_label), 0.0F, 0.0F)) {
+        g_context.read_modules_requested.store(true, std::memory_order_release);
+    }
+    const auto probe_label =
+        g_context.localizer.Text("action.probe_effects",
+            "Probe candidate effect IDs (read-only)") + "##diag-probe";
+    if (ui->button(ui->user, anomaly::sdk::StringView(probe_label), 0.0F, 0.0F)) {
+        g_context.probe_requested.store(true, std::memory_order_release);
+    }
+    const auto sweep_label =
+        g_context.localizer.Text("action.sweep_tables",
+            "Sweep all DataTables (forensics)") + "##diag-sweep";
+    if (ui->button(ui->user, anomaly::sdk::StringView(sweep_label), 0.0F, 0.0F)) {
+        g_context.sweep_requested.store(true, std::memory_order_release);
+    }
+    const auto export_label =
+        g_context.localizer.Text("action.export_log",
+            "Export log (attach when reporting)") + "##diag-export";
+    if (ui->button(ui->user, anomaly::sdk::StringView(export_label), 0.0F, 0.0F)) {
+        g_context.export_log_requested.store(true, std::memory_order_release);
+    }
+
     DrawDivider(ui);
     DrawText(ui, g_context.localizer.Text("detail.speed_ratio_note",
         "Speed ratio: 0.05x-100.0x; drag the slider to apply it automatically"));
@@ -2287,6 +4254,7 @@ void DrawContents(const AnomalyUiServiceV1* ui) {
     bool friction;
     bool durability_guard;
     bool durability_guard_installed;
+    bool durability_auto_full{};
     std::string durability_guard_detail;
     bool player_position_valid{};
     bool customization_status_failure{};
@@ -2312,6 +4280,7 @@ void DrawContents(const AnomalyUiServiceV1* ui) {
         durability_guard = g_context.durability_guard_enabled;
         durability_guard_installed = g_context.durability_guard_installed;
         durability_guard_detail = g_context.durability_guard_detail;
+        durability_auto_full = g_context.durability_auto_full;
         player_position_valid = g_context.player_position_valid;
         customization_status_failure = g_context.customization_status_failure;
     }
@@ -2352,7 +4321,7 @@ void DrawContents(const AnomalyUiServiceV1* ui) {
             other_speed_floor_ratio, other_torque_ratio);
     } else if (active_tab == 2) {
         DrawChassisTab(ui, friction, durability_guard, durability_guard_installed,
-            durability_guard_detail);
+            durability_guard_detail, durability_auto_full);
     } else if (active_tab == 3) {
         DrawDebugPanel(ui, snap, status, selected, ids.size(), player_position_valid);
     }
@@ -2491,6 +4460,12 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
     if (!g_context.saved_vehicle_id.empty()) {
         g_context.selected_vehicle_id = g_context.saved_vehicle_id;
     }
+    // Local feature: load the per-vehicle memory and feature configuration
+    // (plugin-state directory, lifecycle callback — no I/O in Game/Render).
+    LoadCustomizationMemory();
+    LoadTuningMemory();
+    LoadDriftConfig();
+    LoadAllowedExtraModules();
     g_context.pending_vehicle_id.clear();
     g_context.catalog_filter.clear();
     g_context.vehicle_ids.clear();
@@ -2564,6 +4539,7 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void* plugin_context, std::uint32_t) try {
     }
     nte_vehicle::StopBackend();
     SaveSelection(g_context.saved_vehicle_id);
+    SaveAllPluginState();
     SaveSettings();
     ReleaseMenuHotkey(g_context);
     if (g_context.window_service && g_context.menu_window_handle.id != 0) {
@@ -2589,6 +4565,7 @@ void ANOMALY_CALL Unload(void* plugin_context) try {
     }
     nte_vehicle::StopBackend();
     SaveSelection(g_context.saved_vehicle_id);
+    SaveAllPluginState();
     SaveSettings();
     ReleaseMenuHotkey(g_context);
     if (g_context.window_service && g_context.menu_window_handle.id != 0) {
@@ -2628,6 +4605,6 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         anomaly::sdk::StringView("anomaly.nte-vehicle"),
         anomaly::sdk::StringView("Vehicle Control"), anomaly::sdk::StringView("Anomaly"),
-        anomaly::sdk::StringView("0.13.0"), Load, Start, Stop, Unload, UpdateCallback, DrawCallback};
+        anomaly::sdk::StringView("0.14.0"), Load, Start, Stop, Unload, UpdateCallback, DrawCallback};
     return anomaly::sdk::Ok();
 }
