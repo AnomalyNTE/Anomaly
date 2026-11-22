@@ -369,6 +369,10 @@ struct Context {
     bool one_key_active{false};
     std::int32_t one_key_phase{0};
     std::chrono::steady_clock::time_point one_key_deadline{};
+    // 上次尝试补查晚发布服务（实体/玩家/拾取/寻路）的时刻。
+    std::chrono::steady_clock::time_point late_service_probe{};
+    // 上次把实体服务状态写进日志的时刻（一秒刷屏没意义）。
+    std::chrono::steady_clock::time_point target_service_log_at{};
     std::uint32_t one_key_enter_wait{8};
     std::uint32_t one_key_loop_count{1};
     std::uint32_t one_key_loop_done{0};
@@ -401,9 +405,51 @@ void SetCombatStatus(void* user, const std::string& text) noexcept {
     static_cast<Context*>(user)->combat_status = text;
 }
 
+// 实体 / 玩家 / 拾取 / 寻路这些服务是**随世界加载才发布**的：加载期查一次会永远拿到
+// null，表现就是一键副本和自动战斗永远停在「等待目标数据」。这里和 session / skills
+// 一样惰性重查，拿到就缓存；还拿不到时节流到一秒一次，避免每帧都做服务查找。
+template <typename Service>
+void RefreshLateService(const AnomalyHostApiV1* api, const Service*& slot, const char* id,
+                        const std::uint32_t version) noexcept {
+    if (slot != nullptr || api == nullptr) return;
+    slot = anomaly::sdk::Host(api).Query<Service>(id, version).get();
+}
+
+void RefreshLateServices(Context& context) noexcept {
+    if (context.host == nullptr) return;
+    if (context.entities != nullptr && context.actors != nullptr && context.player != nullptr &&
+        context.pickup != nullptr && context.navigation != nullptr &&
+        context.map_landmarks != nullptr) {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (context.late_service_probe.time_since_epoch().count() != 0 &&
+        now < context.late_service_probe) {
+        return;
+    }
+    context.late_service_probe = now + std::chrono::seconds(1);
+    RefreshLateService(context.host, context.player, ANOMALY_NTE_PLAYER_SERVICE_V1_ID,
+                       ANOMALY_NTE_PLAYER_SERVICE_V1_VERSION);
+    RefreshLateService(context.host, context.entities, ANOMALY_NTE_ENTITIES_SERVICE_V1_ID,
+                       ANOMALY_NTE_ENTITIES_SERVICE_V1_VERSION);
+    RefreshLateService(context.host, context.actors, ANOMALY_NTE_ACTORS_SERVICE_V1_ID,
+                       ANOMALY_NTE_ACTORS_SERVICE_V1_VERSION);
+    RefreshLateService(context.host, context.pickup, ANOMALY_NTE_PICKUP_SERVICE_V1_ID,
+                       ANOMALY_NTE_PICKUP_SERVICE_V1_VERSION);
+    RefreshLateService(context.host, context.navigation, ANOMALY_NTE_NAVIGATION_SERVICE_V1_ID,
+                       ANOMALY_NTE_NAVIGATION_SERVICE_V1_VERSION);
+    RefreshLateService(context.host, context.map_landmarks,
+                       ANOMALY_NTE_MAP_LANDMARKS_SERVICE_V1_ID,
+                       ANOMALY_NTE_MAP_LANDMARKS_SERVICE_V1_VERSION);
+    RefreshLateService(context.host, context.teleport,
+                       ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_ID,
+                       ANOMALY_NTE_PLAYER_TELEPORT_SERVICE_V1_VERSION);
+}
+
 // 每个调用点现构造宿主：服务指针、策略与回显都取自插件当前状态，模块不缓存它们，
 // 所以热重载或服务晚发布都不会让它用到过期指针。
 combat::Host MakeCombatHost(Context& context) noexcept {
+    RefreshLateServices(context);
     combat::Host host;
     host.navigation = context.navigation;
     host.actors = context.actors;
@@ -6455,6 +6501,29 @@ void AutoClaimTick(Context& context) noexcept {
 // 是同一个 5：模块负责计数，这里只负责跨过它）。
 constexpr std::uint32_t kOneKeyNoMonsterSeconds = 5;
 
+// 卡在「等待目标数据」时，真正的原因要能从日志看出来：是服务还没发布（指针为空），
+// 还是发布了但 frame() 拒绝服务（布局校验没通过 / 不在 Game 回调域）。
+void LogTargetServiceState(Context& context, const char* reason) noexcept {
+    const auto now = std::chrono::steady_clock::now();
+    if (context.target_service_log_at.time_since_epoch().count() != 0 &&
+        now < context.target_service_log_at) {
+        return;
+    }
+    context.target_service_log_at = now + std::chrono::seconds(5);
+    const auto describe = [](const auto* service) -> std::string {
+        if (service == nullptr || service->frame == nullptr) return "missing";
+        AnomalyNteEntityFrameV1 frame{sizeof(frame)};
+        const AnomalyStatusV1 status = service->frame(service->user, &frame);
+        if (status.code != ANOMALY_STATUS_V1_OK) {
+            return "unavailable(" + std::to_string(status.code) + ")";
+        }
+        return "count=" + std::to_string(frame.entity_count);
+    };
+    LogRewardDiagnostic(context, std::string("one-key target scan (") + reason +
+        "): entities=" + describe(context.entities) +
+        " actors=" + describe(context.actors));
+}
+
 // 结果码与停链在文件后面实现（IPC provider 与生命周期都要用），这里先声明。
 void SetOneKeyResult(Context& context, OneKeyResult result, const char* reason) noexcept;
 void StopOneKeyAutoRun(Context& context) noexcept;
@@ -6517,7 +6586,14 @@ void OneKeyTick(Context& context) noexcept {
         context.one_key_deadline = now + std::chrono::seconds(1);
         // 「见过怪之后连续 5 秒无怪」由战斗模块统计（state.met_monster /
         // state.no_monster_seconds）：这里只读结果，不再自己计数。
+        if (context.entities == nullptr && context.actors == nullptr) {
+            LogTargetServiceState(context, "services not published");
+            context.combat_status = context.localizer.Text("status.one_key_wait_services",
+                "One-key run: waiting for the entity services");
+            return;
+        }
         if (!context.combat_state.scan_valid) {
+            LogTargetServiceState(context, "scan rejected");
             context.combat_status = context.localizer.Text("status.one_key_wait_target", "One-key run: waiting for the target data");
             return;
         }
@@ -7507,7 +7583,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         anomaly::sdk::StringView("ccyellowstar.clone-enter"),
         anomaly::sdk::StringView("Clone Enter"),
         anomaly::sdk::StringView("CCYellowStar"),
-        anomaly::sdk::StringView("0.2.16"),
+        anomaly::sdk::StringView("0.2.17"),
         Load, Start, Stop, Unload, Update, Draw};
     return anomaly::sdk::Ok();
 }
