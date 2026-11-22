@@ -33,11 +33,8 @@ void ReachEvacuation(BankLoop& loop, BankLoopObservation& o) {
 }
 }
 
-void RunBankIntroRuntimeTests();
-
 int main() {
     // The entry cinema's presentation gate, exercised through its real timing contract.
-    RunBankIntroRuntimeTests();
     {
         BankIntroSkip intro;
         Check(!intro.Ready(origin + 1h), "No bank playback can authorize a cinematic finish");

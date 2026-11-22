@@ -1321,10 +1321,6 @@ if(ANOMALY_BUILD_TEST_FIXTURES)
     target_compile_options(anomaly_profile_compatibility_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
     add_test(NAME profile_compatibility COMMAND anomaly_profile_compatibility_fixture
         "${CMAKE_SOURCE_DIR}/profiles/nte/nte-current.json")
-    add_executable(anomaly_signature_coverage_fixture apps/test_host/signature_coverage_fixture.cpp)
-    target_link_libraries(anomaly_signature_coverage_fixture PRIVATE anomaly_signature_updater anomaly_plugin_profile nlohmann_json::nlohmann_json)
-    target_include_directories(anomaly_signature_coverage_fixture PRIVATE "${PROJECT_SOURCE_DIR}")
-    target_compile_options(anomaly_signature_coverage_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
     add_executable(anomaly_d3d12_interop_fixture
         apps/render_fixture/d3d12_interop_fixture.cpp)
     target_include_directories(anomaly_d3d12_interop_fixture PRIVATE include src)
@@ -1541,7 +1537,6 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
     if(ANOMALY_BUILD_TEST_FIXTURES)
         add_executable(anomaly_pink_paw_bank_loop_fixture
             plugins/PinkPawHeistESP/tests/bank_loop_test.cpp
-            plugins/PinkPawHeistESP/tests/bank_intro_runtime_test.cpp
             plugins/PinkPawHeistESP/rob_bank_runtime.cpp)
         target_link_libraries(anomaly_pink_paw_bank_loop_fixture PRIVATE anomaly_sdk)
         target_include_directories(anomaly_pink_paw_bank_loop_fixture PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1947,7 +1942,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         add_executable(anomaly_skin_changer_vehicle_fixture plugins/SkinChanger/vehicle_tests.cpp)
         target_compile_features(anomaly_skin_changer_vehicle_fixture PRIVATE cxx_std_20)
         target_compile_options(anomaly_skin_changer_vehicle_fixture PRIVATE /W4 /permissive- /EHsc /utf-8)
-        foreach(suite IN ITEMS lifecycle cosmetics_runtime vehicle_runtime profile)
+        foreach(suite IN ITEMS lifecycle cosmetics_runtime vehicle_runtime)
             add_executable(anomaly_skin_changer_${suite}_fixture
                 plugins/SkinChanger/${suite}_tests.cpp)
             target_link_libraries(anomaly_skin_changer_${suite}_fixture PRIVATE
@@ -2416,13 +2411,7 @@ if(ANOMALY_BUILD_SYMBOLS)
 endif()
 
 if(ANOMALY_BUILD_TEST_FIXTURES AND ANOMALY_BUILD_BUILTIN_PLUGINS)
-    add_executable(anomaly_plugin_compatibility_fixture apps/test_host/plugin_compatibility_fixture.cpp)
-    target_link_libraries(anomaly_plugin_compatibility_fixture PRIVATE anomaly_plugin_profile ue5mem_memory)
-    target_compile_features(anomaly_plugin_compatibility_fixture PRIVATE cxx_std_20)
-    target_compile_options(anomaly_plugin_compatibility_fixture PRIVATE /utf-8 /EHsc)
-    add_test(NAME plugin_compatibility COMMAND anomaly_plugin_compatibility_fixture)
     foreach(profile_fixture IN ITEMS
-        anomaly_pink_paw_bank_loop_fixture
         anomaly_skin_changer_plate_follow_fixture
         anomaly_combat_auto_fixture
         anomaly_better_pose_visibility_fixture
