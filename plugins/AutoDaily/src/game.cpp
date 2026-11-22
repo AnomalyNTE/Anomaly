@@ -62,7 +62,8 @@ struct RewardStep {
     // 0=按名字点第一个 1=点全部同名 2=按 class 子串点 3=只等页面就绪（不点击）
     // 5=按名字前缀点一次，有没有都立刻过（清残留窗口用）
     // 6=按名字前缀点第一个（控件名带实例号后缀，如 W_BoundActionButton_Close_C_2147458308）
-    // 7=验证式关窗：弹窗与面板都从屏幕上消失才算过，关不掉就停下并报原因
+    // 7=尽力关窗：能确认收起来最好，关不掉只记一条警告就往下走
+    // 8=确保面板打开：页签行已经可点就直接过，否则才点 target 这个入口按钮
     int mode;
     const char* target;
     int wait;
@@ -87,7 +88,7 @@ constexpr const char* kPanelClosePrefix = "W_BoundActionButton_Close";
 // 两种领取是两条独立链路，各自一套步骤，配置里也是两个开关。
 // 每日活跃奖励：探索指南 -> 「全部」(每日活跃页) -> 活跃度奖励 -> 最终领取 -> 关窗（验证关掉）
 constexpr RewardStep kDailyRewardSteps[] = {
-    {0, "W_HTButton_AdventureManual", 120, "open-panel", true, nullptr, false},
+    {8, "W_HTButton_AdventureManual", 120, "open-panel", true, nullptr, false},
     {0, "BPUI_RadioBox_Table_1", 120, "daily-tab-all", true, kCaptionAll, false},
     {3, "", 60, "daily-page-ready", true, nullptr, false},
     {1, "ReceiveButton", 30, "activity-reward", false, nullptr, true},
@@ -102,9 +103,9 @@ constexpr RewardStep kDailyRewardSteps[] = {
 // 注意：环期任务入口 W_HTButton_CombatAward 在主界面 HUD 上，**不能先开探索指南面板**——
 // 面板一开就把它挡成不可点击，点了也只会看到上次停留的每日活跃页。
 constexpr RewardStep kPeriodicRewardSteps[] = {
-    // 先把上一条链路可能留下的面板关掉（同样要验证关干净），否则它会挡住 HUD 上的入口按钮。
-    {7, "", 15, "clear-leftover-panel", true, nullptr, false},
-    {0, "W_HTButton_CombatAward", 90, "combat-award", true, nullptr, false},
+    // 面板可能已经被上一条链路打开：「环期任务」页就在同一个面板里，直接在面板里切页就行，
+    // 不必（也点不到）HUD 上被面板挡住的入口按钮。
+    {8, "W_HTButton_CombatAward", 90, "combat-award", true, nullptr, false},
     {0, "BPUI_RadioBox_Table_1", 90, "periodic-tab", false, kCaptionPeriodic, false},
     {3, "BtnSubmitAllQuest", 60, "periodic-page-ready", true, nullptr, false},
     // 已经领完时这个按钮是 HIDDEN，点了也没用：跳过就好，后面照样把窗口关掉退出。
@@ -991,6 +992,30 @@ bool ContainsIgnoreCase(const char* text, const char* needle) {
     return false;
 }
 
+// 面板的页签行现在可点吗？可点说明面板已经开在屏幕上，可以直接在里面切页——
+// 这时候 HUD 上的入口按钮反而被面板挡成不可点击，别去点它。
+bool PanelTabReady() {
+    const AnomalyNteUiButtonsServiceV1* service = Buttons();
+    if (service == nullptr || service->status == nullptr || service->button_at == nullptr) {
+        return false;
+    }
+    AnomalyNteUiButtonsStatusV1 status{sizeof(status)};
+    if (service->status(service->user, &status).code != ANOMALY_STATUS_V1_OK) return false;
+    const std::string& known = S().reward_window_name;
+    for (std::uint32_t i = 0; i < status.button_count; ++i) {
+        AnomalyNteUiButtonSnapshotV1 button{sizeof(button)};
+        if (service->button_at(service->user, status.catalog_sequence, i, &button).code !=
+            ANOMALY_STATUS_V1_OK) {
+            continue;
+        }
+        if (std::strcmp(button.name, kPanelTabName) != 0) continue;
+        if (!ButtonClickable(button)) continue;
+        if (!known.empty() && std::strcmp(button.window, known.c_str()) != 0) continue;
+        return true;
+    }
+    return false;
+}
+
 // 关面板：HUD 上也有一个同名的 W_BoundActionButton_Close，全局前缀匹配点到它只会空转，
 // 所以按作用域分三轮找：先找领取按钮所在的窗口，再找 tab 行所在的窗口，最后才退回全局。
 bool ClickPanelClose(char* clicked_name, const std::size_t clicked_size, const char** used_scope) {
@@ -1056,29 +1081,6 @@ bool ClickPanelClose(char* clicked_name, const std::size_t clicked_size, const c
         }
     }
     return false;
-}
-
-// 关不掉的时候，把屏幕上到底还有什么打出来——下次就不用再猜关闭键叫什么。
-void LogRewardUiCandidates() {
-    const AnomalyNteUiButtonsServiceV1* service = Buttons();
-    if (service == nullptr || service->status == nullptr || service->button_at == nullptr) return;
-    AnomalyNteUiButtonsStatusV1 status{sizeof(status)};
-    if (service->status(service->user, &status).code != ANOMALY_STATUS_V1_OK) return;
-    int shown = 0;
-    for (std::uint32_t i = 0; i < status.button_count && shown < 12; ++i) {
-        AnomalyNteUiButtonSnapshotV1 button{sizeof(button)};
-        if (service->button_at(service->user, status.catalog_sequence, i, &button).code !=
-            ANOMALY_STATUS_V1_OK) {
-            continue;
-        }
-        if (button.category == ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_HIDDEN) continue;
-        const char* slash = std::strrchr(button.path, '/');
-        WinLogf("reward ui candidate: %s cat=%d text=%s path=%s", button.name,
-                static_cast<int>(button.category), button.text[0] != '\0' ? button.text : "-",
-                slash != nullptr ? slash + 1 : "-");
-        ++shown;
-    }
-    WinLogf("reward ui catalog: total=%u", status.button_count);
 }
 
 // 收尾排障：面板/弹窗判定依据 + 目录里所有 tab 行与关闭类控件的原始状态一次打全，
@@ -1147,6 +1149,15 @@ void LogRewardWindowState(const char* reason) {
 // mode 1 会把目录里所有同名按钮都点一遍。
 StepOutcome RewardClickStep(const RewardStep& step) {
     StepOutcome outcome{0, false};
+    if (step.mode == 8) {
+        // 面板已经开在屏幕上：这一步就已经完成，不用再点 HUD 入口。
+        if (PanelTabReady()) {
+            outcome.clicked = 1;
+            return outcome;
+        }
+        if (TryClickWidget(step.target)) outcome.clicked = 1;
+        return outcome;
+    }
     if (step.mode == 7) {
         // 验证式关窗：依次试「确定 → 弹窗关闭 → 最外层关闭 → 关闭键（前缀）」，
         // 一次只点一个，点完等目录刷新再看窗口是不是真的消失了。
@@ -1391,7 +1402,6 @@ void StartRewardChain(const RewardGroup group) {
     state.reward_tab_rounds = 0;
     state.reward_caption_logs = 0;
     state.reward_blocked_step = -1;
-    state.reward_stuck = false;
     WinLogf("reward chain started (%s, %d steps)", table.label, table.count);
     SetStatus(group == RewardGroup::Periodic
                   ? TextLocalized("status.periodic_start", "Claiming periodic quest rewards...")
@@ -1437,14 +1447,12 @@ void TickRewardChain() {
         }
         const StepOutcome outcome = RewardClickStep(step);
         if (state.reward_close_clicks >= kRewardCloseRetries) {
-            // 点满预算窗口还在：停手。否则会在一个点不动的关闭键上每秒点一次，永不结束。
-            state.reward_step = -1;
-            state.reward_stuck = true;
-            WinLogf("reward chain stopped: the reward window is still open (%s) after %u clicks",
-                    step.label, state.reward_close_clicks);
-            LogRewardWindowState("stuck");
-            SetStatus(TextLocalized("status.reward_window_stuck",
-                "Rewards are claimed but the reward window is still open; close it and the chain can continue."));
+            // 点满预算还没确认关掉：记一条警告就往下走。奖励已经在面板里领完，
+            // 后面没有任何需要 HUD 的步骤，没必要为这个窗口把整条链卡死。
+            WinLogf("reward step %s: the reward window is still open after %u clicks; "
+                    "carrying on without it", step.label, state.reward_close_clicks);
+            LogRewardWindowState("close step give-up");
+            AdvanceRewardStep(1u, false);
             return;
         }
         if (outcome.clicked > 0) {
@@ -1457,13 +1465,11 @@ void TickRewardChain() {
             if (SubmitScan()) state.reward_wait = 30;
             return;
         }
-        // 关不掉：停在这里，绝不带着开着的面板进下一条链路（面板会挡死 HUD 入口按钮）。
-        state.reward_step = -1;
-        state.reward_stuck = true;
-        WinLogf("reward chain stopped: the reward window is still open (%s)", step.label);
-        LogRewardUiCandidates();
-        SetStatus(TextLocalized("status.reward_window_stuck",
-            "Rewards are claimed but the reward window is still open; close it and the chain can continue."));
+        // 没有可点的关闭控件也没确认收起来：记警告往下走，不为这个窗口把整条链卡死。
+        WinLogf("reward step %s: no clickable close control and the window is unconfirmed; "
+                "carrying on", step.label);
+        LogRewardWindowState("close step give-up");
+        AdvanceRewardStep(1u, false);
         return;
     }
     const StepOutcome outcome = RewardClickStep(step);
@@ -1472,15 +1478,12 @@ void TickRewardChain() {
 
 bool RewardChainBusy() { return S().reward_step >= 0; }
 
-bool RewardChainStuck() { return S().reward_stuck; }
-
 void AbortRewardChain() {
     State& state = S();
     state.reward_step = -1;
     state.reward_wait = 0;
     state.reward_retries = 0;
     state.reward_tab_rounds = 0;
-    state.reward_stuck = false;
 }
 
 // ---------------------------------------------------------------------------

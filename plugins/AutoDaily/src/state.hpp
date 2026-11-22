@@ -160,7 +160,6 @@ struct State {
     int reward_tab_rounds{};  // 前置步骤失败后退回切页步骤重试的次数
     int reward_caption_logs{};  // 诊断日志配额（避免每轮扫描刷屏）
     int reward_blocked_step{-1};  // 已经打过「控件不可点击」日志的步骤
-    bool reward_stuck{};  // 奖励窗口关不掉：链路停下，不带着面板进下一步
     std::uint32_t reward_close_clicks{};  // 关窗步骤点了几次（超预算就收手，避免空转）
     std::uint32_t reward_logged_click{};  // 已回报过结果的点击次数（每次点击只打一条）
     // 领取按钮所在窗口的 path 前缀：收尾时优先在这个窗口里找关闭键，

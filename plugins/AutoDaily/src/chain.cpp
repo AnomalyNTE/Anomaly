@@ -370,14 +370,6 @@ void ChainTick(const double delta_seconds) {
                 }
                 return;
             }
-            if (RewardChainStuck()) {
-                // 面板还开在屏幕上：再往下走只会被它挡死，停在这里把原因说清楚。
-                AbortRewardChain();
-                WinLog("daily reward stage stopped: the reward window is still open");
-                ChainStop(StopCause::Manual, "stage.reward_window_stuck",
-                          "The reward window could not be closed");
-                return;
-            }
             WinLog("daily reward stage finished");
             SetNote("stage.daily_rewards_done", "Daily rewards finished");
             EnterNext(Stage::DailyRewards);
@@ -396,13 +388,6 @@ void ChainTick(const double delta_seconds) {
                     ChainStop(StopCause::Manual, "stage.periodic_timeout",
                               "The periodic quest stage timed out");
                 }
-                return;
-            }
-            if (RewardChainStuck()) {
-                AbortRewardChain();
-                WinLog("periodic reward stage stopped: the reward window is still open");
-                ChainStop(StopCause::Manual, "stage.reward_window_stuck",
-                          "The reward window could not be closed");
                 return;
             }
             WinLog("periodic reward stage finished");

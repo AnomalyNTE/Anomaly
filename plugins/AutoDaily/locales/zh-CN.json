@@ -113,8 +113,6 @@
     "action.dungeon": "立即打副本",
     "action.save": "保存配置",
     "action.defaults": "恢复默认",
-    "panel.logs": "日志",
-    "status.reward_window_stuck": "奖励已领完，但奖励窗口没能关掉：请手动关闭窗口后再继续（面板会挡住下一个入口）。",
-    "stage.reward_window_stuck": "奖励窗口关不掉，一条龙已停下"
+    "panel.logs": "日志"
   }
 }

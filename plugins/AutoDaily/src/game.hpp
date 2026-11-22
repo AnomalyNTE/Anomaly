@@ -46,7 +46,6 @@ SessionIdentity CurrentSession();
 void TickRewardChain();
 bool RewardChainBusy();
 // 奖励窗口关不掉：上一条链路的这一步主动停了，调用方不要再进下一阶段。
-bool RewardChainStuck();
 void AbortRewardChain();
 
 // ---- 进游戏 ----
