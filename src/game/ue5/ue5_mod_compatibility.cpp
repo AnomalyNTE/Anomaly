@@ -1,4 +1,5 @@
 #include "anomaly/ue5_mod_compatibility.hpp"
+#include "anomaly/memory_files.hpp"
 
 #include <Windows.h>
 #include <bcrypt.h>
@@ -64,7 +65,17 @@ void Packed(Bytes& out, std::uint64_t value, std::size_t n, bool big = false) {
     if (n < 8 && (value >> (n * 8))) throw Invalid("container exceeds packed integer range");
     for (std::size_t i{}; i < n; ++i) out.push_back(static_cast<std::uint8_t>(value >> (8 * (big ? n - 1 - i : i))));
 }
+std::uint64_t FileSize(const std::filesystem::path& path) {
+    if (const auto file = FindMemoryFile(path)) return file->bytes.size();
+    return std::filesystem::file_size(path);
+}
 Bytes Range(const std::filesystem::path& path, std::uint64_t at, std::size_t n) {
+    if (const auto file = FindMemoryFile(path)) {
+        if (n > MaxMetadata || at > file->bytes.size() || n > file->bytes.size() - at)
+            throw Invalid("invalid memory container range");
+        const auto bytes = file->bytes.subspan(static_cast<std::size_t>(at), n);
+        return {bytes.begin(), bytes.end()};
+    }
     const auto size = std::filesystem::file_size(path);
     if (n > MaxMetadata || at > size || n > size - at) throw Invalid("invalid container range");
     std::ifstream file(path, std::ios::binary);
@@ -182,7 +193,7 @@ struct Container {
     std::array<std::uint8_t, 32> key{};
 
     Container(std::filesystem::path file, const Ue5ContainerCodecs& codecs) : path(std::move(file)) {
-        toc = Range(path, 0, static_cast<std::size_t>(std::filesystem::file_size(path)));
+        toc = Range(path, 0, static_cast<std::size_t>(FileSize(path)));
         Reader r{toc};
         constexpr char magic[] = "-==--==--==--==-";
         if (toc.size() < 144 || std::memcmp(toc.data(), magic, 16)) throw Invalid("invalid IoStore header");
@@ -643,7 +654,7 @@ Bytes EmptyPak() {
 }
 std::filesystem::path WriteOverlay(const std::filesystem::path& candidate,
     const std::filesystem::path& directory, const std::vector<RetainedPackage>& packages,
-    const std::vector<RetainedChunk>& bulk) {
+    const std::vector<RetainedChunk>& bulk, std::shared_ptr<const MemoryFileSet>& memory_files) {
     const auto path_text = candidate.generic_u8string();
     Bytes identity(reinterpret_cast<const std::uint8_t*>(path_text.data()),
         reinterpret_cast<const std::uint8_t*>(path_text.data()) + path_text.size());
@@ -701,9 +712,20 @@ std::filesystem::path WriteOverlay(const std::filesystem::path& candidate,
     Put(toc, 40, std::uint32_t{32}); Put(toc, 44, std::uint32_t{65536});
     Put(toc, 52, std::uint32_t{1}); Put(toc, 56, container_id); Put(toc, 88, ~std::uint64_t{});
     Append(toc, ids); Append(toc, offsets); Append(toc, blocks); Append(toc, metadata);
+    auto empty_pak = EmptyPak();
+    if (FindMemoryFile(candidate)) {
+        const auto root = MemoryFileDirectory(candidate.parent_path());
+        auto payload = std::make_shared<std::array<Bytes, 3>>(
+            std::array<Bytes, 3>{std::move(empty_pak), std::move(toc), std::move(data)});
+        std::vector<MemoryFile> files;
+        std::size_t i{};
+        for (const auto* extension : {".pak", ".utoc", ".ucas"})
+            files.push_back({root / (stem + extension), payload, (*payload)[i++]});
+        memory_files = std::make_shared<MemoryFileSet>(std::move(files));
+        return root / (stem + ".pak");
+    }
     std::filesystem::create_directories(directory);
     const auto pak = directory / (stem + ".pak");
-    const auto empty_pak = EmptyPak();
     WriteImmutable(directory / (stem + ".ucas"), data);
     WriteImmutable(directory / (stem + ".utoc"), toc);
     WriteImmutable(pak, empty_pak);
@@ -735,7 +757,7 @@ Ue5ModCompatibilityPlan Ue5ModCompatibility::Prepare(const std::filesystem::path
     const std::vector<std::filesystem::path>& official_containers, const std::filesystem::path& output_directory,
     const Ue5ContainerCodecs& codecs) {
     auto toc = candidate; toc.replace_extension(L".utoc");
-    if (!std::filesystem::is_regular_file(toc)) return {}; // Legacy paks do not use Zen unversioned export bundles.
+    if (!FindMemoryFile(toc) && !std::filesystem::is_regular_file(toc)) return {}; // Legacy paks do not use Zen unversioned export bundles.
     Container mod(toc, codecs);
     if (mod.packages.empty()) return {};
     std::map<std::uint64_t, std::shared_ptr<Container>> base;
@@ -930,7 +952,7 @@ Ue5ModCompatibilityPlan Ue5ModCompatibility::Prepare(const std::filesystem::path
         }
         if (!found) throw Invalid("retained package has mod-only bulk data that cannot be masked");
     }
-    plan.overlay = WriteOverlay(candidate, output_directory, retained, bulk);
+    plan.overlay = WriteOverlay(candidate, output_directory, retained, bulk, plan.memory_files);
     return plan;
 }
 

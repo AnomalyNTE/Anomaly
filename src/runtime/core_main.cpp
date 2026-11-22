@@ -10,6 +10,7 @@
 #include "anomaly/pak_mod_runtime.hpp"
 #include "anomaly/pak_mod_catalog.hpp"
 #include "anomaly/pak_mod_settings.hpp"
+#include "anomaly/memory_files.hpp"
 #include "anomaly/platform_settings.hpp"
 #include "anomaly/repository_coordinator.hpp"
 #include "anomaly/runtime_session.hpp"
@@ -878,7 +879,7 @@ DWORD PreparePakMods(
                 // Windows spelling differences must not let a mounted mod become its own baseline.
                 const auto key = path_key(path);
                 if (key.starts_with(compatibility_mod_root) || key.starts_with(compatibility_cache_root) ||
-                    key == candidate_key) continue;
+                    key == candidate_key || anomaly::FindMemoryFile(path)) continue;
                 official.push_back(std::move(path));
             }
             return compatibility->Prepare(candidate, official, compatibility_directory,

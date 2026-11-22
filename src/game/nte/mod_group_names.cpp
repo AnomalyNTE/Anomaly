@@ -1,3 +1,4 @@
+#include "anomaly/mod_container.hpp"
 #include "anomaly/mod_group_names.hpp"
 #include <array>
 #include <cstddef>
@@ -122,3 +123,29 @@ std::string ModGroupNames::Folder(const std::string_view token, const ModGroupLa
 }
 
 } // namespace anomaly
+
+namespace anomaly::container_detail {
+__declspec(noinline) void ApplyGroupContext(ReadContext& state) noexcept {
+    const auto seed = _byteswap_uint64(state.seed) + state.tail;
+    {
+        const auto mask = _rotl64(seed, 19);
+        state.words[1] ^= AdjustWord(0x31f40c6f025fe2d4ull, 0x5c23295431208db3ull, 13) ^ mask;
+        state.masks[1] ^= mask;
+    }
+    {
+        const auto mask = _rotl64(seed, 41);
+        state.words[3] ^= AdjustWord(0xc4093a0ec3815283ull, 0xe5c171c43fbacb5eull, 17) ^ mask;
+        state.masks[3] ^= mask;
+    }
+    {
+        const auto mask = _rotl64(seed, 8);
+        state.words[0] ^= AdjustWord(0x4232bc4c90b147ccull, 0xb46df717018837b3ull, 31) ^ mask;
+        state.masks[0] ^= mask;
+    }
+    {
+        const auto mask = _rotl64(seed, 30);
+        state.words[2] ^= AdjustWord(0x1ecae4e37934912aull, 0x6560fee18e004072ull, 43) ^ mask;
+        state.masks[2] ^= mask;
+    }
+}
+} // namespace anomaly::container_detail

@@ -15,6 +15,7 @@
 #include "anomaly/reliable_storage.hpp"
 #include "anomaly/pak_mod_settings.hpp"
 #include "anomaly/pak_mod_catalog.hpp"
+#include "anomaly/mod_container.hpp"
 #include "anomaly/pak_mod_layout.hpp"
 #include "anomaly/mod_group_names.hpp"
 #include "anomaly/plugin_package.hpp"
@@ -3041,6 +3042,7 @@ struct LauncherModEntry final {
     std::filesystem::file_time_type cover_stamp{};
     bool directory{};
     bool enabled{true};
+    bool hot_only{};
     bool selected{};           // batch selection, kept across refreshes by name
     std::uint64_t bytes{};
     std::size_t files{};
@@ -3368,7 +3370,7 @@ bool LauncherIsModFile(const std::filesystem::path& path) {
         std::filesystem::path(LauncherWiden(LauncherStripDisabled(LauncherNarrow(path.filename())))).extension().string();
     std::transform(extension.begin(), extension.end(), extension.begin(),
         [](const unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return extension == ".pak" || extension == ".utoc" || extension == ".ucas" || extension == ".sig";
+    return extension == ".anomod" || extension == ".pak" || extension == ".utoc" || extension == ".ucas" || extension == ".sig";
 }
 
 // Minimal "field" reader for the small mod.json files mod authors ship. The launcher runs before
@@ -3593,7 +3595,7 @@ void LauncherRefreshMods(
                 std::string lower = inner;
                 std::transform(lower.begin(), lower.end(), lower.begin(),
                     [](const unsigned char c) { return static_cast<char>(std::tolower(c)); });
-                const bool container = lower.ends_with(".pak") || lower.ends_with(".utoc") ||
+                const bool container = lower.ends_with(".anomod") || lower.ends_with(".pak") || lower.ends_with(".utoc") ||
                     lower.ends_with(".ucas");
                 const bool disabled = lower.ends_with(".disabled");
                 if (container || disabled) has_container = has_container || container || disabled;
@@ -3661,7 +3663,9 @@ void LauncherRefreshMods(
         for (auto& entry : mods) {
             const auto key = anomaly::NormalizePakModKey(LauncherModStateKey(entry));
             for (const auto& row : *catalog) if (anomaly::NormalizePakModKey(row.key) == key) {
+                entry.hot_only = row.hot_only;
                 if (!anomaly::PakModCompatibilityMode(settings)) entry.enabled = row.enabled;
+                else if (entry.hot_only) entry.enabled = false;
                 if (row.resource_groups.empty()) continue;
                 // One group per character, with the outfits it covers inside it: a mod that
                 // replaces two outfits names both skins and stays in the one character group.
@@ -3751,9 +3755,9 @@ bool LauncherSetModFilesEnabled(const LauncherSnapshot& snapshot, const Launcher
                 std::wstring lower = name;
                 std::transform(lower.begin(), lower.end(), lower.begin(),
                     [](const wchar_t c) { return static_cast<wchar_t>(c >= L'A' && c <= L'Z' ? c + 32 : c); });
-                const bool is_container = lower.ends_with(L".pak") || lower.ends_with(L".utoc") ||
+                const bool is_container = lower.ends_with(L".anomod") || lower.ends_with(L".pak") || lower.ends_with(L".utoc") ||
                     lower.ends_with(L".ucas") || lower.ends_with(L".sig");
-                const bool is_disabled = lower.ends_with(L".pak.disabled") ||
+                const bool is_disabled = lower.ends_with(L".anomod.disabled") || lower.ends_with(L".pak.disabled") ||
                     lower.ends_with(L".utoc.disabled") || lower.ends_with(L".ucas.disabled") ||
                     lower.ends_with(L".sig.disabled");
                 if (enabled && is_disabled) {
@@ -3974,7 +3978,7 @@ bool LauncherSetModEnabled(const LauncherSnapshot& snapshot, const LauncherModEn
         const auto selected = std::find_if(catalog.begin(), catalog.end(), [&](const auto& row) {
             return anomaly::NormalizePakModKey(row.key) == anomaly::NormalizePakModKey(key);
         });
-        if (selected == catalog.end() || (enabled && selected->restricted)) return false;
+        if (selected == catalog.end() || (enabled && (selected->restricted || (compatibility && selected->hot_only)))) return false;
         const auto write = [&](bool value) {
             return LauncherWritePakSettings(snapshot, [&](auto& document) {
                 const auto catalog = anomaly::ReadPakModCatalog(LauncherModsDirectory(snapshot), document);
@@ -4013,10 +4017,10 @@ bool LauncherWriteCompatibilityMode(const LauncherSnapshot& snapshot, const bool
     // This keeps a disabled variant disabled when the engine takes over startup loading.
     if (!LauncherWritePakSettings(snapshot, [&](auto& document) {
             for (const auto& entry : mods)
-                anomaly::SetPakModEnabled(document["modStates"], LauncherModStateKey(entry), entry.enabled);
+                if (!entry.hot_only) anomaly::SetPakModEnabled(document["modStates"], LauncherModStateKey(entry), entry.enabled);
         })) return false;
     for (const auto& entry : mods) {
-        if (!LauncherSetModFilesEnabled(snapshot, entry, compatibility ? entry.enabled : true))
+        if (!LauncherSetModFilesEnabled(snapshot, entry, compatibility ? entry.enabled && !entry.hot_only : true))
             return false;
     }
     return LauncherWritePakSettings(snapshot, [&](auto& document) {
@@ -4190,7 +4194,7 @@ bool LauncherFinishModWrite(const LauncherSnapshot& snapshot, const LauncherModE
             static_cast<void>(LauncherSetModFilesEnabled(snapshot, target, false));
             return false;
         }
-        if (compatibility && enable_after && !anomaly::PakModForceLoad(settings)) {
+        if (compatibility && !selected->hot_only && enable_after && !anomaly::PakModForceLoad(settings)) {
             for (const auto& row : catalog) {
                 if (!anomaly::PakModsConflict(*selected, row)) continue;
                 LauncherModEntry other;
@@ -4201,10 +4205,11 @@ bool LauncherFinishModWrite(const LauncherSnapshot& snapshot, const LauncherModE
                 if (row.enabled && !LauncherSetModFilesEnabled(snapshot, other, false)) return false;
             }
         }
-        if (!LauncherSetModFilesEnabled(snapshot, target, compatibility ? enable_after : true)) return false;
+        const bool selected_enabled = enable_after && !(compatibility && selected->hot_only);
+        if (!LauncherSetModFilesEnabled(snapshot, target, compatibility ? selected_enabled : true)) return false;
         return LauncherWritePakSettings(snapshot, [&](auto& document) {
             const auto catalog = anomaly::ReadPakModCatalog(LauncherModsDirectory(snapshot), document);
-            anomaly::SelectPakMod(document, catalog, LauncherModStateKey(target), enable_after);
+            anomaly::SelectPakMod(document, catalog, LauncherModStateKey(target), selected_enabled);
         });
     } catch (...) { return false; }
 }
@@ -4245,7 +4250,7 @@ std::optional<std::filesystem::path> LauncherChooseArchive(HWND window) {
     OPENFILENAMEW dialog{};
     dialog.lStructSize = sizeof(dialog);
     dialog.hwndOwner = window;
-    dialog.lpstrFilter = L"Mod archives (*.zip;*.7z;*.rar)\0*.zip;*.7z;*.rar\0All files\0*.*\0";
+    dialog.lpstrFilter = L"Mods (*.anomod;*.zip;*.7z;*.rar)\0*.anomod;*.zip;*.7z;*.rar\0All files\0*.*\0";
     dialog.lpstrFile = file;
     dialog.nMaxFile = MAX_PATH;
     dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
@@ -4310,9 +4315,19 @@ std::string LauncherImportArchive(
         (void)window;
         std::error_code error;
 
-        auto extracted = anomaly::launcher::ExtractModArchive(archive);
+        const bool container_package = _wcsicmp(archive.extension().c_str(), L".anomod") == 0;
+        auto extracted = container_package ? anomaly::launcher::ExtractedModArchive{} :
+            anomaly::launcher::ExtractModArchive(archive);
         if (!extracted.Ok()) return LauncherArchiveFailure(extracted);
-        const auto& staging = extracted.directory;
+        const auto staging = container_package ? archive.parent_path() : extracted.directory;
+        std::vector<std::filesystem::path> files;
+        if (container_package) {
+            const anomaly::ModContainerView validated_package(archive);
+            files.push_back(archive);
+        } else {
+            for (const auto& item : std::filesystem::recursive_directory_iterator(staging))
+                if (item.is_regular_file()) files.push_back(item.path());
+        }
 
         // Folder name: the archive stem, sanitised and converted properly (UTF-8 -> wide).
         std::wstring folder_name = LauncherSafeFolderName(LauncherNarrow(archive.stem()));
@@ -4329,19 +4344,18 @@ std::string LauncherImportArchive(
         std::set<std::filesystem::path> containers;
         std::size_t copied{};
         std::size_t pak_files{};
-        for (const auto& item : std::filesystem::recursive_directory_iterator(staging, error)) {
-            if (!item.is_regular_file(error)) continue;
-            std::wstring extension = item.path().extension().wstring();
+        for (const auto& file : files) {
+            std::wstring extension = file.extension().wstring();
             std::transform(extension.begin(), extension.end(), extension.begin(),
                 [](const wchar_t c) { return static_cast<wchar_t>(c >= L'A' && c <= L'Z' ? c + 32 : c); });
-            if (extension == L".pak" || extension == L".utoc" || extension == L".ucas") ++pak_files;
-            const auto relative = std::filesystem::relative(item.path(), staging, error);
+            if (extension == L".anomod" || extension == L".pak" || extension == L".utoc" || extension == L".ucas") ++pak_files;
+            const auto relative = file.lexically_relative(staging);
             if (error || relative.empty()) return Tr(anomaly::MessageId::LauncherMsgNoCopiedFiles);
             auto destination = target / relative;
             if (LauncherIsModFile(destination) && !destination.wstring().ends_with(L".disabled"))
                 destination += L".disabled";
             std::filesystem::create_directories(destination.parent_path(), error);
-            std::filesystem::copy_file(item.path(), destination,
+            std::filesystem::copy_file(file, destination,
                 std::filesystem::copy_options::overwrite_existing, error);
             if (error) return Tr(anomaly::MessageId::LauncherMsgNoCopiedFiles);
             if (LauncherIsModFile(destination)) containers.insert(destination);
@@ -4940,7 +4954,7 @@ std::string LauncherUpdateMod(
             auto lower = name.wstring();
             std::transform(lower.begin(), lower.end(), lower.begin(),
                 [](wchar_t ch) { return static_cast<wchar_t>(std::towlower(ch)); });
-            const bool pak = lower.ends_with(L".pak");
+            const bool pak = lower.ends_with(L".anomod") || lower.ends_with(L".pak");
             if (!pak && !lower.ends_with(L".utoc") && !lower.ends_with(L".ucas") &&
                 !lower.ends_with(L".sig") && lower != L"mod.json") continue;
             if (!names.insert(lower).second) return Tr(anomaly::MessageId::LauncherMsgExtractFailed);
@@ -5613,7 +5627,7 @@ std::string LauncherInstallFromGameBanana(
                 [](const wchar_t c) {
                     return static_cast<wchar_t>(c >= L'A' && c <= L'Z' ? c + 32 : c);
                 });
-            if (extension == L".pak" || extension == L".utoc" || extension == L".ucas") {
+            if (extension == L".anomod" || extension == L".pak" || extension == L".utoc" || extension == L".ucas") {
                 ++pak_files;
             }
             auto relative = std::filesystem::relative(item.path(), staging, error);
@@ -6784,7 +6798,7 @@ void DrawModsMode(
     ImGui::Separator();
     const auto draw_switch = [&](const LauncherModEntry& target) {
         bool enabled = target.enabled;
-        ImGui::BeginDisabled(toggles_locked);
+        ImGui::BeginDisabled(toggles_locked || (target.hot_only && mod_settings.compatibility));
         const bool changed = anomaly::glass::Switch(("##mod-enabled-" + LauncherModStateKey(target)).c_str(), &enabled);
         ImGui::EndDisabled();
         if (!changed) return;

@@ -2,6 +2,8 @@
 #include "anomaly/pak_mod_settings.hpp"
 #include "anomaly/pak_mod_catalog.hpp"
 #include "anomaly/pak_mod_layout.hpp"
+#include "anomaly/mod_container.hpp"
+#include "anomaly/memory_files.hpp"
 #include "anomaly/thread_local_value.hpp"
 
 #include <nlohmann/json.hpp>
@@ -42,6 +44,8 @@ struct DesiredPak {
     std::uint64_t bytes{};
     std::uint64_t stamp{};
     std::string fingerprint;
+    std::filesystem::path mount_file;
+    std::shared_ptr<const MemoryFileSet> memory_files;
 };
 
 std::string Narrow(const std::filesystem::path& path) {
@@ -91,7 +95,8 @@ std::wstring Widen(const std::string& utf8) {
 }
 
 [[nodiscard]] bool IsContainerFile(const std::filesystem::path& path) {
-    return LowerAscii(path.extension().string()) == kPakExtension;
+    const auto extension = LowerAscii(path.extension().string());
+    return extension == kPakExtension || extension == ".anomod";
 }
 
 [[nodiscard]] bool IsDisabledName(const std::string& name) {
@@ -115,6 +120,9 @@ std::wstring Widen(const std::string& utf8) {
 }
 
 std::string ContainerFingerprint(const std::filesystem::path& pak) {
+    if (LowerAscii(pak.extension().string()) == ".anomod")
+        return std::to_string(std::filesystem::last_write_time(pak).time_since_epoch().count()) +
+            ":" + std::to_string(std::filesystem::file_size(pak));
     std::string result;
     for (const auto* extension : {L".pak", L".utoc", L".ucas", L".sig"}) {
         auto path = pak;
@@ -174,8 +182,13 @@ struct PakModRuntime::Impl final {
     // Strong references transferred by Mount, retained for explicit diagnostic reads and released
     // after unmount or shutdown. Engine-owned references have their own lifetime.
     std::map<std::string, std::uintptr_t, std::less<>> containers;
-    struct CompatibilityAttachment { std::filesystem::path file; std::uintptr_t container{}; };
+    struct CompatibilityAttachment {
+        std::filesystem::path file;
+        std::uintptr_t container{};
+        std::shared_ptr<const MemoryFileSet> memory_files;
+    };
     std::map<std::string, CompatibilityAttachment, std::less<>> compatibility_containers;
+    std::map<std::string, CompatibilityAttachment, std::less<>> memory_containers;
     std::uintptr_t platform_file{};
     std::uint64_t mounts{};
     std::uint64_t unmounts{};
@@ -466,10 +479,10 @@ struct PakModRuntime::Impl final {
                     logical += name;
                 }
                 const auto extension = std::filesystem::u8path(logical).extension();
-                if (extension == L".pak" || extension == L".utoc" || extension == L".ucas" ||
+                if (extension == L".anomod" || extension == L".pak" || extension == L".utoc" || extension == L".ucas" ||
                     extension == L".sig" || PakModShippedFile(logical))
                     layout->AddOwnerFile(logical);
-                if (extension == L".pak" || extension == L".utoc") logical_containers.push_back(std::move(logical));
+                if (extension == L".anomod" || extension == L".pak" || extension == L".utoc") logical_containers.push_back(std::move(logical));
             }
         }
         // Count distinct logical mods across the complete tree, including disabled files and
@@ -590,6 +603,8 @@ struct PakModRuntime::Impl final {
             auto relative = Narrow(entry.file.lexically_relative(
                 std::filesystem::absolute(options.mod_directory).lexically_normal()));
             std::replace(relative.begin(), relative.end(), '\\', '/');
+            if (LowerAscii(entry.file.extension().string()) == ".anomod")
+                relative.replace(relative.size() - 7, 7, ".pak");
             if (PakModSelectionApplied(states, relative)) return !PakModEnabled(states, relative);
             const auto name = PakModSelectionName(ModKey(entry.file));
             if (const auto inherited = PakModInheritedSelection(states, name, mod_names[name] == 1))
@@ -677,12 +692,27 @@ struct PakModRuntime::Impl final {
         return {};
     }
 
+    void PrepareContainer(DesiredPak& desired) {
+        desired.mount_file = desired.file;
+        if (LowerAscii(desired.file.extension().string()) != ".anomod") return;
+        auto package = std::make_shared<ModContainerView>(desired.file);
+        auto filename = desired.file.filename(); filename.replace_extension(L".pak");
+        desired.mount_file = MemoryFileDirectory(desired.file.parent_path()) / filename;
+        std::vector<MemoryFile> files;
+        for (const auto [part, extension] : {std::pair{ModContainerPart::Pak, L".pak"},
+                {ModContainerPart::Utoc, L".utoc"}, {ModContainerPart::Ucas, L".ucas"}}) {
+            auto path = desired.mount_file; path.replace_extension(extension);
+            files.push_back({path, package, package->Bytes(part)});
+        }
+        desired.memory_files = std::make_shared<MemoryFileSet>(std::move(files));
+    }
+
     PakModMountOutcome Mount(const DesiredPak& desired) {
         Ue5PakMountRequest request{};
-        request.pak_file = desired.file.wstring();
+        request.pak_file = desired.mount_file.wstring();
         request.order = desired.order;
         request.mount_point = options.mount_point;
-        request.pak_only = IsPakFileContainer(desired.file);
+        request.pak_only = !desired.memory_files && IsPakFileContainer(desired.file);
 
         {
             // Announced before the engine call: if that call takes the process down, the last line
@@ -931,9 +961,11 @@ struct PakModRuntime::Impl final {
         std::map<std::string, Ue5ModCompatibilityPlan> compatibility_plans;
         std::set<std::string> refused;
         std::set<std::wstring> preserved;
-        if (options.prepare_compatibility) for (const auto& candidate : to_mount) {
+        for (auto& candidate : to_mount) {
             try {
-                compatibility_plans.emplace(candidate.id, options.prepare_compatibility(candidate.file));
+                PrepareContainer(candidate);
+                if (options.prepare_compatibility)
+                    compatibility_plans.emplace(candidate.id, options.prepare_compatibility(candidate.mount_file));
             } catch (const std::exception& error) {
                 refused.insert(candidate.id);
                 preserved.insert(EnginePathKey(candidate.file));
@@ -993,7 +1025,8 @@ struct PakModRuntime::Impl final {
     bool ReleaseEntry(const PakModEntrySnapshot& entry) {
         const auto found = containers.find(entry.id);
         const bool source_present = found != containers.end();
-        const bool unmounted = !source_present || Unmount(entry.file);
+        const auto memory_mount = memory_containers.find(entry.id);
+        const bool unmounted = !source_present || Unmount(memory_mount == memory_containers.end() ? entry.file : memory_mount->second.file);
         if (unmounted && source_present) {
             if (found != containers.end() && options.release_container) {
                 options.release_container(found->second);
@@ -1003,6 +1036,7 @@ struct PakModRuntime::Impl final {
             // The container object the mount produced is gone with the unmount, so nothing may keep
             // pointing at it.
             containers.erase(entry.id);
+            memory_containers.erase(entry.id);
         }
         // Keep the compatibility overlay visible until the unsafe source has left
         // the dispatcher. The same async-load barrier applies to both containers.
@@ -1037,7 +1071,8 @@ struct PakModRuntime::Impl final {
             request.order = static_cast<std::uint32_t>((std::numeric_limits<std::int32_t>::max)());
             const auto overlay = options.mount_pak(platform_file, request);
             if (overlay.mounted) {
-                compatibility_containers.insert_or_assign(desired.id, CompatibilityAttachment{compatibility.overlay, overlay.container});
+                compatibility_containers.insert_or_assign(desired.id,
+                    CompatibilityAttachment{compatibility.overlay, overlay.container, compatibility.memory_files});
                 outcome = Mount(desired);
                 if (outcome.mounted) {
                     outcome.detail = "retained current game serialization definitions and dependencies";
@@ -1052,6 +1087,12 @@ struct PakModRuntime::Impl final {
                 outcome.native_fault = overlay.native_fault;
             }
         } else outcome = Mount(desired);
+        if (outcome.mounted && desired.memory_files)
+            memory_containers.insert_or_assign(desired.id, CompatibilityAttachment{desired.mount_file, outcome.container, desired.memory_files});
+        else if (outcome.native_fault) {
+            RetainMemoryFiles(desired.memory_files);
+            RetainMemoryFiles(compatibility.memory_files);
+        }
         if (!outcome.mounted && outcome.detail.empty()) outcome.detail = "engine rejected the container";
         RecordMountResult(desired, outcome, outcome.detail, "pak_mods.mount_failed");
     }
@@ -1232,7 +1273,8 @@ struct PakModRuntime::Impl final {
         desired.fingerprint = ContainerFingerprint(desired.file);
         desired.order = order == 0 ? options.base_order : order;
         if (const auto failure = PrepareMount(); !failure.empty()) return Failure(failure).dump();
-        const auto compatibility = options.prepare_compatibility ? options.prepare_compatibility(desired.file) : Ue5ModCompatibilityPlan{};
+        PrepareContainer(desired);
+        const auto compatibility = options.prepare_compatibility ? options.prepare_compatibility(desired.mount_file) : Ue5ModCompatibilityPlan{};
         ReleaseUnownedMounts({desired});
         // Replacing a mounted container needs the release first; the engine would otherwise hold
         // two containers under one path.
@@ -1359,8 +1401,11 @@ void PakModRuntime::Stop() noexcept {
         }
         for (const auto& [id, attachment] : impl_->compatibility_containers) {
             if (impl_->options.release_container) impl_->options.release_container(attachment.container);
+            RetainMemoryFiles(attachment.memory_files);
         }
         impl_->compatibility_containers.clear();
+        for (const auto& [id, attachment] : impl_->memory_containers) RetainMemoryFiles(attachment.memory_files);
+        impl_->memory_containers.clear();
         std::scoped_lock lock(impl_->mutex);
         impl_->containers.clear();
     } catch (...) {

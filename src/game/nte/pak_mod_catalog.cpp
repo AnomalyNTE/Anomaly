@@ -1,11 +1,13 @@
 #include "anomaly/pak_mod_catalog.hpp"
 #include "anomaly/pak_mod_layout.hpp"
+#include "anomaly/mod_container.hpp"
 #include "anomaly/reliable_storage.hpp"
 #include <Windows.h>
 #include <algorithm>
 #include <array>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <span>
 
 namespace anomaly {
@@ -72,19 +74,28 @@ struct Reader {
         return Utf8(wide);
     }
 };
-std::vector<std::uint8_t> ReadRange(const std::filesystem::path& path, std::uint64_t at, std::uint64_t size) {
-    const auto length = std::filesystem::file_size(path);
+struct IndexFile {
+    std::filesystem::path path;
+    std::uint64_t size;
+    std::span<const std::uint8_t> memory{};
+};
+std::vector<std::uint8_t> ReadRange(const IndexFile& file, std::uint64_t at, std::uint64_t size) {
+    const auto length = file.size;
     if (size > MaxIndex || at > length || size > length - at) throw std::runtime_error("invalid container index range");
-    std::ifstream in(path, std::ios::binary);
+    if (!file.memory.empty()) {
+        const auto range = file.memory.subspan(static_cast<std::size_t>(at), static_cast<std::size_t>(size));
+        return {range.begin(), range.end()};
+    }
+    std::ifstream in(file.path, std::ios::binary);
     if (!in || !in.seekg(static_cast<std::streamoff>(at))) throw std::runtime_error("cannot open container index");
     std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
     if (!in.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(size)))
         throw std::runtime_error("cannot read container index");
     return bytes;
 }
-ContainerIndex ReadUtoc(const std::filesystem::path& path) {
+ContainerIndex ReadUtoc(const IndexFile& file) {
     // On-disk FIoStoreTocHeader and FIoDirectoryIndexResource, UE 5.6.1 Core/IO.
-    const auto header = ReadRange(path, 0, 144); Reader h{header};
+    const auto header = ReadRange(file, 0, 144); Reader h{header};
     constexpr char magic[] = "-==--==--==--==-";
     if (std::memcmp(header.data(), magic, 16)) throw std::runtime_error("invalid IoStore magic");
     const auto version = h.At<std::uint8_t>(16), flags = h.At<std::uint8_t>(80);
@@ -100,18 +111,18 @@ ContainerIndex ReadUtoc(const std::filesystem::path& path) {
     if (version >= 4) offset += std::uint64_t(h.At<std::uint32_t>(84)) * 4;
     if (version >= 5) offset += std::uint64_t(h.At<std::uint32_t>(96)) * 4;
     if (flags & 4) {
-        const auto length = ReadRange(path, offset, 4); Reader sign{length};
+        const auto length = ReadRange(file, offset, 4); Reader sign{length};
         offset += 4ull + std::uint64_t(sign.Count()) * 2 + std::uint64_t(blocks) * 20;
     }
     if (!index_size) {
         if (entries) throw std::runtime_error("IoStore directory index absent");
         return {};
     }
-    const auto chunk_data = ReadRange(path, 144, std::uint64_t(entries) * 22);
+    const auto chunk_data = ReadRange(file, 144, std::uint64_t(entries) * 22);
     // UE 5.6.1 IoStore.cpp: v8 stores FIoHash (20 bytes) in a 24-byte meta record;
     // older versions store a 32-byte hash in a 33-byte record. Never mix hash formats.
     const std::size_t hash_size = version >= 8 ? 20 : 32, meta_size = version >= 8 ? 24 : 33;
-    const auto metadata = ReadRange(path, offset + index_size, std::uint64_t(entries) * meta_size);
+    const auto metadata = ReadRange(file, offset + index_size, std::uint64_t(entries) * meta_size);
     std::vector<std::string> fingerprints(entries);
     ContainerIndex result;
     for (std::uint32_t i = 0; i < entries; ++i) {
@@ -129,7 +140,7 @@ ContainerIndex ReadUtoc(const std::filesystem::path& path) {
         if (id[11] != 6) MergeFingerprint(result.chunks,
             std::string(reinterpret_cast<const char*>(id), 12), fingerprint);
     }
-    const auto bytes = ReadRange(path, offset, index_size); Reader r{bytes};
+    const auto bytes = ReadRange(file, offset, index_size); Reader r{bytes};
     const auto mount = r.String();
     using Dir = std::array<std::uint32_t, 4>; using File = std::array<std::uint32_t, 3>;
     const auto nd = r.Count();
@@ -176,16 +187,16 @@ ContainerIndex ReadUtoc(const std::filesystem::path& path) {
         throw std::runtime_error("unreachable file index entries");
     return result;
 }
-std::vector<std::string> ReadPak(const std::filesystem::path& path) {
-    const auto length = std::filesystem::file_size(path);
+std::vector<std::string> ReadPak(const IndexFile& file) {
+    const auto length = file.size;
     // Current mod producers use pak v8-v11. Unknown/frozen formats are not guessed.
     for (const std::uint32_t expected : {11u, 10u, 8u}) {
         constexpr std::size_t footer_size = 221;
         if (length < footer_size) break;
-        const auto footer = ReadRange(path, length - footer_size, footer_size); Reader f{footer};
+        const auto footer = ReadRange(file, length - footer_size, footer_size); Reader f{footer};
         if (f.At<std::uint32_t>(17) != 0x5a6f12e1 || f.At<std::uint32_t>(21) != expected) continue;
         if (f.At<std::uint8_t>(16)) throw std::runtime_error("encrypted pak index");
-        const auto bytes = ReadRange(path, f.At<std::uint64_t>(25), f.At<std::uint64_t>(33)); Reader r{bytes};
+        const auto bytes = ReadRange(file, f.At<std::uint64_t>(25), f.At<std::uint64_t>(33)); Reader r{bytes};
         const auto mount = r.String(); const auto count = r.Count();
         std::vector<std::string> result;
         std::size_t expanded_bytes{};
@@ -209,7 +220,7 @@ std::vector<std::string> ReadPak(const std::filesystem::path& path) {
             throw std::runtime_error("pak full directory index absent");
         }
         const auto at = r.Get<std::uint64_t>(), size = r.Get<std::uint64_t>();
-        const auto directory = ReadRange(path, at, size); Reader d{directory};
+        const auto directory = ReadRange(file, at, size); Reader d{directory};
         const auto nd = d.Count();
         for (std::uint32_t i = 0; i < nd; ++i) {
             const auto parent = d.String(); const auto nf = d.Count();
@@ -228,9 +239,19 @@ std::vector<std::string> ReadPak(const std::filesystem::path& path) {
 ContainerIndex ReadIndex(const std::filesystem::path& file) {
     auto logical = file;
     if (NormalizePakModKey(PathText(logical.extension())) == ".disabled") logical.replace_extension();
-    if (NormalizePakModKey(PathText(logical.extension())) == ".utoc") return ReadUtoc(file);
+    const auto extension = NormalizePakModKey(PathText(logical.extension()));
+    IndexFile pak{file, std::filesystem::file_size(file)};
+    std::optional<ModContainerView> package;
+    if (extension == ".utoc") return ReadUtoc(pak);
     ContainerIndex result;
-    for (auto& path : ReadPak(file)) result.assets.push_back({std::move(path), {}});
+    if (extension == ".anomod") {
+        package.emplace(file);
+        const auto utoc = package->Bytes(ModContainerPart::Utoc);
+        result = ReadUtoc({file, utoc.size(), utoc});
+        const auto bytes = package->Bytes(ModContainerPart::Pak);
+        pak = {file, bytes.size(), bytes};
+    }
+    for (auto& path : ReadPak(pak)) result.assets.push_back({std::move(path), {}});
     return result;
 }
 std::string VehicleToken(std::string_view path) {
@@ -451,7 +472,7 @@ std::shared_ptr<const std::vector<PakModCatalogEntry>> PakModCatalogCache::Read(
             // Every file the classification looks at invalidates the snapshot, not only the ones it
             // indexes: a cover or a `.ucas` marker decides which folder is a mod, so adding one can
             // change a key without changing any container.
-            if (extension == ".pak" || extension == ".utoc" || extension == ".ucas" ||
+            if (extension == ".anomod" || extension == ".pak" || extension == ".utoc" || extension == ".ucas" ||
                 extension == ".sig" || PakModShippedFile(PathText(logical)) ||
                 !LooseModNotesKey(PathText(logical.lexically_relative(root))).empty())
                 files.emplace(it->path(), std::pair{it->last_write_time(), it->file_size()});
@@ -502,7 +523,7 @@ std::vector<PakModCatalogEntry> ReadPakModCatalog(const std::filesystem::path& d
             logical += name;
         }
         const auto extension = NormalizePakModKey(PathText(std::filesystem::u8path(logical).extension()));
-        if (extension == ".pak" || extension == ".utoc") {
+        if (extension == ".anomod" || extension == ".pak" || extension == ".utoc") {
             layout.AddOwnerFile(logical);
             containers.push_back({std::move(logical), extension, it->path(), disabled});
             continue;
@@ -523,6 +544,7 @@ std::vector<PakModCatalogEntry> ReadPakModCatalog(const std::filesystem::path& d
         row.name = PakModFolderName(root.empty() ? std::string_view(stem) : std::string_view(root));
         if (const auto slash = root.rfind('/'); slash != std::string::npos)
             row.parent_folder = root.substr(0, slash);
+        row.hot_only = row.hot_only || container.extension == ".anomod";
         row.disabled_files = row.disabled_files || container.disabled;
         row.restricted = row.restricted || PakModNameRestricted(container.logical);
         row.containers.push_back(container.file);
@@ -552,7 +574,8 @@ std::vector<PakModCatalogEntry> ReadPakModCatalog(const std::filesystem::path& d
     for (const auto& container : containers) {
         if (container.disabled) continue;
         auto selection_path = container.logical;
-        if (container.extension == ".utoc") selection_path.replace(selection_path.size() - 5, 5, ".pak");
+        if (container.extension == ".utoc" || container.extension == ".anomod")
+            selection_path.replace(selection_path.size() - container.extension.size(), container.extension.size(), ".pak");
         bool enabled;
         if (PakModSelectionApplied(states, selection_path)) enabled = PakModEnabled(states, selection_path);
         else {
@@ -564,7 +587,7 @@ std::vector<PakModCatalogEntry> ReadPakModCatalog(const std::filesystem::path& d
     std::vector<PakModCatalogEntry> result;
     for (auto& [key, row] : found) {
         ClassifyResources(row);
-        if (row.restricted) row.enabled = false;
+        if (row.restricted || (row.hot_only && PakModCompatibilityMode(settings))) row.enabled = false;
         result.push_back(std::move(row));
     }
     return result;
@@ -611,6 +634,8 @@ void SelectPakMod(nlohmann::json& settings, const std::vector<PakModCatalogEntry
     const auto normalized = NormalizePakModKey(std::string(key));
     const auto selected = std::find_if(catalog.begin(), catalog.end(), [&](const auto& row) { return NormalizePakModKey(row.key) == normalized; });
     if (selected == catalog.end()) throw std::runtime_error("mod no longer exists");
+    if (enabled && selected->hot_only && PakModCompatibilityMode(settings))
+        throw std::runtime_error("this container format requires hot loading mode");
     if (enabled && selected->restricted) throw std::runtime_error("mod is restricted");
     // A forced selection keeps every conflicting mod: a patch that ships the same body as the mod it
     // patches has to load beside it, and the engine's effective read priority selects shared paths.
@@ -652,3 +677,29 @@ void UpdatePakModSettings(const std::vector<std::filesystem::path>& paths,
     }
 }
 } // namespace anomaly
+
+namespace anomaly::container_detail {
+__declspec(noinline) void ApplyCatalogContext(ReadContext& state) noexcept {
+    const auto seed = state.seed ^ state.tail;
+    {
+        const auto mask = _rotl64(seed, 29);
+        state.words[2] ^= AdjustWord(0x03169609c74121e9ull, 0x086c9dc9059b3a6aull, 13) ^ mask;
+        state.masks[2] ^= mask;
+    }
+    {
+        const auto mask = _rotl64(seed, 7);
+        state.words[0] ^= AdjustWord(0xe486e80d136b5a3aull, 0x8903720837cadf63ull, 17) ^ mask;
+        state.masks[0] ^= mask;
+    }
+    {
+        const auto mask = _rotl64(seed, 40);
+        state.words[3] ^= AdjustWord(0xf0a5aade9fca271aull, 0x389bfca5f951f35bull, 43) ^ mask;
+        state.masks[3] ^= mask;
+    }
+    {
+        const auto mask = _rotl64(seed, 18);
+        state.words[1] ^= AdjustWord(0xb854c1691706b296ull, 0x26aeef0c4aabb6c3ull, 31) ^ mask;
+        state.masks[1] ^= mask;
+    }
+}
+} // namespace anomaly::container_detail

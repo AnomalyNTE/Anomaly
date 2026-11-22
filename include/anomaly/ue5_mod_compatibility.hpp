@@ -11,6 +11,7 @@
 #include <vector>
 
 namespace anomaly {
+class MemoryFileSet;
 
 // Worker-side cooked data inspection. These callbacks use the running engine's
 // registered codecs and keys; neither keys nor game addresses are stored on disk.
@@ -24,6 +25,7 @@ struct Ue5ModCompatibilityPlan {
     // containing the current game's incompatible Blueprint dependency closure.
     std::filesystem::path overlay;
     std::vector<std::string> retained_packages;
+    std::shared_ptr<const MemoryFileSet> memory_files;
 };
 
 class Ue5ModCompatibility final {

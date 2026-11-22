@@ -632,7 +632,13 @@ target_compile_options(anomaly_adapter_services PRIVATE /W4 /permissive- /EHsc /
 target_link_libraries(
     anomaly_adapter_services
     PUBLIC anomaly_symbol_resolver anomaly_hook_manager anomaly_minhook_backend anomaly_ue5_ftext
-    PRIVATE anomaly_blake3 bcrypt)
+    PRIVATE anomaly_blake3 anomaly_memory_files bcrypt)
+
+add_library(anomaly_memory_files STATIC src/platform/windows/memory_files.cpp)
+target_include_directories(anomaly_memory_files PUBLIC include)
+target_compile_definitions(anomaly_memory_files PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_options(anomaly_memory_files PRIVATE /W4 /permissive- /EHsc)
+target_link_libraries(anomaly_memory_files PUBLIC anomaly_minhook_backend)
 
 add_library(anomaly_websocket_server STATIC src/platform/windows/websocket_server.cpp)
 target_include_directories(anomaly_websocket_server PUBLIC include)
@@ -712,12 +718,18 @@ target_compile_options(anomaly_crash_reporter PRIVATE /W4 /permissive- /EHsc)
 
 add_library(anomaly_reliable_storage STATIC src/services/reliable_storage.cpp)
 add_library(anomaly_pak_mod_catalog STATIC
+    src/game/nte/mod_container.cpp
     src/game/nte/pak_mod_catalog.cpp
     src/game/nte/mod_group_names.cpp)
+set_source_files_properties(
+    src/game/nte/pak_mod_catalog.cpp
+    src/game/nte/mod_group_names.cpp
+    src/game/nte/mod_container.cpp
+    PROPERTIES COMPILE_OPTIONS "/GL-")
 target_include_directories(anomaly_pak_mod_catalog PUBLIC include)
 target_compile_definitions(anomaly_pak_mod_catalog PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_compile_options(anomaly_pak_mod_catalog PRIVATE /W4 /permissive- /EHsc /utf-8)
-target_link_libraries(anomaly_pak_mod_catalog PUBLIC anomaly_reliable_storage nlohmann_json::nlohmann_json)
+target_link_libraries(anomaly_pak_mod_catalog PUBLIC anomaly_artifact_crypto anomaly_reliable_storage nlohmann_json::nlohmann_json)
 target_include_directories(anomaly_reliable_storage PUBLIC include)
 target_compile_definitions(
     anomaly_reliable_storage PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
@@ -1068,6 +1080,7 @@ set(ANOMALY_MANUAL_MAP_TLS_FREE_TARGETS
     anomaly_telemetry
     anomaly_blake3
     anomaly_pak_mod_catalog
+    anomaly_memory_files
     anomaly_core
     anomaly_i18n
     anomaly_adapter_services

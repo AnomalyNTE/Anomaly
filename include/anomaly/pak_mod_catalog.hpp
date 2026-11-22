@@ -32,11 +32,11 @@ struct PakModCatalogEntry {
     std::map<std::string, std::string> asset_fingerprints, chunk_fingerprints;
     // Keep restricted rows internally so every container of a multi-pak mod is refused together.
     // User-facing enumerations omit them; forceLoad only overrides conflicts.
-    bool enabled{}, disabled_files{}, index_complete{true}, restricted{};
+    bool enabled{}, disabled_files{}, index_complete{true}, restricted{}, hot_only{};
     std::vector<std::filesystem::path> containers;
     std::string analysis_error;
 };
-// Reads only container indices, never resource payloads. Unsupported/encrypted indices are explicit.
+// Parses container indices; .anomod contents are validated before index parsing.
 std::vector<std::string> ReadModContainerIndex(const std::filesystem::path& file);
 std::vector<PakModCatalogEntry> ReadPakModCatalog(const std::filesystem::path& directory,
     const nlohmann::json& settings);
