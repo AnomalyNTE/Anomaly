@@ -180,14 +180,6 @@
       "name": "layout",
       "candidates": [
         {
-          "pattern": "48 89 5C 24 10 48 89 74 24 18 57 48 83 EC 30 48 8B 99 48 18 00 00",
-          "entry": "48 89 5C 24 10 48 89 74 24 18 57 48 83 EC 30 48 8B 99 48 18 00 00",
-          "values": {
-            "kGameInstanceMusicTableOffset": 6208,
-            "kGameInstanceAlbumTableOffset": 6216
-          }
-        },
-        {
           "pattern": "48 89 5C 24 10 48 89 74 24 18 57 48 83 EC 30 48 8B 99 68 19 00 00",
           "entry": "48 89 5C 24 10 48 89 74 24 18 57 48 83 EC 30 48 8B 99 68 19 00 00",
           "values": {
@@ -200,11 +192,6 @@
     {
       "name": "kAlbumRowPattern",
       "candidates": [
-        {
-          "pattern": "48 89 5C 24 10 48 89 74 24 18 57 48 83 EC 30 48 8B 99 48 18 00 00",
-          "entry": "48 89 5C 24 10 48 89 74 24 18 57 48 83 EC 30 48 8B 99 48 18 00 00",
-          "values": {}
-        },
         {
           "pattern": "48 89 5C 24 10 48 89 74 24 18 57 48 83 EC 30 48 8B 99 68 19 00 00",
           "entry": "48 89 5C 24 10 48 89 74 24 18 57 48 83 EC 30 48 8B 99 68 19 00 00",
@@ -386,13 +373,6 @@
       "name": "kDetailCoverPattern",
       "candidates": [
         {
-          "pattern": "48 89 54 24 10 56 48 83 EC 50 48 8B 81 98 0F 00 00 48 8B F1 48 85 C0 0F 84",
-          "entry": "48 89 54 24 10 56 48 83 EC 50 48 8B 81 98 0F 00 00 48 8B F1 48 85 C0 0F 84",
-          "values": {
-            "albumIndirect": 0
-          }
-        },
-        {
           "pattern": "48 89 5C 24 20 56 48 83 EC 60 48 8B 81 98 0F 00 00 48 8B DA 48 8B F1 48 85 C0 0F 84",
           "entry": "48 89 5C 24 20 56 48 83 EC 60 48 8B 81 98 0F 00 00 48 8B DA 48 8B F1 48 85 C0 0F 84",
           "values": {
@@ -478,11 +458,6 @@
         {
           "pattern": "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3",
           "entry": "48 8B 05",
-          "values": {}
-        },
-        {
-          "pattern": "48 8B 0D ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3",
-          "entry": "48 8B 0D",
           "values": {}
         }
       ]

@@ -31,8 +31,6 @@ struct Layout {
 inline Layout native_layout;
 inline anomaly::sdk::ProfileSnapshot compatibility;
 // Optional: a missing/unsupported rotation path must not disable the existing tools.
-// The 1.4b and 1.5a native bodies share the rotation ABI and vtable slot, but
-// have different prologues. Resolve their separate Profile candidates uniquely.
 inline std::uint32_t process_view_rotation_slot{};
 inline constexpr std::string_view kProcessViewRotation = "processViewRotation";
 inline bool LoadCompatibility(const AnomalyHostApiV1* host) noexcept {
