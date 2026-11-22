@@ -8,6 +8,8 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <mutex>
+#include <thread>
 #include <cstddef>
 #include <cstring>
 #include <deque>
@@ -319,16 +321,29 @@ AnomalyStatusV1 ANOMALY_CALL Start(void*) noexcept {
         StartEncounters();
         // 0.2.0 自动队列:加载持久化的勾选角色(重启恢复上次的勾选)。
         LoadEncounterQueue();PublishEncounterQueue();
+        // 0.2.1 维护者 review 修复:队列文件写入全部由 worker 线程执行,
+        // Game/Render 回调只改内存、发布快照并标记 dirty。
+        queue_worker_exit.store(false,std::memory_order_release);
+        queue_worker=std::thread(EncounterQueueWorkerLoop);
         Publish(localizer.Text("status.startup", "Drive a taxi and start taking orders in the game, then enable automatic completion."));
         static_cast<void>(EnsureWindow()); return Ok();
     } catch (...) { return {ANOMALY_STATUS_V1_FAILED,0,{}}; }
 }
 AnomalyStatusV1 ANOMALY_CALL Stop(void*, uint32_t) noexcept {
     enabled=false;++intent;
+    // 0.2.1:先停 worker 并补存一次,再做其余清理(生命周期回调允许 I/O)。
+    queue_worker_exit.store(true,std::memory_order_release);
+    if(queue_worker.joinable()) queue_worker.join();
+    queue_dirty.store(false,std::memory_order_release);
+    SaveEncounterQueue();
     if(!StopEncounters()) return {ANOMALY_STATUS_V1_UNAVAILABLE,0,{}};
     registry=world_slot=0;ReleaseWindow();return Ok();
 }
-void ANOMALY_CALL Unload(void*) noexcept { registry = world_slot = 0; taxi::profile::snapshot={}; encounter_hooks=nullptr; ReleaseWindow(); }
+void ANOMALY_CALL Unload(void*) noexcept {
+    queue_worker_exit.store(true,std::memory_order_release);
+    if(queue_worker.joinable()) queue_worker.join();
+    registry = world_slot = 0; taxi::profile::snapshot={}; encounter_hooks=nullptr; ReleaseWindow();
+}
 void ANOMALY_CALL Update(void*, double) noexcept {
     try {
         if (!names || !objects || !framework || !build_service) {
@@ -453,6 +468,6 @@ void ANOMALY_CALL Draw(void*, const AnomalyUiServiceV1* ui) noexcept {
 ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(AnomalyPluginDescriptorV1* descriptor) {
     if (!descriptor || descriptor->struct_size < sizeof(*descriptor)) return {ANOMALY_STATUS_V1_INVALID_ARGUMENT, 0, {}};
     *descriptor = {sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
-        StringView("b1ank.autotaxi"), StringView("AutoTaxi"), StringView("b1ank"), StringView("0.2.0"), Load, Start, Stop, Unload, Update, Draw};
+        StringView("b1ank.autotaxi"), StringView("AutoTaxi"), StringView("b1ank"), StringView("0.2.1"), Load, Start, Stop, Unload, Update, Draw};
     return Ok();
 }

@@ -1,4 +1,4 @@
-# AutoTaxi（自动出租车）0.2.0
+# AutoTaxi（自动出租车）0.2.1
 
 独立的 Anomaly 出租车插件，插件 ID：`b1ank.autotaxi`。
 

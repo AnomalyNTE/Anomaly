@@ -32,9 +32,19 @@ size_t encounter_page{};
 // 0.2.0 自动队列:勾选的角色按勾选顺序逐个自动预选(每单消耗一个)。
 // 以跨会话稳定的角色标签为键,持久化于 state 目录 encounter-queue.cfg。
 // 全局共享(所有车/所有会话),权威数据在 Game 线程,渲染线程读快照。
+// 0.2.1 维护者 review 修复:武装(预选)不再移除队列项——仅在 detour 确认
+// 游戏实际接受该偏好后,由 Game 线程在 Update 中移除;取消/换车/不可遇时
+// 条目保留在队列中可再次武装。文件写入全部由插件自有 worker 线程执行,
+// Game/Render 回调只改内存、发布原子快照并标记 dirty。
 std::deque<std::string> encounter_queue;
 std::atomic<std::shared_ptr<const std::vector<std::string>>> encounter_queue_published;
 std::string plugin_state_directory;
+std::thread queue_worker;
+std::atomic_bool queue_worker_exit{};
+std::atomic_bool queue_dirty{};
+std::mutex encounter_consume_mutex;
+std::string encounter_consumed_label;
+std::atomic_bool encounter_consume_requested{};
 
 void EncounterStatus(std::string text, const Runtime* runtime=nullptr,
                      const std::vector<EncounterChoice>* choices=nullptr) {
@@ -60,12 +70,23 @@ std::string EncounterQueuePath() {
     path+="encounter-queue.cfg";
     return path;
 }
+// 0.2.1 维护者 review 修复:只由 worker 线程调用。持久化最新发布的原子快照,
+// 武装中(待消费)的角色以 A| 行单独记录、不写入 C| 列表避免重复。
 void SaveEncounterQueue() {
     const auto path=EncounterQueuePath();
     if(path.empty()) return;
+    const auto snapshot=encounter_queue_published.load();
+    const auto pending=encounter_pending.load();
+    const std::string armed=(pending&&!pending->label.empty())?pending->label:std::string();
     std::ofstream out(path,std::ios::binary|std::ios::trunc);
     if(!out) {EncounterLog("Encounter queue save failed: "+path);return;}
-    for(const auto& label:encounter_queue) out<<"C|"<<label<<"\n";
+    if(!armed.empty()) out<<"A|"<<armed<<"\n";
+    if(snapshot) {
+        for(const auto& label:*snapshot) {
+            if(!armed.empty()&&label==armed) continue;
+            out<<"C|"<<label<<"\n";
+        }
+    }
 }
 void LoadEncounterQueue() {
     const auto path=EncounterQueuePath();
@@ -74,29 +95,52 @@ void LoadEncounterQueue() {
     if(!in) return;
     encounter_queue.clear();
     std::string line;
+    size_t restored_armed=0;
     while(std::getline(in,line)) {
         while(!line.empty()&&(line.back()=='\r'||line.back()=='\n'||line.back()==' ')) line.pop_back();
-        if(line.size()<3||line[0]!='C'||line[1]!='|') continue;
+        if(line.size()<3||line[1]!='|') continue;
         const auto label=line.substr(2);
-        if(!label.empty()) encounter_queue.push_back(label);
+        if(label.empty()) continue;
+        if(line[0]=='A') {
+            // 上次会话武装但未消费的角色:回到队首(0.2.0 的 A 行兼容网)。
+            if(std::find(encounter_queue.begin(),encounter_queue.end(),label)==encounter_queue.end()) {
+                encounter_queue.push_front(label);++restored_armed;
+            }
+            continue;
+        }
+        if(line[0]!='C') continue;
+        if(std::find(encounter_queue.begin(),encounter_queue.end(),label)==encounter_queue.end()) {
+            encounter_queue.push_back(label);
+        }
     }
-    EncounterLog("Encounter queue loaded: "+std::to_string(encounter_queue.size())+" entries");
+    EncounterLog("Encounter queue loaded: "+std::to_string(encounter_queue.size())+
+        " entries"+(restored_armed!=0?" (armed label restored to queue front)":""));
 }
 void PublishEncounterQueue() {
     encounter_queue_published.store(
         std::make_shared<const std::vector<std::string>>(encounter_queue.begin(),encounter_queue.end()));
+}
+// 0.2.1 维护者 review 修复:worker 线程负责全部文件写入。
+void EncounterQueueWorkerLoop() {
+    for(;;) {
+        if(queue_worker_exit.load(std::memory_order_acquire)) return;
+        if(queue_dirty.exchange(false,std::memory_order_acq_rel)) SaveEncounterQueue();
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
 }
 bool EncounterQueued(const std::string& label) {
     return std::find(encounter_queue.begin(),encounter_queue.end(),label)!=encounter_queue.end();
 }
 void EncounterQueueAdd(const std::string& label) {
     if(label.empty()||EncounterQueued(label)) return;
-    encounter_queue.push_back(label);SaveEncounterQueue();PublishEncounterQueue();
+    encounter_queue.push_back(label);
+    queue_dirty.store(true,std::memory_order_release);PublishEncounterQueue();
 }
 void EncounterQueueRemove(const std::string& label) {
     const auto it=std::find(encounter_queue.begin(),encounter_queue.end(),label);
     if(it==encounter_queue.end()) return;
-    encounter_queue.erase(it);SaveEncounterQueue();PublishEncounterQueue();
+    encounter_queue.erase(it);
+    queue_dirty.store(true,std::memory_order_release);PublishEncounterQueue();
 }
 bool WriteEncounterName(uintptr_t address,FName value) {
     return core && core->write_memory && core->write_memory(core->user,address,
@@ -272,8 +316,9 @@ void AutoArmNextFromQueue(const Reader& r,const Runtime& runtime) {
         if(found==choices.end()) continue;
         encounter_pending.store(std::make_shared<const EncounterPreference>(
             EncounterPreference{runtime.observation.identity,found->character,found->label}));
-        encounter_queue.erase(encounter_queue.begin()+static_cast<std::ptrdiff_t>(k));
-        SaveEncounterQueue();PublishEncounterQueue();
+        // 0.2.1 维护者 review 修复:武装不再移除队列项;角色仅在 detour 确认
+        // 游戏实际接受该偏好后由 Update 移除。取消/换车/不可遇时条目保留。
+        queue_dirty.store(true,std::memory_order_release);PublishEncounterQueue();
         EncounterStatus(localizer.Format("encounter.auto_armed","Auto-armed queued character: {0} ({1} left in queue). Start taking orders to use it.",
             std::array<std::string_view,2>{found->label,std::to_string(encounter_queue.size())}),&runtime);
         EncounterLog("Encounter queue auto-armed: "+found->label);
@@ -321,10 +366,17 @@ void* __fastcall EncounterDetour(void* player,void* output) noexcept {
                 if(ReadEncounterCandidates(r,runtime,candidates) &&
                    std::any_of(candidates.begin(),candidates.end(),[&](const auto& c){return Pack(c.character)==Pack(request->character);}) &&
                    r.Read(slot,previous) && !Pack(previous)) {
-                    if(encounter_pending.compare_exchange_strong(request,{})) {
-                        written=WriteEncounterName(slot,request->character);
-                        if(!written) EncounterStatus(localizer.Text("encounter.read_failed","Could not verify the encounter list. No character preference was applied."));
+                if(encounter_pending.compare_exchange_strong(request,{})) {
+                    written=WriteEncounterName(slot,request->character);
+                    if(!written) EncounterStatus(localizer.Text("encounter.read_failed","Could not verify the encounter list. No character preference was applied."));
+                    else {
+                        // 0.2.1 维护者 review 修复:消费在 detour 里只做标记,
+                        // 队列移除与落盘由 Game 线程 Update 与 worker 完成。
+                        std::scoped_lock consume_lock(encounter_consume_mutex);
+                        encounter_consumed_label=request->label;
+                        encounter_consume_requested.store(true,std::memory_order_release);
                     }
+                }
                 } else {
                     encounter_pending.compare_exchange_strong(request,{});
                     EncounterStatus(localizer.Text("encounter.unavailable_now","The selected character is unavailable or another preference is active. Refresh before trying again."));
@@ -411,13 +463,31 @@ bool StopEncounters() {
     encounter_hook={};encounter_original=0;assigned_encounter.reset();return true;
 }
 void UpdateEncounters(const Reader& r) {
+    // 0.2.1 维护者 review 修复:消费确认后由 Game 线程在此移除队列项并
+    // 发布快照;文件落盘由 worker 依据 dirty 标记完成。
+    if(encounter_consume_requested.exchange(false,std::memory_order_acq_rel)) {
+        std::string consumed;
+        {
+            std::scoped_lock consume_lock(encounter_consume_mutex);
+            consumed=std::move(encounter_consumed_label);
+            encounter_consumed_label.clear();
+        }
+        if(!consumed.empty()) {
+            const auto it=std::find(encounter_queue.begin(),encounter_queue.end(),consumed);
+            if(it!=encounter_queue.end()) encounter_queue.erase(it);
+            queue_dirty.store(true,std::memory_order_release);PublishEncounterQueue();
+            EncounterLog("Encounter queue entry consumed: "+consumed+
+                " (remaining "+std::to_string(encounter_queue.size())+")");
+        }
+    }
     auto command=encounter_commands.exchange({});
     if(command && command->kind==EncounterCommandKind::Cancel) {
         // 0.2.0 队列语义:带标签的取消 = 从队列移除该角色;空标签(底部
         // 取消按钮)= 取消当前预选并清空队列。若该角色已武装,预选一并清除。
         if(command->label.empty()) {
             encounter_pending.store({});
-            encounter_queue.clear();SaveEncounterQueue();PublishEncounterQueue();
+            encounter_queue.clear();
+            queue_dirty.store(true,std::memory_order_release);PublishEncounterQueue();
             EncounterStatus(localizer.Text("encounter.queue_cleared","Passenger preference cancelled and the auto queue cleared."));return;
         }
         EncounterQueueRemove(command->label);

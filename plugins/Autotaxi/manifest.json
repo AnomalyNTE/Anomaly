@@ -5,7 +5,7 @@
   "description": "Automatically complete taxi orders with an optional preferred eligible character passenger.",
   "author": "b1ank",
   "license": "AGPL-3.0-only",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "entry": "plugin.dll",
   "api": {
     "major": 1,
