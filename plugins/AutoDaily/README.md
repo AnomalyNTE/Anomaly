@@ -36,8 +36,15 @@
 `... present but not clickable (category=N)`，一看就知道被什么挡住了。
 
 窗口关闭键 `W_BoundActionButton_Close_C` 的控件名带实例号后缀（`..._C_2147458308`），
-所以按**名字前缀**匹配，实例号每次都变也照样点得到；两条领取链路末尾都会走这一步，
-即使「全部领取」按钮当时是 HIDDEN（已经领完）也会把窗口关掉再收尾。
+所以按**名字前缀**匹配，实例号每次都变也照样点得到。
+
+收尾是**验证式**的：依次试 `Button_Sure`「确定」→ `ButtonDeactivate` → `WB_CommonDeactivate`
+→ `W_BoundActionButton_Close*`「关闭」，一次只点一个，点完重新扫目录，直到面板的 tab 行
+`BPUI_RadioBox_Table_1` 与关闭键都变成 HIDDEN（真的从屏幕上消失）才算这一步过了。宿主的按钮目录
+会保留已关闭窗口的控件，只有 `category=HIDDEN` 才代表它不在屏幕上——这正是以前「点了关闭就当完成」
+误判的地方：面板还开着链路就进了下一步，而下一步要点的 HUD 入口被面板挡成不可点击，整条链卡死。
+关不掉时会打出屏幕上还剩下的控件（`reward ui candidate: …`）并**停止整条链**
+（`stage.reward_window_stuck`），提示手动关窗后再继续，而不是带着开着的面板往下走。
 
 两个 tab 用的是同一个控件名 `BPUI_RadioBox_Table_1`，只能靠 caption 区分（「全部」/「环期任务」）。
 caption 属于游戏数据，代码里写成 UTF-8 字节转义与原文本逐字比较，不参与本地化；点错或找不到时

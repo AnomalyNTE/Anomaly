@@ -61,6 +61,7 @@ struct RewardStep {
     // 0=按名字点第一个 1=点全部同名 2=按 class 子串点 3=只等页面就绪（不点击）
     // 5=按名字前缀点一次，有没有都立刻过（清残留窗口用）
     // 6=按名字前缀点第一个（控件名带实例号后缀，如 W_BoundActionButton_Close_C_2147458308）
+    // 7=验证式关窗：弹窗与面板都从屏幕上消失才算过，关不掉就停下并报原因
     int mode;
     const char* target;
     int wait;
@@ -78,17 +79,21 @@ struct RewardStep {
 constexpr const char* kCaptionAll = "\xE5\x85\xA8\xE9\x83\xA8";
 // 「环期任务」
 constexpr const char* kCaptionPeriodic = "\xE7\x8E\xAF\xE6\x9C\x9F\xE4\xBB\xBB\xE5\x8A\xA1";
+// 探索指南面板的 tab 行与关闭键：用它们判断「面板还开在屏幕上」，而不是靠点击成功与否。
+constexpr const char* kPanelTabName = "BPUI_RadioBox_Table_1";
+constexpr const char* kPanelClosePrefix = "W_BoundActionButton_Close";
 
 // 两种领取是两条独立链路，各自一套步骤，配置里也是两个开关。
-// 每日活跃奖励：探索指南 -> 「全部」(每日活跃页) -> 活跃度奖励 -> 最终领取 -> 关弹窗 -> 关面板
+// 每日活跃奖励：探索指南 -> 「全部」(每日活跃页) -> 活跃度奖励 -> 最终领取 -> 关窗（验证关掉）
 constexpr RewardStep kDailyRewardSteps[] = {
     {0, "W_HTButton_AdventureManual", 120, "open-panel", true, nullptr, false},
     {0, "BPUI_RadioBox_Table_1", 120, "daily-tab-all", true, kCaptionAll, false},
     {3, "", 60, "daily-page-ready", true, nullptr, false},
     {1, "ReceiveButton", 30, "activity-reward", false, nullptr, true},
     {1, "ButtonAccept", 30, "final-claim", false, nullptr, true},
-    {0, "ButtonDeactivate", 20, "close-dialog", false, nullptr, false},
-    {6, "W_BoundActionButton_Close_C", 30, "close-panel", false, nullptr, false},
+    // 关窗是一步「验证式收尾」：弹窗和面板都从屏幕上消失才算完，关不掉就停在这里，
+    // 绝不带着开着的面板进下一条链路（面板会把 HUD 上的入口按钮挡成不可点击）。
+    {7, "", 30, "close-reward-ui", true, nullptr, false},
 };
 
 // 环期任务奖励：探索指南 -> 战斗奖励入口 -> 「环期任务」页 -> 全部领取 -> 关弹窗 -> 关面板
@@ -96,16 +101,14 @@ constexpr RewardStep kDailyRewardSteps[] = {
 // 注意：环期任务入口 W_HTButton_CombatAward 在主界面 HUD 上，**不能先开探索指南面板**——
 // 面板一开就把它挡成不可点击，点了也只会看到上次停留的每日活跃页。
 constexpr RewardStep kPeriodicRewardSteps[] = {
-    // 先把上一条链路可能留下的面板关掉，否则它会挡住 HUD 上的入口按钮。
-    {5, "W_BoundActionButton_Close_C", 15, "clear-leftover-panel", false, nullptr, false},
+    // 先把上一条链路可能留下的面板关掉（同样要验证关干净），否则它会挡住 HUD 上的入口按钮。
+    {7, "", 15, "clear-leftover-panel", true, nullptr, false},
     {0, "W_HTButton_CombatAward", 90, "combat-award", true, nullptr, false},
     {0, "BPUI_RadioBox_Table_1", 90, "periodic-tab", false, kCaptionPeriodic, false},
     {3, "BtnSubmitAllQuest", 60, "periodic-page-ready", true, nullptr, false},
     // 已经领完时这个按钮是 HIDDEN，点了也没用：跳过就好，后面照样把窗口关掉退出。
     {0, "BtnSubmitAllQuest", 30, "claim-all-quests", false, nullptr, true},
-    {0, "ButtonDeactivate", 20, "close-dialog", false, nullptr, false},
-    // 环期任务窗口的关闭键名字带实例号（W_BoundActionButton_Close_C_2147458308），按前缀匹配。
-    {6, "W_BoundActionButton_Close_C", 30, "close-panel", false, nullptr, false},
+    {7, "", 30, "close-reward-ui", true, nullptr, false},
 };
 
 struct RewardTableDef {
@@ -127,6 +130,8 @@ constexpr int kRewardTablePeriodic = 1;
 constexpr int kRewardTabRounds = 2;
 // 单个步骤的重试次数：领过的控件会立刻跳过，这里只给「页面正在切」留点余量。
 constexpr int kRewardRetries = 5;
+// 关窗步骤的耐心要大一点：点完关闭键后窗口有收起动画，目录也要重新扫一次才看得到结果。
+constexpr int kRewardCloseRetries = 12;
 
 // ---------------------------------------------------------------------------
 // 内存读取
@@ -847,9 +852,133 @@ struct StepOutcome {
     bool blocked;  // 控件在、但宿主说不可点击（多半已经领过 / 条件不满足）
 };
 
+// 宿主目录会保留已经关掉的窗口控件，只有 HIDDEN 才代表它不在屏幕上了——
+// 领取后「ButtonDeactivate present but not clickable (category=3)」正是这个来源。
+bool WidgetVisible(const char* name, const bool prefix) {
+    if (name == nullptr || name[0] == '\0') return false;
+    const AnomalyNteUiButtonsServiceV1* service = Buttons();
+    if (service == nullptr || service->status == nullptr || service->button_at == nullptr) {
+        return false;
+    }
+    AnomalyNteUiButtonsStatusV1 status{sizeof(status)};
+    if (service->status(service->user, &status).code != ANOMALY_STATUS_V1_OK) return false;
+    const std::size_t length = std::strlen(name);
+    for (std::uint32_t i = 0; i < status.button_count; ++i) {
+        AnomalyNteUiButtonSnapshotV1 button{sizeof(button)};
+        if (service->button_at(service->user, status.catalog_sequence, i, &button).code !=
+            ANOMALY_STATUS_V1_OK) {
+            continue;
+        }
+        const bool hit = prefix ? std::strncmp(button.name, name, length) == 0
+                                : std::strcmp(button.name, name) == 0;
+        if (!hit) continue;
+        if (button.category != ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_HIDDEN) return true;
+    }
+    return false;
+}
+
+// 探索指南面板还开在屏幕上吗：面板自己的 tab 行或关闭键还在就算开着。
+bool RewardPanelVisible() {
+    return WidgetVisible(kPanelTabName, false) || WidgetVisible(kPanelClosePrefix, true);
+}
+
+// 奖励弹窗还盖着吗：只认**可点击**的确定/关闭控件——弹窗开着时它们必然可点，
+// 关掉之后目录里会残留成 HIDDEN/BLOCKED，那都不算弹窗还在。
+bool RewardPopupVisible() {
+    const AnomalyNteUiButtonsServiceV1* service = Buttons();
+    if (service == nullptr || service->status == nullptr || service->button_at == nullptr) {
+        return false;
+    }
+    AnomalyNteUiButtonsStatusV1 status{sizeof(status)};
+    if (service->status(service->user, &status).code != ANOMALY_STATUS_V1_OK) return false;
+    for (std::uint32_t i = 0; i < status.button_count; ++i) {
+        AnomalyNteUiButtonSnapshotV1 button{sizeof(button)};
+        if (service->button_at(service->user, status.catalog_sequence, i, &button).code !=
+            ANOMALY_STATUS_V1_OK) {
+            continue;
+        }
+        if (!ButtonClickable(button)) continue;
+        if (MatchWidget(button, kAwardSureName) || MatchWidget(button, kAwardCloseName) ||
+            MatchWidget(button, kAwardExitName)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool RewardDismissPending() { return RewardPanelVisible() || RewardPopupVisible(); }
+
+// 按名字前缀点一个可点击的控件（窗口关闭键带实例号后缀）。只点宿主报 CLICKABLE 的。
+bool TryClickWidgetPrefix(const char* prefix) {
+    const AnomalyNteUiButtonsServiceV1* service = Buttons();
+    if (service == nullptr || service->status == nullptr || service->button_at == nullptr ||
+        service->request_click == nullptr || prefix == nullptr || prefix[0] == '\0') {
+        return false;
+    }
+    AnomalyNteUiButtonsStatusV1 status{sizeof(status)};
+    if (service->status(service->user, &status).code != ANOMALY_STATUS_V1_OK) return false;
+    State& state = S();
+    const std::size_t length = std::strlen(prefix);
+    for (std::uint32_t i = 0; i < status.button_count; ++i) {
+        AnomalyNteUiButtonSnapshotV1 button{sizeof(button)};
+        if (service->button_at(service->user, status.catalog_sequence, i, &button).code !=
+            ANOMALY_STATUS_V1_OK) {
+            continue;
+        }
+        if (std::strncmp(button.name, prefix, length) != 0 || !ButtonClickable(button)) continue;
+        AnomalyNteUiButtonClickRequestV1 click{sizeof(click)};
+        click.button = button.button;
+        click.flags = 0u;
+        CancelPendingRequest();
+        return service->request_click(service->user, &click, &state.pending_request).code ==
+               ANOMALY_STATUS_V1_OK;
+    }
+    return false;
+}
+
+// 关不掉的时候，把屏幕上到底还有什么打出来——下次就不用再猜关闭键叫什么。
+void LogRewardUiCandidates() {
+    const AnomalyNteUiButtonsServiceV1* service = Buttons();
+    if (service == nullptr || service->status == nullptr || service->button_at == nullptr) return;
+    AnomalyNteUiButtonsStatusV1 status{sizeof(status)};
+    if (service->status(service->user, &status).code != ANOMALY_STATUS_V1_OK) return;
+    int shown = 0;
+    for (std::uint32_t i = 0; i < status.button_count && shown < 12; ++i) {
+        AnomalyNteUiButtonSnapshotV1 button{sizeof(button)};
+        if (service->button_at(service->user, status.catalog_sequence, i, &button).code !=
+            ANOMALY_STATUS_V1_OK) {
+            continue;
+        }
+        if (button.category == ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_HIDDEN) continue;
+        const char* slash = std::strrchr(button.path, '/');
+        WinLogf("reward ui candidate: %s cat=%d text=%s path=%s", button.name,
+                static_cast<int>(button.category), button.text[0] != '\0' ? button.text : "-",
+                slash != nullptr ? slash + 1 : "-");
+        ++shown;
+    }
+    WinLogf("reward ui catalog: total=%u", status.button_count);
+}
+
 // mode 1 会把目录里所有同名按钮都点一遍。
 StepOutcome RewardClickStep(const RewardStep& step) {
     StepOutcome outcome{0, false};
+    if (step.mode == 7) {
+        // 验证式关窗：依次试「确定 → 弹窗关闭 → 最外层关闭 → 关闭键（前缀）」，
+        // 一次只点一个，点完等目录刷新再看窗口是不是真的消失了。
+        State& state = S();
+        if (TryClickWidget(kAwardSureName) || TryClickWidget(kAwardCloseName) ||
+            TryClickWidget(kAwardExitName) || TryClickWidgetPrefix(kPanelClosePrefix)) {
+            outcome.clicked = 1;
+            return outcome;
+        }
+        outcome.blocked = RewardDismissPending();
+        if (outcome.blocked && state.reward_blocked_step != state.reward_step) {
+            state.reward_blocked_step = state.reward_step;
+            WinLogf("reward step %s: nothing clickable to close the window", step.label);
+            LogRewardUiCandidates();
+        }
+        return outcome;
+    }
     const AnomalyNteUiButtonsServiceV1* service = Buttons();
     if (service == nullptr || service->status == nullptr || service->button_at == nullptr) {
         return outcome;
@@ -1044,6 +1173,7 @@ void StartRewardChain(const RewardGroup group) {
     state.reward_tab_rounds = 0;
     state.reward_caption_logs = 0;
     state.reward_blocked_step = -1;
+    state.reward_stuck = false;
     WinLogf("reward chain started (%s, %d steps)", table.label, table.count);
     SetStatus(group == RewardGroup::Periodic
                   ? TextLocalized("status.periodic_start", "Claiming periodic quest rewards...")
@@ -1072,11 +1202,40 @@ void TickRewardChain() {
         AdvanceRewardStep(1u, false);
         return;
     }
+    if (step.mode == 7) {
+        // 弹窗和面板都已经不在屏幕上：这一步才算过。
+        if (!RewardDismissPending()) {
+            WinLogf("reward step done: %s", step.label);
+            AdvanceRewardStep(1u, false);
+            return;
+        }
+        const StepOutcome outcome = RewardClickStep(step);
+        if (outcome.clicked > 0) {
+            // 点到了：给它收起的时间，预算重置，等目录刷新后再判断关没关掉。
+            state.reward_retries = kRewardCloseRetries;
+            if (SubmitScan()) state.reward_wait = 20;
+            return;
+        }
+        if (state.reward_retries > 0) {
+            --state.reward_retries;
+            if (SubmitScan()) state.reward_wait = 30;
+            return;
+        }
+        // 关不掉：停在这里，绝不带着开着的面板进下一条链路（面板会挡死 HUD 入口按钮）。
+        state.reward_step = -1;
+        state.reward_stuck = true;
+        WinLogf("reward chain stopped: the reward window is still open (%s)", step.label);
+        SetStatus(TextLocalized("status.reward_window_stuck",
+            "Rewards are claimed but the reward window is still open; close it and the chain can continue."));
+        return;
+    }
     const StepOutcome outcome = RewardClickStep(step);
     AdvanceRewardStep(outcome.clicked, outcome.blocked);
 }
 
 bool RewardChainBusy() { return S().reward_step >= 0; }
+
+bool RewardChainStuck() { return S().reward_stuck; }
 
 void AbortRewardChain() {
     State& state = S();
@@ -1084,6 +1243,7 @@ void AbortRewardChain() {
     state.reward_wait = 0;
     state.reward_retries = 0;
     state.reward_tab_rounds = 0;
+    state.reward_stuck = false;
 }
 
 // ---------------------------------------------------------------------------
