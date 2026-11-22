@@ -25,6 +25,7 @@
 #include <random>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -139,6 +140,18 @@ struct Context {
     // Per-vehicle advanced tuning memory: 16 floats per catalog ID, persisted
     // as tuning-memory.cfg (T2 lines). See LoadTuningMemory for the layout.
     std::map<std::string, std::array<float, 16>> saved_tunes;
+    // Per-vehicle factory transmission baselines (maintainer review: baselines
+    // must never cross vehicles). [0..4] normal up/down/time/ratio/efficiency,
+    // [5..9] comfort group; a negative [0] means "not captured yet".
+    std::map<std::string, std::array<float, 10>> tuning_baselines;
+    // Maintainer review fix: file writes happen on a plugin-owned worker
+    // thread; Game/Render callbacks only queue payloads and mark dirty flags.
+    std::thread save_worker;
+    std::atomic_bool save_worker_exit{};
+    std::mutex pending_writes_mutex;
+    std::vector<std::pair<std::string, std::string>> pending_file_writes;
+    std::atomic_bool pending_writes_present{};
+    std::atomic_bool export_modules_requested{};
     // Dirty flags: config/memory file writes only happen in the lifecycle
     // callbacks (Load/Stop/Unload), never inside Game/Render callbacks.
     std::atomic_bool memory_dirty{};
@@ -384,15 +397,24 @@ void LoadCustomizationMemory() {
 void SaveCustomizationMemory() {
     const std::string path = CustomizationMemoryPath();
     if (path.empty()) return;
+    // Worker thread: snapshot the shared state under the plugin mutex first,
+    // then write the file without holding any lock.
+    std::map<std::string, Context::SavedCustomization> saved;
+    std::map<std::uint32_t, std::string> hotkeys;
+    {
+        std::scoped_lock lock(g_context.mutex);
+        saved = g_context.saved_customizations;
+        hotkeys = g_context.hotkey_vehicle_bindings;
+    }
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     if (!out) return;
-    for (const auto& [vehicle_id, saved] : g_context.saved_customizations) {
-        if (!saved.skin_id.empty()) out << "V|" << vehicle_id << "|" << saved.skin_id << "\n";
-        for (const auto& entry : saved.module_overrides) {
+    for (const auto& [vehicle_id, saved_entry] : saved) {
+        if (!saved_entry.skin_id.empty()) out << "V|" << vehicle_id << "|" << saved_entry.skin_id << "\n";
+        for (const auto& entry : saved_entry.module_overrides) {
             out << "M|" << vehicle_id << "|" << entry.first << ":" << entry.second << "\n";
         }
     }
-    for (const auto& [key, vehicle_id] : g_context.hotkey_vehicle_bindings) {
+    for (const auto& [key, vehicle_id] : hotkeys) {
         out << "H|" << vehicle_id << "|" << key << "\n";
     }
 }
@@ -452,9 +474,14 @@ void LoadTuningMemory() {
 void SaveTuningMemory() {
     const std::string path = TuningMemoryPath();
     if (path.empty()) return;
+    std::map<std::string, std::array<float, 16>> saved;
+    {
+        std::scoped_lock lock(g_context.mutex);
+        saved = g_context.saved_tunes;
+    }
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     if (!out) return;
-    for (const auto& [vehicle_id, tune] : g_context.saved_tunes) {
+    for (const auto& [vehicle_id, tune] : saved) {
         out << "T2|" << vehicle_id;
         for (const float value : tune) out << "|" << value;
         out << "\n";
@@ -505,6 +532,17 @@ void LoadDriftConfig() {
 void SaveDriftConfig() {
     const std::string path = DriftConfigPath();
     if (path.empty()) return;
+    bool smoke_on, mark_on, smoke_random, mark_random;
+    std::vector<std::string> smoke_scope, mark_scope;
+    {
+        std::scoped_lock lock(g_context.mutex);
+        smoke_on = g_context.drift_smoke_on;
+        mark_on = g_context.drift_mark_on;
+        smoke_random = g_context.drift_smoke_random;
+        mark_random = g_context.drift_mark_random;
+        smoke_scope = g_context.drift_smoke_scope;
+        mark_scope = g_context.drift_mark_scope;
+    }
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     if (!out) return;
     const auto write_line = [&](const char kind, const bool enabled,
@@ -517,10 +555,8 @@ void SaveDriftConfig() {
         }
         out << "\n";
     };
-    write_line('S', g_context.drift_smoke_on, g_context.drift_smoke_random,
-        g_context.drift_smoke_scope);
-    write_line('M', g_context.drift_mark_on, g_context.drift_mark_random,
-        g_context.drift_mark_scope);
+    write_line('S', smoke_on, smoke_random, smoke_scope);
+    write_line('M', mark_on, mark_random, mark_scope);
 }
 
 // allowed-extra-modules.cfg lines: <module_type>|<module_id[#N]>.
@@ -554,9 +590,14 @@ void LoadAllowedExtraModules() {
 void SaveAllowedExtraModules() {
     const std::string path = AllowedExtraModulesPath();
     if (path.empty()) return;
+    std::vector<std::pair<std::uint32_t, std::string>> entries;
+    {
+        std::scoped_lock lock(g_context.mutex);
+        entries = g_context.allowed_extra_modules;
+    }
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     if (!out) return;
-    for (const auto& entry : g_context.allowed_extra_modules) {
+    for (const auto& entry : entries) {
         out << entry.first << "|" << entry.second << "\n";
     }
 }
@@ -574,6 +615,48 @@ void SaveAllPluginState() {
     }
     if (g_context.extras_dirty.exchange(false, std::memory_order_acq_rel)) {
         SaveAllowedExtraModules();
+    }
+}
+
+// Maintainer review fix: Game/Render callbacks never touch the filesystem.
+// They queue (path, content) pairs and mark dirty flags; the plugin-owned
+// worker thread drains the queue and persists the state files.
+bool WriteTextFileAtomic(const std::string& path, const std::string& content);
+
+void QueueFileWrite(std::string path, std::string content) {
+    if (path.empty()) return;
+    {
+        std::scoped_lock lock(g_context.pending_writes_mutex);
+        g_context.pending_file_writes.emplace_back(std::move(path), std::move(content));
+    }
+    g_context.pending_writes_present.store(true, std::memory_order_release);
+}
+
+bool AnyStateDirty() {
+    return g_context.memory_dirty.load(std::memory_order_acquire) ||
+        g_context.tuning_dirty.load(std::memory_order_acquire) ||
+        g_context.drift_dirty.load(std::memory_order_acquire) ||
+        g_context.extras_dirty.load(std::memory_order_acquire);
+}
+
+void SaveWorkerLoop() {
+    for (;;) {
+        if (g_context.save_worker_exit.load(std::memory_order_acquire)) return;
+        const bool has_pending = g_context.pending_writes_present.exchange(
+            false, std::memory_order_acq_rel);
+        if (AnyStateDirty()) SaveAllPluginState();
+        if (has_pending) {
+            std::vector<std::pair<std::string, std::string>> batch;
+            {
+                std::scoped_lock lock(g_context.pending_writes_mutex);
+                batch = std::move(g_context.pending_file_writes);
+                g_context.pending_file_writes.clear();
+            }
+            for (const auto& [path, content] : batch) {
+                WriteTextFileAtomic(path, content);
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
     }
 }
 
@@ -1494,19 +1577,8 @@ void AdoptDrivenVehicle() {
         g_context.adv_live_c_final_ratio = live.comfort_final_ratio;
         g_context.adv_live_c_efficiency = live.comfort_transmission_efficiency;
         if (g_context.adv_baseline_up_rpm < 0.0F && !g_context.adv_baseline_valid) {
-            // First valid read for this vehicle: remember the factory tuning as
-            // the reset baseline.
-            g_context.adv_baseline_up_rpm = live.change_up_rpm;
-            g_context.adv_baseline_down_rpm = live.change_down_rpm;
-            g_context.adv_baseline_gear_time = live.gear_change_time;
-            g_context.adv_baseline_final_ratio = live.final_ratio;
-            g_context.adv_baseline_efficiency = live.transmission_efficiency;
-            g_context.adv_baseline_c_up_rpm = live.comfort_change_up_rpm;
-            g_context.adv_baseline_c_down_rpm = live.comfort_change_down_rpm;
-            g_context.adv_baseline_c_gear_time = live.comfort_gear_change_time;
-            g_context.adv_baseline_c_final_ratio = live.comfort_final_ratio;
-            g_context.adv_baseline_c_efficiency = live.comfort_transmission_efficiency;
-            g_context.adv_baseline_valid = true;
+            // Handled per vehicle in the boarding branch below (maintainer
+            // review: baselines must not cross vehicles).
         }
     } else {
         std::scoped_lock lock(g_context.mutex);
@@ -1537,7 +1609,8 @@ void AdoptDrivenVehicle() {
         // customization catalog reload restores this car's saved memory.
         g_context.read_modules_requested.store(true, std::memory_order_release);
         g_context.realtime_sync_requested.store(true, std::memory_order_release);
-        // Auto-load this vehicle's saved tuning.
+        // Auto-load this vehicle's saved tuning, per-vehicle factory baseline,
+        // and actually write the saved transmission parameters back.
         std::string vehicle_key;
         {
             std::string catalog_id;
@@ -1548,8 +1621,44 @@ void AdoptDrivenVehicle() {
                 std::scoped_lock lock(g_context.mutex);
                 vehicle_key = g_context.selected_vehicle_id;
             }
+        }
+        {
             std::scoped_lock lock(g_context.mutex);
             g_context.realtime_vehicle_id = vehicle_key;
+            // Maintainer review fix: the factory transmission baseline is kept
+            // per vehicle — captured from the first read after boarding, which
+            // happens before any plugin write, so it is the factory tuning.
+            if (!vehicle_key.empty()) {
+                auto& baseline = g_context.tuning_baselines[vehicle_key];
+                if (baseline[0] < 0.0F) {
+                    baseline[0] = live.change_up_rpm;
+                    baseline[1] = live.change_down_rpm;
+                    baseline[2] = live.gear_change_time;
+                    baseline[3] = live.final_ratio;
+                    baseline[4] = live.transmission_efficiency;
+                    baseline[5] = live.comfort_change_up_rpm;
+                    baseline[6] = live.comfort_change_down_rpm;
+                    baseline[7] = live.comfort_gear_change_time;
+                    baseline[8] = live.comfort_final_ratio;
+                    baseline[9] = live.comfort_transmission_efficiency;
+                }
+                g_context.adv_baseline_up_rpm = baseline[0];
+                g_context.adv_baseline_down_rpm = baseline[1];
+                g_context.adv_baseline_gear_time = baseline[2];
+                g_context.adv_baseline_final_ratio = baseline[3];
+                g_context.adv_baseline_efficiency = baseline[4];
+                g_context.adv_baseline_c_up_rpm = baseline[5];
+                g_context.adv_baseline_c_down_rpm = baseline[6];
+                g_context.adv_baseline_c_gear_time = baseline[7];
+                g_context.adv_baseline_c_final_ratio = baseline[8];
+                g_context.adv_baseline_c_efficiency = baseline[9];
+                g_context.adv_baseline_valid = true;
+            }
+        }
+        bool has_saved_tune = false;
+        nte_vehicle::Runtime::VehicleAdvancedTuning restored{};
+        {
+            std::scoped_lock lock(g_context.mutex);
             const auto tune = g_context.saved_tunes.find(vehicle_key);
             if (tune != g_context.saved_tunes.end()) {
                 const auto& t = tune->second;
@@ -1570,11 +1679,35 @@ void AdoptDrivenVehicle() {
                 if (t[13] > 0.0F) g_context.other_speed_ratio = t[13];
                 if (t[14] > 0.0F) g_context.other_torque_ratio = t[14];
                 g_context.adv_reverse_top_speed = t[15];
-                g_context.apply_speed.store(true, std::memory_order_release);
-                g_context.apply_torque.store(true, std::memory_order_release);
-                g_context.apply_other_speed.store(true, std::memory_order_release);
-                g_context.apply_other_torque.store(true, std::memory_order_release);
+                // The saved parameters are written immediately (maintainer
+                // review: boarding must apply them, not only refresh editors).
+                restored.max_linear_velocity_kmh = t[0];
+                restored.reverse_top_speed_kmh = t[15];
+                restored.change_up_rpm = t[1];
+                restored.change_down_rpm = t[2];
+                restored.gear_change_time = t[3];
+                restored.final_ratio = t[4];
+                restored.transmission_efficiency = t[5];
+                restored.comfort_change_up_rpm = t[6];
+                restored.comfort_change_down_rpm = t[7];
+                restored.comfort_gear_change_time = t[8];
+                restored.comfort_final_ratio = t[9];
+                restored.comfort_transmission_efficiency = t[10];
+                has_saved_tune = true;
             }
+        }
+        if (has_saved_tune) {
+            // Both setups receive their own field set; -1 fields are skipped
+            // inside the writer, so unset entries never touch the vehicle.
+            (void)vehicle->VehicleWriteAdvancedTuning(restored, false);
+            (void)vehicle->VehicleWriteAdvancedTuning(restored, true);
+        }
+        {
+            std::scoped_lock lock(g_context.mutex);
+            g_context.apply_speed.store(true, std::memory_order_release);
+            g_context.apply_torque.store(true, std::memory_order_release);
+            g_context.apply_other_speed.store(true, std::memory_order_release);
+            g_context.apply_other_torque.store(true, std::memory_order_release);
         }
     } else if (!live.valid && g_context.adv_synced_movement != 0) {
         // Left the vehicle.
@@ -1624,11 +1757,13 @@ void TickLiveFeatures() {
     }
 
     // Read the driven vehicle's applied modules (and optionally store them as
-    // this vehicle's plugin memory).
+    // this vehicle's plugin memory or export them via the worker thread).
     const bool read_requested =
         g_context.read_modules_requested.exchange(false, std::memory_order_acq_rel);
     const bool save_requested =
         g_context.save_modules_to_memory_requested.exchange(false, std::memory_order_acq_rel);
+    const bool export_requested =
+        g_context.export_modules_requested.exchange(false, std::memory_order_acq_rel);
     if (read_requested || save_requested) {
         std::vector<std::pair<std::uint32_t, std::string>> pairs;
         const auto status = vehicle->VehicleReadCurrentModules(&pairs);
@@ -1663,13 +1798,16 @@ void TickLiveFeatures() {
                 const std::array arguments{std::string_view(count)};
                 SetStatus(g_context.localizer.Format("status.modules_read",
                     "Read the driven vehicle's modules: {0}", arguments));
-                // Export the read list for bug reports.
-                std::string content = "modules=" + std::to_string(pairs.size()) + "\n";
-                for (const auto& entry : pairs) {
-                    content += "  " + entry.second + "\n";
-                }
-                const std::string path = StampSidecarPath("current-vehicle-modules");
-                if (!path.empty() && WriteTextFileAtomic(path, content)) {
+                // Maintainer review fix: the read snapshot is handed to the
+                // worker thread for writing; only an explicit export request
+                // produces a file (no automatic write on boarding).
+                if (export_requested) {
+                    std::string content = "modules=" + std::to_string(pairs.size()) + "\n";
+                    for (const auto& entry : pairs) {
+                        content += "  " + entry.second + "\n";
+                    }
+                    const std::string path = StampSidecarPath("current-vehicle-modules");
+                    QueueFileWrite(path, content);
                     const std::array export_arguments{std::string_view(path)};
                     SetStatus(g_context.localizer.Format("status.modules_exported",
                         "Module list exported: {0}", export_arguments));
@@ -1998,14 +2136,10 @@ void TickLiveFeatures() {
             }
         }
         const std::string path = StampSidecarPath("plugin-log");
-        if (!path.empty() && WriteTextFileAtomic(path, content)) {
-            const std::array arguments{std::string_view(path)};
-            SetStatus(g_context.localizer.Format("status.log_exported",
-                "Log exported: {0}", arguments));
-        } else {
-            SetStatus(g_context.localizer.Text("status.log_export_failed",
-                "Writing the log file failed."));
-        }
+        QueueFileWrite(path, content);
+        const std::array arguments{std::string_view(path)};
+        SetStatus(g_context.localizer.Format("status.log_exported",
+            "Log exported: {0}", arguments));
     }
 
     // Diagnostics: probe candidate premium-effect IDs against the FName pool.
@@ -2031,11 +2165,10 @@ void TickLiveFeatures() {
         }
         content += "hits=" + std::to_string(hits) + "/" + std::to_string(kProbeIds.size()) + "\n";
         const std::string path = StampSidecarPath("fname-probe");
-        if (!path.empty() && WriteTextFileAtomic(path, content)) {
-            const std::array arguments{std::string_view(path)};
-            SetStatus(g_context.localizer.Format("status.probe_exported",
-                "FName probe written: {0}", arguments));
-        }
+        QueueFileWrite(path, content);
+        const std::array arguments{std::string_view(path)};
+        SetStatus(g_context.localizer.Format("status.probe_exported",
+            "FName probe written: {0}", arguments));
     }
 
     // Diagnostics: sweep every DataTable in the registry.
@@ -2044,14 +2177,10 @@ void TickLiveFeatures() {
         const auto status = vehicle->SweepAllDataTables(&content);
         if (status.code == ANOMALY_STATUS_V1_OK && !content.empty()) {
             const std::string path = StampSidecarPath("datatables-inventory");
-            if (!path.empty() && WriteTextFileAtomic(path, content)) {
-                const std::array arguments{std::string_view(path)};
-                SetStatus(g_context.localizer.Format("status.sweep_exported",
-                    "DataTable sweep written: {0}", arguments));
-            } else {
-                SetStatus(g_context.localizer.Text("status.sweep_write_failed",
-                    "Writing the DataTable sweep file failed."));
-            }
+            QueueFileWrite(path, content);
+            const std::array arguments{std::string_view(path)};
+            SetStatus(g_context.localizer.Format("status.sweep_exported",
+                "DataTable sweep written: {0}", arguments));
         } else {
             SetStatus(StatusDescription(
                 g_context.localizer.Text("status.sweep_failed",
@@ -4386,6 +4515,7 @@ void DrawDebugPanel(
             "Read driven vehicle (sync selection)") + "##diag-read-modules";
     if (ui->button(ui->user, anomaly::sdk::StringView(read_label), 0.0F, 0.0F)) {
         g_context.read_modules_requested.store(true, std::memory_order_release);
+        g_context.export_modules_requested.store(true, std::memory_order_release);
     }
     const auto probe_label =
         g_context.localizer.Text("action.probe_effects",
@@ -4686,6 +4816,10 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* plugin_context) try {
     }
 
     g_context.toggle_menu_requested.store(false, std::memory_order_release);
+    // Maintainer review fix: launch the file-write worker (callbacks only
+    // queue payloads; this thread persists them and the dirty state files).
+    g_context.save_worker_exit.store(false, std::memory_order_release);
+    g_context.save_worker = std::thread(SaveWorkerLoop);
     InstallDurabilityGuardOnStart();
     static_cast<void>(g_context.window_service->set_open(
         g_context.window_service->user, g_context.menu_window_handle, 0));
@@ -4706,6 +4840,10 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void* plugin_context, std::uint32_t) try {
         g_context.durability_guard_installed = false;
     }
     nte_vehicle::StopBackend();
+    // Maintainer review fix: stop the worker before the final save so nothing
+    // writes concurrently with the lifecycle finalization.
+    g_context.save_worker_exit.store(true, std::memory_order_release);
+    if (g_context.save_worker.joinable()) g_context.save_worker.join();
     SaveSelection(g_context.saved_vehicle_id);
     SaveAllPluginState();
     SaveSettings();
@@ -4732,6 +4870,8 @@ void ANOMALY_CALL Unload(void* plugin_context) try {
         g_context.durability_guard_installed = false;
     }
     nte_vehicle::StopBackend();
+    g_context.save_worker_exit.store(true, std::memory_order_release);
+    if (g_context.save_worker.joinable()) g_context.save_worker.join();
     SaveSelection(g_context.saved_vehicle_id);
     SaveAllPluginState();
     SaveSettings();

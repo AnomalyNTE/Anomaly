@@ -4995,7 +4995,12 @@ struct Runtime : NativeAccess {
             !ok_or_unset(value.change_down_rpm, 100000.0F) ||
             !ok_or_unset(value.gear_change_time, 10.0F) ||
             !ok_or_unset(value.final_ratio, 100.0F) ||
-            !ok_or_unset(value.transmission_efficiency, 100.0F))
+            !ok_or_unset(value.transmission_efficiency, 100.0F) ||
+            !ok_or_unset(value.comfort_change_up_rpm, 100000.0F) ||
+            !ok_or_unset(value.comfort_change_down_rpm, 100000.0F) ||
+            !ok_or_unset(value.comfort_gear_change_time, 10.0F) ||
+            !ok_or_unset(value.comfort_final_ratio, 100.0F) ||
+            !ok_or_unset(value.comfort_transmission_efficiency, 100.0F))
             return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT,
                 TextLocalized("backend.advanced_tuning_value_out_of_range_915", "an advanced tuning value is out of range"));
         std::scoped_lock lock(mutex);
@@ -5053,40 +5058,53 @@ struct Runtime : NativeAccess {
             const auto write_setup = [&](const std::int32_t setup_offset) -> AnomalyStatusV1 {
                 const std::uintptr_t base = vehicle_movement_component +
                     static_cast<std::uintptr_t>(setup_offset);
+                // Maintainer review fix: the comfort setup takes the comfort_*
+                // fields and the normal setup takes the plain fields — the
+                // caller supplies both sets in one struct.
+                const float up_value = comfort_setup
+                    ? value.comfort_change_up_rpm : value.change_up_rpm;
+                const float down_value = comfort_setup
+                    ? value.comfort_change_down_rpm : value.change_down_rpm;
+                const float time_value = comfort_setup
+                    ? value.comfort_gear_change_time : value.gear_change_time;
+                const float ratio_value = comfort_setup
+                    ? value.comfort_final_ratio : value.final_ratio;
+                const float eff_value = comfort_setup
+                    ? value.comfort_transmission_efficiency : value.transmission_efficiency;
                 std::uintptr_t a = 0;
-                if (value.change_up_rpm >= 0.0F) {
+                if (up_value >= 0.0F) {
                     if (!AddAddress(base, static_cast<std::uintptr_t>(offsets->up_offset), a))
                         return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
                             TextLocalized("backend.advanced_tuning_offsets_unresolved_914", "advanced tuning fields could not be resolved (layout changed?)"));
-                    if (const auto s = write_float(a, value.change_up_rpm, "ChangeUpRPM");
+                    if (const auto s = write_float(a, up_value, "ChangeUpRPM");
                         s.code != ANOMALY_STATUS_V1_OK) return s;
                 }
-                if (value.change_down_rpm >= 0.0F) {
+                if (down_value >= 0.0F) {
                     if (!AddAddress(base, static_cast<std::uintptr_t>(offsets->down_offset), a))
                         return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
                             TextLocalized("backend.advanced_tuning_offsets_unresolved_914", "advanced tuning fields could not be resolved (layout changed?)"));
-                    if (const auto s = write_float(a, value.change_down_rpm, "ChangeDownRPM");
+                    if (const auto s = write_float(a, down_value, "ChangeDownRPM");
                         s.code != ANOMALY_STATUS_V1_OK) return s;
                 }
-                if (value.gear_change_time >= 0.0F) {
+                if (time_value >= 0.0F) {
                     if (!AddAddress(base, static_cast<std::uintptr_t>(offsets->time_offset), a))
                         return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
                             TextLocalized("backend.advanced_tuning_offsets_unresolved_914", "advanced tuning fields could not be resolved (layout changed?)"));
-                    if (const auto s = write_float(a, value.gear_change_time, "GearChangeTime");
+                    if (const auto s = write_float(a, time_value, "GearChangeTime");
                         s.code != ANOMALY_STATUS_V1_OK) return s;
                 }
-                if (value.final_ratio >= 0.0F) {
+                if (ratio_value >= 0.0F) {
                     if (!AddAddress(base, static_cast<std::uintptr_t>(offsets->ratio_offset), a))
                         return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
                             TextLocalized("backend.advanced_tuning_offsets_unresolved_914", "advanced tuning fields could not be resolved (layout changed?)"));
-                    if (const auto s = write_float(a, value.final_ratio, "FinalRatio");
+                    if (const auto s = write_float(a, ratio_value, "FinalRatio");
                         s.code != ANOMALY_STATUS_V1_OK) return s;
                 }
-                if (value.transmission_efficiency >= 0.0F) {
+                if (eff_value >= 0.0F) {
                     if (!AddAddress(base, static_cast<std::uintptr_t>(offsets->eff_offset), a))
                         return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
                             TextLocalized("backend.advanced_tuning_offsets_unresolved_914", "advanced tuning fields could not be resolved (layout changed?)"));
-                    if (const auto s = write_float(a, value.transmission_efficiency,
+                    if (const auto s = write_float(a, eff_value,
                             "TransmissionEfficiency"); s.code != ANOMALY_STATUS_V1_OK) return s;
                 }
                 return Status(ANOMALY_STATUS_V1_OK);
