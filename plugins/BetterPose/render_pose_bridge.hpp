@@ -10,9 +10,14 @@ inline std::uintptr_t update_original{};
 inline const AnomalyHookServiceV1 *hook_api{};
 inline AnomalyGenerationHandleV1 update_lease_source{};
 
-inline bool Publish(Context &context, const std::vector<PackedTransform> &pose) noexcept {
+// `from_motion` exists because this used to refuse every publish while a motion was loaded, which
+// is exactly when the motion path needs to publish: without a snapshot the engine renders whatever
+// buffer it picked itself, so the clock advanced and the writes landed while the character stayed on
+// one frame.
+inline bool Publish(Context &context, const std::vector<PackedTransform> &pose,
+                    const bool from_motion = false) noexcept {
   if (!context.render_bridge.enabled.load(std::memory_order_acquire) || pose.empty() ||
-      context.motion_loaded.load(std::memory_order_acquire) ||
+      (!from_motion && context.motion_loaded.load(std::memory_order_acquire)) ||
       context.render_bridge.producer_thread.load(std::memory_order_acquire) != GetCurrentThreadId())
     return false;
   try {
@@ -56,12 +61,14 @@ inline void SynchronizeOwnership(Context &context) noexcept {
     const auto mesh = it->first;
     bool owned{};
     if (mesh == context.runtime.mesh) {
-      owned = context.pose_override_enabled.load(std::memory_order_acquire) &&
-          !context.motion_loaded.load(std::memory_order_acquire);
+      // Both the manual pose and a loaded motion publish a snapshot now, so both own it.
+      owned = context.pose_override_enabled.load(std::memory_order_acquire) ||
+          context.motion_loaded.load(std::memory_order_acquire);
     } else {
       const auto track = context.entity_motion_states.find(mesh);
-      owned = track != context.entity_motion_states.end() && track->second.track.frame_count == 0 &&
-          !track->second.keyframe_track.Empty();
+      owned = track != context.entity_motion_states.end() &&
+          (track->second.track.frame_count != 0 ||
+           (!track->second.keyframe_driving_released && !track->second.keyframe_track.Empty()));
     }
     if (!owned) it = context.render_bridge.samples.erase(it);
     else ++it;

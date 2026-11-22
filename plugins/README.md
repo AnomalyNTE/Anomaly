@@ -9,6 +9,7 @@
 - `FakeUID`
 - `CameraTools`
 - `CameraBlurFix`
+- `FpsUnlocker`
 - `BetterPose`
 - `BetterMap`
 - `HiFiVehicleMusic`
