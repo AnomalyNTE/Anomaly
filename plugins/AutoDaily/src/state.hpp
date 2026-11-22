@@ -161,6 +161,7 @@ struct State {
     int reward_caption_logs{};  // 诊断日志配额（避免每轮扫描刷屏）
     int reward_blocked_step{-1};  // 已经打过「控件不可点击」日志的步骤
     bool reward_stuck{};  // 奖励窗口关不掉：链路停下，不带着面板进下一步
+    std::uint32_t reward_close_clicks{};  // 关窗步骤点了几次（超预算就收手，避免空转）
 
     // ui-buttons 请求（同一时刻只保留一个在飞请求）
     AnomalyGenerationHandleV1 pending_request{};

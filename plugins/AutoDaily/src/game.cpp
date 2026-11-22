@@ -6,6 +6,7 @@
 #include "profile_layout.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -852,34 +853,28 @@ struct StepOutcome {
     bool blocked;  // 控件在、但宿主说不可点击（多半已经领过 / 条件不满足）
 };
 
-// 宿主目录会保留已经关掉的窗口控件，只有 HIDDEN 才代表它不在屏幕上了——
-// 领取后「ButtonDeactivate present but not clickable (category=3)」正是这个来源。
-bool WidgetVisible(const char* name, const bool prefix) {
-    if (name == nullptr || name[0] == '\0') return false;
+// 探索指南面板还开在屏幕上吗。
+//
+// 判据不能用「节点在且不是 HIDDEN」：面板关掉之后宿主目录里还会留着 tab 行，表现为
+// BLOCKED（category=2）且 text 为空——那样永远判定「还开着」，收尾步骤会一直点关闭键
+// 空转。真正开着的时候，tab 行可点击、并且带 caption（「全部」/「环期任务」）。
+bool RewardPanelVisible() {
     const AnomalyNteUiButtonsServiceV1* service = Buttons();
     if (service == nullptr || service->status == nullptr || service->button_at == nullptr) {
         return false;
     }
     AnomalyNteUiButtonsStatusV1 status{sizeof(status)};
     if (service->status(service->user, &status).code != ANOMALY_STATUS_V1_OK) return false;
-    const std::size_t length = std::strlen(name);
     for (std::uint32_t i = 0; i < status.button_count; ++i) {
         AnomalyNteUiButtonSnapshotV1 button{sizeof(button)};
         if (service->button_at(service->user, status.catalog_sequence, i, &button).code !=
             ANOMALY_STATUS_V1_OK) {
             continue;
         }
-        const bool hit = prefix ? std::strncmp(button.name, name, length) == 0
-                                : std::strcmp(button.name, name) == 0;
-        if (!hit) continue;
-        if (button.category != ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_HIDDEN) return true;
+        if (std::strcmp(button.name, kPanelTabName) != 0) continue;
+        if (ButtonClickable(button) || button.text[0] != '\0') return true;
     }
     return false;
-}
-
-// 探索指南面板还开在屏幕上吗：面板自己的 tab 行或关闭键还在就算开着。
-bool RewardPanelVisible() {
-    return WidgetVisible(kPanelTabName, false) || WidgetVisible(kPanelClosePrefix, true);
 }
 
 // 奖励弹窗还盖着吗：只认**可点击**的确定/关闭控件——弹窗开着时它们必然可点，
@@ -909,7 +904,9 @@ bool RewardPopupVisible() {
 bool RewardDismissPending() { return RewardPanelVisible() || RewardPopupVisible(); }
 
 // 按名字前缀点一个可点击的控件（窗口关闭键带实例号后缀）。只点宿主报 CLICKABLE 的。
-bool TryClickWidgetPrefix(const char* prefix) {
+// clicked_name 不为空时回填实际点中的控件名，供日志说明「到底点了什么」。
+bool TryClickWidgetPrefix(const char* prefix, char* clicked_name = nullptr,
+                          const std::size_t clicked_size = 0) {
     const AnomalyNteUiButtonsServiceV1* service = Buttons();
     if (service == nullptr || service->status == nullptr || service->button_at == nullptr ||
         service->request_click == nullptr || prefix == nullptr || prefix[0] == '\0') {
@@ -926,12 +923,85 @@ bool TryClickWidgetPrefix(const char* prefix) {
             continue;
         }
         if (std::strncmp(button.name, prefix, length) != 0 || !ButtonClickable(button)) continue;
+        if (clicked_name != nullptr && clicked_size != 0) {
+            std::snprintf(clicked_name, clicked_size, "%s", button.name);
+        }
         AnomalyNteUiButtonClickRequestV1 click{sizeof(click)};
         click.button = button.button;
         click.flags = 0u;
         CancelPendingRequest();
         return service->request_click(service->user, &click, &state.pending_request).code ==
                ANOMALY_STATUS_V1_OK;
+    }
+    return false;
+}
+
+bool ContainsIgnoreCase(const char* text, const char* needle) {
+    if (text == nullptr || needle == nullptr || needle[0] == '\0') return false;
+    const std::size_t needle_length = std::strlen(needle);
+    for (const char* cursor = text; *cursor != '\0'; ++cursor) {
+        std::size_t i = 0;
+        while (i < needle_length && cursor[i] != '\0' &&
+               std::tolower(static_cast<unsigned char>(cursor[i])) ==
+                   std::tolower(static_cast<unsigned char>(needle[i]))) {
+            ++i;
+        }
+        if (i == needle_length) return true;
+    }
+    return false;
+}
+
+// 关面板：HUD 上也有一个同名的 W_BoundActionButton_Close_C，全局前缀匹配点到它只会空转，
+// 所以先按「和 tab 行同一个窗口」限定范围（path 前缀相同），找不到再退回全局前缀匹配。
+bool ClickPanelClose(char* clicked_name, const std::size_t clicked_size) {
+    const AnomalyNteUiButtonsServiceV1* service = Buttons();
+    if (service == nullptr || service->status == nullptr || service->button_at == nullptr ||
+        service->request_click == nullptr) {
+        return false;
+    }
+    AnomalyNteUiButtonsStatusV1 status{sizeof(status)};
+    if (service->status(service->user, &status).code != ANOMALY_STATUS_V1_OK) return false;
+    State& state = S();
+    std::string scope;
+    for (std::uint32_t i = 0; i < status.button_count; ++i) {
+        AnomalyNteUiButtonSnapshotV1 button{sizeof(button)};
+        if (service->button_at(service->user, status.catalog_sequence, i, &button).code !=
+            ANOMALY_STATUS_V1_OK) {
+            continue;
+        }
+        if (std::strcmp(button.name, kPanelTabName) != 0) continue;
+        const char* slash = std::strrchr(button.path, '/');
+        if (slash != nullptr) scope.assign(button.path, static_cast<std::size_t>(slash - button.path) + 1);
+        break;
+    }
+    const bool want_scope = !scope.empty();
+    for (int pass = 0; pass < 2; ++pass) {
+        for (std::uint32_t i = 0; i < status.button_count; ++i) {
+            AnomalyNteUiButtonSnapshotV1 button{sizeof(button)};
+            if (service->button_at(service->user, status.catalog_sequence, i, &button).code !=
+                ANOMALY_STATUS_V1_OK) {
+                continue;
+            }
+            if (!ButtonClickable(button)) continue;
+            const bool close_like =
+                std::strncmp(button.name, kPanelClosePrefix, std::strlen(kPanelClosePrefix)) == 0 ||
+                ContainsIgnoreCase(button.name, "Close");
+            if (!close_like) continue;
+            const bool in_scope =
+                want_scope &&
+                std::strncmp(button.path, scope.c_str(), scope.size()) == 0;
+            // 第一轮只认面板窗口内的关闭键；第二轮才允许全局匹配。
+            if (pass == 0 && !in_scope) continue;
+            if (clicked_name != nullptr && clicked_size != 0) {
+                std::snprintf(clicked_name, clicked_size, "%s", button.name);
+            }
+            AnomalyNteUiButtonClickRequestV1 click{sizeof(click)};
+            click.button = button.button;
+            click.flags = 0u;
+            CancelPendingRequest();
+            return service->request_click(service->user, &click, &state.pending_request).code ==
+                   ANOMALY_STATUS_V1_OK;
+        }
     }
     return false;
 }
@@ -966,9 +1036,18 @@ StepOutcome RewardClickStep(const RewardStep& step) {
         // 验证式关窗：依次试「确定 → 弹窗关闭 → 最外层关闭 → 关闭键（前缀）」，
         // 一次只点一个，点完等目录刷新再看窗口是不是真的消失了。
         State& state = S();
-        if (TryClickWidget(kAwardSureName) || TryClickWidget(kAwardCloseName) ||
-            TryClickWidget(kAwardExitName) || TryClickWidgetPrefix(kPanelClosePrefix)) {
+        char clicked_name[128]{};
+        const bool hit = TryClickWidget(kAwardSureName) || TryClickWidget(kAwardCloseName) ||
+                         TryClickWidget(kAwardExitName) ||
+                         ClickPanelClose(clicked_name, sizeof(clicked_name)) ||
+                         TryClickWidgetPrefix(kPanelClosePrefix, clicked_name,
+                                              sizeof(clicked_name));
+        if (hit) {
             outcome.clicked = 1;
+            ++state.reward_close_clicks;
+            WinLogf("reward step %s: clicked %s (attempt %u)", step.label,
+                    clicked_name[0] != '\0' ? clicked_name : "a dismiss control",
+                    state.reward_close_clicks);
             return outcome;
         }
         outcome.blocked = RewardDismissPending();
@@ -1050,13 +1129,22 @@ StepOutcome RewardClickStep(const RewardStep& step) {
     return outcome;
 }
 
+// 进入新步骤时给对应的重试预算：关窗步骤要更大的耐心（等窗口收起 + 目录重扫）。
+void BeginRetryBudget() {
+    State& state = S();
+    const RewardTableDef& table = RewardTable();
+    const bool closing = state.reward_step >= 0 && state.reward_step < table.count &&
+                         table.steps[state.reward_step].mode == 7;
+    state.reward_retries = closing ? kRewardCloseRetries : kRewardRetries;
+    if (closing) state.reward_close_clicks = 0;
+}
+
 void AdvanceRewardStep(const std::uint32_t clicked_in, const bool blocked) {
     State& state = S();
     const RewardTableDef& table = RewardTable();
     const std::uint32_t clicked = clicked_in;
     if (clicked) {
         state.reward_blocked_step = -1;
-        state.reward_retries = kRewardRetries;
         state.reward_tab_rounds = 0;
         ++state.reward_step;
         if (state.reward_step >= table.count) {
@@ -1069,6 +1157,7 @@ void AdvanceRewardStep(const std::uint32_t clicked_in, const bool blocked) {
             return;
         }
         WinLogf("reward step done: %s", table.steps[state.reward_step - 1].label);
+        BeginRetryBudget();
         if (!SubmitScan()) {
             state.reward_step = -1;
             WinLog("reward chain aborted: scan request rejected");
@@ -1083,7 +1172,6 @@ void AdvanceRewardStep(const std::uint32_t clicked_in, const bool blocked) {
         // 已经领过：控件还在但不可点击。直接放过，不耗重试、不回退页签。
         WinLogf("reward step %s: nothing to claim, skipping", failed.label);
         state.reward_blocked_step = -1;
-        state.reward_retries = kRewardRetries;
         ++state.reward_step;
         if (state.reward_step >= table.count) {
             state.reward_step = -1;
@@ -1094,6 +1182,7 @@ void AdvanceRewardStep(const std::uint32_t clicked_in, const bool blocked) {
                               "Periodic quest rewards were claimed; confirm them in game."));
             return;
         }
+        BeginRetryBudget();
         if (SubmitScan()) state.reward_wait = table.steps[state.reward_step - 1].wait;
         return;
     }
@@ -1108,13 +1197,12 @@ void AdvanceRewardStep(const std::uint32_t clicked_in, const bool blocked) {
         WinLogf("reward step %s not actionable; back to the tab step %d (%d/%d)", failed.label,
                 table.tab_step, state.reward_tab_rounds, kRewardTabRounds);
         state.reward_step = table.tab_step;
-        state.reward_retries = kRewardRetries;
+        BeginRetryBudget();
         state.reward_blocked_step = -1;
         if (SubmitScan()) state.reward_wait = 30;
         return;
     }
     WinLogf("reward step skipped: %s", failed.label);
-    state.reward_retries = kRewardRetries;
     state.reward_blocked_step = -1;
     ++state.reward_step;
     if (state.reward_step >= table.count) {
@@ -1123,6 +1211,7 @@ void AdvanceRewardStep(const std::uint32_t clicked_in, const bool blocked) {
         SetStatus(TextLocalized("status.reward_partial", "Rewards were claimed with skipped steps; confirm them in game."));
         return;
     }
+    BeginRetryBudget();
     if (!SubmitScan()) {
         state.reward_step = -1;
         WinLog("reward chain aborted: scan request rejected");
@@ -1170,6 +1259,7 @@ void StartRewardChain(const RewardGroup group) {
     state.reward_table = table_index;
     state.reward_step = 0;
     state.reward_retries = kRewardRetries;
+    state.reward_close_clicks = 0;
     state.reward_tab_rounds = 0;
     state.reward_caption_logs = 0;
     state.reward_blocked_step = -1;
@@ -1211,8 +1301,8 @@ void TickRewardChain() {
         }
         const StepOutcome outcome = RewardClickStep(step);
         if (outcome.clicked > 0) {
-            // 点到了：给它收起的时间，预算重置，等目录刷新后再判断关没关掉。
-            state.reward_retries = kRewardCloseRetries;
+            // 点到了就等它收起来。预算**不重置**：点满次数窗口还在就收手——否则会在一个
+            // 点不动的关闭键上空转，日志里什么都没有，界面看起来就是卡住。
             if (SubmitScan()) state.reward_wait = 20;
             return;
         }
@@ -1225,6 +1315,7 @@ void TickRewardChain() {
         state.reward_step = -1;
         state.reward_stuck = true;
         WinLogf("reward chain stopped: the reward window is still open (%s)", step.label);
+        LogRewardUiCandidates();
         SetStatus(TextLocalized("status.reward_window_stuck",
             "Rewards are claimed but the reward window is still open; close it and the chain can continue."));
         return;
