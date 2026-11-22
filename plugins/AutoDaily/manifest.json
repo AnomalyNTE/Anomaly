@@ -5,7 +5,7 @@
   "description": "Runs the daily routine in one pass: hands the dungeon run to the Clone Enter plugin, withdraws the one-shop income, then claims daily rewards. Configure once, then let it run after each start; Ctrl+S stops it in game.",
   "author": "YU-1021",
   "license": "AGPL-3.0-only",
-  "version": "4.3.3",
+  "version": "4.3.4",
   "entry": "plugin.dll",
   "api": {
     "major": 1,

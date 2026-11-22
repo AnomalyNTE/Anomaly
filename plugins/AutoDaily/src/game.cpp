@@ -853,12 +853,37 @@ struct StepOutcome {
     bool blocked;  // 控件在、但宿主说不可点击（多半已经领过 / 条件不满足）
 };
 
+// 宿主自己维护的窗口列表：这才是「这个窗口现在到底在不在屏幕上」的权威答案。
+// 不能靠目录里的残留控件推断——面板关掉之后 tab 行还会以 BLOCKED/空文本留在目录里。
+bool WindowOpen(const char* window_name) {
+    if (window_name == nullptr || window_name[0] == '\0') return false;
+    const AnomalyNteUiButtonsServiceV1* service = Buttons();
+    if (service == nullptr || service->status == nullptr || service->window_at == nullptr) {
+        return false;
+    }
+    AnomalyNteUiButtonsStatusV1 status{sizeof(status)};
+    if (service->status(service->user, &status).code != ANOMALY_STATUS_V1_OK) return false;
+    for (std::uint32_t i = 0; i < status.window_count; ++i) {
+        AnomalyNteUiWindowSnapshotV1 window{sizeof(window)};
+        if (service->window_at(service->user, status.catalog_sequence, i, &window).code !=
+            ANOMALY_STATUS_V1_OK) {
+            continue;
+        }
+        if (std::strcmp(window.window, window_name) != 0) continue;
+        if ((window.flags & ANOMALY_NTE_UI_WINDOW_V1_VISIBLE) == 0u) continue;
+        if ((window.flags & ANOMALY_NTE_UI_WINDOW_V1_CLOSING) != 0u) continue;
+        return true;
+    }
+    return false;
+}
+
 // 探索指南面板还开在屏幕上吗。
 //
-// 判据不能用「节点在且不是 HIDDEN」：面板关掉之后宿主目录里还会留着 tab 行，表现为
-// BLOCKED（category=2）且 text 为空——那样永远判定「还开着」，收尾步骤会一直点关闭键
-// 空转。真正开着的时候，tab 行可点击、并且带 caption（「全部」/「环期任务」）。
+// 已知面板窗口名时直接问宿主窗口列表；还不知道（第一次跑）才退回 tab 行判据：
+// tab 行可点击或带 caption 说明面板真的画着。
 bool RewardPanelVisible() {
+    const std::string& known = S().reward_window_name;
+    if (!known.empty()) return WindowOpen(known.c_str());
     const AnomalyNteUiButtonsServiceV1* service = Buttons();
     if (service == nullptr || service->status == nullptr || service->button_at == nullptr) {
         return false;
@@ -936,6 +961,14 @@ bool TryClickWidgetPrefix(const char* prefix, char* clicked_name = nullptr,
     return false;
 }
 
+// 窗口作用域：控件 path 的父链（到最后一个 '/' 为止）足以区分「哪个窗口里的控件」。
+std::string WindowScopeOf(const char* path) {
+    if (path == nullptr) return std::string();
+    const char* slash = std::strrchr(path, '/');
+    if (slash == nullptr || slash == path) return std::string();
+    return std::string(path, static_cast<std::size_t>(slash - path) + 1);
+}
+
 bool ContainsIgnoreCase(const char* text, const char* needle) {
     if (text == nullptr || needle == nullptr || needle[0] == '\0') return false;
     const std::size_t needle_length = std::strlen(needle);
@@ -951,9 +984,9 @@ bool ContainsIgnoreCase(const char* text, const char* needle) {
     return false;
 }
 
-// 关面板：HUD 上也有一个同名的 W_BoundActionButton_Close_C，全局前缀匹配点到它只会空转，
-// 所以先按「和 tab 行同一个窗口」限定范围（path 前缀相同），找不到再退回全局前缀匹配。
-bool ClickPanelClose(char* clicked_name, const std::size_t clicked_size) {
+// 关面板：HUD 上也有一个同名的 W_BoundActionButton_Close，全局前缀匹配点到它只会空转，
+// 所以按作用域分三轮找：先找领取按钮所在的窗口，再找 tab 行所在的窗口，最后才退回全局。
+bool ClickPanelClose(char* clicked_name, const std::size_t clicked_size, const char** used_scope) {
     const AnomalyNteUiButtonsServiceV1* service = Buttons();
     if (service == nullptr || service->status == nullptr || service->button_at == nullptr ||
         service->request_click == nullptr) {
@@ -962,7 +995,7 @@ bool ClickPanelClose(char* clicked_name, const std::size_t clicked_size) {
     AnomalyNteUiButtonsStatusV1 status{sizeof(status)};
     if (service->status(service->user, &status).code != ANOMALY_STATUS_V1_OK) return false;
     State& state = S();
-    std::string scope;
+    std::string tab_scope;
     for (std::uint32_t i = 0; i < status.button_count; ++i) {
         AnomalyNteUiButtonSnapshotV1 button{sizeof(button)};
         if (service->button_at(service->user, status.catalog_sequence, i, &button).code !=
@@ -970,12 +1003,18 @@ bool ClickPanelClose(char* clicked_name, const std::size_t clicked_size) {
             continue;
         }
         if (std::strcmp(button.name, kPanelTabName) != 0) continue;
-        const char* slash = std::strrchr(button.path, '/');
-        if (slash != nullptr) scope.assign(button.path, static_cast<std::size_t>(slash - button.path) + 1);
+        tab_scope = WindowScopeOf(button.path);
         break;
     }
-    const bool want_scope = !scope.empty();
-    for (int pass = 0; pass < 2; ++pass) {
+    const std::string claim_scope = state.reward_window_scope;
+    const std::string window_name = state.reward_window_name;
+    for (int pass = 0; pass < 4; ++pass) {
+        // 0: 面板窗口内（window 精确匹配）1: 领取窗口 path 前缀 2: tab 窗口 path 前缀 3: 全局
+        if (pass == 0 && window_name.empty()) continue;
+        const std::string* scope = pass == 0 ? nullptr : pass == 1 ? &claim_scope
+                                  : pass == 2       ? &tab_scope
+                                                    : nullptr;
+        if (pass != 0 && scope != nullptr && scope->empty()) continue;
         for (std::uint32_t i = 0; i < status.button_count; ++i) {
             AnomalyNteUiButtonSnapshotV1 button{sizeof(button)};
             if (service->button_at(service->user, status.catalog_sequence, i, &button).code !=
@@ -987,13 +1026,19 @@ bool ClickPanelClose(char* clicked_name, const std::size_t clicked_size) {
                 std::strncmp(button.name, kPanelClosePrefix, std::strlen(kPanelClosePrefix)) == 0 ||
                 ContainsIgnoreCase(button.name, "Close");
             if (!close_like) continue;
-            const bool in_scope =
-                want_scope &&
-                std::strncmp(button.path, scope.c_str(), scope.size()) == 0;
-            // 第一轮只认面板窗口内的关闭键；第二轮才允许全局匹配。
-            if (pass == 0 && !in_scope) continue;
+            if (pass == 0 && std::strcmp(button.window, window_name.c_str()) != 0) continue;
+            if (scope != nullptr &&
+                std::strncmp(button.path, scope->c_str(), scope->size()) != 0) {
+                continue;
+            }
             if (clicked_name != nullptr && clicked_size != 0) {
                 std::snprintf(clicked_name, clicked_size, "%s", button.name);
+            }
+            if (used_scope != nullptr) {
+                *used_scope = pass == 0   ? "window-name"
+                              : pass == 1 ? "claim-window-path"
+                              : pass == 2 ? "tab-window-path"
+                                          : "anywhere";
             }
             AnomalyNteUiButtonClickRequestV1 click{sizeof(click)};
             click.button = button.button;
@@ -1029,6 +1074,49 @@ void LogRewardUiCandidates() {
     WinLogf("reward ui catalog: total=%u", status.button_count);
 }
 
+// 收尾排障：面板/弹窗判定依据 + 目录里所有 tab 行与关闭类控件的原始状态一次打全，
+// 下次就不用再猜「到底哪个控件才是关闭键」。
+void LogRewardWindowState(const char* reason) {
+    const AnomalyNteUiButtonsServiceV1* service = Buttons();
+    if (service == nullptr || service->status == nullptr || service->button_at == nullptr) return;
+    AnomalyNteUiButtonsStatusV1 status{sizeof(status)};
+    if (service->status(service->user, &status).code != ANOMALY_STATUS_V1_OK) return;
+    State& state = S();
+    WinLogf("reward window state (%s): panel=%d popup=%d clicks=%u scope=%s", reason,
+            RewardPanelVisible() ? 1 : 0, RewardPopupVisible() ? 1 : 0, state.reward_close_clicks,
+            state.reward_window_scope.empty() ? "-" : state.reward_window_scope.c_str());
+    int listed = 0;
+    for (std::uint32_t i = 0; i < status.button_count; ++i) {
+        AnomalyNteUiButtonSnapshotV1 button{sizeof(button)};
+        if (service->button_at(service->user, status.catalog_sequence, i, &button).code !=
+            ANOMALY_STATUS_V1_OK) {
+            continue;
+        }
+        const bool tab = std::strcmp(button.name, kPanelTabName) == 0;
+        const bool close_like =
+            std::strncmp(button.name, kPanelClosePrefix, std::strlen(kPanelClosePrefix)) == 0 ||
+            ContainsIgnoreCase(button.name, "Close") || std::strcmp(button.name, kAwardSureName) == 0 ||
+            std::strcmp(button.name, kAwardCloseName) == 0 ||
+            std::strcmp(button.name, kAwardExitName) == 0;
+        if (!tab && !close_like) continue;
+        if (listed++ >= 20) break;
+        WinLogf("reward window entry: %s cat=%d text=%s path=%s", button.name,
+                static_cast<int>(button.category), button.text[0] != '\0' ? button.text : "-",
+                button.path);
+    }
+    for (std::uint32_t i = 0; i < status.window_count && service->window_at != nullptr; ++i) {
+        AnomalyNteUiWindowSnapshotV1 window{sizeof(window)};
+        if (service->window_at(service->user, status.catalog_sequence, i, &window).code !=
+            ANOMALY_STATUS_V1_OK) {
+            continue;
+        }
+        WinLogf("reward window open: %s layer=%s flags=0x%x", window.window, window.layer,
+                window.flags);
+    }
+    WinLogf("reward window entries: total=%u catalog=%u windows=%u", listed, status.button_count,
+            status.window_count);
+}
+
 // mode 1 会把目录里所有同名按钮都点一遍。
 StepOutcome RewardClickStep(const RewardStep& step) {
     StepOutcome outcome{0, false};
@@ -1036,25 +1124,25 @@ StepOutcome RewardClickStep(const RewardStep& step) {
         // 验证式关窗：依次试「确定 → 弹窗关闭 → 最外层关闭 → 关闭键（前缀）」，
         // 一次只点一个，点完等目录刷新再看窗口是不是真的消失了。
         State& state = S();
+        if (state.reward_close_clicks == 0) LogRewardWindowState("close step begin");
         char clicked_name[128]{};
+        const char* scope_used = "-";
         const bool hit = TryClickWidget(kAwardSureName) || TryClickWidget(kAwardCloseName) ||
                          TryClickWidget(kAwardExitName) ||
-                         ClickPanelClose(clicked_name, sizeof(clicked_name)) ||
-                         TryClickWidgetPrefix(kPanelClosePrefix, clicked_name,
-                                              sizeof(clicked_name));
+                         ClickPanelClose(clicked_name, sizeof(clicked_name), &scope_used);
         if (hit) {
             outcome.clicked = 1;
             ++state.reward_close_clicks;
-            WinLogf("reward step %s: clicked %s (attempt %u)", step.label,
-                    clicked_name[0] != '\0' ? clicked_name : "a dismiss control",
-                    state.reward_close_clicks);
+            WinLogf("reward step %s: clicked %s (scope=%s, attempt %u/%d)", step.label,
+                    clicked_name[0] != '\0' ? clicked_name : "a dismiss control", scope_used,
+                    state.reward_close_clicks, kRewardCloseRetries);
             return outcome;
         }
         outcome.blocked = RewardDismissPending();
         if (outcome.blocked && state.reward_blocked_step != state.reward_step) {
             state.reward_blocked_step = state.reward_step;
             WinLogf("reward step %s: nothing clickable to close the window", step.label);
-            LogRewardUiCandidates();
+            LogRewardWindowState("no clickable close control");
         }
         return outcome;
     }
@@ -1104,6 +1192,13 @@ StepOutcome RewardClickStep(const RewardStep& step) {
             break;
         }
         ++clicked;
+        if (step.idempotent || step.caption != nullptr) {
+            // 领取按钮 / tab 行都开在面板窗口里：记下窗口名和 path 前缀，
+            // 收尾时用它们判断「面板关没关」以及锁定面板里的关闭键。
+            const std::string scope = WindowScopeOf(button.path);
+            if (!scope.empty()) state.reward_window_scope = scope;
+            if (button.window[0] != '\0') state.reward_window_name = button.window;
+        }
         if (step.mode == 0 || step.mode == 5 || step.mode == 6) {
             WinLogf("reward step %s clicked %s (caption=%s)", step.label, button.name,
                     button.text[0] != '\0' ? button.text : "-");
@@ -1260,6 +1355,8 @@ void StartRewardChain(const RewardGroup group) {
     state.reward_step = 0;
     state.reward_retries = kRewardRetries;
     state.reward_close_clicks = 0;
+    state.reward_window_name.clear();
+    state.reward_window_scope.clear();
     state.reward_tab_rounds = 0;
     state.reward_caption_logs = 0;
     state.reward_blocked_step = -1;
@@ -1300,9 +1397,19 @@ void TickRewardChain() {
             return;
         }
         const StepOutcome outcome = RewardClickStep(step);
+        if (state.reward_close_clicks >= kRewardCloseRetries) {
+            // 点满预算窗口还在：停手。否则会在一个点不动的关闭键上每秒点一次，永不结束。
+            state.reward_step = -1;
+            state.reward_stuck = true;
+            WinLogf("reward chain stopped: the reward window is still open (%s) after %u clicks",
+                    step.label, state.reward_close_clicks);
+            LogRewardWindowState("stuck");
+            SetStatus(TextLocalized("status.reward_window_stuck",
+                "Rewards are claimed but the reward window is still open; close it and the chain can continue."));
+            return;
+        }
         if (outcome.clicked > 0) {
-            // 点到了就等它收起来。预算**不重置**：点满次数窗口还在就收手——否则会在一个
-            // 点不动的关闭键上空转，日志里什么都没有，界面看起来就是卡住。
+            // 点到了就等它收起来，再看目录确认关没关掉。
             if (SubmitScan()) state.reward_wait = 20;
             return;
         }

@@ -714,7 +714,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
                    Str("yu-1021.daily"),
                    Str("Auto Daily"),
                    Str("YU-1021"),
-                   Str("4.3.3"),
+                   Str("4.3.4"),
                    daily::Load,
                    daily::Start,
                    daily::Stop,

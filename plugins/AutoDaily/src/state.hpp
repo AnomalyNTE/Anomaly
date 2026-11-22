@@ -162,6 +162,12 @@ struct State {
     int reward_blocked_step{-1};  // 已经打过「控件不可点击」日志的步骤
     bool reward_stuck{};  // 奖励窗口关不掉：链路停下，不带着面板进下一步
     std::uint32_t reward_close_clicks{};  // 关窗步骤点了几次（超预算就收手，避免空转）
+    // 领取按钮所在窗口的 path 前缀：收尾时优先在这个窗口里找关闭键，
+    // 而不是去撞 HUD 上同名的 W_BoundActionButton_Close。
+    std::string reward_window_scope{};
+    // 领取按钮所属窗口的名字（宿主窗口列表里的 window）：判「面板还开着吗」用它，
+    // 比目录里的残留 tab 行可靠得多。
+    std::string reward_window_name{};
 
     // ui-buttons 请求（同一时刻只保留一个在飞请求）
     AnomalyGenerationHandleV1 pending_request{};
