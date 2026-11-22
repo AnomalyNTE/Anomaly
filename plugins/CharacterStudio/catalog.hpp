@@ -1,15 +1,22 @@
 #pragma once
 #include "ue.hpp"
+#include <map>
 #include <set>
 
 namespace character_studio {
+struct Fashion {
+    Name id{};
+    std::string label;
+};
 struct Character {
     Name id{};
     std::string code, display_name;
+    std::vector<Fashion> fashions;
 };
 struct CatalogRow {
     Character character;
     Name default_fashion{};
+    std::vector<Fashion> fashions;
 };
 
 // Join authored table references only. Mesh residency and player ownership do not
@@ -17,26 +24,25 @@ struct CatalogRow {
 inline std::vector<Character> BuildCatalog(
     std::vector<CatalogRow> rows,
     const std::set<std::uint64_t>& defaults,
-    const std::map<std::uint64_t, Name>& fashion_owners) {
+    const std::map<std::uint64_t, Name>& fashion_owners,
+    const std::map<std::uint64_t, std::vector<Fashion>>& fashion_options) {
     std::sort(rows.begin(), rows.end(), [](const CatalogRow& a, const CatalogRow& b) {
         return a.character.code < b.character.code;
     });
-    std::set<std::string> names;
     std::vector<Character> result;
     for (auto& row : rows) {
         auto& item = row.character;
         if (!defaults.contains(Key(item.id))) {
             const auto fashion = fashion_owners.find(Key(row.default_fashion));
-            if (!row.default_fashion.index || fashion == fashion_owners.end() ||
-                fashion->second != item.id) continue;
+            const auto options = fashion_options.find(Key(item.id));
+            const bool has_matching_default = row.default_fashion.index &&
+                fashion != fashion_owners.end() && fashion->second == item.id;
+            if (!has_matching_default && (options == fashion_options.end() ||
+                options->second.empty())) continue;
         }
-        // Filter before deduplicating: an unusable alias must never hide the
-        // actual character. Missing display names are not a shared identity.
-        if (!item.display_name.empty()) {
-            if (!names.insert(item.display_name).second) continue;
-        } else {
+        if (item.display_name.empty())
             item.display_name = item.code;
-        }
+        item.fashions = std::move(row.fashions);
         result.push_back(std::move(item));
     }
     return result;

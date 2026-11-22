@@ -12,6 +12,7 @@ struct Model {
     Vector position{};
     double yaw{};
     std::string animation;
+    std::string appearance;
 };
 struct Part {
     Address mesh{};
@@ -77,11 +78,17 @@ public:
                 default_ids.insert(key);
         }
         std::map<std::uint64_t, Name> fashion_owners;
+        std::map<std::uint64_t, std::vector<Fashion>> fashion_options;
         if (fashions) {
             const auto appearances = ue_.Rows(fashions, "StaticAppearanceData");
-            for (const auto& [key, row] : appearances.rows)
-                fashion_owners.emplace(key, ue_.Value<Name>(row, appearances.type,
-                    "CharacterID", "NameProperty"));
+            for (const auto& [key, row] : appearances.rows) {
+                const Name fashion{static_cast<std::uint32_t>(key),
+                                   static_cast<std::uint32_t>(key >> 32)};
+                const auto owner = ue_.Value<Name>(row, appearances.type,
+                    "CharacterID", "NameProperty");
+                fashion_owners.emplace(key, owner);
+                fashion_options[Key(owner)].push_back({fashion, ue_.Spelling(fashion)});
+            }
         }
         // Publish atomically after joining the same two appearance routes used
         // by Spawn. This reads metadata without loading any model assets.
@@ -100,9 +107,13 @@ public:
                 candidate.default_fashion = ue_.Value<Name>(character.data, character.type,
                     "DefaultFashionID", "NameProperty");
             }
+            const auto options = fashion_options.find(Key(item.id));
+            if (options != fashion_options.end())
+                candidate.fashions = options->second;
             next.push_back(std::move(candidate));
         }
-        auto catalog = BuildCatalog(std::move(next), default_ids, fashion_owners);
+        auto catalog = BuildCatalog(std::move(next), default_ids, fashion_owners,
+                                    fashion_options);
         const auto character_handle = ue_.Pin(table);
         const auto default_handle = ue_.Pin(defaults);
         const auto appearance_handle = ue_.Pin(fashions);
@@ -115,7 +126,8 @@ public:
         appearance_table_ = appearance_handle;
         characters_ = std::move(catalog);
     }
-    std::uint64_t Spawn(Name character, Vector position, double yaw) {
+    std::uint64_t Spawn(Name character, Name fashion,
+                        Vector position, double yaw) {
         if (!position.finite() || !std::isfinite(yaw))
             throw std::runtime_error(localizer.Text("error.transform_not_finite",
                 "The position and angle must be finite numbers"));
@@ -129,7 +141,7 @@ public:
             throw std::runtime_error(
                 localizer.Text("error.world_stale", "The world is no longer valid"));
         // All resource loading and all function validation precede allocation.
-        const auto appearance = ReadAppearance(character);
+        const auto appearance = ReadAppearance(character, fashion);
         Preflight();
         const auto cls = ue_.Find("/Script/Engine.SkeletalMeshActor");
         const auto statics = ue_.Find("/Script/Engine.Default__GameplayStatics");
@@ -140,7 +152,7 @@ public:
         if (models_.size() == models_.capacity())
             models_.reserve(std::max(models_.size() + 1, models_.capacity() * 2));
         Model record{next_id_, {}, world_, chosen->display_name + " [" + chosen->code + "]",
-                     position, yaw};
+                     position, yaw, {}, fashion.index ? ue_.Spelling(fashion) : std::string()};
         Transform transform = At(position, yaw);
         const auto begin = ue_.Call(
             "/Script/Engine.GameplayStatics.BeginDeferredActorSpawnFromClass", statics,
@@ -353,7 +365,7 @@ private:
                 "This character has no usable local appearance asset"));
         return asset;
     }
-    Appearance ReadAppearance(Name id) {
+    Appearance ReadAppearance(Name id, Name override_fashion) {
         // Reacquire expired metadata handles; model assets still load only here.
         if (!ue_.Resolve(default_table_) && !ue_.Resolve(appearance_table_)) {
             const auto library = ue_.Find("/Script/HTGame.Default__HTGameData");
@@ -367,8 +379,27 @@ private:
             appearance_table_ = ue_.Pin(ue_.ObjectField(asset, "AppearanceDataTable"));
         }
         Address appearance{};
+        if (override_fashion.index) {
+            const auto fashions = ue_.Resolve(appearance_table_);
+            if (!fashions)
+                throw std::runtime_error(localizer.Text("error.appearance_not_ready",
+                    "The appearance catalog is not ready; refresh once the character data has loaded"));
+            const auto rows = ue_.Rows(fashions, "StaticAppearanceData");
+            const auto row = rows.rows.find(Key(override_fashion));
+            if (row == rows.rows.end())
+                throw std::runtime_error(localizer.Text("error.appearance_missing",
+                    "The selected appearance is no longer available"));
+            const auto owner = ue_.Value<Name>(row->second, rows.type,
+                                               "CharacterID", "NameProperty");
+            if (owner != id)
+                throw std::runtime_error(localizer.Text("error.appearance_id_mismatch",
+                    "The appearance does not match the character id"));
+            const auto data = ue_.Instanced(row->second, rows.type,
+                                            "AppearanceData", "FashionData");
+            appearance = LoadAppearance(data.data, data.type, "PlayerAppearanceAsset");
+        }
         const auto defaults = ue_.Resolve(default_table_);
-        if (defaults) {
+        if (!appearance && defaults) {
             const auto rows = ue_.Rows(defaults, "StaticDefaultAppearanceData");
             if (const auto row = rows.rows.find(Key(id)); row != rows.rows.end())
                 appearance = LoadAppearance(row->second, rows.type, "PlayerAppearanceAsset");
