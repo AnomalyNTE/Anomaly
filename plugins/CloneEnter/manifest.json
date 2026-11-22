@@ -5,7 +5,7 @@
   "description": "Enter clone dungeons and kill nearby monsters.",
   "author": "CCYellowStar",
   "license": "MIT",
-  "version": "0.2.14",
+  "version": "0.2.18",
   "entry": "plugin.dll",
   "api": {
     "major": 1,
@@ -38,6 +38,10 @@
     },
     {
       "id": "anomaly.interop.signature",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.ipc",
       "minVersion": 1
     },
     {
@@ -115,6 +119,7 @@
   "capabilities": [
     "ui",
     "input",
+    "ipc",
     "memory-read",
     "memory-write",
     "interop-signature",

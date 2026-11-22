@@ -130,6 +130,8 @@
     "status.one_key_next_round": "一键副本：回到主世界，开始下一轮",
     "status.one_key_enter_timeout": "一键副本失败：进副本超时",
     "status.one_key_claim_timeout": "一键副本失败：领取超时",
-    "status.left_dungeon": "已退出副本"
+    "status.daily_stop_requested": "一键副本：已按外部请求停止",
+    "status.left_dungeon": "已退出副本",
+    "status.one_key_wait_services": "一键副本：等待实体服务"
   }
 }
