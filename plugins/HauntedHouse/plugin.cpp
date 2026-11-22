@@ -1891,7 +1891,7 @@ AnomalyPluginEntryV1(AnomalyPluginDescriptorV1 *descriptor) {
     *descriptor = {sizeof(*descriptor),
                    ANOMALY_PLUGIN_API_V1_MAJOR,
                    ANOMALY_PLUGIN_API_V1_MINOR,
-                   anomaly::sdk::StringView("anomaly.haunted-house"),
+                   anomaly::sdk::StringView("xuancaiyajiji.haunted-house"),
                    anomaly::sdk::StringView("Haunted House"),
                    anomaly::sdk::StringView("Anomaly"),
                    anomaly::sdk::StringView("1.0.0"),

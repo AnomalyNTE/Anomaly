@@ -1,9 +1,9 @@
 {
   "schemaVersion": 2,
-  "id": "anomaly.haunted-house",
+  "id": "xuancaiyajiji.haunted-house",
   "name": "Haunted House",
   "description": "Teleports the local player through the haunted-house event: a numbered 18-step main flow (castle hall, exploration, seals, ice cream, candy, four gems and their hand-ins, candy key, visiting the count) with one-click completion and a boss-room shortcut; the flyer, battery, sanity spray, and gingerbread pages are filled only when you press Scan, then each instance gets its own teleport.",
-  "author": "Anomaly",
+  "author": "XUANCAIYajiji",
   "license": "AGPL-3.0-only",
   "version": "1.0.0",
   "entry": "plugin.dll",
