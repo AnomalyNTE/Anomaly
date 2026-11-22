@@ -751,7 +751,8 @@ bool HudReady() {
 }
 
 // 目录扫描 + 只点可点击：弹窗按钮常带实例号，按 MatchWidget 匹配（名字或 path 末段）。
-bool TryClickWidget(const char* target) {
+bool TryClickWidget(const char* target, char* clicked_name = nullptr,
+                    const std::size_t clicked_size = 0, const char* scope_label = nullptr) {
     const AnomalyNteUiButtonsServiceV1* service = Buttons();
     State& state = S();
     if (service == nullptr || service->status == nullptr || service->button_at == nullptr ||
@@ -770,6 +771,12 @@ bool TryClickWidget(const char* target) {
         AnomalyNteUiButtonClickRequestV1 click{sizeof(click)};
         click.button = button.button;
         click.flags = 0u;
+        if (clicked_name != nullptr && clicked_size != 0) {
+            std::snprintf(clicked_name, clicked_size, "%s", button.name);
+        }
+        if (scope_label != nullptr) {
+            WinLogf("reward click target: %s via %s path=%s", button.name, scope_label, button.path);
+        }
         CancelPendingRequest();
         return service->request_click(service->user, &click, &state.pending_request).code ==
                ANOMALY_STATUS_V1_OK;
@@ -1104,6 +1111,26 @@ void LogRewardWindowState(const char* reason) {
                 static_cast<int>(button.category), button.text[0] != '\0' ? button.text : "-",
                 button.path);
     }
+    // 面板窗口里此刻到底有哪些**可点**控件：这是判断「该按哪个键关门」的决定性证据。
+    const std::string& panel_window = state.reward_window_name;
+    if (!panel_window.empty()) {
+        int clickable_in_window = 0;
+        for (std::uint32_t i = 0; i < status.button_count; ++i) {
+            AnomalyNteUiButtonSnapshotV1 button{sizeof(button)};
+            if (service->button_at(service->user, status.catalog_sequence, i, &button).code !=
+                ANOMALY_STATUS_V1_OK) {
+                continue;
+            }
+            if (std::strcmp(button.window, panel_window.c_str()) != 0) continue;
+            if (!ButtonClickable(button)) continue;
+            if (clickable_in_window++ >= 25) break;
+            WinLogf("reward window clickable: %s kind=%u depth=%u text=%s path=%s", button.name,
+                    button.kind, button.depth, button.text[0] != '\0' ? button.text : "-",
+                    button.path);
+        }
+        WinLogf("reward window clickable: total=%d window=%s", clickable_in_window,
+                panel_window.c_str());
+    }
     for (std::uint32_t i = 0; i < status.window_count && service->window_at != nullptr; ++i) {
         AnomalyNteUiWindowSnapshotV1 window{sizeof(window)};
         if (service->window_at(service->user, status.catalog_sequence, i, &window).code !=
@@ -1127,8 +1154,12 @@ StepOutcome RewardClickStep(const RewardStep& step) {
         if (state.reward_close_clicks == 0) LogRewardWindowState("close step begin");
         char clicked_name[128]{};
         const char* scope_used = "-";
+        // 面板是点 HUD 上的入口按钮打开的，同一个按钮通常就是开关：先试它，再试面板里的关闭键。
         const bool hit = TryClickWidget(kAwardSureName) || TryClickWidget(kAwardCloseName) ||
                          TryClickWidget(kAwardExitName) ||
+                         (step.target != nullptr && step.target[0] != '\0' &&
+                          TryClickWidget(step.target, clicked_name, sizeof(clicked_name),
+                                         "opener-toggle")) ||
                          ClickPanelClose(clicked_name, sizeof(clicked_name), &scope_used);
         if (hit) {
             outcome.clicked = 1;
@@ -1377,6 +1408,14 @@ void TickRewardChain() {
     }
     if (!PollRequestDone(&done)) return;
     const RewardStep& step = RewardTable().steps[state.reward_step];
+    if (step.mode == 7 && done.kind == ANOMALY_NTE_UI_BUTTON_REQUEST_V1_CLICK &&
+        done.request.id != 0 && state.reward_logged_click != state.reward_close_clicks) {
+        // 宿主到底有没有真的执行这次点击：被拒绝会带 reasons，被接受则是 CLICK_ACCEPTED。
+        state.reward_logged_click = state.reward_close_clicks;
+        WinLogf("reward close click result: status=%u outcome=0x%x reasons=0x%x detail=%s",
+                done.status, done.outcome, done.reasons,
+                done.detail[0] != '\0' ? done.detail : "-");
+    }
     if (step.mode == 3) {
         AdvanceRewardStep(ButtonPresent(step.target) ? 1u : 0u, false);
         return;
