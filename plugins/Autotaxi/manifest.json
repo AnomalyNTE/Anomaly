@@ -5,7 +5,7 @@
   "description": "Automatically complete taxi orders with an optional preferred eligible character passenger.",
   "author": "b1ank",
   "license": "AGPL-3.0-only",
-  "version": "0.1.11",
+  "version": "0.2.0",
   "entry": "plugin.dll",
   "api": {
     "major": 1,
@@ -22,6 +22,10 @@
   "services": [
     {
       "id": "anomaly.core",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.plugin-state",
       "minVersion": 1
     },
     {
@@ -78,6 +82,7 @@
   "capabilities": [
     "ui",
     "ui-window",
+    "configuration",
     "memory-read",
     "memory-write",
     "interop-hook",
