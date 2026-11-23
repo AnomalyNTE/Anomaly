@@ -171,4 +171,4 @@ The host also reads two fixed keys from the same file for the management UI: `wi
 
 The active language is fixed for the lifetime of the process and changing it requires a game restart, so text can be resolved wherever it is produced instead of at draw time.
 
-On the C++ side use the SDK's `anomaly::sdk::Localizer` (`include/anomaly/sdk/localization.hpp`); it wraps `Text` / `Format` / `Label` and the two-phase retry for long messages. See [Plugin development · Localized text](../developer-guide/plugin-development.md#localized-text).
+On the C++ side use the SDK's `anomaly::sdk::Localizer` (`include/anomaly/sdk/localization.hpp`); it wraps `Text` / `Format` / `Label` and the two-phase retry for long messages. `Locale()` reads the active language from the same retained service table for web `lang` attributes and date/number formatting. See [Plugin development · Localized text](../developer-guide/plugin-development.md#localized-text).

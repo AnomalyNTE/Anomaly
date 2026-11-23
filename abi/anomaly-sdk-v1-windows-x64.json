@@ -25,6 +25,9 @@
     "ANOMALY_SCHEDULER_SERVICE_V1_VERSION": 1,
     "ANOMALY_IPC_SERVICE_V1_VERSION": 1,
     "ANOMALY_WEBSOCKET_SERVICE_V1_VERSION": 1,
+    "ANOMALY_WEB_SERVICE_V1_VERSION": 1,
+    "ANOMALY_WEB_MAX_REQUEST_BYTES_V1": 65536,
+    "ANOMALY_WEB_MAX_RESPONSE_BYTES_V1": 1048576,
     "ANOMALY_IPC_SCHEMA_HASH_V1_SIZE": 32,
     "ANOMALY_COMMANDS_SERVICE_V1_VERSION": 1,
     "ANOMALY_NOTIFICATIONS_SERVICE_V1_VERSION": 1,
@@ -129,6 +132,14 @@
     "ANOMALY_NTE_UI_BUTTON_OUTCOME_V1_TRUNCATED": 8
   },
   "enums": {
+    "AnomalyWebContentTypeV1": {
+      "size": 4,
+      "alignment": 4,
+      "values": {
+        "ANOMALY_WEB_CONTENT_TYPE_V1_JSON": 0,
+        "ANOMALY_WEB_CONTENT_TYPE_V1_TEXT": 1
+      }
+    },
     "AnomalyStatusCodeV1": {
       "size": 4,
       "alignment": 4,
@@ -801,6 +812,41 @@
         "publish_text": 16,
         "server_info": 24,
         "set_port": 32
+      }
+    },
+    "AnomalyWebRequestV1": {
+      "size": 56,
+      "alignment": 8,
+      "offsets": {
+        "struct_size": 0,
+        "reserved": 4,
+        "method": 8,
+        "path": 24,
+        "body": 40
+      }
+    },
+    "AnomalyWebResponseV1": {
+      "size": 40,
+      "alignment": 8,
+      "offsets": {
+        "struct_size": 0,
+        "http_status": 4,
+        "content_type": 8,
+        "reserved": 12,
+        "body": 16,
+        "body_size": 32
+      }
+    },
+    "AnomalyWebServiceV1": {
+      "size": 40,
+      "alignment": 8,
+      "offsets": {
+        "struct_size": 0,
+        "service_version": 4,
+        "user": 8,
+        "register_application": 16,
+        "unregister_application": 24,
+        "application_url": 32
       }
     },
     "AnomalyIpcSchemaHashV1": {
@@ -2244,6 +2290,7 @@
     { "id": "anomaly.scheduler", "version": 1, "table": "AnomalySchedulerServiceV1" },
     { "id": "anomaly.ipc", "version": 1, "table": "AnomalyIpcServiceV1" },
     { "id": "anomaly.websocket", "version": 1, "table": "AnomalyWebSocketServiceV1" },
+    { "id": "anomaly.web", "version": 1, "table": "AnomalyWebServiceV1" },
     { "id": "anomaly.commands", "version": 1, "table": "AnomalyCommandsServiceV1" },
     { "id": "anomaly.notifications", "version": 1, "table": "AnomalyNotificationsServiceV1" },
     { "id": "anomaly.interop.signature", "version": 1, "table": "AnomalySignatureServiceV1" },

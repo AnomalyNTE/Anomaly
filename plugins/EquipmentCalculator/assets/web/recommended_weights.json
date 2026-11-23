@@ -1,0 +1,459 @@
+{
+  "schema_version": 1,
+  "source": "yihuan_workshop",
+  "attribution": "异环工坊",
+  "generated_at": "2026-11-23T11:07:55Z",
+  "general": {
+    "weights": {
+      "AtkUp": 0.7,
+      "CritBase": 1,
+      "CritDamageBase": 1,
+      "DamageUpGeneralBase": 0.75
+    },
+    "main_weights": {
+      "AtkUp": 0.7,
+      "CritBase": 1,
+      "CritDamageBase": 1,
+      "DamageUpGeneralBase": 0.75
+    }
+  },
+  "characters": {
+    "1003": {
+      "name": "早雾",
+      "weights": {
+        "AtkAdd": 0.4,
+        "AtkUp": 0.7,
+        "CritBase": 1,
+        "CritDamageBase": 1,
+        "DamageUpGeneralBase": 0.8,
+        "UnbalIntensityBase": 1
+      },
+      "main_weights": {
+        "AtkUp": 0.9,
+        "CritBase": 1,
+        "CritDamageBase": 0.9,
+        "DamageUpIncantationBase": 1,
+        "UnbalIntensityBase": 1
+      }
+    },
+    "1004": {
+      "name": "安魂曲",
+      "weights": {
+        "AtkAdd": 0.35,
+        "AtkUp": 0.65,
+        "CritBase": 1,
+        "CritDamageBase": 1,
+        "DamageUpGeneralBase": 0.75,
+        "MagBase": 0.2
+      },
+      "main_weights": {
+        "AtkUp": 0.8,
+        "CritBase": 1,
+        "CritDamageBase": 1,
+        "DamageUpChaosBase": 1
+      }
+    },
+    "1008": {
+      "name": "翳",
+      "weights": {
+        "AtkAdd": 0.3,
+        "AtkUp": 0.5,
+        "CritBase": 1,
+        "CritDamageBase": 1,
+        "DamageUpGeneralBase": 0.75
+      },
+      "main_weights": {
+        "AtkUp": 0.8,
+        "CritBase": 1,
+        "CritDamageBase": 0.9,
+        "DamageUpLakshanaBase": 1
+      }
+    },
+    "1010": {
+      "name": "娜娜莉",
+      "weights": {
+        "AtkAdd": 0.45,
+        "AtkUp": 0.9,
+        "CritBase": 1,
+        "CritDamageBase": 1,
+        "DamageUpGeneralBase": 0.75
+      },
+      "main_weights": {
+        "AtkUp": 0.9,
+        "CritBase": 1,
+        "CritDamageBase": 1,
+        "DamageUpNatureBase": 1
+      }
+    },
+    "1019": {
+      "name": "薄荷",
+      "weights": {
+        "AtkAdd": 0.5,
+        "AtkUp": 0.85,
+        "CritBase": 1,
+        "CritDamageBase": 1,
+        "DamageUpGeneralBase": 0.75,
+        "MagBase": 0.3
+      },
+      "main_weights": {
+        "AtkUp": 0.9,
+        "CritBase": 1,
+        "CritDamageBase": 1,
+        "DamageUpNatureBase": 1
+      }
+    },
+    "1020": {
+      "name": "哈尼娅",
+      "weights": {
+        "AtkAdd": 0.25,
+        "AtkUp": 0.35,
+        "CritBase": 0.5,
+        "CritDamageBase": 0.45,
+        "DamageUpGeneralBase": 0.5,
+        "MagBase": 1,
+        "UnbalIntensityBase": 1
+      },
+      "main_weights": {
+        "CritBase": 0.5,
+        "DamageUpPsycheBase": 0.5,
+        "MagBase": 1,
+        "UnbalIntensityBase": 1
+      }
+    },
+    "1021": {
+      "name": "埃德嘉",
+      "weights": {
+        "HPMaxAdd": 0.5,
+        "HPMaxUp": 1,
+        "MagBase": 1,
+        "UnbalIntensityBase": 0.7
+      },
+      "main_weights": {
+        "HPMaxUp": 1,
+        "HealUp": 1,
+        "MagBase": 1,
+        "UnbalIntensityBase": 0.7
+      }
+    },
+    "1023": {
+      "name": "白藏",
+      "weights": {
+        "AtkAdd": 0.25,
+        "AtkUp": 0.55,
+        "CritBase": 1,
+        "CritDamageBase": 1,
+        "DamageUpGeneralBase": 0.8,
+        "MagBase": 0.2
+      },
+      "main_weights": {
+        "AtkUp": 0.75,
+        "CritBase": 1,
+        "CritDamageBase": 1,
+        "DamageUpIncantationBase": 1
+      }
+    },
+    "1025": {
+      "name": "哈索尔",
+      "weights": {
+        "AtkAdd": 0.25,
+        "AtkUp": 0.5,
+        "CritBase": 1,
+        "CritDamageBase": 1,
+        "DamageUpGeneralBase": 0.7
+      },
+      "main_weights": {
+        "AtkUp": 0.8,
+        "CritBase": 1,
+        "CritDamageBase": 0.9,
+        "DamageUpLakshanaBase": 1
+      }
+    },
+    "1033": {
+      "name": "阿德勒",
+      "weights": {
+        "CritBase": 0.5,
+        "CritDamageBase": 0.45,
+        "DamageUpGeneralBase": 0.6,
+        "DefAdd": 0.5,
+        "DefUp": 1,
+        "UnbalIntensityBase": 1
+      },
+      "main_weights": {
+        "CritBase": 0.5,
+        "DamageUpIncantationBase": 0.6,
+        "DefUp": 1,
+        "UnbalIntensityBase": 1
+      }
+    },
+    "1036": {
+      "name": "残虹",
+      "weights": {
+        "AtkAdd": 0.3,
+        "AtkUp": 0.6,
+        "CritBase": 1,
+        "CritDamageBase": 1,
+        "DamageUpGeneralBase": 0.65,
+        "MagBase": 0.6
+      },
+      "main_weights": {
+        "AtkUp": 0.9,
+        "CritBase": 1,
+        "CritDamageBase": 1,
+        "DamageUpIncantationBase": 1,
+        "MagBase": 1
+      }
+    },
+    "1039": {
+      "name": "法帝娅",
+      "weights": {
+        "CritBase": 0.9,
+        "CritDamageBase": 0.9,
+        "DamageUpGeneralBase": 0.8,
+        "HPMaxAdd": 0.5,
+        "HPMaxUp": 1,
+        "MagBase": 0.7
+      },
+      "main_weights": {
+        "CritBase": 1,
+        "CritDamageBase": 1,
+        "DamageUpPsychicallyBase": 1,
+        "HPMaxUp": 1,
+        "MagBase": 0.7
+      }
+    },
+    "1042": {
+      "name": "黑羽",
+      "weights": {
+        "AtkAdd": 0.25,
+        "AtkUp": 0.55,
+        "CritBase": 1,
+        "CritDamageBase": 1,
+        "DamageUpGeneralBase": 0.65,
+        "MagBase": 0.3
+      },
+      "main_weights": {
+        "AtkUp": 0.9,
+        "CritBase": 1,
+        "CritDamageBase": 1,
+        "DamageUpPsycheBase": 1
+      }
+    },
+    "1046": {
+      "name": "异能者(男)",
+      "weights": {
+        "AtkAdd": 0.4,
+        "AtkUp": 0.75,
+        "CritBase": 1,
+        "CritDamageBase": 1,
+        "DamageUpGeneralBase": 1,
+        "MagBase": 1
+      },
+      "main_weights": {
+        "AtkUp": 0.5,
+        "CritBase": 0.7,
+        "CritDamageBase": 0.7,
+        "DamageUpCosmosBase": 0.7,
+        "MagBase": 1
+      }
+    },
+    "1051": {
+      "name": "异能者(女)",
+      "weights": {
+        "AtkAdd": 0.4,
+        "AtkUp": 0.75,
+        "CritBase": 1,
+        "CritDamageBase": 1,
+        "DamageUpGeneralBase": 1,
+        "MagBase": 1
+      },
+      "main_weights": {
+        "AtkUp": 0.5,
+        "CritBase": 0.7,
+        "CritDamageBase": 0.7,
+        "DamageUpCosmosBase": 0.7,
+        "MagBase": 1
+      }
+    },
+    "1052": {
+      "name": "浔",
+      "weights": {
+        "AtkAdd": 0.45,
+        "AtkUp": 0.9,
+        "CritBase": 1,
+        "CritDamageBase": 1,
+        "DamageUpGeneralBase": 0.8
+      },
+      "main_weights": {
+        "AtkUp": 0.8,
+        "CritBase": 1,
+        "CritDamageBase": 1,
+        "DamageUpCosmosBase": 1
+      }
+    },
+    "1054": {
+      "name": "达芙蒂尔",
+      "weights": {
+        "AtkAdd": 0.3,
+        "AtkUp": 0.55,
+        "CritBase": 1,
+        "CritDamageBase": 1,
+        "DamageUpGeneralBase": 0.7,
+        "UnbalIntensityBase": 1
+      },
+      "main_weights": {
+        "AtkUp": 0.8,
+        "CritBase": 1,
+        "CritDamageBase": 0.8,
+        "DamageUpChaosBase": 0.9,
+        "UnbalIntensityBase": 1
+      }
+    },
+    "1055": {
+      "name": "九原",
+      "weights": {
+        "AtkAdd": 0.45,
+        "AtkUp": 0.85,
+        "CritBase": 1,
+        "CritDamageBase": 1,
+        "DamageUpGeneralBase": 0.8
+      },
+      "main_weights": {
+        "AtkUp": 0.9,
+        "CritBase": 1,
+        "CritDamageBase": 1,
+        "DamageUpNatureBase": 1
+      }
+    },
+    "1057": {
+      "name": "明音凛",
+      "weights": {
+        "AtkAdd": 0.2,
+        "AtkUp": 0.4,
+        "CritBase": 1,
+        "CritDamageBase": 0.8,
+        "DamageUpGeneralBase": 0.6,
+        "MagBase": 0.35
+      },
+      "main_weights": {
+        "AtkUp": 0.8,
+        "CritBase": 1,
+        "CritDamageBase": 1,
+        "DamageUpLakshanaBase": 1
+      }
+    },
+    "1070": {
+      "name": "海月",
+      "weights": {
+        "AtkAdd": 0.25,
+        "AtkUp": 0.45,
+        "CritBase": 1,
+        "CritDamageBase": 1,
+        "DamageUpGeneralBase": 0.7,
+        "MagBase": 0.3
+      },
+      "main_weights": {
+        "AtkUp": 0.8,
+        "CritBase": 1,
+        "CritDamageBase": 1,
+        "DamageUpPsycheBase": 1
+      }
+    },
+    "1071": {
+      "name": "卡厄斯",
+      "weights": {
+        "AtkAdd": 0.4,
+        "AtkUp": 0.75,
+        "CritBase": 1,
+        "CritDamageBase": 1,
+        "DamageUpGeneralBase": 0.65,
+        "MagBase": 0.3
+      },
+      "main_weights": {
+        "AtkUp": 0.9,
+        "CritBase": 1,
+        "CritDamageBase": 1,
+        "DamageUpLakshanaBase": 1
+      }
+    },
+    "1072": {
+      "name": "灵可",
+      "weights": {
+        "AtkAdd": 0.3,
+        "AtkUp": 0.55,
+        "CritBase": 1,
+        "CritDamageBase": 0.7,
+        "DamageUpGeneralBase": 0.75,
+        "MagBase": 0.3
+      },
+      "main_weights": {
+        "AtkUp": 0.9,
+        "CritBase": 1,
+        "CritDamageBase": 1,
+        "DamageUpNatureBase": 1
+      }
+    },
+    "1073": {
+      "name": "小吱",
+      "weights": {
+        "AtkAdd": 0.2,
+        "AtkUp": 0.4,
+        "CritBase": 0.4,
+        "CritDamageBase": 0.7,
+        "DamageUpGeneralBase": 1
+      },
+      "main_weights": {
+        "DamageUpCosmosBase": 1
+      }
+    },
+    "1075": {
+      "name": "伊洛伊",
+      "weights": {
+        "AtkAdd": 0.55,
+        "AtkUp": 1,
+        "CritBase": 1,
+        "CritDamageBase": 1,
+        "DamageUpGeneralBase": 0.9
+      },
+      "main_weights": {
+        "AtkUp": 1,
+        "CritBase": 1,
+        "CritDamageBase": 0.9,
+        "DamageUpNatureBase": 1,
+        "HealUp": 1
+      }
+    },
+    "1076": {
+      "name": "真红",
+      "weights": {
+        "AtkAdd": 0.35,
+        "AtkUp": 0.65,
+        "CritBase": 1,
+        "CritDamageBase": 1,
+        "DamageUpGeneralBase": 0.75
+      },
+      "main_weights": {
+        "AtkUp": 0.8,
+        "CritBase": 1,
+        "CritDamageBase": 1,
+        "DamageUpCosmosBase": 1
+      }
+    },
+    "1090": {
+      "name": "曳尔沐",
+      "weights": {
+        "AtkAdd": 0.25,
+        "AtkUp": 0.55,
+        "CritBase": 0.8,
+        "CritDamageBase": 1,
+        "DamageUpGeneralBase": 0.6,
+        "MagBase": 0.2
+      },
+      "main_weights": {
+        "AtkUp": 0.8,
+        "CritBase": 1,
+        "CritDamageBase": 1,
+        "DamageUpCosmosBase": 1
+      }
+    }
+  }
+}

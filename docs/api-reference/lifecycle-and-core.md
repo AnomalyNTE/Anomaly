@@ -168,7 +168,7 @@ typedef struct AnomalyLocalizationServiceV1 {
 
 当前语言在进程生命周期内固定，切换语言需重启游戏进程，所以文案可以在产生它的位置直接解析，不必推迟到绘制。
 
-C++ 侧直接用 SDK 的 `anomaly::sdk::Localizer`（`include/anomaly/sdk/localization.hpp`），它封装 `Text` / `Format` / `Label` 与超长消息的两段式重试；用法见 [插件开发 · 文本本地化](../developer-guide/plugin-development.md#文本本地化)。
+C++ 侧直接用 SDK 的 `anomaly::sdk::Localizer`（`include/anomaly/sdk/localization.hpp`），它封装 `Text` / `Format` / `Label` 与超长消息的两段式重试；`Locale()` 从同一个已保存的服务表读取当前语言，可用于网页的 `lang` 和日期／数字格式。用法见 [插件开发 · 文本本地化](../developer-guide/plugin-development.md#文本本地化)。
 
 
 ## `anomaly.mods`（v1）

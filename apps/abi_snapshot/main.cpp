@@ -176,6 +176,12 @@ std::string BuildSnapshot() {
     AppendUnsigned(output, ANOMALY_IPC_SERVICE_V1_VERSION);
     output.append(",\n    \"ANOMALY_WEBSOCKET_SERVICE_V1_VERSION\": ");
     AppendUnsigned(output, ANOMALY_WEBSOCKET_SERVICE_V1_VERSION);
+    output.append(",\n    \"ANOMALY_WEB_SERVICE_V1_VERSION\": ");
+    AppendUnsigned(output, ANOMALY_WEB_SERVICE_V1_VERSION);
+    output.append(",\n    \"ANOMALY_WEB_MAX_REQUEST_BYTES_V1\": ");
+    AppendUnsigned(output, ANOMALY_WEB_MAX_REQUEST_BYTES_V1);
+    output.append(",\n    \"ANOMALY_WEB_MAX_RESPONSE_BYTES_V1\": ");
+    AppendUnsigned(output, ANOMALY_WEB_MAX_RESPONSE_BYTES_V1);
     output.append(",\n    \"ANOMALY_IPC_SCHEMA_HASH_V1_SIZE\": ");
     AppendUnsigned(output, ANOMALY_IPC_SCHEMA_HASH_V1_SIZE);
     output.append(",\n    \"ANOMALY_COMMANDS_SERVICE_V1_VERSION\": ");
@@ -383,6 +389,10 @@ std::string BuildSnapshot() {
     output.append("\n  },\n");
 
     output.append("  \"enums\": {\n");
+    AppendEnum(output, "AnomalyWebContentTypeV1", sizeof(AnomalyWebContentTypeV1),
+        alignof(AnomalyWebContentTypeV1),
+        {{"ANOMALY_WEB_CONTENT_TYPE_V1_JSON", ANOMALY_WEB_CONTENT_TYPE_V1_JSON},
+         {"ANOMALY_WEB_CONTENT_TYPE_V1_TEXT", ANOMALY_WEB_CONTENT_TYPE_V1_TEXT}}, false);
     AppendEnum(
         output,
         "AnomalyStatusCodeV1",
@@ -1077,6 +1087,33 @@ std::string BuildSnapshot() {
          {"server_info", offsetof(AnomalyWebSocketServiceV1, server_info)},
          {"set_port", offsetof(AnomalyWebSocketServiceV1, set_port)}},
         false);
+    AppendStruct(
+        output,
+        "AnomalyWebRequestV1",
+        sizeof(AnomalyWebRequestV1), alignof(AnomalyWebRequestV1),
+        {{"struct_size", offsetof(AnomalyWebRequestV1, struct_size)},
+         {"reserved", offsetof(AnomalyWebRequestV1, reserved)},
+         {"method", offsetof(AnomalyWebRequestV1, method)},
+         {"path", offsetof(AnomalyWebRequestV1, path)},
+         {"body", offsetof(AnomalyWebRequestV1, body)}}, false);
+    AppendStruct(
+        output, "AnomalyWebResponseV1",
+        sizeof(AnomalyWebResponseV1), alignof(AnomalyWebResponseV1),
+        {{"struct_size", offsetof(AnomalyWebResponseV1, struct_size)},
+         {"http_status", offsetof(AnomalyWebResponseV1, http_status)},
+         {"content_type", offsetof(AnomalyWebResponseV1, content_type)},
+         {"reserved", offsetof(AnomalyWebResponseV1, reserved)},
+         {"body", offsetof(AnomalyWebResponseV1, body)},
+         {"body_size", offsetof(AnomalyWebResponseV1, body_size)}}, false);
+    AppendStruct(
+        output, "AnomalyWebServiceV1",
+        sizeof(AnomalyWebServiceV1), alignof(AnomalyWebServiceV1),
+        {{"struct_size", offsetof(AnomalyWebServiceV1, struct_size)},
+         {"service_version", offsetof(AnomalyWebServiceV1, service_version)},
+         {"user", offsetof(AnomalyWebServiceV1, user)},
+         {"register_application", offsetof(AnomalyWebServiceV1, register_application)},
+         {"unregister_application", offsetof(AnomalyWebServiceV1, unregister_application)},
+         {"application_url", offsetof(AnomalyWebServiceV1, application_url)}}, false);
     AppendStruct(
         output,
         "AnomalyIpcSchemaHashV1",
@@ -2528,6 +2565,8 @@ std::string BuildSnapshot() {
         ANOMALY_IPC_SERVICE_V1_VERSION, "AnomalyIpcServiceV1", false);
     AppendService(output, ANOMALY_WEBSOCKET_SERVICE_V1_ID,
         ANOMALY_WEBSOCKET_SERVICE_V1_VERSION, "AnomalyWebSocketServiceV1", false);
+    AppendService(output, ANOMALY_WEB_SERVICE_V1_ID,
+        ANOMALY_WEB_SERVICE_V1_VERSION, "AnomalyWebServiceV1", false);
     AppendService(output, ANOMALY_COMMANDS_SERVICE_V1_ID,
         ANOMALY_COMMANDS_SERVICE_V1_VERSION, "AnomalyCommandsServiceV1", false);
     AppendService(output, ANOMALY_NOTIFICATIONS_SERVICE_V1_ID,

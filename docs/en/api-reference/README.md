@@ -15,6 +15,7 @@ For a workflow-oriented walkthrough, see [Plugin development](../developer-guide
 | [Interop and memory](interop-and-memory.md) | `interop.signature`, `interop.hook`, `interop.patch`, memory grants |
 | [Inter-plugin IPC](ipc.md) | `anomaly.ipc` |
 | [WebSocket broadcast](websocket.md) | `anomaly.websocket` |
+| [Loopback web applications](web.md) | `anomaly.web` |
 | [UI services](ui-services.md) | `anomaly.ui`, `window`, `font`, `texture`, `input` |
 | [UE5 services](ue5-services.md) | `ue5.build`, `ahud`, `framework`, `process-event`, `names`, `objects`, `world` |
 | [NTE services](nte-services.md) | `nte.build`, `session`, `player`, `player-teleport`, `map-landmarks`, `navigation`, `pickup`, `ui-buttons`, `combat`, `skills`, `skill-invocation`, `entities`, `actors`, `metrics` |
@@ -121,6 +122,7 @@ Many functions that return variable-length data use a signature of the form `(..
 | `anomaly.interop.patch` | 1 | `interop-patch` | [patch](interop-and-memory.md#anomalyinteroppatch) |
 | `anomaly.ipc` | 1 | `ipc` | [ipc](ipc.md) |
 | `anomaly.websocket` | 1 | `websocket` | [websocket](websocket.md) |
+| `anomaly.web` | 1 | `web` | [web](web.md) |
 | `anomaly.ui` | 1 | `ui` | [ui](ui-services.md#anomalyui) |
 | `anomaly.window` | 1 | `ui-window` | [window](ui-services.md#anomalywindow) |
 | `anomaly.font` | 1 | `ui-font` | [font](ui-services.md#anomalyfont) |

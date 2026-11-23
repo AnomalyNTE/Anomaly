@@ -10,6 +10,7 @@
 #include "anomaly/plugin_package.hpp"
 #include "anomaly/plugin_profile.hpp"
 #include "anomaly/scoped_platform_services.hpp"
+#include "anomaly/web_server.hpp"
 #include "anomaly/structured_logger.hpp"
 #include "anomaly/thread_local_value.hpp"
 #include "anomaly/ui_resource_decoder.hpp"
@@ -1566,6 +1567,13 @@ struct JsonNode final {
     nlohmann::json* value{};
 };
 
+struct WebCallbackBinding final {
+    std::shared_ptr<anomaly::PluginScope> scope;
+    std::uint64_t generation{};
+    AnomalyWebCallbackV1 callback{};
+    void* callback_user{};
+};
+
 struct PluginServiceContext {
     PluginManager* manager{};
     PluginUiProxyContext* ui_proxy_context{};
@@ -1597,6 +1605,7 @@ struct PluginServiceContext {
     AnomalyModsServiceV1 mods{};
     AnomalyIpcServiceV1 ipc_service{};
     AnomalyCommandsServiceV1 commands{};
+    AnomalyWebServiceV1 web{};
     AnomalyNotificationsServiceV1 notifications{};
     AnomalyNteEscMenuButtonServiceV1 nte_esc_menu_button{};
     AnomalySignatureServiceV1 signature{};
@@ -2542,6 +2551,64 @@ AnomalyStatusV1 ANOMALY_CALL PublishIpcV1(
     void* user, AnomalyGenerationHandleV1 endpoint, AnomalyByteSpanV1 event) {
     return InvokeScopedIpc(user, [&](PluginServiceContext& context) {
         return context.ipc->Publish(IpcOwner(context), endpoint, event);
+    });
+}
+
+anomaly::WebServer* QueryWebProvider() noexcept {
+    const auto* provider = static_cast<const anomaly::WebProviderV1*>(
+        anomaly::ProcessAdapterServices().Query(anomaly::kWebProviderId, 1));
+    return provider != nullptr && provider->struct_size >= sizeof(*provider) && provider->service_version == 1
+        ? provider->user : nullptr;
+}
+
+AnomalyStatusV1 ANOMALY_CALL InvokeWebRequestV1(
+    void* user, const AnomalyWebRequestV1* request,
+    AnomalyWebResponseV1* response) noexcept {
+    auto* binding = static_cast<WebCallbackBinding*>(user);
+    if (binding == nullptr || binding->callback == nullptr) {
+        return StatusV1(ANOMALY_STATUS_V1_UNAVAILABLE);
+    }
+    const ScopedLogThreadDomain domain(anomaly::LogThreadDomain::Worker);
+    ScopedPluginCallback callback_scope(binding->scope, binding->generation, false);
+    try {
+        return binding->callback(binding->callback_user, request, response);
+    } catch (...) {
+        return StatusV1(ANOMALY_STATUS_V1_FAILED, "loopback web callback failed");
+    }
+}
+
+AnomalyStatusV1 ANOMALY_CALL RegisterWebV1(
+    void* user, AnomalyStringViewV1 assets, AnomalyWebCallbackV1 callback,
+    void* callback_user, AnomalyGenerationHandleV1* application) {
+    return InvokeStateIoService(user, [&](PluginServiceContext& context) {
+        auto* provider = QueryWebProvider();
+        if (provider == nullptr) return StatusV1(ANOMALY_STATUS_V1_UNAVAILABLE);
+        if (callback == nullptr) return StatusV1(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+        auto binding = std::make_shared<WebCallbackBinding>();
+        binding->scope = context.scope;
+        binding->generation = context.generation;
+        binding->callback = callback;
+        binding->callback_user = callback_user;
+        return provider->Register(context.scope, context.profile_package_directory,
+            ServiceString(assets), InvokeWebRequestV1, binding.get(), application, binding);
+    });
+}
+
+AnomalyStatusV1 ANOMALY_CALL UnregisterWebV1(
+    void* user, AnomalyGenerationHandleV1 application) {
+    return InvokeStateIoService(user, [&](PluginServiceContext& context) {
+        auto* provider = QueryWebProvider();
+        return provider == nullptr ? StatusV1(ANOMALY_STATUS_V1_UNAVAILABLE)
+            : provider->Unregister(context.scope, application);
+    });
+}
+
+AnomalyStatusV1 ANOMALY_CALL WebUrlV1(
+    void* user, AnomalyGenerationHandleV1 application, char* destination, std::size_t* inout_size) {
+    return InvokeScopedPlatform(user, [&](PluginServiceContext& context) {
+        auto* provider = QueryWebProvider();
+        return provider == nullptr ? StatusV1(ANOMALY_STATUS_V1_UNAVAILABLE)
+            : provider->Url(context.scope, application, destination, inout_size);
     });
 }
 
@@ -3663,6 +3730,11 @@ AnomalyStatusV1 ANOMALY_CALL QueryServiceV1(
         *service = &context->commands;
         return StatusV1(ANOMALY_STATUS_V1_OK);
     }
+    if (id == ANOMALY_WEB_SERVICE_V1_ID &&
+        minimum_version <= context->web.service_version && QueryWebProvider() != nullptr) {
+        *service = &context->web;
+        return StatusV1(ANOMALY_STATUS_V1_OK);
+    }
     if (id == ANOMALY_NOTIFICATIONS_SERVICE_V1_ID &&
         minimum_version <= context->notifications.service_version) {
         *service = &context->notifications;
@@ -4620,6 +4692,9 @@ bool PluginManager::Activate(LoadedPlugin& plugin) {
     plugin.service_context.commands = {
         sizeof(AnomalyCommandsServiceV1), ANOMALY_COMMANDS_SERVICE_V1_VERSION,
         &plugin.service_context, RegisterCommandV1, UnregisterCommandV1, InvokeCommandV1};
+    plugin.service_context.web = {
+        sizeof(AnomalyWebServiceV1), ANOMALY_WEB_SERVICE_V1_VERSION,
+        &plugin.service_context, RegisterWebV1, UnregisterWebV1, WebUrlV1};
     plugin.service_context.notifications = {
         sizeof(AnomalyNotificationsServiceV1), ANOMALY_NOTIFICATIONS_SERVICE_V1_VERSION,
         &plugin.service_context, PostNotificationV1, DismissNotificationV1};
@@ -6613,6 +6688,8 @@ PluginRuntimeDiagnosticsSnapshot PluginManager::DiagnosticsSnapshot() const {
                     plugin.service_context.ipc_service.service_version, true},
                 ServiceCandidate{ANOMALY_COMMANDS_SERVICE_V1_ID,
                     plugin.service_context.commands.service_version, true},
+                ServiceCandidate{ANOMALY_WEB_SERVICE_V1_ID,
+                    plugin.service_context.web.service_version, QueryWebProvider() != nullptr},
                 ServiceCandidate{ANOMALY_NOTIFICATIONS_SERVICE_V1_ID,
                     plugin.service_context.notifications.service_version, true},
                 ServiceCandidate{ANOMALY_NTE_ESC_MENU_BUTTON_SERVICE_V1_ID,

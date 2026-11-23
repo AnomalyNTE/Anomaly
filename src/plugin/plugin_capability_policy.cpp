@@ -11,7 +11,7 @@ struct ServiceCapabilityMapping {
     std::string_view capability;
 };
 
-constexpr std::array<std::string_view, 48> kKnownCapabilities{
+constexpr std::array<std::string_view, 49> kKnownCapabilities{
     "mods",
     "commands",
     "configuration",
@@ -60,9 +60,10 @@ constexpr std::array<std::string_view, 48> kKnownCapabilities{
     "ui",
     "json",
     "websocket",
+    "web",
 };
 
-constexpr std::array<ServiceCapabilityMapping, 48> kServiceCapabilities{{
+constexpr std::array<ServiceCapabilityMapping, 49> kServiceCapabilities{{
     {"anomaly.mods", "mods"},
     {"anomaly.plugin-state", "configuration"},
     {"anomaly.config", "configuration"},
@@ -72,6 +73,7 @@ constexpr std::array<ServiceCapabilityMapping, 48> kServiceCapabilities{{
     {"anomaly.scheduler", "scheduler"},
     {"anomaly.ipc", "ipc"},
     {"anomaly.websocket", "websocket"},
+    {"anomaly.web", "web"},
     {"anomaly.commands", "commands"},
     {"anomaly.notifications", "notifications"},
     {"anomaly.interop.signature", "interop-signature"},

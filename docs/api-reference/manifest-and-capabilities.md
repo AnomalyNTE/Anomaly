@@ -99,6 +99,7 @@ capability 约束**服务可见性与资源归属**（不是 native 代码沙箱
 | `anomaly.scheduler` | `scheduler` |
 | `anomaly.ipc` | `ipc` |
 | `anomaly.websocket` | `websocket` |
+| `anomaly.web` | `web` |
 | `anomaly.commands` | `commands` |
 | `anomaly.notifications` | `notifications` |
 | `anomaly.interop.signature` | `interop-signature` |
