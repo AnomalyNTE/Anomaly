@@ -1316,9 +1316,13 @@ void StepMainRun(Context &context) {
         }
         // 交互-查看会弹出查看窗口，点 ButtonDeactivate 关掉（等效 ESC）。窗口要等一会儿才
         // 出现，所以先给一段延时再进关窗阶段；关窗阶段里会周期性重扫 UI 目录。
+        // 目录序号必须抬到「交互之后」：查看窗口是交互后才创建的，交互前的目录里根本没有
+        // ButtonDeactivate。floor 不抬的话 deactivate 阶段会认为手里那份旧目录已经够新、
+        // 不重扫，于是选中旧目录里 owner 为空的隐藏 CloseButton（点了游戏不理），整步白跑。
         context.main_phase = MainPhase::deactivate_delay;
         context.main_click_request = {};
         context.main_scan_deadline = 0;
+        context.main_catalog_floor = CatalogSequence(context);
         context.main_deadline = now + kDeactivateDelayMilliseconds;
         return;
     }
