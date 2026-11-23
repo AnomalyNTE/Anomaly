@@ -2141,28 +2141,28 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         add_test(NAME nailong_model_contract COMMAND anomaly_nailong_model_fixture
             "${CMAKE_CURRENT_SOURCE_DIR}/plugins/Nailong/assets/mesh/lod0_skinned.nlm")
     endif()
-    anomaly_add_plugin(anomaly_builtin_equipment_calculator
+    anomaly_add_plugin(anomaly_builtin_equipment_manager
         SOURCES
-            plugins/EquipmentCalculator/plugin.cpp
-            plugins/EquipmentCalculator/operations.cpp
-            plugins/EquipmentCalculator/game_bridge.cpp
-            plugins/EquipmentCalculator/algorithm.cpp
-            plugins/EquipmentCalculator/algorithm_multi.cpp
-            plugins/EquipmentCalculator/algorithm_blueprint.cpp
-            plugins/EquipmentCalculator/algorithm_rewind.cpp
-            plugins/EquipmentCalculator/workspace_store.cpp
-            plugins/EquipmentCalculator/account_archive.cpp
-            plugins/EquipmentCalculator/avatar_images.cpp
-            plugins/EquipmentCalculator/character_math.cpp
-            plugins/EquipmentCalculator/progression_math.cpp
-            plugins/EquipmentCalculator/warehouse_rules.cpp
-            plugins/EquipmentCalculator/reference_stamina_model.cpp
-            plugins/EquipmentCalculator/recommended_weights.cpp
-        MANIFEST plugins/EquipmentCalculator/manifest.json
-        PACKAGE_NAME EquipmentCalculator
-        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/EquipmentCalculator")
-    target_link_libraries(anomaly_builtin_equipment_calculator PRIVATE nlohmann_json::nlohmann_json anomaly_miniz winsqlite3 bcrypt winhttp)
-    target_compile_options(anomaly_builtin_equipment_calculator PRIVATE /utf-8)
+            plugins/EquipmentManager/plugin.cpp
+            plugins/EquipmentManager/operations.cpp
+            plugins/EquipmentManager/game_bridge.cpp
+            plugins/EquipmentManager/algorithm.cpp
+            plugins/EquipmentManager/algorithm_multi.cpp
+            plugins/EquipmentManager/algorithm_blueprint.cpp
+            plugins/EquipmentManager/algorithm_rewind.cpp
+            plugins/EquipmentManager/workspace_store.cpp
+            plugins/EquipmentManager/account_archive.cpp
+            plugins/EquipmentManager/avatar_images.cpp
+            plugins/EquipmentManager/character_math.cpp
+            plugins/EquipmentManager/progression_math.cpp
+            plugins/EquipmentManager/warehouse_rules.cpp
+            plugins/EquipmentManager/reference_stamina_model.cpp
+            plugins/EquipmentManager/recommended_weights.cpp
+        MANIFEST plugins/EquipmentManager/manifest.json
+        PACKAGE_NAME EquipmentManager
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/EquipmentManager")
+    target_link_libraries(anomaly_builtin_equipment_manager PRIVATE nlohmann_json::nlohmann_json anomaly_miniz winsqlite3 bcrypt winhttp)
+    target_compile_options(anomaly_builtin_equipment_manager PRIVATE /utf-8)
 
     anomaly_add_plugin(anomaly_builtin_character_studio
         SOURCES plugins/CharacterStudio/plugin.cpp
@@ -2229,7 +2229,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
     # Test packages exist only when ANOMALY_BUILD_TEST_PLUGINS is on, so every list that
     # reaches their targets is built from the targets that actually exist.
     set(ANOMALY_BUILTIN_PLUGIN_TARGETS
-        anomaly_builtin_equipment_calculator
+        anomaly_builtin_equipment_manager
         anomaly_builtin_mod_manager
         anomaly_builtin_nte_position anomaly_builtin_nte_teleport anomaly_builtin_nte_vehicle
         anomaly_builtin_entity_esp anomaly_builtin_pink_paw_heist_esp
