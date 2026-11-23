@@ -297,6 +297,7 @@ export function createMultiOptimizer({ mount, api, t, node, workspace, inventory
       const entry = { character: role.character, role_id: role.id, ...(role.official === false ? { allowed_cells: role.allowed_cells } : {}) };
       const resolved = resolveOptimizationPreference(role, stored[role.id]);
       const validWeights = (value) => value && typeof value === "object" && !Array.isArray(value) && Object.values(value).every((weight) => Number.isFinite(weight) && weight >= 0 && weight <= 1);
+      if (resolved.require_core !== false && resolved.core_suit_source === "recommended" && !resolved.core_suit_id) { error = t("web.optimize_recommended_suit_missing", role.name); render(); return; }
       if (!validWeights(resolved.weights) || (resolved.shared_main_weights !== true && resolved.main_weights != null && !validWeights(resolved.main_weights))) { error = t("web.multi_invalid_weights", role.name); render(); return; }
       if (!Object.values(resolved.weights).some((value) => value > 0)) { error = t("web.multi_weights_required", role.name); render(); return; }
       Object.assign(entry, optimizationPreferenceFields(resolved, inventory()?.items || [], role.character));

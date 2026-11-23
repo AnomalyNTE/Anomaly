@@ -39,7 +39,7 @@ export function createBlueprintPanel({ mount, t, node, inventory, workspace, job
     fields[field].replaceChildren(...entries.map(([value, label]) => { const option = node("option", "", label); option.value = value; return option; })); fields[field].value = preferences[field];
   }
   function catalog() {
-    const data = observedEquipmentCatalog(inventory()), roles = (workspace()?.roles || []).filter((role) => !role.archived && role.allowed_cells?.length);
+    const data = observedEquipmentCatalog(inventory(), t), roles = (workspace()?.roles || []).filter((role) => !role.archived && role.allowed_cells?.length);
     const next = JSON.stringify([data.shapes, data.suits, roles.map((role) => [role.id, role.name, role.allowed_cells])]); if (signature === next) return; signature = next;
     selectOptions("role_id", [["", t("web.blueprint_choose_board")], ...roles.map((role) => [role.id, role.name])]);
     selectOptions("suit_id", [["", t("web.optimize_any_suit")], ...data.suits.map((suit) => [suit.id, suit.name])]);
@@ -97,7 +97,7 @@ export function createBlueprintPanel({ mount, t, node, inventory, workspace, job
     phase.textContent = t(`web.optimize_status_${job.status || "idle"}`);
     for (const control of form.querySelectorAll("input,select")) control.disabled = disabled;
     fields.suit_id.disabled = disabled || preferences.set_effect_mode === "none";
-    run.disabled = disabled || !workspace()?.account || !preferences.role_id || !observedEquipmentCatalog(inventory()).shapes.length;
+    run.disabled = disabled || !workspace()?.account || !preferences.role_id || !observedEquipmentCatalog(inventory(), t).shapes.length;
     cancel.disabled = !active || posting || cancelling;
     cancel.textContent = t(cancelling ? "web.search_progress_cancelling" : "web.optimize_cancel");
     notice.textContent = error || jobError || (job.kind === "blueprints" ? job.message : "") || ""; notice.hidden = !notice.textContent;
@@ -106,7 +106,7 @@ export function createBlueprintPanel({ mount, t, node, inventory, workspace, job
   }
   form.onsubmit = async (event) => {
     event.preventDefault(); if (!form.reportValidity()) return;
-    const role = workspace()?.roles?.find((role) => role.id === preferences.role_id), data = observedEquipmentCatalog(inventory());
+    const role = workspace()?.roles?.find((role) => role.id === preferences.role_id), data = observedEquipmentCatalog(inventory(), t);
     if (!role?.allowed_cells?.length) { error = t("web.blueprint_choose_board"); render(); return; }
     const suit = data.suits.find((suit) => suit.id === preferences.suit_id);
     if (preferences.set_effect_mode !== "none" && !suit) { error = t("web.blueprint_require_suit"); render(); return; }

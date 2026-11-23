@@ -114,9 +114,23 @@ export function recommendedWeightsForRole(role) {
   return null;
 }
 
+export function recommendedCoreForRole(role) {
+  if (!role || role.official === false) return null;
+  const core = role.observed?.recommended_core || role.recommended_core;
+  return core && typeof core.suit_id === "string" && core.suit_id ? core : null;
+}
+
+export function resolveCorePreference(role, preference) {
+  const manual = role?.official === false || preference.core_suit_source === "manual" ||
+    (preference.core_suit_source == null && Boolean(preference.core_suit_id));
+  return { ...preference, core_suit_source: manual ? "manual" : "recommended",
+    core_suit_id: manual ? preference.core_suit_id || "" : recommendedCoreForRole(role)?.suit_id || "" };
+}
+
 export function rolePreference(role = {}) {
   const preference = { weights: role.weights || {}, main_weights: role.main_weights || role.weights || {}, shared_main_weights: false,
     require_core: role.require_core !== false, set_effect_mode: role.set_effect_mode || "four_piece", core_suit_id: role.core_suit_id || "", core_main_stats: role.core_main_stats || [],
+    core_suit_source: role.core_suit_source || (role.core_suit_id || role.official === false ? "manual" : "recommended"),
     priority_stats: role.priority_stats || [], priority_equal: role.priority_equal === true, priority_min_grade: role.priority_min_grade || "A",
     filters: role.filters || {}, property_limits: role.property_limits || [], allow_missing_core: role.allow_missing_core === true,
     include_discarded: role.include_discarded === true, allow_borrow: role.allow_borrow !== false };
@@ -135,7 +149,7 @@ function recommendedPreference(preference, recommended) {
     shared_main_weights: false, preset: "recommended" };
 }
 
-export function resolveOptimizationPreference(role = {}, stored, initial = null) {
+function scoringPreference(role, stored, initial) {
   const recommended = recommendedWeightsForRole(role);
   if (stored) {
     const resolved = structuredClone(stored);
@@ -154,6 +168,10 @@ export function resolveOptimizationPreference(role = {}, stored, initial = null)
   if (recommended) return recommendedPreference(rolePreference(role), recommended);
   if (initial) return { ...structuredClone(initial), preset: initial.preset ?? "custom" };
   return generalPreference(rolePreference(role));
+}
+
+export function resolveOptimizationPreference(role = {}, stored, initial = null) {
+  return resolveCorePreference(role, scoringPreference(role, stored, initial));
 }
 
 // Single and team requests use the same scoring preferences and raw units.

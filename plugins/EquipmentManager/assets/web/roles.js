@@ -111,6 +111,7 @@ export function createRolesPanel({ mount, api, t, node, workspace, features, rea
           const profile = { weights: preferences.weights, main_weights: preferences.shared_main_weights ? preferences.weights : preferences.main_weights || {},
             priority_stats: preferences.priority_stats || [], priority_equal: preferences.priority_equal === true, priority_min_grade: preferences.priority_min_grade || "A",
             require_core: preferences.require_core !== false, set_effect_mode: preferences.set_effect_mode || "four_piece", core_suit_id: preferences.core_suit_id || "", core_main_stats: preferences.core_main_stats || [],
+            core_suit_source: preferences.core_suit_source || (preferences.core_suit_id ? "manual" : "recommended"),
             filters: preferences.filters || {}, property_limits: preferences.property_limits || [], allow_missing_core: preferences.allow_missing_core === true,
             include_discarded: preferences.include_discarded === true, allow_borrow: preferences.allow_borrow !== false };
           mutate({ action: "update", id: role.id, role: profile });

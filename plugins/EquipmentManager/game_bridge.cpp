@@ -163,6 +163,9 @@ struct GameBridge::Impl {
     std::map<std::uint64_t, std::uintptr_t> attribute_rows, suit_rows;
     std::map<std::uint64_t, AttributeDefinition> attribute_definitions;
     std::map<std::string, std::pair<Json, bool>, std::less<>> suit_definitions;
+    std::map<std::string, std::string, std::less<>> suit_names;
+    std::uint32_t suit_title_field{};
+    std::optional<std::uint32_t> plan_core_field;
     std::map<std::string, std::uint64_t, std::less<>> curve_rows;
     std::map<std::pair<std::string, std::int32_t>, std::optional<double>> curve_values;
     struct StatisticsCache {
@@ -991,6 +994,7 @@ struct GameBridge::Impl {
             MemoryProperty(attributes, "EquipmentRandomAttributeName", "TextProperty", "attributeRandomName", 16);
             const auto suits = Class("EquipmentSuitStaticData"); StructSize(suits, "suitDataSize");
             MemoryProperty(suits, "SuitGeometryCondition", "ArrayProperty", "suitGeometry", sizeof(Array));
+            suit_title_field = catalog_data::Field(*this, suits, "SuitTitle", "TextProperty", 16);
             statistics_schema_valid = true;
         }
         if (!statistics_schema_valid) return;
@@ -999,7 +1003,7 @@ struct GameBridge::Impl {
         const auto suits = Field<std::uintptr_t>(current_character_asset, "characterSuitTable");
         if (attributes == attribute_table && curves == curve_table && suits == suit_table) return;
         attribute_table = 0; curve_table = 0; suit_table = 0;
-        attribute_rows.clear(); suit_rows.clear(); attribute_definitions.clear(); curve_values.clear(); curve_rows.clear(); suit_definitions.clear(); statistics_cache.clear();
+        attribute_rows.clear(); suit_rows.clear(); attribute_definitions.clear(); curve_values.clear(); curve_rows.clear(); suit_definitions.clear(); suit_names.clear(); statistics_cache.clear();
         if (!attributes || !curves || !suits) throw NotReady("Equipment attribute definitions are not ready");
         HandleFor(attributes); HandleFor(curves); HandleFor(suits);
         if (Field<std::uintptr_t>(attributes, "tableRowStruct") != Class("AttributeStaticData") ||
@@ -1086,6 +1090,26 @@ struct GameBridge::Impl {
         }
         curve_values.emplace(key, value);
         return value;
+    }
+    std::string SuitName(const std::string& suit, const std::string& fallback = {}) {
+        if (suit.empty() || !statistics_schema_valid || !suit_table) return fallback;
+        auto found = suit_names.find(suit);
+        if (found == suit_names.end()) {
+            std::string name;
+            for (const auto& [id, row] : suit_rows) if (Name(id) == suit) {
+                name = Text(row + suit_title_field, {}); break;
+            }
+            found = suit_names.emplace(suit, std::move(name)).first;
+        }
+        return found->second.empty() ? fallback : found->second;
+    }
+    Json RecommendedCore(std::uint64_t character_id, const CatalogTable& plans) {
+        const auto row = std::find_if(plans.rows.begin(), plans.rows.end(), [character_id](const auto& entry) { return entry.first == character_id; });
+        if (row == plans.rows.end()) return nullptr;
+        const auto core_id = ReadValue<std::uint64_t>(row->second + *plan_core_field);
+        const auto& definition = Meta(core_id);
+        if (definition.kind != "core" || definition.suit.empty()) Fail("The official character plan does not identify a cartridge set");
+        return {{"item_id", Name(core_id)}, {"name", definition.name}, {"suit_id", definition.suit}, {"suit_name", SuitName(definition.suit, definition.name)}};
     }
     Json RequiredShapes(const Metadata& meta, bool& complete) {
         complete = false;
@@ -1497,6 +1521,13 @@ struct GameBridge::Impl {
         } else if (section == "character_skills") {
             table = Exact("/Game/DataTable/Character/DT_CharacterAbilityConfig.DT_CharacterAbilityConfig").second;
             row_type = Class("CharacterAbilityConfig");
+        } else if (section == "equipment_plans") {
+            auto found = catalog_source_fields.find(section);
+            if (found == catalog_source_fields.end())
+                found = catalog_source_fields.emplace(std::string(section), catalog_data::Field(*this, Class("CharacterDataAsset"), "EquipmentPlanDataTable", "ObjectProperty", sizeof(std::uintptr_t))).first;
+            table = ReadValue<std::uintptr_t>(current_character_asset + found->second);
+            row_type = Class("EquipmentPlanData");
+            if (!plan_core_field) plan_core_field = catalog_data::Field(*this, row_type, "CoreID", "NameProperty", sizeof(std::uint64_t));
         } else if (section == "character_slots" || section == "likeability_roles") {
             const bool slots = section == "character_slots";
             const auto owner = slots ? Class("CharacterDataAsset") : Class("HTGameData");
@@ -1662,6 +1693,7 @@ struct GameBridge::Impl {
         }
         if (section == "equipment_suits") {
             Metadata meta; meta.kind = "core"; meta.suit = Name(id); bool complete{};
+            result["name"] = SuitName(meta.suit);
             result["required_shapes"] = RequiredShapes(meta, complete); result["required_shapes_complete"] = complete;
             return result;
         }
@@ -1712,7 +1744,7 @@ struct GameBridge::Impl {
             if (section == "equipment") {
                 const auto& meta = Meta(id); bool required_complete{};
                 result.update({{"kind", meta.kind}, {"shape_id", meta.shape}, {"cells", meta.cells}, {"max_level", meta.max_level},
-                    {"grid_count", meta.grid_count}, {"suit_id", meta.suit}, {"required_shapes", RequiredShapes(meta, required_complete)}});
+                    {"grid_count", meta.grid_count}, {"suit_id", meta.suit}, {"suit_name", SuitName(meta.suit, meta.name)}, {"required_shapes", RequiredShapes(meta, required_complete)}});
                 result["required_shapes_complete"] = required_complete;
             }
             result["element_complete"] = true;
@@ -1913,6 +1945,10 @@ struct GameBridge::Impl {
         const CatalogTable* character_definitions{};
         try { character_definitions = &CatalogTableFor("characters"); }
         catch (const std::exception& exception) { if (progression_diagnostic.empty()) progression_diagnostic = exception.what(); }
+        const CatalogTable* equipment_plans{};
+        std::string recommendation_diagnostic;
+        try { equipment_plans = &CatalogTableFor("equipment_plans"); }
+        catch (const std::exception& exception) { recommendation_diagnostic = exception.what(); }
         Json characters = Json::array(), items = Json::array();
         struct ItemRecord { bool equipment, fork; std::vector<std::uint8_t> bytes; };
         std::map<Uid, ItemRecord> inventory_items;
@@ -1946,6 +1982,12 @@ struct GameBridge::Impl {
             Json character{{"uid", Encode(uid)}, {"name", definition ? Text(definition + V("staticItemName"), item_id) : DisplayName(raw_id)}, {"item_id", item_id},
                 {"character_id", formal_identity ? Json(item_id) : Json(nullptr)}, {"character_identity_complete", formal_identity},
                 {"level", Extract<std::int32_t>(record.bytes, "characterLevel")}};
+            character["recommended_core"] = nullptr;
+            if (equipment_plans) {
+                try { character["recommended_core"] = RecommendedCore(raw_id, *equipment_plans); }
+                catch (const std::exception& exception) { if (recommendation_diagnostic.empty()) recommendation_diagnostic = exception.what(); }
+            }
+            character["recommended_core_complete"] = character["recommended_core"].is_object();
             character.update(ItemImages(definition));
             character.update(CurrentCharacterImages(record.bytes, appearance_ready));
             character["growth_complete"] = false;
@@ -2005,7 +2047,7 @@ struct GameBridge::Impl {
                 {"discarded", Extract<std::uint8_t>(record.bytes, "equipmentDiscarded") != 0},
                 {"level", Extract<std::int32_t>(record.bytes, "equipmentLevel")}, {"max_level", meta.max_level},
                 {"experience", Extract<std::int32_t>(record.bytes, "equipmentExperience")},
-                {"grid_count", meta.grid_count}, {"suit_id", meta.suit}};
+                {"grid_count", meta.grid_count}, {"suit_id", meta.suit}, {"suit_name", meta.kind == "core" ? SuitName(meta.suit, meta.name) : std::string{}}};
             item.update(EquipmentImages(meta));
             item.update(Statistics(record.bytes, meta, gold_core_level, attribute_names));
             if (const auto found = locations.find(uid); found != locations.end()) {
@@ -2031,6 +2073,7 @@ struct GameBridge::Impl {
             result["account_identity_source"] = "anomaly.nte.account";
         }
         if (!statistics_diagnostic.empty()) result["attribute_diagnostic"] = statistics_diagnostic;
+        if (!recommendation_diagnostic.empty()) result["recommendation_diagnostic"] = recommendation_diagnostic;
         if (!image_diagnostic.empty()) result["image_diagnostic"] = image_diagnostic;
         result["likeability_complete"] = false;
         result["likeability"] = nullptr;

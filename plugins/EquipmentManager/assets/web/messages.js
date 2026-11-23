@@ -920,5 +920,9 @@ export const fallbackMessages = Object.freeze({
   "web.characters_previous": "Previous characters",
   "web.characters_next": "Next characters",
   "web.first_page": "First page",
-  "web.last_page": "Last page"
+  "web.last_page": "Last page",
+  "web.unknown_suit": "Unknown set",
+  "web.optimize_recommended_suit": "Role recommendation: {0}",
+  "web.optimize_recommended_suit_pending": "Role recommendation",
+  "web.optimize_recommended_suit_missing": "No recommended cartridge found for {0} Sync inventory or select a set manually"
 });

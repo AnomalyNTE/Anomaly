@@ -1,4 +1,4 @@
-import { propertyLabel, qualityLabel } from "./equipment_display.js";
+import { propertyLabel, qualityLabel, suitLabel } from "./equipment_display.js";
 const defaults = { qualities: [], shape: "", suit: "", main: "", sub: [], excluded_sub: [],
   sub_match: "all", min_level: "", max_level: "", min_area: "", max_area: "", sort: "name", open: false };
 const mainStats = (item) => item.kind === "core" ? (item.main_stat ? [item.main_stat] : []) : item.main_stats || [];
@@ -61,13 +61,13 @@ export function createWarehouseFilters({ mount, t, node, inventory, readPreferen
     }
     const items = inventory()?.items || [], qualities = new Set(preferences.qualities), shapes = new Set(), suits = new Map(), main = new Map(), sub = new Map();
     if (preferences.shape) shapes.add(preferences.shape);
-    if (preferences.suit) suits.set(preferences.suit, preferences.suit);
+    if (preferences.suit) suits.set(preferences.suit, t("web.unknown_suit"));
     if (preferences.main) main.set(preferences.main, propertyLabel(t, preferences.main));
     for (const id of [...preferences.sub, ...preferences.excluded_sub]) sub.set(id, propertyLabel(t, id));
     for (const item of items) {
       if (item.quality) qualities.add(item.quality);
       if (item.kind === "module" && item.shape_id) shapes.add(item.shape_id);
-      if (item.suit_id) suits.set(item.suit_id, item.suit_name || item.suit_id);
+      if (item.suit_id) suits.set(item.suit_id, suitLabel(t, item));
       for (const stat of mainStats(item)) main.set(stat.id, propertyLabel(t, stat));
       for (const stat of item.sub_stats || (item.attributes || []).filter((value) => value.source !== "main")) sub.set(stat.id, propertyLabel(t, stat));
     }

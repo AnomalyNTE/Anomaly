@@ -1,7 +1,7 @@
 import { renderPlanPreview, renderSearchSummary } from "./optimization_results.js";
 import { createOptimizerConstraints } from "./optimizer_constraints.js";
-import { generalOutputWeights, generalWeights, recommendedWeightsForRole, getRecommendedWeightsCatalog, rolePreference, resolveOptimizationPreference, optimizationPreferenceFields } from "./weight_preferences.js";
-import { propertyLabel } from "./equipment_display.js";
+import { generalOutputWeights, generalWeights, recommendedWeightsForRole, recommendedCoreForRole, resolveCorePreference, getRecommendedWeightsCatalog, rolePreference, resolveOptimizationPreference, optimizationPreferenceFields } from "./weight_preferences.js";
+import { propertyLabel, suitLabel } from "./equipment_display.js";
 import { sameLoadout } from "./loadout_state.js";
 
 const $ = (id) => document.getElementById(id);
@@ -13,6 +13,7 @@ const defaults = {
   max_nodes: 2000000, time_limit_ms: 10000, top_k: 1, keep_current: false, allow_missing_core: false, custom_role_id: "",
 };
 const keyOf = (uid) => uid ? `${uid.slot}:${uid.serial}` : "";
+const recommendedSuitOption = "@recommended";
 
 export function createOptimizer({ jobController, features, workspace, t, node, inventory, selectedCharacter, selectedUids,
   readPreference, savePreference, readRolePreferences, saveRolePreferences, currentRole, api, reloadWorkspace, canRun, loadDraft, saveSoftwarePlan, previewPlan, refreshRecommendedWeights }) {
@@ -61,14 +62,22 @@ export function createOptimizer({ jobController, features, workspace, t, node, i
         stats.set(item.main_stat.id, propertyLabel(t, item.main_stat));
         mains.add(item.main_stat.id);
       }
-      if (item.kind === "core" && item.suit_id) suits.set(item.suit_id, item.suit_name || item.suit_id);
+      if (item.kind === "core" && item.suit_id) suits.set(item.suit_id, suitLabel(t, item));
     }
     for (const id of [...Object.keys(preferences.weights), ...Object.keys(preferences.main_weights), ...preferences.priority_stats, ...preferences.core_main_stats]) if (!stats.has(id)) stats.set(id, propertyLabel(t, id));
     for (const id of preferences.priority_stats) subStats.add(id);
     for (const id of preferences.core_main_stats) mains.add(id);
-    if (preferences.core_suit_id && !suits.has(preferences.core_suit_id)) suits.set(preferences.core_suit_id, preferences.core_suit_id);
+    const role = preferences.custom_role_id ? workspace()?.roles?.find((value) => value.id === preferences.custom_role_id) : currentRole();
+    const recommended = recommendedCoreForRole(role);
+    if (recommended) suits.set(recommended.suit_id, suitLabel(t, { ...recommended, kind: "core" }));
+    if (preferences.core_suit_id && !suits.has(preferences.core_suit_id)) suits.set(preferences.core_suit_id, t("web.unknown_suit"));
+    const suitOptions = [
+      ...(role && role.official !== false ? [[recommendedSuitOption, recommended ? t("web.optimize_recommended_suit", suitLabel(t, { ...recommended, kind: "core" })) : t("web.optimize_recommended_suit_pending")]] : []),
+      ["", t("web.optimize_any_suit")], ...suits,
+    ];
+    const selectedSuit = preferences.core_suit_source === "recommended" ? recommendedSuitOption : preferences.core_suit_id;
     const entries = [...stats].sort(([, leftName], [, rightName]) => leftName.localeCompare(rightName, document.documentElement.lang || "en"));
-    const signature = JSON.stringify([entries, [...subStats].sort(), [...mains].sort(), [...suits].sort()]);
+    const signature = JSON.stringify([entries, [...subStats].sort(), [...mains].sort(), suitOptions, selectedSuit]);
     if (signature === catalogSignature) return;
     catalogSignature = signature;
     const rows = entries.map(([id, name]) => {
@@ -99,7 +108,7 @@ export function createOptimizer({ jobController, features, workspace, t, node, i
       cell.colSpan = 3; row.append(cell); rows.push(row);
     }
     $("weight-rows").replaceChildren(...rows);
-    selectOptions($("opt-core-suit"), [["", t("web.optimize_any_suit")], ...suits], preferences.core_suit_id);
+    selectOptions($("opt-core-suit"), suitOptions, selectedSuit);
     selectOptions($("opt-core-main"), [...mains].sort().map((id) => [id, stats.get(id) || id]), preferences.core_main_stats, true);
     for (let index = 0; index < 4; index++) selectOptions($(`opt-priority-${index + 1}`), [["", t("web.optimize_no_priority")], ...[...subStats].sort().map((id) => [id, stats.get(id) || id])], preferences.priority_stats[index] || "");
   }
@@ -119,6 +128,7 @@ export function createOptimizer({ jobController, features, workspace, t, node, i
             !validWeights(candidate.weights) || !validWeights(candidate.main_weights) ||
             !ids(candidate.priority_stats) || candidate.priority_stats.length > 4 || !ids(candidate.core_main_stats) ||
             typeof candidate.core_suit_id !== "string" || !["four_piece", "two_piece", "none"].includes(candidate.set_effect_mode) ||
+            (candidate.core_suit_source != null && !["manual", "recommended"].includes(candidate.core_suit_source)) ||
             !["D", "C", "B", "A", "S", "SS", "SSS", "ACE"].includes(candidate.priority_min_grade) ||
             ["shared_main_weights", "require_core", "priority_equal", "include_discarded", "allow_borrow", "exclude_selected", "keep_current", "allow_missing_core"].some((key) => typeof candidate[key] !== "boolean")) throw new Error();
         let restoredPreset = value.preset ?? (Object.hasOwn(value, "weights") || Object.hasOwn(value, "main_weights") ? "custom" : "general");
@@ -146,7 +156,8 @@ export function createOptimizer({ jobController, features, workspace, t, node, i
 
   function selectContext(force = false) {
     const role = preferences.custom_role_id ? workspace()?.roles?.find((value) => value.id === preferences.custom_role_id) : currentRole();
-    if (!role || (!force && contextId === role.id)) return;
+    if (!role) return;
+    if (!force && contextId === role.id) { preferences = resolveCorePreference(role, preferences); return; }
     try { rolePreferences = JSON.parse(readRolePreferences() || "{}"); if (!rolePreferences || typeof rolePreferences !== "object" || Array.isArray(rolePreferences)) throw new Error(); }
     catch { preferenceError = t("web.optimize_invalid_preferences"); return; }
     const previous = contextId;
@@ -233,13 +244,15 @@ export function createOptimizer({ jobController, features, workspace, t, node, i
 
   function render() {
     const { job, posting, active, cancelling, error, applied } = jobController.state();
+    const role = preferences.custom_role_id ? workspace()?.roles?.find((value) => value.id === preferences.custom_role_id) : currentRole();
+    if (role) preferences = resolveCorePreference(role, preferences);
+    catalog();
     const target = targetRole();
     const custom = (workspace()?.roles || []).filter((role) => role.official === false && !role.archived && role.allowed_cells?.length === 20);
     const targets = [["", t("web.optimize_current_native")], ...custom.map((role) => [role.id, role.name])];
     if (JSON.stringify([...$("opt-role-target").options].map((option) => [option.value, option.textContent])) !== JSON.stringify(targets)) selectOptions($("opt-role-target"), targets, preferences.custom_role_id);
     $("opt-role-target").value = preferences.custom_role_id;
     $("optimizer-software-hint").hidden = !preferences.custom_role_id;
-    const role = preferences.custom_role_id ? workspace()?.roles?.find((value) => value.id === preferences.custom_role_id) : currentRole();
     const hasRecommended = Boolean(recommendedWeightsForRole(role));
     const choices = [
       ...(hasRecommended ? [["recommended", t("web.preference_recommended")]] : []),
@@ -270,7 +283,9 @@ export function createOptimizer({ jobController, features, workspace, t, node, i
     $("optimization-phase").dataset.status = applied ? "confirmed" : job.status || "idle";
     const globalProgressVisible = !$("calculation-progress").hidden;
     $("optimization-phase").hidden = !active || globalProgressVisible;
-    $("optimization-message").textContent = preferenceError || localError || error || preferenceMessage || (["failed", "cancelled"].includes(job.status) ? job.message || t(`algorithm.${job.status}`) : "");
+    const missingRecommendedSuit = preferences.require_core && preferences.core_suit_source === "recommended" && !preferences.core_suit_id;
+    const suitMessage = missingRecommendedSuit ? t("web.optimize_recommended_suit_missing", role?.name || t("web.character")) : "";
+    $("optimization-message").textContent = preferenceError || localError || error || suitMessage || preferenceMessage || (["failed", "cancelled"].includes(job.status) ? job.message || t(`algorithm.${job.status}`) : "");
     $("optimization-message").hidden = !$("optimization-message").textContent;
     $("optimization-message").classList.toggle("error", Boolean(preferenceError || localError || error) || job.status === "failed");
     $("optimizer-exclude-label").textContent = t("web.optimize_exclude_selected", selectedUids().length);
@@ -280,7 +295,7 @@ export function createOptimizer({ jobController, features, workspace, t, node, i
     $("opt-core-suit").disabled = locked || !preferences.require_core;
     $("opt-core-main").disabled = locked || !preferences.require_core;
     const needsVerifiedSuit = preferences.allow_missing_core && preferences.require_core && preferences.set_effect_mode !== "none";
-    $("opt-core-suit").setCustomValidity(needsVerifiedSuit && !stateItems().some((item) => item.kind === "core" && item.suit_id === preferences.core_suit_id && item.required_shapes_complete === true) ? t("web.constraints_missing_core_suit") : "");
+    $("opt-core-suit").setCustomValidity(suitMessage || (needsVerifiedSuit && !stateItems().some((item) => item.kind === "core" && item.suit_id === preferences.core_suit_id && item.required_shapes_complete === true) ? t("web.constraints_missing_core_suit") : ""));
     for (const input of $("weight-rows").querySelectorAll("[data-weight-field=main_weights]")) {
       input.disabled = locked || preferences.shared_main_weights;
       if (preferences.shared_main_weights) input.value = String(preferences.weights[input.dataset.stat] ?? 0);
@@ -305,7 +320,12 @@ export function createOptimizer({ jobController, features, workspace, t, node, i
     if (field === "shared_main_weights" && !preferences.shared_main_weights) for (const input of $("weight-rows").querySelectorAll("[data-weight-field=main_weights]")) input.value = String(preferences.main_weights[input.dataset.stat] ?? 0);
     changed();
   };
-  for (const [id, field] of [["opt-set-mode", "set_effect_mode"], ["opt-priority-grade", "priority_min_grade"], ["opt-core-suit", "core_suit_id"]]) $(id).onchange = () => { preferences[field] = $(id).value; changed(); };
+  for (const [id, field] of [["opt-set-mode", "set_effect_mode"], ["opt-priority-grade", "priority_min_grade"]]) $(id).onchange = () => { preferences[field] = $(id).value; changed(); };
+  $("opt-core-suit").onchange = () => {
+    preferences.core_suit_source = $("opt-core-suit").value === recommendedSuitOption ? "recommended" : "manual";
+    preferences.core_suit_id = preferences.core_suit_source === "manual" ? $("opt-core-suit").value : "";
+    changed();
+  };
   $("opt-core-main").onchange = () => { preferences.core_main_stats = [...$("opt-core-main").selectedOptions].map((option) => option.value); changed(); };
   $("opt-role-target").onchange = () => { preferences.custom_role_id = $("opt-role-target").value; selectContext(true); changed(true); };
   $("opt-preset").onchange = () => {

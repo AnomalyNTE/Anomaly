@@ -1,4 +1,6 @@
-export function observedEquipmentCatalog(inventory) {
+import { suitLabel } from "./equipment_display.js";
+
+export function observedEquipmentCatalog(inventory, t) {
   const shapes = new Map(), suits = new Map(), counts = {};
   for (const item of inventory?.items || []) {
     if (item.kind === "module" && item.shape_id && Array.isArray(item.cells) && item.cells.length) {
@@ -6,7 +8,7 @@ export function observedEquipmentCatalog(inventory) {
       counts[item.shape_id] = (counts[item.shape_id] || 0) + 1;
     }
     if (item.kind === "core" && item.suit_id && item.required_shapes_complete === true) suits.set(item.suit_id, {
-      id: item.suit_id, name: item.suit_name || item.suit_id, required_shapes: item.required_shapes,
+      id: item.suit_id, name: suitLabel(t, item), required_shapes: item.required_shapes,
     });
   }
   return { shapes: [...shapes.values()].sort((a, b) => a.shape_id.localeCompare(b.shape_id)), suits: [...suits.values()], counts };

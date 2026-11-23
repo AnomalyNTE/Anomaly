@@ -22,7 +22,7 @@ export function createRewindPanel({ mount, api, t, node, workspace, inventory, i
   suitLabel.append(node("span", "", t("web.filter_suit")), suitSelect); fill.type = "button";
   suitSelect.onchange = () => { preferences.suit_id = suitSelect.value; persist(); };
   fill.onclick = () => {
-    const suit = observedEquipmentCatalog(inventory()).suits.find((suit) => suit.id === suitSelect.value); if (!suit) return;
+    const suit = observedEquipmentCatalog(inventory(), t).suits.find((suit) => suit.id === suitSelect.value); if (!suit) return;
     preferences.demand = {}; for (const shape of suit.required_shapes) preferences.demand[shape] = (preferences.demand[shape] || 0) + 1;
     signature = ""; persist(); catalog(); render();
   };
@@ -41,7 +41,7 @@ export function createRewindPanel({ mount, api, t, node, workspace, inventory, i
     for (const [field, input] of Object.entries(fields)) input.value = preferences[field]; loaded = true;
   }
   function catalog() {
-    const data = observedEquipmentCatalog(inventory()), roles = (workspace()?.roles || []).filter((role) => !role.archived), slots = (workspace()?.slots || []).filter((slot) => !slot.archived && slot.plan);
+    const data = observedEquipmentCatalog(inventory(), t), roles = (workspace()?.roles || []).filter((role) => !role.archived), slots = (workspace()?.slots || []).filter((slot) => !slot.archived && slot.plan);
     const next = JSON.stringify([data, roles.map((role) => [role.id, role.name]), slots.map((slot) => [slot.id, slot.role_id, slot.name, slot.current_revision])]);
     if (signature === next) return; signature = next;
     suitSelect.replaceChildren(...[["", t("web.optimize_any_suit")], ...data.suits.map((suit) => [suit.id, suit.name])].map(([value, caption]) => { const option = node("option", "", caption); option.value = value; return option; })); suitSelect.value = preferences.suit_id;
@@ -91,7 +91,7 @@ export function createRewindPanel({ mount, api, t, node, workspace, inventory, i
     event.preventDefault(); if (busy || !isReady() || !form.reportValidity()) return;
     busy = true; error = ""; render();
     try {
-      const data = observedEquipmentCatalog(inventory()), definitions = new Map(data.shapes.map((shape) => [shape.shape_id, { shape_id: shape.shape_id, area: shape.cells.length }]));
+      const data = observedEquipmentCatalog(inventory(), t), definitions = new Map(data.shapes.map((shape) => [shape.shape_id, { shape_id: shape.shape_id, area: shape.cells.length }]));
       const sourceSnapshot = inventory().snapshot_id;
       const request = { mode: preferences.mode, strategy: preferences.strategy, owned_counts: data.counts, target_grade: preferences.target_grade };
       const sources = [];

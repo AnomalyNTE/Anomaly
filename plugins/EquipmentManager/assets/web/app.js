@@ -11,7 +11,7 @@ import { createSearchProgress } from "./search_progress.js";
 import { arrangeBoard } from "./board_layout.js";
 import { createLoadoutSlots } from "./loadout_slots.js";
 import { loadoutMatchesInventory, sameLoadout } from "./loadout_state.js";
-import { propertyLabel, qualityLabel } from "./equipment_display.js";
+import { propertyLabel, qualityLabel, suitLabel } from "./equipment_display.js";
 import { createCharacterRail } from "./character_rail.js";
 import { setRecommendedWeightsCatalog, getRecommendedWeightsCatalog } from "./weight_preferences.js";
 
@@ -530,7 +530,7 @@ function renderBoardTelemetry(boardCharacter, layout, sourceItems, coreUid, plac
   const equipped = [...(coreUid ? [coreUid] : []), ...placements.map((placement) => placement.equipment)]
     .map((uid) => sourceItems.find((candidate) => sameUid(candidate.uid, uid))).filter(Boolean);
   for (const item of equipped) {
-    const suit = item.suit_name || item.suit_id;
+    const suit = item.suit_id ? suitLabel(t, item) : "";
     if (suit) suitCounts.set(suit, (suitCounts.get(suit) || 0) + 1);
   }
   const occupancy = node("span", "telemetry-occupancy");

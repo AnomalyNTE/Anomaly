@@ -27,3 +27,8 @@ export function propertyLabel(t, value) {
   }
   return name || id;
 }
+
+export function suitLabel(t, item) {
+  const name = item?.suit_name || (item?.kind === "core" && item.name !== item.item_id ? item.name : "");
+  return name && name !== item?.suit_id && !/^Suit\d+$/i.test(name) ? name : t("web.unknown_suit");
+}

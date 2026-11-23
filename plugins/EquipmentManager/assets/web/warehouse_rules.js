@@ -28,7 +28,7 @@ export function createWarehouseRules({ mount, api, t, node, inventory, workspace
     fields.include_equipped.checked = preferences.include_equipped === true; fields.strict_compatibility.checked = preferences.strict_compatibility === true; loaded = true;
   }
   function catalog() {
-    const data = observedEquipmentCatalog(inventory()), mains = new Map(), subs = new Map(), qualities = new Set();
+    const data = observedEquipmentCatalog(inventory(), t), mains = new Map(), subs = new Map(), qualities = new Set();
     for (const item of inventory()?.items || []) {
       if (item.quality) qualities.add(item.quality); if (item.main_stat?.id) mains.set(item.main_stat.id, propertyLabel(t, item.main_stat));
       for (const stat of item.sub_stats || []) subs.set(stat.id, propertyLabel(t, stat));
