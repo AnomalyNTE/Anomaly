@@ -710,6 +710,8 @@ void MarkSettingsDirty(Context &context) noexcept {
 }
 
 bool PersistSettings(Context &context) noexcept {
+  const auto revision =
+      context.settings_revision.load(std::memory_order_acquire);
   const double distance = context.distance.load(std::memory_order_acquire);
   const float fov = context.fov.load(std::memory_order_acquire);
   const float speed = context.speed.load(std::memory_order_acquire);
@@ -719,8 +721,6 @@ bool PersistSettings(Context &context) noexcept {
       !SettingsValid(distance, fov, speed, toggle, teleport)) {
     return false;
   }
-  const auto revision =
-      context.settings_revision.load(std::memory_order_acquire);
   try {
     const auto document =
         nlohmann::json{
@@ -842,10 +842,8 @@ bool LoadSettings(Context &context) noexcept {
 void ANOMALY_CALL SaveSettingsTask(void *user, AnomalyGenerationHandleV1) noexcept {
   auto *context = static_cast<Context *>(user);
   if (context == nullptr) return;
-  const auto revision = context->settings_revision.load(std::memory_order_acquire);
   try {
     static_cast<void>(PersistSettings(*context));
-    context->persisted_settings_revision.store(revision, std::memory_order_release);
   } catch (...) {
   }
   {

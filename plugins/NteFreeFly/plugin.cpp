@@ -17,6 +17,7 @@
 //         on_draw   = Render 域（只复制插件自己的展示快照，不做任何游戏查询）。
 
 #include "anomaly/sdk/localization.hpp"
+#include "../common/config_save_queue.hpp"
 
 #include "anomaly/sdk/cpp.hpp"
 #include "anomaly/sdk/services/core.h"
@@ -67,7 +68,6 @@ constexpr float kMinimumSpeed = 100.0F;
 constexpr float kMaximumSpeed = 12000.0F;
 // 松手判定：拖动期间滑杆每帧都会回报「改动过」，所以时间戳会一直刷新；等它停住这么久
 // 才真正写盘。保证拖动过程中不产生任何磁盘写入，松手后写一次。
-constexpr std::int64_t kSettingsSaveDelayMilliseconds = 400;
 
 constexpr double kDegreesToRadians = 3.14159265358979323846 / 180.0;
 
@@ -162,10 +162,9 @@ struct Context final {
     std::atomic<double> horizontal_speed{kDefaultHorizontalSpeed};
     std::atomic<double> vertical_speed{kDefaultVerticalSpeed};
     std::atomic_bool toggle_requested{false};
-    // 最近一次改动设置的时刻（Render 域写）。Game 域据此判断「拖动停住没有」，
-    // 然后才写盘 —— Render 回调里不做文件 I/O。
+    // Render updates this on each edit; Game hands the snapshot to the debounced Worker queue.
     std::atomic<std::int64_t> settings_touched{0};
-    // 快捷键：Render 域（UI 按钮）请求捕获，Game 域完成捕获并落盘。
+    // Render requests hotkey capture; Game captures the key and queues its settings.
     std::atomic<std::uint32_t> toggle_key{kDefaultToggleKey};
     std::atomic_bool capture_requested{false};
     std::atomic_bool capture_aborted{false};
@@ -173,6 +172,7 @@ struct Context final {
     // 设置持久化（anomaly.config 不可用时整段降级为「仅本次会话生效」）。
     AnomalyGenerationHandleV1 settings_schema{};
     bool settings_schema_ready{};
+    anomaly::plugins::ConfigSaveQueue settings_save;
 
     // 以下成员只属于 Game 域。
     bool enabled{};
@@ -198,8 +198,8 @@ struct Context final {
     std::uint64_t teleport_count{};
     AnomalyGenerationHandleV1 flight_world{};
     AnomalyGenerationHandleV1 flight_player{};
-    // 已经落盘的那次改动时刻；与 settings_touched 相等表示没有待写的改动。
-    std::int64_t settings_saved_touched{};
+    // Already handed to the Worker queue; failed writes remain pending there.
+    std::int64_t settings_queued_touched{};
 
     // Game 域写、Render 域读。
     mutable std::mutex display_mutex;
@@ -426,10 +426,9 @@ AnomalyStatusV1 ANOMALY_CALL MigrateSettings(void* user, const std::uint32_t sou
     return anomaly::sdk::Ok();
 }
 
-// 写盘：校验与原子替换都由宿主的 anomaly.config 完成，插件不碰文件。
+// Capture on the settings owner; Worker performs schema validation and atomic I/O.
 bool SaveSettings(Context& context) noexcept {
     if (!SettingsAvailable(context)) return false;  // 服务不可用：保持待写状态，on_stop 再试
-    const auto* config = context.services.config;
     const std::int64_t touched = context.settings_touched.load(std::memory_order_relaxed);
 
     Settings settings;
@@ -437,37 +436,25 @@ bool SaveSettings(Context& context) noexcept {
     settings.horizontal_speed = context.horizontal_speed.load(std::memory_order_relaxed);
     settings.vertical_speed = context.vertical_speed.load(std::memory_order_relaxed);
     if (!std::isfinite(settings.horizontal_speed) || !std::isfinite(settings.vertical_speed)) {
-        context.settings_saved_touched = touched;
         return false;
     }
 
     char document[128];
     const std::size_t required = FormatSettings(settings, document, sizeof(document));
     if (required == 0) {
-        context.settings_saved_touched = touched;
         return false;
     }
 
-    const AnomalyByteSpanV1 bytes{reinterpret_cast<const std::uint8_t*>(document), required};
-    if (config->write_atomic(config->user, StringView(kSettingsSchemaId), kSettingsSchemaVersion,
-                             bytes).code != ANOMALY_STATUS_V1_OK) {
-        // 写入被拒绝（文档不合 schema / 存储故障）：不在这里忙等重试，记下已处理，
-        // 下一次改动或 on_stop 会再写一次。
-        context.settings_saved_touched = touched;
-        return false;
-    }
-    context.settings_saved_touched = touched;
-    Log(context, ANOMALY_CORE_LOG_LEVEL_V1_INFO, "free fly: settings saved");
+    if (!context.settings_save.Queue({document, required})) return false;
+    context.settings_queued_touched = touched;
     return true;
 }
 
-// 设置落盘（Game 域）。Render 域只刷新 settings_touched，写盘时机由这里判断：
-// 拖动滑杆期间每帧都会刷新时间戳，所以这段时间一次也不写；松手后时间戳停住，等满
-// kSettingsSaveDelayMilliseconds 才写一次。
+// Render changes the timestamp; Game queues the latest snapshot. The Worker queue
+// waits for the last edit to settle before writing, including during a slider drag.
 void FlushSettings(Context& context) noexcept {
     const std::int64_t touched = context.settings_touched.load(std::memory_order_relaxed);
-    if (touched == 0 || touched == context.settings_saved_touched) return;
-    if (NowTicks() - touched < kSettingsSaveDelayMilliseconds) return;
+    if (touched == 0 || touched == context.settings_queued_touched) return;
     static_cast<void>(SaveSettings(context));
 }
 
@@ -1024,6 +1011,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
     context->services.ui = ui.get();
     context->services.input = input.get();
     context->services.config = ConfigMethodsAvailable(config.get()) ? config.get() : nullptr;
+    context->settings_save.Bind(host, context->services.config, kSettingsSchemaId, kSettingsSchemaVersion);
     context->services.json = JsonAvailable(json.get()) ? json.get() : nullptr;
     // localization 也是可选的：拿不到服务时面板回退英文原文，功能不受影响。
     context->localizer = anomaly::sdk::Localizer(host);
@@ -1059,8 +1047,13 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void* plugin_context, std::uint32_t /*deadline
     context->want_enabled = false;
     StopFlying(*context, "free fly: stopped");
     // on_stop 是宿主给的最后一个可靠写盘时机（config 在 on_stop 之后才回收）。
-    static_cast<void>(SaveSettings(*context));
-    return anomaly::sdk::Ok();
+    bool saved = true;
+    if (SettingsAvailable(*context)) {
+        const bool queued = context->settings_touched.load(std::memory_order_relaxed) ==
+            context->settings_queued_touched || SaveSettings(*context);
+        saved = context->settings_save.Flush() && queued;
+    }
+    return saved ? anomaly::sdk::Ok() : Fail(ANOMALY_STATUS_V1_FAILED);
 }
 
 void ANOMALY_CALL Unload(void* plugin_context) {

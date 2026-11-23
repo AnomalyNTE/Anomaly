@@ -282,6 +282,7 @@ struct Context {
     // Draw (Render domain) only raises the dirty flag. Update schedules debounced
     // persistence on the Worker domain; Stop flushes any final pending change.
     std::atomic_bool settings_dirty{};
+    std::atomic<std::uint64_t> settings_changed_at{};
     std::atomic_bool settings_save_scheduled{};
     std::mutex settings_save_mutex;
     std::uint32_t result_code{ANOMALY_STATUS_V1_UNAVAILABLE};
@@ -993,7 +994,7 @@ bool ParseSettingsDocument(const std::string_view document, TeleportSettings& se
     if (!reader.Consume('{')) return false;
     for (;;) {
         std::string key;
-        if (!reader.ReadString(key, 16) || !reader.Consume(':')) return false;
+        if (!reader.ReadString(key, 32) || !reader.Consume(':')) return false;
         if (key == "target") {
             if (target_seen || !ReadPosition(reader, settings.target)) return false;
             target_seen = true;
@@ -1192,9 +1193,18 @@ bool SaveSettings() {
     }
 }
 
+void ScheduleSettingsSave(Context& context);
+
+void MarkSettingsDirty(Context& context) noexcept {
+    context.settings_changed_at.store(GetTickCount64(), std::memory_order_release);
+    context.settings_dirty.store(true, std::memory_order_release);
+}
+
 void ANOMALY_CALL SaveSettingsTask(void*, AnomalyGenerationHandleV1) {
-    static_cast<void>(SaveSettings());
+    if (GetTickCount64() - g_context.settings_changed_at.load(std::memory_order_acquire) >= 500)
+        static_cast<void>(SaveSettings());
     g_context.settings_save_scheduled.store(false, std::memory_order_release);
+    ScheduleSettingsSave(g_context);
 }
 
 void ScheduleSettingsSave(Context& context) {
@@ -1209,7 +1219,7 @@ void ScheduleSettingsSave(Context& context) {
     }
     AnomalyGenerationHandleV1 task{};
     const AnomalyStatusV1 status = context.scheduler->schedule(
-        context.scheduler->user, 250, SaveSettingsTask, nullptr, &task);
+        context.scheduler->user, 500, SaveSettingsTask, nullptr, &task);
     if (status.code != ANOMALY_STATUS_V1_OK || task.id == 0) {
         context.settings_save_scheduled.store(false, std::memory_order_release);
     }
@@ -1448,7 +1458,7 @@ bool ReplaceHotkey(
         }
         current = {};
         current_key = 0;
-        context.settings_dirty = true;
+        MarkSettingsDirty(context);
         return true;
     }
     AnomalyGenerationHandleV1 replacement{};
@@ -1462,7 +1472,7 @@ bool ReplaceHotkey(
     }
     current = replacement;
     current_key = key;
-    context.settings_dirty = true;
+    MarkSettingsDirty(context);
     return true;
 }
 
@@ -1767,7 +1777,7 @@ void ANOMALY_CALL ImportFileTask(void* value, AnomalyGenerationHandleV1) {
             std::scoped_lock lock(context->mutex);
             context->imported_points = std::move(points);
             context->imported_page = 0;
-            context->settings_dirty = true;
+            MarkSettingsDirty(*context);
         }
         const std::string imported_count_text = std::to_string(imported_count);
         const std::string message = context->localizer.Format(
@@ -2696,7 +2706,7 @@ void DrawTabCoordinate(
     {
         std::scoped_lock lock(g_context.mutex);
         for (std::size_t axis = 0; axis != 3; ++axis) g_context.target[axis] = target[axis];
-        if (target_changed) g_context.settings_dirty = true;
+        if (target_changed) MarkSettingsDirty(g_context);
     }
     if (g_context.current_position_unavailable) {
         DrawText(ui, g_context.localizer.Text(
@@ -3095,7 +3105,7 @@ void DrawTabSettings(const AnomalyUiServiceV1* ui) {
                 g_context.preload_delay = std::clamp(
                     preload_delay_input, 0.0, kPreloadDelayMaximum);
             }
-            g_context.settings_dirty = true;
+            MarkSettingsDirty(g_context);
         }
     }
     ui->end_tab_item(ui->user);

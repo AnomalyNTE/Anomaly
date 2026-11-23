@@ -1,5 +1,6 @@
 #include "anomaly/sdk/cpp.hpp"
 #include "anomaly/sdk/localization.hpp"
+#include "../common/config_save_queue.hpp"
 
 #include <algorithm>
 #include <array>
@@ -145,6 +146,8 @@ struct Context {
     std::vector<ClassSummary> class_summaries;
     bool settings_dirty{};
 } g_context;
+
+anomaly::plugins::ConfigSaveQueue g_settings_save;
 
 std::unordered_map<std::uint64_t, std::string> g_class_names;
 std::atomic<std::shared_ptr<const DisplaySettings>> g_display_settings;
@@ -589,16 +592,13 @@ SettingsLoadResult LoadSettings() {
     }
 }
 
-bool SaveSettings() {
+bool QueueSettingsSave() {
     const auto* config = g_context.config;
     if (!HasConfigFunctions(config)) return false;
     try {
         std::string document;
         if (!BuildSettingsDocument(document)) return false;
-        const AnomalyStatusV1 result = config->write_atomic(
-            config->user, anomaly::sdk::StringView(kSettingsSchemaId), kSettingsSchemaVersion,
-            {reinterpret_cast<const std::uint8_t*>(document.data()), document.size()});
-        if (result.code != ANOMALY_STATUS_V1_OK) return false;
+        if (!g_settings_save.Queue(document)) return false;
         g_context.settings_dirty = false;
         return true;
     } catch (...) {
@@ -1551,6 +1551,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
     g_context.localizer = anomaly::sdk::Localizer(host);
     g_context.core = core.get();
     g_context.config = config.get();
+    g_settings_save.Bind(host, g_context.config, kSettingsSchemaId, kSettingsSchemaVersion);
     g_context.ahud = ahud.get();
     const AnomalyStatusV1 registered = config->register_schema(
         config->user, anomaly::sdk::StringView(kSettingsSchemaId), kSettingsSchemaVersion,
@@ -1587,7 +1588,8 @@ AnomalyStatusV1 ANOMALY_CALL Start(void*) {
 
 AnomalyStatusV1 ANOMALY_CALL Stop(void*, std::uint32_t) {
     const AnomalyStatusV1 ahud_status = UnsubscribeAhud();
-    const bool saved = !g_context.settings_dirty || SaveSettings();
+    const bool queued = !g_context.settings_dirty || QueueSettingsSave();
+    const bool saved = g_settings_save.Flush() && queued;
     if (!saved) LogSettingsFailure("write");
     ClearEntityCache();
     g_display_settings.store({}, std::memory_order_release);
@@ -1602,6 +1604,7 @@ void ANOMALY_CALL Unload(void*) {
     g_display_settings.store({}, std::memory_order_release);
     g_reconciled_cache_generation = 0;
     g_context = {};
+    g_settings_save.Reset();
 }
 
 void ANOMALY_CALL Update(void*, double) {
@@ -1629,6 +1632,7 @@ void ANOMALY_CALL Draw(void*, const AnomalyUiServiceV1* ui) {
     const bool settings_changed = DrawMenu(ui, snapshot);
     if (settings_changed) g_context.settings_dirty = true;
     if (filters_changed || settings_changed) PublishDisplaySettings();
+    if (g_context.settings_dirty) static_cast<void>(QueueSettingsSave());
 }
 
 }  // namespace

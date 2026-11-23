@@ -21,6 +21,10 @@
   "loadPhase": "game-ready",
   "services": [
     {
+      "id": "anomaly.scheduler",
+      "minVersion": 1
+    },
+    {
       "id": "anomaly.core",
       "minVersion": 1
     },
@@ -76,6 +80,7 @@
     }
   ],
   "capabilities": [
+    "scheduler",
     "memory-read",
     "memory-write",
     "interop-signature",

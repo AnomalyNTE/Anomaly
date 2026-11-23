@@ -1,4 +1,5 @@
 #include "anomaly/sdk/cpp.hpp"
+#include "../common/config_save_queue.hpp"
 #include "anomaly/sdk/localization.hpp"
 
 #include "ahud_geometry.hpp"
@@ -274,6 +275,7 @@ struct Context final {
 };
 
 Context g_context;
+anomaly::plugins::ConfigSaveQueue g_settings_save;
 TeleportState g_teleport;
 PickupState g_pickup;
 AutoTeleportPickupState g_auto_teleport_pickup;
@@ -768,15 +770,12 @@ bool LoadSettings() {
     return true;
 }
 
-bool SaveSettings() {
+bool QueueSettingsSave() {
     if (!g_context.settings_dirty) return true;
     if (!ConfigMethodsAvailable(g_context.config)) return false;
 
     const std::string document = SerializeSettings();
-    const AnomalyStatusV1 status = g_context.config->write_atomic(
-        g_context.config->user, anomaly::sdk::StringView(kSettingsSchemaId),
-        kSettingsSchemaVersion, Bytes(document));
-    if (status.code != ANOMALY_STATUS_V1_OK) return false;
+    if (!g_settings_save.Queue(document)) return false;
     g_context.settings_dirty = false;
     return true;
 }
@@ -3677,6 +3676,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
     g_context.host = host;
     g_context.localizer = anomaly::sdk::Localizer(host);
     g_context.config = config.get();
+    g_settings_save.Bind(host, g_context.config, kSettingsSchemaId, kSettingsSchemaVersion);
     g_context.ahud = ahud.get();
     g_context.websocket = websocket &&
             HasField<AnomalyWebSocketServiceV1,
@@ -3779,7 +3779,8 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void*, std::uint32_t) {
     g_in_bank.store(false, std::memory_order_release);
     g_developer_mode.store(false, std::memory_order_release);
     const AnomalyStatusV1 ahud_status = UnsubscribeAhud();
-    const bool saved = SaveSettings();
+    const bool queued = QueueSettingsSave();
+    const bool saved = g_settings_save.Flush() && queued;
     g_world_gate.Reset();
     g_in_pink_paw_world = false;
     g_world_gate_refresh_requested.store(false, std::memory_order_release);
@@ -3835,6 +3836,7 @@ void ANOMALY_CALL Unload(void*) {
     ClearExtractionCache();
     g_display_settings.store({}, std::memory_order_release);
     g_context = {};
+    g_settings_save.Reset();
 }
 
 void ProcessPendingTeleport() {
@@ -3979,6 +3981,7 @@ void ANOMALY_CALL Draw(void*, const AnomalyUiServiceV1* ui) {
     const LootCache empty;
     const LootCache& snapshot = cache ? *cache : empty;
     DrawMenu(ui, snapshot);
+    if (g_context.settings_dirty) static_cast<void>(QueueSettingsSave());
 }
 
 }  // namespace

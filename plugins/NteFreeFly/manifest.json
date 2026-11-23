@@ -13,6 +13,7 @@
   "builds": ["nte-*"],
   "loadPhase": "game-ready",
   "services": [
+    {"id": "anomaly.scheduler", "minVersion": 1},
     {"id": "anomaly.core", "minVersion": 1},
     {"id": "anomaly.ui", "minVersion": 1},
     {"id": "anomaly.localization", "minVersion": 1},
@@ -25,6 +26,7 @@
     {"id": "anomaly.nte.player-hold", "minVersion": 1, "optional": true}
   ],
   "capabilities": [
+    "scheduler",
     "ui",
     "input",
     "configuration",

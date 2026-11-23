@@ -1,5 +1,6 @@
 #include "anomaly/sdk/cpp.hpp"
 #include "anomaly/sdk/localization.hpp"
+#include "../common/config_save_queue.hpp"
 #include "plugins/ModelScale/model_scale_profile.hpp"
 #include "plugins/ModelScale/scale_plan.hpp"
 
@@ -21,7 +22,8 @@ constexpr std::string_view kConfigSchemaId = "anomaly.model-scale.settings";
 constexpr std::uint32_t kConfigSchemaVersion = 1;
 inline constexpr std::string_view kConfigSchemaJson =
     R"({"type":"object","properties":{"enabled":{"type":"boolean"},)"
-    R"("scale":{"type":"number","minimum":0.1,"maximum":10.0}},)"
+    R"("scale":{"type":"number","exclusiveMinimum":0.0},)"
+    R"("base":{"type":"number","exclusiveMinimum":0.0}},)"
     R"("required":["enabled","scale"],"additionalProperties":false})";
 
 // The scale the plugin wants is the factor times whatever the game itself put on the
@@ -85,6 +87,8 @@ struct Context {
     // Owned by the Game thread only.
     AppliedState applied{};
 } g_context;
+
+anomaly::plugins::ConfigSaveQueue g_settings_save;
 
 template <typename Struct, typename Field>
 bool HasField(const Struct* value, const std::size_t offset) noexcept {
@@ -442,6 +446,7 @@ void Draw(const AnomalyUiServiceV1* ui) {
     if (ui->checkbox(ui->user, anomaly::sdk::StringView(enable_label), &enabled) != 0) {
         g_context.enabled.store(enabled != 0, std::memory_order_release);
         g_context.sync_requested.store(true, std::memory_order_release);
+        PersistSettings();
     }
 
     // input_double takes no range, so the factor is clamped here before it is stored: the
@@ -455,12 +460,14 @@ void Draw(const AnomalyUiServiceV1* ui) {
             factor, profile::kMinimumScaleFactor, profile::kMaximumScaleFactor);
         g_context.factor.store(factor, std::memory_order_release);
         g_context.sync_requested.store(true, std::memory_order_release);
+        PersistSettings();
     }
 
     const std::string reset_label = Text("action.reset", "Reset to 1.0x");
     if (ui->button(ui->user, anomaly::sdk::StringView(reset_label), 0.0F, 0.0F) != 0) {
         g_context.factor.store(1.0, std::memory_order_release);
         g_context.sync_requested.store(true, std::memory_order_release);
+        PersistSettings();
     }
 
     ui->separator(ui->user);
@@ -493,16 +500,12 @@ void PersistSettings() noexcept {
     // range, and a fixed-width format would need 40 characters for a legal value.
     char document[256]{};
     const int written = std::snprintf(
-        document, sizeof(document), "{\"enabled\":%s,\"scale\":%g,\"base\":%g}",
+        document, sizeof(document), "{\"enabled\":%s,\"scale\":%.17g,\"base\":%.17g}",
         g_context.enabled.load(std::memory_order_acquire) ? "true" : "false",
         g_context.factor.load(std::memory_order_acquire),
         g_context.saved_base.load(std::memory_order_acquire));
     if (written <= 0 || static_cast<std::size_t>(written) >= sizeof(document)) return;
-    const AnomalyByteSpanV1 payload{
-        reinterpret_cast<const std::uint8_t*>(document), static_cast<std::size_t>(written)};
-    static_cast<void>(g_context.config->write_atomic(
-        g_context.config->user, anomaly::sdk::StringView(kConfigSchemaId),
-        kConfigSchemaVersion, payload));
+    static_cast<void>(g_settings_save.Queue({document, static_cast<std::size_t>(written)}));
 }
 
 void LoadSettings() noexcept {
@@ -573,6 +576,7 @@ void LoadSettings() noexcept {
 }
 
 void ResetContext() noexcept {
+    g_settings_save.Reset();
     // Assigned while nothing is subscribed, so the plugin's own state is the only
     // thing being replaced. Atomics are not copy-assignable, hence the explicit reload.
     g_context.host = nullptr;
@@ -637,6 +641,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
         return StatusCode(ANOMALY_STATUS_V1_UNAVAILABLE);
     }
     if (!ConfigReady(g_context.config)) g_context.config = nullptr;
+    g_settings_save.Bind(host, g_context.config, kConfigSchemaId, kConfigSchemaVersion);
 
     *context = &g_context;
     return anomaly::sdk::Ok();
@@ -677,7 +682,8 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void* context, std::uint32_t /*deadline_millis
     if (state == nullptr || state != &g_context) {
         return StatusCode(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
     }
-    PersistSettings();
+    if (state->base_measured.exchange(false, std::memory_order_acq_rel)) PersistSettings();
+    const bool saved = g_settings_save.Flush();
     if (state->ahud_subscription.id != 0 && AhudReady(state->ahud)) {
         // A successful unsubscribe drains a callback already in flight.
         const AnomalyGenerationHandleV1 handle = state->ahud_subscription;
@@ -687,7 +693,7 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void* context, std::uint32_t /*deadline_millis
     // The component keeps the scale that was last written. The next Start re-derives the
     // base from the live value, so an applied factor is not a leak.
     ForgetApplied();
-    return anomaly::sdk::Ok();
+    return saved ? anomaly::sdk::Ok() : StatusCode(ANOMALY_STATUS_V1_FAILED);
 }
 
 void ANOMALY_CALL Unload(void* context) {

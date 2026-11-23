@@ -21,6 +21,10 @@
   "loadPhase": "game-ready",
   "services": [
     {
+      "id": "anomaly.scheduler",
+      "minVersion": 1
+    },
+    {
       "id": "anomaly.ui",
       "minVersion": 1
     },
@@ -108,6 +112,7 @@
     }
   ],
   "capabilities": [
+    "scheduler",
     "ui",
     "configuration",
     "game-events",

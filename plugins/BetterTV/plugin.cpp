@@ -177,6 +177,7 @@ struct Context final {
     std::mutex mutex;
     Settings settings;
     bool settings_dirty{};
+    MediaClock::time_point settings_changed_at{};
     PrepareDisplay prepare;  // Guarded by mutex.
     // Last preparation result written to the log; game thread only.
     std::uint64_t prepare_logged{};
@@ -2039,17 +2040,14 @@ void ReadSettings(Context& context) noexcept {
     }
 }
 
-void PersistSettingsTask(void* user, AnomalyGenerationHandleV1) noexcept {
-    auto* context = static_cast<Context*>(user);
-    if (context == nullptr || !context->alive.load(std::memory_order_acquire)) return;
+bool PersistSettings(Context* context) noexcept {
+    if (!ConfigReady(context->config)) return false;
     Settings settings;
     {
         std::scoped_lock lock(context->mutex);
         settings = context->settings;
-        context->persist_task = {};
         context->settings_dirty = false;
     }
-    if (!ConfigReady(context->config)) return;
     try {
         const std::string document =
             nlohmann::json{{"enabled", false},
@@ -2060,12 +2058,30 @@ void PersistSettingsTask(void* user, AnomalyGenerationHandleV1) noexcept {
                            {"audioFullVolumeMeters", settings.audio_distance.full_volume_meters},
                            {"audioMaxDistanceMeters", settings.audio_distance.max_distance_meters}}
                 .dump();
-        static_cast<void>(context->config->write_atomic(
+        if (context->config->write_atomic(
             context->config->user, anomaly::sdk::StringView(kConfigSchemaId),
             kConfigSchemaVersion,
-            {reinterpret_cast<const std::uint8_t*>(document.data()), document.size()}));
+            {reinterpret_cast<const std::uint8_t*>(document.data()), document.size()}).code ==
+            ANOMALY_STATUS_V1_OK) return true;
     } catch (...) {
     }
+    std::scoped_lock lock(context->mutex);
+    context->settings_dirty = true;
+    return false;
+}
+
+void SchedulePersist(Context& context) noexcept;
+
+void PersistSettingsTask(void* user, AnomalyGenerationHandleV1) noexcept {
+    auto* context = static_cast<Context*>(user);
+    if (context == nullptr || !context->alive.load(std::memory_order_acquire)) return;
+    bool ready{};
+    {
+        std::scoped_lock lock(context->mutex);
+        context->persist_task = {};
+        ready = MediaClock::now() - context->settings_changed_at >= std::chrono::milliseconds(500);
+    }
+    if (!ready || !PersistSettings(context)) SchedulePersist(*context);
 }
 
 void SchedulePersist(Context& context) noexcept {
@@ -2085,6 +2101,7 @@ void MarkSettingsDirty(Context& context) noexcept {
     {
         std::scoped_lock lock(context.mutex);
         context.settings_dirty = true;
+        context.settings_changed_at = MediaClock::now();
     }
     SchedulePersist(context);
 }
@@ -2802,6 +2819,7 @@ AnomalyStatusV1 Start(void* plugin_context) noexcept {
 AnomalyStatusV1 Stop(void* plugin_context, std::uint32_t deadline_ms) noexcept {
     auto* context = static_cast<Context*>(plugin_context);
     if (context == nullptr) return anomaly::sdk::Ok();
+    const bool saved = !context->settings_dirty || PersistSettings(context);
     context->alive.store(false, std::memory_order_release);
     g_active.store(nullptr, std::memory_order_release);
     context->persist_task = {};
@@ -2829,6 +2847,7 @@ AnomalyStatusV1 Stop(void* plugin_context, std::uint32_t deadline_ms) noexcept {
         return Status(ANOMALY_STATUS_V1_TIMEOUT, "bilibili preparation worker did not stop in time");
     if (!audio_stopped)
         return Status(ANOMALY_STATUS_V1_TIMEOUT, "television audio worker did not stop in time");
+    if (!saved) return Status(ANOMALY_STATUS_V1_FAILED);
     return anomaly::sdk::Ok();
 }
 

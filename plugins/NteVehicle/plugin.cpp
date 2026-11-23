@@ -8,6 +8,7 @@
 #include "anomaly/sdk/services/ui_resources.h"
 #include "anomaly/sdk/services/plugin_state.h"
 #include "anomaly/sdk/localization.hpp"
+#include "../common/config_save_queue.hpp"
 
 #include <algorithm>
 #include <array>
@@ -98,7 +99,7 @@ struct Context {
     std::atomic_bool summon{};
     std::atomic_bool summon_customized{};
     std::atomic_bool friction_toggle{};
-    // 载具耐久保护的开关与安装状态。开关在 Game 线程翻转，落盘只在生命周期回调执行。
+    // Game owns the guard switch; settings snapshots are written on Worker/Lifecycle.
     bool durability_guard_enabled{true};
     bool durability_guard_installed{};
     std::string durability_guard_detail;
@@ -115,6 +116,8 @@ struct Context {
     float other_torque_ratio{1.0F};
     bool friction_enabled{true};
 } g_context;
+
+anomaly::plugins::ConfigSaveQueue g_settings_save;
 
 template <typename Struct, typename Field>
 bool HasField(const Struct* value, std::size_t offset) noexcept {
@@ -189,8 +192,7 @@ void SaveSelection(const std::string& vehicle_id) {
     if (out) out << vehicle_id << "\n";
 }
 
-// 载具耐久保护开关由宿主 anomaly.config 持久化：Game 回调只置 dirty 位，
-// 文档读写全部留在生命周期回调（Load/Stop/Unload）里，避免在渲染/游戏回调做 I/O。
+// Guard settings use anomaly.config, with snapshots queued from Game and written on Worker.
 constexpr std::string_view kSettingsSchemaId = "settings";
 constexpr std::uint32_t kSettingsSchemaVersion = 1;
 constexpr std::size_t kMaximumSettingsBytes = 512;
@@ -258,17 +260,14 @@ void LoadSettings() {
     }
 }
 
-void SaveSettings() {
-    if (!ConfigReady() || !g_context.settings_dirty.exchange(false, std::memory_order_acq_rel))
+void QueueSettingsSave() {
+    if (!ConfigReady() || !g_context.settings_dirty.load(std::memory_order_acquire))
         return;
     constexpr std::string_view kEnabledDocument = R"json({"durabilityGuard":true})json";
     constexpr std::string_view kDisabledDocument = R"json({"durabilityGuard":false})json";
-    const auto document =
-        g_context.durability_guard_enabled ? kEnabledDocument : kDisabledDocument;
-    static_cast<void>(g_context.config->write_atomic(
-        g_context.config->user, anomaly::sdk::StringView(kSettingsSchemaId),
-        kSettingsSchemaVersion,
-        {reinterpret_cast<const std::uint8_t*>(document.data()), document.size()}));
+    std::scoped_lock lock(g_context.mutex);
+    const auto document = g_context.durability_guard_enabled ? kEnabledDocument : kDisabledDocument;
+    if (g_settings_save.Queue(std::string(document))) g_context.settings_dirty.store(false);
 }
 
 bool RegisterSettingsSchema() {
@@ -2439,6 +2438,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
     g_context.window_service = window_service;
     g_context.plugin_state = plugin_state;
     g_context.config = config;
+    g_settings_save.Bind(host, config, kSettingsSchemaId, kSettingsSchemaVersion);
     g_context.core = QueryService<AnomalyCoreServiceV1>(
         host, ANOMALY_CORE_SERVICE_V1_ID, ANOMALY_CORE_SERVICE_V1_VERSION);
     g_context.settings_schema = {};
@@ -2564,7 +2564,8 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void* plugin_context, std::uint32_t) try {
     }
     nte_vehicle::StopBackend();
     SaveSelection(g_context.saved_vehicle_id);
-    SaveSettings();
+    QueueSettingsSave();
+    const bool saved = g_settings_save.Flush();
     ReleaseMenuHotkey(g_context);
     if (g_context.window_service && g_context.menu_window_handle.id != 0) {
         static_cast<void>(g_context.window_service->set_open(
@@ -2574,7 +2575,7 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void* plugin_context, std::uint32_t) try {
         std::scoped_lock lock(g_context.mutex);
         g_context.speed_ratio = kDefaultSpeedRatio;
     }
-    return anomaly::sdk::Ok();
+    return saved ? anomaly::sdk::Ok() : Status(ANOMALY_STATUS_V1_FAILED);
 } catch (...) { return Status(ANOMALY_STATUS_V1_FAILED); }
 
 void ANOMALY_CALL Unload(void* plugin_context) try {
@@ -2589,7 +2590,8 @@ void ANOMALY_CALL Unload(void* plugin_context) try {
     }
     nte_vehicle::StopBackend();
     SaveSelection(g_context.saved_vehicle_id);
-    SaveSettings();
+    QueueSettingsSave();
+    static_cast<void>(g_settings_save.Flush());
     ReleaseMenuHotkey(g_context);
     if (g_context.window_service && g_context.menu_window_handle.id != 0) {
         static_cast<void>(g_context.window_service->release_window(
@@ -2605,12 +2607,14 @@ void ANOMALY_CALL Unload(void* plugin_context) try {
     g_context.config = nullptr;
     g_context.core = nullptr;
     g_context.settings_schema = {};
+    g_settings_save.Reset();
 } catch (...) {  }
 
 void ANOMALY_CALL UpdateCallback(void* plugin_context, double) try {
     if (plugin_context == &g_context && g_context.started.load(std::memory_order_acquire)) {
         nte_vehicle::TickBackend();
         Update();
+        QueueSettingsSave();
     }
 } catch (...) {  }
 

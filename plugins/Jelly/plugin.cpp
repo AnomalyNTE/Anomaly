@@ -12,10 +12,11 @@
 // The thread split follows the host contract: on_update runs in the Game domain
 // (the UE game thread while the NTE adapter is running) and does every object
 // read, every reflected call and every restore; on_draw runs in the Render domain
-// and only reads a published snapshot and writes user settings. Configuration and
-// the bundled layout resource are touched in the Lifecycle domain only.
+// and only reads a published snapshot and writes user settings. Configuration is
+// saved on Worker/Lifecycle; the bundled layout resource loads on Lifecycle.
 
 #include "anomaly/sdk/cpp.hpp"
+#include "../common/config_save_queue.hpp"
 
 #include "jelly_effect.hpp"
 #include "jelly_layout.hpp"
@@ -331,6 +332,7 @@ struct Context {
 };
 
 Context g_context;
+anomaly::plugins::ConfigSaveQueue g_settings_save;
 
 // The model module's naming notes go to the host log. The window can only show how
 // many targets were refused; the log says which name this build does not carry, so a
@@ -610,11 +612,7 @@ void PersistSettings() noexcept {
         g_context.published.simulated_vehicles.load(std::memory_order_acquire) ? "true"
                                                                               : "false");
     if (written <= 0 || static_cast<std::size_t>(written) >= sizeof(document)) return;
-    const AnomalyByteSpanV1 payload{
-        reinterpret_cast<const std::uint8_t*>(document), static_cast<std::size_t>(written)};
-    static_cast<void>(g_context.config->write_atomic(
-        g_context.config->user, anomaly::sdk::StringView(kConfigSchemaId),
-        kConfigSchemaVersion, payload));
+    static_cast<void>(g_settings_save.Queue({document, static_cast<std::size_t>(written)}));
 }
 
 bool ReadBoolean(const std::string_view document, const std::string_view key) noexcept {
@@ -1462,6 +1460,7 @@ void Draw(const AnomalyUiServiceV1* ui) {
             ui->user, anomaly::sdk::StringView(g_context.localizer.Text("setting.enabled", "Enable")),
             &enabled) != 0) {
         g_context.published.enabled.store(enabled != 0, std::memory_order_release);
+        PersistSettings();
     }
 
     float amplitude =
@@ -1474,6 +1473,7 @@ void Draw(const AnomalyUiServiceV1* ui) {
             static_cast<float>(jelly::kMaximumAmplitude)) != 0) {
         g_context.published.amplitude.store(
             jelly::ClampAmplitude(amplitude), std::memory_order_release);
+        PersistSettings();
     }
 
     float frequency =
@@ -1487,6 +1487,7 @@ void Draw(const AnomalyUiServiceV1* ui) {
             static_cast<float>(jelly::kMaximumFrequencyHz)) != 0) {
         g_context.published.frequency.store(
             jelly::ClampFrequency(frequency), std::memory_order_release);
+        PersistSettings();
     }
 
     // The one cap the window owns. The UI service only offers a float slider, so the
@@ -1502,6 +1503,7 @@ void Draw(const AnomalyUiServiceV1* ui) {
         g_context.published.max_models.store(
             static_cast<double>(jelly::ClampModels(max_models)),
             std::memory_order_release);
+        PersistSettings();
     }
 
     float pause_seconds = static_cast<float>(jelly::ClampPause(
@@ -1514,6 +1516,7 @@ void Draw(const AnomalyUiServiceV1* ui) {
             static_cast<float>(jelly::kMaximumPauseSeconds)) != 0) {
         g_context.published.pause_seconds.store(
             jelly::ClampPause(pause_seconds), std::memory_order_release);
+        PersistSettings();
     }
 
     int spin = g_context.published.spin.load(std::memory_order_acquire) ? 1 : 0;
@@ -1523,6 +1526,7 @@ void Draw(const AnomalyUiServiceV1* ui) {
                 g_context.localizer.Text("setting.spin", "Spin models (up axis)")),
             &spin) != 0) {
         g_context.published.spin.store(spin != 0, std::memory_order_release);
+        PersistSettings();
     }
     float spin_speed = static_cast<float>(jelly::ClampSpin(
         g_context.published.spin_speed.load(std::memory_order_acquire)));
@@ -1534,6 +1538,7 @@ void Draw(const AnomalyUiServiceV1* ui) {
             static_cast<float>(jelly::kMaximumSpinDegreesPerSecond)) != 0) {
         g_context.published.spin_speed.store(
             jelly::ClampSpin(spin_speed), std::memory_order_release);
+        PersistSettings();
     }
 
     ui->separator(ui->user);
@@ -1544,6 +1549,7 @@ void Draw(const AnomalyUiServiceV1* ui) {
                 ui->user, anomaly::sdk::StringView(g_context.localizer.Text(key, fallback)),
                 &checked) != 0) {
             value.store(checked != 0, std::memory_order_release);
+            PersistSettings();
         }
     };
     filter("filter.local_player", "Local player", g_context.published.local_player);
@@ -1689,6 +1695,7 @@ void ANOMALY_CALL OnDraw(void* /*context*/, const AnomalyUiServiceV1* ui) {
 // --- lifecycle ---------------------------------------------------------------------
 
 void ResetContext() noexcept {
+    g_settings_save.Reset();
     g_context.host = nullptr;
     g_context.core = nullptr;
     g_context.ui = nullptr;
@@ -1803,6 +1810,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
     const auto config = sdk_host.Query<AnomalyConfigServiceV1>(
         ANOMALY_CONFIG_SERVICE_V1_ID, ANOMALY_CONFIG_SERVICE_V1_VERSION);
     g_context.config = ConfigReady(config.get()) ? config.get() : nullptr;
+    g_settings_save.Bind(host, g_context.config, kConfigSchemaId, kConfigSchemaVersion);
     g_context.name_table.names = NamesReady(g_context.names) ? g_context.names : nullptr;
     g_context.localizer.Bind(host);
     *context = &g_context;
@@ -1853,14 +1861,14 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void* context, std::uint32_t /*deadline_millis
     // The plugin's own rule is to be stopped with the effect already off and the
     // pending count back to zero; anything still owned is reported as a failure so
     // the host isolates this generation instead of unloading it over a live write.
-    PersistSettings();
+    const bool saved = g_settings_save.Flush();
     if (!state->ledger.empty()) {
         return StatusCode(ANOMALY_STATUS_V1_FAILED);
     }
     state->candidates.clear();
     state->sweep.clear();
     state->model.reset();
-    return anomaly::sdk::Ok();
+    return saved ? anomaly::sdk::Ok() : StatusCode(ANOMALY_STATUS_V1_FAILED);
 }
 
 void ANOMALY_CALL Unload(void* context) {
