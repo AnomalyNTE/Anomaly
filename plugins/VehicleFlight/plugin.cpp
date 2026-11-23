@@ -1,5 +1,6 @@
 #include "vehicle.hpp"
 #include "preferences.hpp"
+#include "input_gate.hpp"
 #include <anomaly/sdk/localization.hpp>
 #include <atomic>
 #include <chrono>
@@ -10,10 +11,11 @@ namespace vehicle_flight {
 using namespace anomaly::sdk;
 constexpr auto Id = "b1ank.vehicle-flight";
 constexpr auto Name = "Vehicle Flight";
-constexpr auto Version = "0.1.6";
+constexpr auto Version = "0.1.25";
 using Clock = std::chrono::steady_clock;
 
-enum class Status { Off, Starting, Flying, CameraUnavailable, Blocked, PositionCorrected, NoVehicle, SceneChanged, Unavailable };
+enum class Status { Off, Starting, Flying, CameraUnavailable, Blocked, PositionCorrected, NoVehicle, SceneChanged, Unavailable, Restoring };
+enum class InputState { Pending, Preparing, Ready, Failed };
 
 bool Same(AnomalyGenerationHandleV1 a, AnomalyGenerationHandleV1 b) {
     return a.id && a.id == b.id && a.generation == b.generation;
@@ -35,14 +37,18 @@ bool DeveloperModeEnabled(const AnomalyUiServiceV1* ui) noexcept {
 }
 
 struct Context {
-    explicit Context(const AnomalyHostApiV1* api) : host(api), localizer(api), hotkey(this, ToggleFlight) {}
+    explicit Context(const AnomalyHostApiV1* api) : api(api), host(api), localizer(api), hotkey(this, ToggleFlight), input_gate(access.engine) {}
+    const AnomalyHostApiV1* api;
     Host host;
     Localizer localizer;
     VehicleAccess access;
     FlightHotkey hotkey;
+    InputGate input_gate;
     PreferencesStore preferences;
     Binding saved_toggle;
     const AnomalyUiServiceV1* ui{};
+    const AnomalyHookServiceV1* hooks{};
+    const AnomalySchedulerServiceV1* scheduler{};
     const AnomalyInputServiceV1* input{};
     const AnomalyUe5FrameworkServiceV1* framework{};
     const AnomalyNteSessionServiceV1* session{};
@@ -50,22 +56,29 @@ struct Context {
     const AnomalyWindowServiceV1* window{};
     AnomalyGenerationHandleV1 window_handle{}, world{};
     Ref vehicle, physics;
-    Clock::time_point next_vehicle_check{};
-    Vector anchor{}, velocity{}, previous_move{};
-    std::optional<Vector> facing;
+    Clock::time_point next_vehicle_check{}, next_move_log{};
+    Vector anchor{};
+    uint32_t measured_frames{};
+    double update_milliseconds{}, longest_update{};
     std::atomic<Status> status{Status::Off};
+    std::atomic<InputState> input_state{InputState::Pending};
     std::atomic<bool> developer_mode{};
     std::atomic<bool> requested{};
-    std::atomic<bool> noclip{};
+    std::atomic<bool> noclip{true};
     std::atomic<int> speed{DefaultSpeed};
-    std::atomic<Mode> mode{Mode::Keyboard};
-    Mode applied_mode{Mode::Keyboard};
     int fallback_open{1};
-    bool restore_mode_tab{true};
+    bool reported_flying{};
 
     void SetRequested(bool enabled) {
-        status = enabled ? Status::Starting : Status::Off;
+        if (enabled && input_state.load() == InputState::Failed) input_state = InputState::Pending;
+        status = enabled ? Status::Starting : Status::Restoring;
         requested = enabled;
+    }
+
+    void Unavailable(std::string_view reason) {
+        if (access.engine.core && access.engine.core->log)
+            access.engine.core->log(access.engine.core->user, ANOMALY_CORE_LOG_LEVEL_V1_WARNING, StringView(reason));
+        End(Status::Unavailable);
     }
 
     static void ToggleFlight(void* owner) noexcept {
@@ -73,39 +86,61 @@ struct Context {
         if (ctx.developer_mode.load() && HasFocus()) ctx.SetRequested(!ctx.requested.load());
     }
 
-    void ResetVehicle() {
+    static void PrepareInput(void* raw, AnomalyGenerationHandleV1) noexcept {
+        auto& ctx = *static_cast<Context*>(raw);
+        try {
+            auto& engine = ctx.access.engine;
+            engine.names = ctx.host.Query<AnomalyUe5NamesServiceV1>(ANOMALY_UE5_NAMES_SERVICE_V1_ID).get();
+            engine.objects = ctx.host.Query<AnomalyUe5ObjectsServiceV1>(ANOMALY_UE5_OBJECTS_SERVICE_V1_ID).get();
+            const auto events = ctx.host.Query<AnomalyUe5ProcessEventServiceV1>(ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_ID);
+            if (events && events->struct_size >= sizeof(*events.get())) engine.events = events.get();
+            ctx.input_state = ctx.input_gate.Start(ctx.hooks, ctx.api) ? InputState::Ready : InputState::Failed;
+        } catch (...) { ctx.input_state = InputState::Failed; }
+    }
+
+    bool ResetVehicle() {
+        if (!access.RestoreFlightPhysics()) return false;
+        input_gate.Release();
+        access.ResetPhysics();
+        reported_flying = false;
         vehicle = {};
         physics = {};
+        next_move_log = {};
         anchor = {};
-        velocity = {};
-        previous_move = {};
-        facing.reset();
+        measured_frames = 0;
+        update_milliseconds = 0.0;
+        longest_update = 0.0;
+        return true;
     }
 
     void WaitForVehicle(Clock::time_point now) {
-        if (vehicle) ResetVehicle();
+        if (vehicle && !ResetVehicle()) {
+            Unavailable("Vehicle Flight: previous vehicle physics could not be restored");
+            return;
+        }
         next_vehicle_check = now + std::chrono::milliseconds(120);
         status = Status::NoVehicle;
     }
 
     void End(Status reason) {
-        ResetVehicle();
+        const bool restored = ResetVehicle();
         world = {};
         next_vehicle_check = {};
-        status = reason;
+        status = restored ? reason : Status::Restoring;
         requested = false;
     }
 };
 
 void Tick(Context& ctx, double seconds) {
     if (!ctx.requested.load()) {
-        if (ctx.world.id) ctx.End(Status::Off);
+        if (ctx.world.id || ctx.access.HasFlightPhysics()) ctx.End(Status::Off);
+        else if (ctx.status.load() == Status::Restoring) ctx.status = Status::Off;
         return;
     }
     if (!ctx.framework)
         ctx.framework = ctx.host.Query<AnomalyUe5FrameworkServiceV1>(ANOMALY_UE5_FRAMEWORK_SERVICE_V1_ID).get();
     if (!ctx.framework || !ctx.framework->is_game_thread) {
-        ctx.End(Status::Unavailable);
+        ctx.Unavailable("Vehicle Flight: Game-thread service is unavailable");
         return;
     }
     if (!ctx.framework->is_game_thread(ctx.framework->user)) return;
@@ -126,8 +161,8 @@ void Tick(Context& ctx, double seconds) {
     if (!ctx.player)
         ctx.player = ctx.host.Query<AnomalyNtePlayerServiceV1>(ANOMALY_NTE_PLAYER_SERVICE_V1_ID).get();
     if (!ctx.player || ctx.player->struct_size < sizeof(*ctx.player) || !ctx.player->get_object_handles ||
-        !ctx.input || !ctx.input->snapshot || !ctx.access.Bind()) {
-        ctx.End(Status::Unavailable);
+        !ctx.input || !ctx.input->snapshot || !ctx.scheduler || !ctx.scheduler->schedule) {
+        ctx.Unavailable("Vehicle Flight: player, input or scheduler service is unavailable");
         return;
     }
     AnomalyGenerationHandleV1 controller{}, pawn{};
@@ -135,12 +170,38 @@ void Tick(Context& ctx, double seconds) {
         ctx.WaitForVehicle(now);
         return;
     }
+    const auto input_state = ctx.input_state.load();
+    if (input_state == InputState::Pending) {
+        ctx.input_state = InputState::Preparing;
+        AnomalyGenerationHandleV1 task{};
+        if (!Succeeded(ctx.scheduler->schedule(ctx.scheduler->user, 0, Context::PrepareInput, &ctx, &task))) {
+            ctx.input_state = InputState::Failed;
+            ctx.Unavailable("Vehicle Flight: input preparation task was rejected");
+        }
+        return;
+    }
+    if (input_state == InputState::Preparing) return;
+    if (input_state != InputState::Ready) {
+        ctx.Unavailable("Vehicle Flight: driving input initialization failed");
+        return;
+    }
+    if (!ctx.access.Bind()) {
+        ctx.Unavailable("Vehicle Flight: vehicle reflection bindings are unavailable");
+        return;
+    }
     const auto vehicle = ctx.access.DrivenVehicle(controller, pawn, ctx.vehicle);
     if (!vehicle) {
         ctx.WaitForVehicle(now);
         return;
     }
-    if (ctx.vehicle && !(vehicle == ctx.vehicle)) ctx.ResetVehicle();
+    if (ctx.vehicle && !(vehicle == ctx.vehicle) && !ctx.ResetVehicle()) {
+        ctx.Unavailable("Vehicle Flight: previous vehicle physics could not be restored");
+        return;
+    }
+    if (!ctx.input_gate.Hold(ctx.access.engine.Resolve(controller)) || !ctx.access.ClearDrivingInput(vehicle)) {
+        ctx.Unavailable("Vehicle Flight: driving input could not be isolated");
+        return;
+    }
     Vector observed{};
     if (!ctx.access.Location(vehicle, observed)) {
         if (ctx.vehicle) ctx.End(Status::Unavailable);
@@ -152,33 +213,14 @@ void Tick(Context& ctx, double seconds) {
         ctx.physics = ctx.access.PhysicsRoot(vehicle);
         ctx.anchor = observed;
     }
-    constexpr double correction_distance = 600.0;
-    constexpr double drift_tolerance = 30.0;
-    const auto correction = Difference(ctx.anchor, observed);
-    const auto drift = Length(correction);
-    const auto lost_distance = Along(correction, ctx.previous_move);
-    const bool sweep = !ctx.noclip.load();
-    const bool position_corrected = drift > correction_distance || lost_distance > drift_tolerance;
-    if (position_corrected) {
-        if (ctx.status.load() != Status::PositionCorrected) {
-            const auto* core = ctx.access.engine.core;
-            if (core && core->log) core->log(core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
-                StringView("Vehicle Flight: position corrected within the same world and vehicle; flight remains enabled"));
-        }
-        ctx.anchor = observed;
-        ctx.previous_move = {};
-    } else if (sweep && drift > drift_tolerance) {
-        ctx.anchor = observed;
-        ctx.velocity = {};
+    if (Length(Difference(ctx.anchor, observed)) > 80.0) ctx.anchor = observed;
+    const bool noclip = ctx.noclip.load();
+    if (!ctx.access.BeginFlightPhysics(vehicle, ctx.physics, noclip)) {
+        ctx.Unavailable("Vehicle Flight: collision and chassis physics overrides failed");
+        return;
     }
     if (!std::isfinite(seconds) || seconds <= 0.0) return;
     seconds = std::min(seconds, 0.05);
-    const auto mode = ctx.mode.load();
-    if (mode != ctx.applied_mode) {
-        ctx.applied_mode = mode;
-        ctx.velocity = {};
-        ctx.facing.reset();
-    }
 
     AnomalyNteCameraSnapshotV1 camera{sizeof(camera)};
     const bool has_camera = ctx.player->camera_snapshot &&
@@ -190,55 +232,57 @@ void Tick(Context& ctx, double seconds) {
     const bool controlling = HasFocus() && Succeeded(ctx.input->snapshot(ctx.input->user, &input)) &&
         !(input.capture_flags & (ANOMALY_INPUT_CAPTURE_V1_TEXT | ANOMALY_INPUT_CAPTURE_V1_KEYBOARD));
     Vector direction{};
-    const Vector* facing = nullptr;
-    if (controlling && mode == Mode::Keyboard) {
+    Vector facing{};
+    const Vector* facing_pointer = nullptr;
+    bool boost{};
+    bool camera_unavailable{};
+    if (controlling) {
         const int forward = static_cast<int>(Down(input, 'W')) - Down(input, 'S');
         const int sideways = static_cast<int>(Down(input, 'D')) - Down(input, 'A');
         const int vertical = static_cast<int>(Down(input, VK_SPACE)) -
             (Down(input, VK_CONTROL) || Down(input, VK_LCONTROL) || Down(input, VK_RCONTROL));
-        direction = Direction(mode, has_camera ? camera.rotation[0] : 0.0,
-                              has_camera ? camera.rotation[1] : 0.0, forward, sideways, vertical);
-    } else if (controlling && mode == Mode::Camera && has_camera &&
-               !(input.capture_flags & ANOMALY_INPUT_CAPTURE_V1_MOUSE)) {
-        if (!ctx.facing && !ctx.access.Rotation(vehicle, ctx.facing.emplace())) {
-            ctx.End(Status::Unavailable);
-            return;
+        camera_unavailable = (forward || sideways) && !has_camera;
+        direction = Direction(has_camera ? camera.rotation[1] : 0.0,
+            has_camera ? forward : 0, has_camera ? sideways : 0, vertical);
+        boost = (input.modifiers & ANOMALY_INPUT_MODIFIER_V1_SHIFT) != 0;
+        if (has_camera && (forward || sideways)) {
+            facing = {0.0, camera.rotation[1], 0.0};
+            facing_pointer = &facing;
         }
-        *ctx.facing = FollowView(*ctx.facing, camera.rotation[0], camera.rotation[1], seconds);
-        facing = &*ctx.facing;
-        direction = CameraTravel(ctx.velocity, camera.rotation[0], camera.rotation[1], Down(input, 'W'), Down(input, 'S'));
-    } else {
-        ctx.velocity = {};
-        ctx.facing.reset();
     }
-    const auto target = Advance(ctx.anchor, ctx.velocity, direction, seconds, ctx.speed.load());
-    const auto step = Difference(target, observed);
+    const auto target = Advance(ctx.anchor, direction, seconds, ctx.speed.load(), boost);
     bool moved{};
-    if (!ctx.access.Move(vehicle, ctx.physics, target, facing, sweep, moved)) {
+    if (!ctx.access.Move(vehicle, ctx.physics, target, facing_pointer, !noclip, moved, &observed)) {
         ctx.End(Status::Unavailable);
         return;
     }
-    const auto distance = Length(step);
-    bool blocked = !moved && distance > 4.0;
-    if (moved && distance > drift_tolerance) {
-        // A move can report success after travelling only part of the requested distance.
-        if (!ctx.access.Location(vehicle, observed)) {
-            ctx.End(Status::Unavailable);
-            return;
-        }
-        blocked = Along(Difference(target, observed), step) > drift_tolerance;
-    }
-    if (blocked) {
-        ctx.anchor = observed;
-        ctx.previous_move = {};
-        if (sweep) ctx.velocity = {};
-        ctx.status = sweep ? Status::Blocked : Status::PositionCorrected;
+    // Swept moves can stop partway. Unswept moves are checked against the next
+    // tick's observation, avoiding a second location query on the fast path.
+    if ((!noclip || !moved) && !ctx.access.Location(vehicle, observed)) {
+        ctx.End(Status::Unavailable);
         return;
     }
-    ctx.anchor = target;
-    ctx.previous_move = step;
-    if (mode == Mode::Camera && !has_camera) ctx.status = Status::CameraUnavailable;
-    else ctx.status = position_corrected ? Status::PositionCorrected : Status::Flying;
+    const bool blocked = !moved || (!noclip && Length(Difference(target, observed)) > 0.02);
+    if (blocked) {
+        ctx.anchor = observed;
+        ctx.status = noclip ? Status::PositionCorrected : Status::Blocked;
+        if (now >= ctx.next_move_log) {
+            const auto* core = ctx.access.engine.core;
+            if (core && core->log) core->log(core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
+                StringView("Vehicle Flight: movement limited; noclip=" + std::to_string(noclip) +
+                    " moved=" + std::to_string(moved) + " remaining_cm=" + std::to_string(Length(Difference(target, observed)))));
+            ctx.next_move_log = now + std::chrono::seconds(1);
+        }
+        return;
+    }
+    ctx.anchor = noclip ? target : observed;
+    ctx.status = camera_unavailable ? Status::CameraUnavailable : Status::Flying;
+    if (!ctx.reported_flying && ctx.status.load() == Status::Flying) {
+        ctx.reported_flying = true;
+        const auto* core = ctx.access.engine.core;
+        if (core && core->log) core->log(core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
+            StringView("Vehicle Flight 0.1.25: flight controls are active using the standard host API"));
+    }
 }
 
 AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** output) noexcept {
@@ -253,6 +297,11 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** output) n
         const auto events = ctx->host.Query<AnomalyUe5ProcessEventServiceV1>(ANOMALY_UE5_PROCESS_EVENT_SERVICE_V1_ID);
         if (events && events->struct_size >= sizeof(*events.get())) engine.events = events.get();
         ctx->ui = ctx->host.Query<AnomalyUiServiceV1>(ANOMALY_UI_SERVICE_V1_ID).get();
+        ctx->hooks = ctx->host.Query<AnomalyHookServiceV1>(ANOMALY_HOOK_SERVICE_V1_ID).get();
+        const auto scheduler = ctx->host.Query<AnomalySchedulerServiceV1>(ANOMALY_SCHEDULER_SERVICE_V1_ID);
+        if (scheduler && scheduler->struct_size >= offsetof(AnomalySchedulerServiceV1, cancel) +
+                sizeof(scheduler->cancel) && scheduler->schedule)
+            ctx->scheduler = scheduler.get();
         ctx->framework = ctx->host.Query<AnomalyUe5FrameworkServiceV1>(ANOMALY_UE5_FRAMEWORK_SERVICE_V1_ID).get();
         ctx->session = ctx->host.Query<AnomalyNteSessionServiceV1>(ANOMALY_NTE_SESSION_SERVICE_V1_ID).get();
         const auto input = ctx->host.Query<AnomalyInputServiceV1>(ANOMALY_INPUT_SERVICE_V1_ID);
@@ -264,11 +313,11 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** output) n
             "b1ank-vehicle-flight-v1"});
         if (!profile) return {ANOMALY_STATUS_V1_UNAVAILABLE, 0, StringView("Vehicle Flight profile unavailable")};
         static_cast<void>(engine.ResolveProfile(host, profile.value()));
+        ctx->input_gate.Load(profile.value());
         const auto preferences = ctx->preferences.Load(ctx->host);
         ctx->saved_toggle = preferences.toggle;
         ctx->speed = preferences.speed;
         ctx->noclip = preferences.noclip;
-        ctx->mode = preferences.mode;
         *output = ctx.release();
         return Ok();
     } catch (...) { return {ANOMALY_STATUS_V1_FAILED, 0, {}}; }
@@ -299,9 +348,21 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* raw) noexcept {
 AnomalyStatusV1 ANOMALY_CALL Stop(void* raw, uint32_t) noexcept {
     auto& ctx = *static_cast<Context*>(raw);
     ctx.developer_mode = false;
+    if (ctx.access.HasFlightPhysics()) {
+        // The standard host has already frozen Game callbacks. Do not invoke UE
+        // from Lifecycle or wait for an update that can no longer be delivered.
+        ctx.requested = false;
+        ctx.input_gate.Release();
+        const auto* core = ctx.access.engine.core;
+        if (core && core->log) core->log(core->user, ANOMALY_CORE_LOG_LEVEL_V1_ERROR,
+            StringView("Vehicle Flight: active unload is unsupported. Turn flight off and wait for restoration before stopping the plugin. Restart the game if this generation is quarantined."));
+        return {ANOMALY_STATUS_V1_CONFLICT, 0, StringView("Turn flight off and wait for restoration before unloading")};
+    }
     ctx.End(Status::Off);
+    const auto input_stopped = ctx.input_gate.Stop();
     const auto hotkey_stopped = ctx.hotkey.Stop();
     ctx.preferences.Flush();
+    if (!Succeeded(input_stopped)) return input_stopped;
     if (!Succeeded(hotkey_stopped)) return hotkey_stopped;
     if (ctx.window_handle.id) {
         const auto status = ctx.window->release_window(ctx.window->user, ctx.window_handle);
@@ -315,69 +376,43 @@ void ANOMALY_CALL Unload(void* raw) noexcept { delete static_cast<Context*>(raw)
 
 void ANOMALY_CALL Update(void* raw, double seconds) noexcept {
     auto& ctx = *static_cast<Context*>(raw);
+    if (!ctx.ui) ctx.ui = ctx.host.Query<AnomalyUiServiceV1>(ANOMALY_UI_SERVICE_V1_ID).get();
+    if (!ctx.ui) return;
     const bool developer_mode = DeveloperModeEnabled(ctx.ui);
     ctx.developer_mode = developer_mode;
     if (!developer_mode) {
         ctx.hotkey.CancelCapture();
-        if (ctx.requested.load() || ctx.world.id) ctx.End(Status::Off);
+        if (ctx.requested.load() || ctx.world.id || ctx.access.HasFlightPhysics()) ctx.End(Status::Off);
         return;
     }
+    const auto started = Clock::now();
     try { Tick(ctx, seconds); }
-    catch (...) { ctx.End(Status::Unavailable); }
-}
-
-void DrawModeSelector(Context& ctx, const AnomalyUiServiceV1& ui) {
-    const auto keyboard = ctx.localizer.Text("flight.keyboard_mode", "Keyboard mode");
-    const auto mouse = ctx.localizer.Text("flight.mouse_mode", "Mouse mode");
-    const auto selected = ctx.mode.load();
-    const bool tabs = ui.struct_size >= offsetof(AnomalyUiServiceV1, end_tab_bar) + sizeof(ui.end_tab_bar) &&
-        ui.begin_tab_bar && ui.begin_tab_item && ui.end_tab_item && ui.end_tab_bar;
-    if (tabs) {
-        if (!ui.begin_tab_bar(ui.user, StringView("##vehicle-flight-modes"), ANOMALY_UI_TAB_BAR_V1_FITTING_POLICY_RESIZE_DOWN))
-            return;
-        const auto tab = [&](const std::string& label, Mode mode) {
-            const auto flags = ctx.restore_mode_tab && mode == selected
-                ? ANOMALY_UI_TAB_ITEM_V1_SET_SELECTED : ANOMALY_UI_TAB_ITEM_V1_NONE;
-            if (ui.begin_tab_item(ui.user, StringView(label), nullptr, flags, 1)) {
-                if (!ctx.restore_mode_tab) ctx.mode = mode;
-                ui.end_tab_item(ui.user);
-            }
-        };
-        tab(keyboard, Mode::Keyboard);
-        tab(mouse, Mode::Camera);
-        ui.end_tab_bar(ui.user);
-        ctx.restore_mode_tab = false;
-        return;
+    catch (...) {
+        ctx.End(Status::Unavailable);
     }
-
-    if (!ui.button) {
-        ui.text(ui.user, StringView(selected == Mode::Keyboard ? keyboard : mouse));
-        return;
+    if (ctx.vehicle && ctx.requested.load() && ctx.measured_frames < 180) {
+        const auto elapsed = std::chrono::duration<double, std::milli>(Clock::now() - started).count();
+        ctx.update_milliseconds += elapsed;
+        ctx.longest_update = std::max(ctx.longest_update, elapsed);
+        if (++ctx.measured_frames == 180) {
+            const auto* core = ctx.access.engine.core;
+            const auto message = "Vehicle Flight: update average=" +
+                std::to_string(ctx.update_milliseconds / ctx.measured_frames) + " ms, max=" +
+                std::to_string(ctx.longest_update) + " ms over 180 frames";
+            if (core && core->log) core->log(core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO, StringView(message));
+        }
     }
-    const auto button = [&](std::string label, Mode mode, std::string_view id) {
-        if (selected == mode) label = ctx.localizer.Format("flight.mode_selected", "{0} (selected)",
-            std::array<std::string_view, 1>{label});
-        label.append(id);
-        if (ui.button(ui.user, StringView(label), 0.0f, 0.0f)) ctx.mode = mode;
-    };
-    button(keyboard, Mode::Keyboard, "###vehicle-flight-keyboard");
-    if (ui.struct_size >= offsetof(AnomalyUiServiceV1, same_line) + sizeof(ui.same_line) && ui.same_line)
-        ui.same_line(ui.user, 0.0f, -1.0f);
-    button(mouse, Mode::Camera, "###vehicle-flight-mouse");
 }
 
 void DrawContent(Context& ctx, const AnomalyUiServiceV1& ui) noexcept {
     try {
-        auto active = ctx.requested.load() ? 1 : 0;
+        auto active = (ctx.requested.load() || ctx.status.load() == Status::Restoring) ? 1 : 0;
         const auto label = ctx.localizer.Text("flight.enable", "Enable vehicle flight");
         if (ui.checkbox(ui.user, StringView(label), &active)) ctx.SetRequested(active != 0);
-        const auto previous_mode = ctx.mode.load();
-        DrawModeSelector(ctx, ui);
         bool changed = ctx.hotkey.Draw(ui, ctx.localizer);
-        changed |= ctx.mode.load() != previous_mode;
-        int noclip = ctx.noclip.load() ? 1 : 0;
-        const auto noclip_label = ctx.localizer.Text("flight.noclip", "Pass through objects");
-        if (ui.checkbox(ui.user, StringView(noclip_label), &noclip)) {
+        int32_t noclip = ctx.noclip.load() ? 1 : 0;
+        const auto collision_label = ctx.localizer.Text("flight.noclip", "No collision");
+        if (ui.checkbox(ui.user, StringView(collision_label), &noclip)) {
             ctx.noclip = noclip != 0;
             changed = true;
         }
@@ -390,28 +425,11 @@ void DrawContent(Context& ctx, const AnomalyUiServiceV1& ui) noexcept {
         }
         if (changed) {
             ctx.saved_toggle = ctx.hotkey.Current();
-            ctx.preferences.Queue({ctx.speed.load(), ctx.saved_toggle, ctx.noclip.load(), ctx.mode.load()});
+            ctx.preferences.Queue({ctx.speed.load(), ctx.saved_toggle, ctx.noclip.load()});
         }
-        if (ctx.preferences.Failed())
-            ui.text(ui.user, StringView(ctx.localizer.Text("flight.save_failed", "The current flight settings could not be saved.")));
-
-        const auto controls = ctx.mode.load() == Mode::Camera
-            ? ctx.localizer.Text("flight.mouse_help", "Aim with the camera. Hold W to fly forward or S to reverse along the view. Release both to hover.")
-            : ctx.localizer.Text("flight.keyboard_help", "WASD moves horizontally. Space ascends and Ctrl descends.");
+        const auto controls = ctx.localizer.Text("flight.controls_help",
+            "WASD moves horizontally along the view. Space ascends, Ctrl descends and Shift triples speed (up to 1000 m/s). Release to hover. No collision only applies during flight; turn it off to fly with physical collision.");
         (ui.text_wrapped ? ui.text_wrapped : ui.text)(ui.user, StringView(controls));
-        std::string status;
-        switch (ctx.status.load()) {
-        case Status::Off: break;
-        case Status::Starting: status = ctx.localizer.Text("flight.starting", "Checking the current vehicle…"); break;
-        case Status::Flying: status = ctx.localizer.Text("flight.active", "Vehicle flight active"); break;
-        case Status::CameraUnavailable: status = ctx.localizer.Text("flight.camera_unavailable", "Waiting for camera direction. The vehicle is hovering."); break;
-        case Status::Blocked: status = ctx.localizer.Text("flight.blocked", "The current path is blocked. Change direction to continue."); break;
-        case Status::PositionCorrected: status = ctx.localizer.Text("flight.position_corrected", "The game adjusted the vehicle position. Flight stays enabled."); break;
-        case Status::NoVehicle: status = ctx.localizer.Text("flight.no_vehicle", "Flight is enabled. Waiting for you to take the driver's seat."); break;
-        case Status::SceneChanged: status = ctx.localizer.Text("flight.scene_changed", "Flight stopped after a scene change."); break;
-        case Status::Unavailable: status = ctx.localizer.Text("flight.unavailable", "Vehicle flight is unavailable in the current scene."); break;
-        }
-        if (!status.empty()) (ui.text_wrapped ? ui.text_wrapped : ui.text)(ui.user, StringView(status));
     } catch (...) {}
 }
 
