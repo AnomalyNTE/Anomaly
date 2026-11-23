@@ -21,6 +21,7 @@
 #include "anomaly/plugin_package.hpp"
 #include "anomaly/ui_resource_decoder.hpp"
 #include "config.hpp"
+#include "mod_cover.hpp"
 #include "mod_list.hpp"
 
 #include <Windows.h>
@@ -3071,7 +3072,7 @@ struct LauncherModEntry final {
     std::size_t files{};
 };
 
-// Mod icons are decoded once and kept for the session: a mod folder only needs its icon.png read
+// Mod icons are decoded once and kept for the session: a mod folder only needs its cover image read
 // the first time the page lists it.
 struct LauncherModIconCache {
     std::filesystem::file_time_type stamp{};
@@ -3510,19 +3511,14 @@ std::string LauncherModStateKey(const LauncherModEntry& entry) {
 }
 
 void LauncherFindModCover(LauncherModEntry& entry, const std::filesystem::path& file) {
-    auto extension = file.extension().wstring();
-    auto stem = file.stem().wstring();
-    for (auto* text : {&extension, &stem})
-        std::transform(text->begin(), text->end(), text->begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
-    if (extension != L".png" && extension != L".jpg" && extension != L".jpeg" && extension != L".webp") return;
     if (entry.directory) {
-        if (stem != L"icon" && stem != L"cover" && stem != L"preview" && stem != L"thumbnail") return;
+        if (!anomaly::launcher::IsBetterDirectoryModCover(entry.path, file, entry.cover)) return;
     } else {
-        auto name = LauncherWiden(entry.name);
-        std::transform(name.begin(), name.end(), name.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
-        if (stem != name) return;
+        if (!entry.cover.empty() ||
+            !anomaly::launcher::IsLooseModCover(LauncherWiden(entry.name), file)) {
+            return;
+        }
     }
-    if (!entry.cover.empty() && !(stem == L"icon" && file.parent_path() == entry.path)) return;
     std::error_code error;
     const auto stamp = std::filesystem::last_write_time(file, error);
     if (!error) { entry.cover = file; entry.cover_stamp = stamp; }
@@ -3663,7 +3659,7 @@ void LauncherRefreshMods(
         entry.files = group.files;
         LauncherReadModNotes(entry);
         if (!entry.custom_name.empty()) entry.display_name = entry.custom_name;
-        for (const auto* extension : {L".png", L".jpg", L".jpeg", L".webp"}) {
+        for (const auto* extension : anomaly::launcher::kModCoverExtensions) {
             const auto cover = directory / (LauncherWiden(group.base) + extension);
             if (std::filesystem::is_regular_file(cover, error)) LauncherFindModCover(entry, cover);
         }
