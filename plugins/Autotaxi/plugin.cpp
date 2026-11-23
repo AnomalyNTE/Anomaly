@@ -8,14 +8,19 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <mutex>
+#include <thread>
 #include <cstddef>
 #include <cstring>
+#include <deque>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <span>
 #include <set>
 #include <string>
 #include <vector>
+#include <anomaly/sdk/services/plugin_state.h>
 #include "plan.hpp"
 #include "access.hpp"
 
@@ -293,6 +298,16 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** context) 
         window_service=services.Query<AnomalyWindowServiceV1>(ANOMALY_WINDOW_SERVICE_V1_ID).get();
         core=services.Query<AnomalyCoreServiceV1>(ANOMALY_CORE_SERVICE_V1_ID).get();
         encounter_hooks=services.Query<AnomalyHookServiceV1>(ANOMALY_HOOK_SERVICE_V1_ID).get();
+        // 0.2.0: 解析 state 目录供自动队列持久化(encounter-queue.cfg)。
+        if(const auto state=services.Query<AnomalyPluginStateServiceV1>(ANOMALY_PLUGIN_STATE_SERVICE_V1_ID).get();
+           state && state->struct_size>=offsetof(AnomalyPluginStateServiceV1,directory)+sizeof(state->directory) && state->directory) {
+            std::array<char,512> buffer{};
+            std::size_t size=buffer.size();
+            if(state->directory(state->user,buffer.data(),&size).code==ANOMALY_STATUS_V1_OK && size>0 && size<buffer.size()) {
+                plugin_state_directory.assign(buffer.data(),size);
+                while(!plugin_state_directory.empty()&&(plugin_state_directory.back()=='\0'||plugin_state_directory.back()=='\r'||plugin_state_directory.back()=='\n')) plugin_state_directory.pop_back();
+            }
+        }
         RefreshRuntimeServices();
         return core ? Ok() : AnomalyStatusV1{ANOMALY_STATUS_V1_NOT_FOUND,0,{}};
     } catch (...) { return {ANOMALY_STATUS_V1_FAILED,0,{}}; }
@@ -304,16 +319,31 @@ AnomalyStatusV1 ANOMALY_CALL Start(void*) noexcept {
         fallback_open = 1;
         registry=taxi::profile::snapshot.registry; world_slot=taxi::profile::snapshot.world;
         StartEncounters();
+        // 0.2.0 自动队列:加载持久化的勾选角色(重启恢复上次的勾选)。
+        LoadEncounterQueue();PublishEncounterQueue();
+        // 0.2.1 维护者 review 修复:队列文件写入全部由 worker 线程执行,
+        // Game/Render 回调只改内存、发布快照并标记 dirty。
+        queue_worker_exit.store(false,std::memory_order_release);
+        queue_worker=std::thread(EncounterQueueWorkerLoop);
         Publish(localizer.Text("status.startup", "Drive a taxi and start taking orders in the game, then enable automatic completion."));
         static_cast<void>(EnsureWindow()); return Ok();
     } catch (...) { return {ANOMALY_STATUS_V1_FAILED,0,{}}; }
 }
 AnomalyStatusV1 ANOMALY_CALL Stop(void*, uint32_t) noexcept {
     enabled=false;++intent;
+    // 0.2.1:先停 worker 并补存一次,再做其余清理(生命周期回调允许 I/O)。
+    queue_worker_exit.store(true,std::memory_order_release);
+    if(queue_worker.joinable()) queue_worker.join();
+    queue_dirty.store(false,std::memory_order_release);
+    SaveEncounterQueue();
     if(!StopEncounters()) return {ANOMALY_STATUS_V1_UNAVAILABLE,0,{}};
     registry=world_slot=0;ReleaseWindow();return Ok();
 }
-void ANOMALY_CALL Unload(void*) noexcept { registry = world_slot = 0; taxi::profile::snapshot={}; encounter_hooks=nullptr; ReleaseWindow(); }
+void ANOMALY_CALL Unload(void*) noexcept {
+    queue_worker_exit.store(true,std::memory_order_release);
+    if(queue_worker.joinable()) queue_worker.join();
+    registry = world_slot = 0; taxi::profile::snapshot={}; encounter_hooks=nullptr; ReleaseWindow();
+}
 void ANOMALY_CALL Update(void*, double) noexcept {
     try {
         if (!names || !objects || !framework || !build_service) {
@@ -348,6 +378,12 @@ void ANOMALY_CALL Update(void*, double) noexcept {
             (!value.data.order.id || !value.data.pickup.id || !value.data.destination.id)) {
             Publish(localizer.Text("status.order_data", "Waiting for complete taxi order information.")); return;
         }
+        // 0.2.0 自动队列:无预选且队列非空时,自动武装队列中第一个今日可遇
+        // 的勾选角色(每单消耗一个,实现多角色逐单自动完成)。
+        if(!encounter_pending.load() && !value.data.character.id &&
+           (value.data.stage==taxi::Stage::Idle || value.data.stage==taxi::Stage::Waiting) &&
+           !encounter_queue.empty())
+            AutoArmNextFromQueue(r,value);
         if(value.data.character.id || encounter_pending.load()) {
             bool dialogue{};
             if(!ReadDialogue(r,value.controller,dialogue)) {
@@ -432,6 +468,6 @@ void ANOMALY_CALL Draw(void*, const AnomalyUiServiceV1* ui) noexcept {
 ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(AnomalyPluginDescriptorV1* descriptor) {
     if (!descriptor || descriptor->struct_size < sizeof(*descriptor)) return {ANOMALY_STATUS_V1_INVALID_ARGUMENT, 0, {}};
     *descriptor = {sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
-        StringView("b1ank.autotaxi"), StringView("AutoTaxi"), StringView("b1ank"), StringView("0.1.11"), Load, Start, Stop, Unload, Update, Draw};
+        StringView("b1ank.autotaxi"), StringView("AutoTaxi"), StringView("b1ank"), StringView("0.2.1"), Load, Start, Stop, Unload, Update, Draw};
     return Ok();
 }
