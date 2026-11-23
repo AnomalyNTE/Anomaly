@@ -837,7 +837,14 @@ ClickOutcome ClickUiButton(Context &context, const ButtonLookup &lookup,
     if (service->find(service->user, &query, &found, &matches).code !=
             ANOMALY_STATUS_V1_OK ||
         matches == 0) {
-        // 提示可能还没弹出来：交给上层在窗口内重试。
+        // 目录是新的，但里面还没有这个按钮：提示可能比目录晚一步才出现。所以这里也要按间隔
+        // 重扫，否则只查手里这份旧目录，等到窗口超时也不会命中。
+        const auto now = GetTickCount64();
+        if (now >= scan_deadline) {
+            scan_deadline = now + kCatalogRescanIntervalMilliseconds;
+            AnomalyGenerationHandleV1 scan_request{};
+            static_cast<void>(service->request_scan(service->user, &scan_request));
+        }
         return ClickOutcome::retry;
     }
     AnomalyNteUiButtonClickRequestV1 click{sizeof(click)};
