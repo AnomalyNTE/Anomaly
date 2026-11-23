@@ -2217,6 +2217,9 @@ struct Ue5NteAdapter::State {
         if (id == ANOMALY_NTE_SESSION_SERVICE_V1_ID) {
             return framework_hook_ready && SemanticFeatureAvailable("nte.session");
         }
+        if (id == ANOMALY_NTE_ACCOUNT_SERVICE_V1_ID) {
+            return framework_hook_ready && AccountDigits() != 0;
+        }
         if (id == ANOMALY_NTE_METRICS_SERVICE_V1_ID) {
             return framework_hook_ready && MetricsFeatureAvailable();
         }
@@ -14887,7 +14890,7 @@ bool Ue5NteAdapter::State::PublishAvailableServices(const std::weak_ptr<State>& 
             {}, semantic_lifetime)) {
         return false;
     }
-    if (framework_hook_ready && AccountDigits() != 0 &&
+    if (ServiceAvailableForPublication(ANOMALY_NTE_ACCOUNT_SERVICE_V1_ID) &&
         !PublishIfMissing(
             ANOMALY_NTE_ACCOUNT_SERVICE_V1_ID,
             ANOMALY_NTE_ACCOUNT_SERVICE_V1_VERSION,

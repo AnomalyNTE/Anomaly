@@ -43,6 +43,15 @@ public:
         return Format(key, english_fallback, {});
     }
 
+    [[nodiscard]] std::string Locale() const {
+        std::array<char, kInlineBytes> buffer{};
+        std::size_t size = buffer.size();
+        if (service_ != nullptr && service_->locale != nullptr &&
+            service_->locale(service_->user, buffer.data(), &size).code == ANOMALY_STATUS_V1_OK &&
+            size > 1U && size <= buffer.size()) return {buffer.data(), size - 1U};
+        return "en-US";
+    }
+
     [[nodiscard]] std::string Format(
         const std::string_view key, const std::string_view english_fallback,
         const std::span<const std::string_view> arguments) const {

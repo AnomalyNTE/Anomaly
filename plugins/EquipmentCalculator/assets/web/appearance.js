@@ -1,0 +1,200 @@
+// Built-in colors follow src/ui/platform_ui_theme.cpp and the launcher's
+// palette order in apps/launcher/main.cpp. CSS derives contrast and surfaces
+// from these shared semantic colors; no launcher preferences are overwritten.
+export const palettes = Object.freeze({
+  "naiwa": {
+    "light": true,
+    "colors": {
+      "--ink": "rgb(74, 58, 18)",
+      "--muted-source": "rgb(138, 116, 64)",
+      "--canvas": "rgb(255, 238, 186)",
+      "--surface": "rgb(255, 246, 216)",
+      "--surface-raised": "rgb(255, 248, 226)",
+      "--line": "rgb(220, 185, 100)",
+      "--field": "rgb(255, 246, 216)",
+      "--field-hover": "rgb(255, 236, 176)",
+      "--button": "rgb(255, 239, 196)",
+      "--button-hover": "rgb(255, 227, 144)",
+      "--accent": "rgb(252, 206, 68)",
+      "--accent-hover": "rgb(255, 221, 110)",
+      "--accent-active": "rgb(232, 180, 36)",
+      "--accent-soft": "rgba(252, 206, 68, 0.16)",
+      "--success": "rgb(76, 175, 106)",
+      "--warning": "rgb(232, 145, 42)",
+      "--danger": "rgb(217, 83, 79)",
+      "--info": "rgb(74, 144, 217)",
+      "--accent-ink": "rgb(58, 44, 8)",
+      "--navigation": "rgb(255, 227, 160)",
+      "--header": "rgb(255, 232, 174)",
+      "--toolbar": "rgb(255, 241, 201)",
+      "--panel": "rgb(255, 246, 216)",
+      "--row-hover": "rgb(237, 227, 196)",
+      "--control-border": "rgb(220, 185, 100)",
+      "--toast": "rgba(255, 248, 226, 0.98)"
+    }
+  },
+  "moss": {
+    "light": false,
+    "colors": {
+      "--ink": "rgb(242, 244, 246)",
+      "--muted-source": "rgb(115, 125, 136)",
+      "--canvas": "rgb(20, 23, 26)",
+      "--surface": "rgb(27, 32, 37)",
+      "--surface-raised": "rgb(35, 42, 49)",
+      "--line": "rgb(52, 60, 69)",
+      "--field": "rgb(27, 32, 37)",
+      "--field-hover": "rgb(35, 42, 49)",
+      "--button": "rgb(27, 32, 37)",
+      "--button-hover": "rgb(35, 42, 49)",
+      "--accent": "rgb(88, 183, 165)",
+      "--accent-hover": "rgb(106, 197, 180)",
+      "--accent-active": "rgb(74, 162, 145)",
+      "--accent-soft": "rgba(88, 183, 165, 0.16)",
+      "--success": "rgb(97, 201, 139)",
+      "--warning": "rgb(225, 172, 82)",
+      "--danger": "rgb(229, 111, 114)",
+      "--info": "rgb(110, 168, 254)",
+      "--accent-ink": "rgb(16, 33, 31)",
+      "--navigation": "rgb(16, 19, 23)",
+      "--header": "rgb(22, 26, 30)",
+      "--toolbar": "rgb(23, 27, 31)",
+      "--panel": "rgb(30, 36, 42)",
+      "--row-hover": "rgb(32, 38, 44)",
+      "--control-border": "rgb(76, 86, 97)",
+      "--toast": "rgba(30, 36, 42, 0.98)"
+    }
+  },
+  "aurora": {
+    "light": false,
+    "colors": {
+      "--ink": "rgb(236, 244, 255)",
+      "--muted-source": "rgb(143, 166, 194)",
+      "--canvas": "rgb(14, 20, 33)",
+      "--surface": "rgb(19, 27, 43)",
+      "--surface-raised": "rgb(28, 38, 59)",
+      "--line": "rgb(51, 74, 107)",
+      "--field": "rgb(19, 27, 43)",
+      "--field-hover": "rgb(28, 38, 59)",
+      "--button": "rgb(19, 27, 43)",
+      "--button-hover": "rgb(28, 38, 59)",
+      "--accent": "rgb(97, 199, 245)",
+      "--accent-hover": "rgb(140, 219, 255)",
+      "--accent-active": "rgb(64, 163, 230)",
+      "--accent-soft": "rgba(97, 199, 245, 0.16)",
+      "--success": "rgb(89, 224, 199)",
+      "--warning": "rgb(250, 191, 64)",
+      "--danger": "rgb(250, 107, 133)",
+      "--info": "rgb(140, 179, 255)",
+      "--accent-ink": "rgb(8, 26, 41)",
+      "--navigation": "rgb(9, 14, 26)",
+      "--header": "rgb(15, 23, 38)",
+      "--toolbar": "rgb(20, 31, 48)",
+      "--panel": "rgb(26, 36, 56)",
+      "--row-hover": "rgb(31, 46, 69)",
+      "--control-border": "rgb(74, 102, 135)",
+      "--toast": "rgba(18, 28, 43, 0.98)"
+    }
+  },
+  "ember": {
+    "light": false,
+    "colors": {
+      "--ink": "rgb(255, 242, 232)",
+      "--muted-source": "rgb(181, 161, 148)",
+      "--canvas": "rgb(23, 17, 13)",
+      "--surface": "rgb(36, 23, 18)",
+      "--surface-raised": "rgb(54, 33, 26)",
+      "--line": "rgb(82, 56, 43)",
+      "--field": "rgb(36, 23, 18)",
+      "--field-hover": "rgb(54, 33, 26)",
+      "--button": "rgb(36, 23, 18)",
+      "--button-hover": "rgb(54, 33, 26)",
+      "--accent": "rgb(240, 122, 82)",
+      "--accent-hover": "rgb(255, 158, 115)",
+      "--accent-active": "rgb(199, 77, 51)",
+      "--accent-soft": "rgba(240, 122, 82, 0.16)",
+      "--success": "rgb(102, 209, 161)",
+      "--warning": "rgb(245, 186, 89)",
+      "--danger": "rgb(255, 102, 97)",
+      "--info": "rgb(140, 179, 237)",
+      "--accent-ink": "rgb(43, 15, 8)",
+      "--navigation": "rgb(17, 11, 9)",
+      "--header": "rgb(31, 19, 15)",
+      "--toolbar": "rgb(41, 26, 20)",
+      "--panel": "rgb(48, 31, 24)",
+      "--row-hover": "rgb(59, 36, 27)",
+      "--control-border": "rgb(110, 77, 61)",
+      "--toast": "rgba(38, 24, 19, 0.98)"
+    }
+  },
+  "paper": {
+    "light": true,
+    "colors": {
+      "--ink": "rgb(28, 41, 59)",
+      "--muted-source": "rgb(89, 107, 130)",
+      "--canvas": "rgb(240, 245, 250)",
+      "--surface": "rgb(255, 255, 255)",
+      "--surface-raised": "rgb(255, 255, 255)",
+      "--line": "rgb(194, 207, 224)",
+      "--field": "rgb(247, 250, 255)",
+      "--field-hover": "rgb(230, 240, 252)",
+      "--button": "rgb(232, 240, 250)",
+      "--button-hover": "rgb(217, 230, 247)",
+      "--accent": "rgb(36, 99, 219)",
+      "--accent-hover": "rgb(56, 125, 242)",
+      "--accent-active": "rgb(26, 79, 186)",
+      "--accent-soft": "rgba(36, 99, 219, 0.14)",
+      "--success": "rgb(31, 158, 107)",
+      "--warning": "rgb(199, 122, 13)",
+      "--danger": "rgb(199, 48, 59)",
+      "--info": "rgb(41, 102, 194)",
+      "--accent-ink": "rgb(255, 255, 255)",
+      "--navigation": "rgb(224, 235, 247)",
+      "--header": "rgb(230, 240, 250)",
+      "--toolbar": "rgb(240, 245, 252)",
+      "--panel": "rgb(250, 252, 255)",
+      "--row-hover": "rgb(232, 242, 255)",
+      "--control-border": "rgb(156, 173, 199)",
+      "--toast": "rgba(245, 247, 255, 0.98)"
+    }
+  },
+  "anomalyhub": {
+    "light": false,
+    "colors": {
+      "--ink": "rgb(242, 242, 242)",
+      "--muted-source": "rgb(179, 179, 179)",
+      "--canvas": "rgb(27, 27, 27)",
+      "--surface": "rgb(41, 41, 41)",
+      "--surface-raised": "rgb(41, 41, 41)",
+      "--line": "rgb(89, 89, 89)",
+      "--field": "rgb(41, 41, 41)",
+      "--field-hover": "rgb(41, 41, 41)",
+      "--button": "rgb(41, 41, 41)",
+      "--button-hover": "rgb(41, 41, 41)",
+      "--accent": "rgb(255, 163, 26)",
+      "--accent-hover": "rgb(255, 185, 77)",
+      "--accent-active": "rgb(209, 107, 5)",
+      "--accent-soft": "rgba(255, 163, 26, 0.16)",
+      "--success": "rgb(92, 209, 143)",
+      "--warning": "rgb(255, 163, 26)",
+      "--danger": "rgb(240, 82, 77)",
+      "--info": "rgb(107, 168, 245)",
+      "--accent-ink": "rgb(27, 27, 27)",
+      "--navigation": "rgb(27, 27, 27)",
+      "--header": "rgb(41, 41, 41)",
+      "--toolbar": "rgb(41, 41, 41)",
+      "--panel": "rgb(41, 41, 41)",
+      "--row-hover": "rgb(41, 41, 41)",
+      "--control-border": "rgb(89, 89, 89)",
+      "--toast": "rgba(41, 41, 41, 0.98)"
+    }
+  }
+});
+
+export function applyPalette(value) {
+  const id = Object.hasOwn(palettes, value) ? value : 'naiwa';
+  const palette = palettes[id];
+  document.documentElement.dataset.theme = id;
+  document.documentElement.style.colorScheme = palette.light ? 'light' : 'dark';
+  for (const [name,color] of Object.entries(palette.colors)) document.documentElement.style.setProperty(name,color);
+  return id;
+}

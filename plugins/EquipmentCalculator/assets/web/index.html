@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Equipment Calculator</title>
+  <link rel="icon" href="./anomaly.png" type="image/png">
+  <link rel="stylesheet" href="./style.css">
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <button class="brand" type="button" id="home-link"><img class="brand-icon" src="./anomaly.png" alt="" aria-hidden="true"><h1 data-i18n="web.brand"></h1></button>
+    <nav id="primary-navigation" class="primary-navigation" data-i18n-aria="web.primary_navigation"></nav>
+    <div class="session"><span id="connection" class="connection" role="status"></span><span id="save-state" class="save-state" aria-live="polite"></span><button id="retry-save" class="button quiet" type="button" data-i18n="web.retry_save" hidden></button><button id="refresh" class="button quiet" type="button" data-i18n="web.sync_inventory" disabled></button></div>
+  </header>
+  <main>
+    <div id="notice" class="notice" role="alert" hidden><span id="notice-text"></span><button id="dismiss-notice" class="icon-button" type="button" data-i18n-aria="web.dismiss">×</button></div>
+    <section id="calculation-progress" class="calculation-progress" data-i18n-aria="web.search_progress_title" hidden></section>
+    <section id="equipment-page" class="primary-page">
+      <div class="workspace">
+        <aside class="character-rail">
+          <div class="character-rail-heading"><h2 data-i18n="web.character"></h2><div class="workspace-context"><label class="character-mobile"><span id="select-character-avatar" class="character-selector-avatar" aria-hidden="true"></span><span class="visually-hidden" data-i18n="web.character"></span><select id="character-select" data-i18n-aria="web.character"></select></label><span id="workspace-message" class="meta"></span><button id="manage-roles" class="button quiet" type="button" data-i18n="web.manage_characters"></button></div></div>
+          <div class="character-roster"><button id="characters-previous" class="roster-arrow" type="button" data-i18n-aria="web.characters_previous" hidden disabled>&#8249;</button><div id="character-list" class="character-list" tabindex="0" data-i18n-aria="web.character"></div><button id="characters-next" class="roster-arrow" type="button" data-i18n-aria="web.characters_next" hidden disabled>&#8250;</button></div>
+        </aside>
+        <div class="detail-column">
+          <section class="panel loadout-panel">
+            <div class="panel-heading"><div class="loadout-character-identity"><span id="selected-character-avatar" aria-hidden="true"></span><h2 id="loadout-character" data-i18n="web.choose_character"></h2></div><div class="core-area"><span class="field-label" data-i18n="web.core"></span><button id="core-slot" class="core-slot" type="button"></button><div id="preview-metrics" class="preview-metrics"></div></div><div class="loadout-view-actions"><div class="segmented" role="group" data-i18n-aria="web.board_view"><button id="view-current" class="active" type="button" aria-pressed="true" data-i18n="web.current"></button><button id="view-draft" type="button" aria-pressed="false" data-i18n="web.preview"></button></div><details class="activity-panel loadout-menu"><summary data-i18n="web.activity"></summary><div id="activity"></div></details><details class="loadout-menu"><summary data-i18n-aria="web.more_actions">⋯</summary><div><button id="clear-character" class="button quiet danger" type="button" data-i18n="web.unequip_all"></button></div></details></div></div>
+            <div class="loadout-content">
+              <div class="board-area"><div class="board-stage"><div id="board" class="board" role="group" data-i18n-aria="web.equipment_board"></div></div><div id="board-telemetry" class="board-telemetry" hidden></div><p id="board-hint" class="board-hint"></p></div>
+            </div>
+          </section>
+          <div class="detail-controls">
+          <div class="workbench">
+            <div class="workbench-tabs" role="tablist" data-i18n-aria="web.workbench"><button id="optimize-tab" type="button" role="tab" aria-controls="optimizer-panel" aria-selected="true" data-i18n="web.optimize_tab"></button><button id="plans-tab" type="button" role="tab" aria-controls="schemes-panel" aria-selected="false" data-i18n="web.saved_schemes"></button><button id="details-tab" type="button" role="tab" aria-controls="draft-panel" aria-selected="false" data-i18n="web.manual_edit"></button></div>
+        <section id="optimizer-panel" class="optimizer-panel" role="tabpanel" aria-labelledby="optimize-tab">
+          <span id="optimization-phase" class="badge" hidden></span>
+          <form id="optimizer-form">
+            <div class="optimizer-preference-card">
+              <div class="optimizer-quick"><label class="page-field"><span data-i18n="web.preference_label"></span><select id="opt-preset"></select></label><button id="save-role-preference" class="button secondary" type="button" data-i18n="web.remember_preference"></button></div>
+              <p id="preset-summary" class="preset-summary"></p>
+              <div id="recommended-weights-bar" class="recommended-weights-bar"><span id="recommended-weights-status" class="meta"></span><button id="refresh-recommended-weights" class="button quiet" type="button" data-i18n="web.recommended_weights_refresh"></button></div>
+            </div>
+            <details id="optimizer-advanced" class="optimizer-advanced"><summary data-i18n="web.advanced_options"></summary>
+            <label class="page-field optimizer-role-target"><span data-i18n="web.optimize_role_target"></span><select id="opt-role-target"></select></label>
+            <p id="optimizer-software-hint" class="draft-warning optimizer-software-hint" data-i18n="web.optimize_software_only" hidden></p>
+
+            <div class="optimizer-options">
+              <label class="optimizer-check"><input id="opt-require-core" type="checkbox" checked><span data-i18n="web.optimize_require_core"></span></label>
+              <label><span data-i18n="web.optimize_set_effect"></span><select id="opt-set-mode"><option value="four_piece" data-i18n="web.set_four_piece"></option><option value="two_piece" data-i18n="web.set_two_piece"></option><option value="none" data-i18n="web.set_none"></option></select></label>
+              <label><span data-i18n="web.optimize_core_suit"></span><select id="opt-core-suit"></select></label>
+              <label><span data-i18n="web.optimize_core_main"></span><select id="opt-core-main" multiple size="3"></select><small data-i18n="web.optimize_any_main_hint"></small></label>
+            </div>
+            <details class="optimizer-section"><summary data-i18n="web.optimize_weights"></summary><p class="optimizer-note" data-i18n="web.optimize_weights_hint"></p><p class="optimizer-note" data-i18n="web.weights_attribution"></p><label class="optimizer-check"><input id="opt-shared-main" type="checkbox" checked><span data-i18n="web.optimize_shared_weights"></span></label><div class="weight-table-wrap"><table class="weight-table"><thead><tr><th scope="col" data-i18n="web.optimize_property"></th><th scope="col" data-i18n="web.optimize_sub_weight"></th><th scope="col" data-i18n="web.optimize_main_weight"></th></tr></thead><tbody id="weight-rows"></tbody></table></div></details>
+            <details class="optimizer-section"><summary data-i18n="web.optimize_priorities"></summary><p class="optimizer-note" data-i18n="web.optimize_priorities_hint"></p><div class="priority-selects"><select id="opt-priority-1" data-i18n-aria="web.priority_first"></select><select id="opt-priority-2" data-i18n-aria="web.priority_second"></select><select id="opt-priority-3" data-i18n-aria="web.priority_third"></select><select id="opt-priority-4" data-i18n-aria="web.priority_fourth"></select></div><div class="optimizer-options"><label class="optimizer-check"><input id="opt-priority-equal" type="checkbox"><span data-i18n="web.optimize_priority_equal"></span></label><label><span data-i18n="web.optimize_priority_grade"></span><select id="opt-priority-grade"><option>D</option><option>C</option><option>B</option><option selected>A</option><option>S</option><option>SS</option><option>SSS</option><option>ACE</option></select></label></div></details>
+            <details class="optimizer-section"><summary data-i18n="web.optimize_limits"></summary><div class="optimizer-options"><label class="optimizer-check"><input id="opt-borrow" type="checkbox" checked><span data-i18n="web.optimize_allow_borrow"></span></label><label class="optimizer-check"><input id="opt-discarded" type="checkbox"><span data-i18n="web.optimize_include_discarded"></span></label><label class="optimizer-check"><input id="opt-exclude-selected" type="checkbox"><span id="optimizer-exclude-label"></span></label><label><span data-i18n="web.optimize_node_limit"></span><input id="opt-node-limit" type="number" min="1" max="100000000" step="1" value="2000000" required></label><label><span data-i18n="web.optimize_time_limit_seconds"></span><input id="opt-time-limit" type="number" min="0.001" max="120" step="0.001" value="10" required></label><button id="opt-increase-budget" class="button quiet" type="button" data-i18n="web.optimize_increase_budget"></button></div></details>
+            <div id="optimizer-constraints"></div>
+            <label id="opt-top-k-field" class="page-field optimizer-top-k" hidden><span data-i18n="web.optimize_top_k"></span><input id="opt-top-k" type="number" min="1" max="20" step="1" value="1" required></label>
+            </details>
+          </form>
+          <p id="optimization-message" class="optimization-message" role="status"></p>
+          <div id="optimization-result" class="optimization-result" hidden></div>
+        </section>
+            <section id="schemes-panel" role="tabpanel" aria-labelledby="plans-tab" hidden><div id="loadout-slots-root"></div></section>
+            <section id="draft-panel" class="draft-panel" role="tabpanel" aria-labelledby="details-tab" hidden>
+              <div class="draft-toolbar"><button id="copy-current" class="button secondary" type="button" data-i18n="web.copy_current"></button><button id="new-draft" class="button quiet" type="button" data-i18n="web.new_draft"></button></div>
+              <div id="draft-content"></div><p id="draft-summary" class="meta"></p>
+              <details class="plan-group"><summary data-i18n="web.plan_group"></summary><div class="plan-group-heading"><button id="stage-draft" class="button quiet" type="button" data-i18n="web.stage_draft"></button></div><div id="staged-plans"></div><div class="draft-footer"><p id="group-summary" class="meta"></p><button id="apply-plans" class="button primary" type="button" data-i18n="web.apply_plans"></button></div></details>
+            </section>
+          </div>
+            <div class="workbench-footer">
+              <div class="optimizer-actions"><button id="optimize-start" form="optimizer-form" class="button primary" type="submit" data-i18n="web.optimize_start"></button><button id="optimize-cancel" class="button quiet" type="button" data-i18n="web.optimize_cancel"></button></div>
+              <div id="preview-actions" class="preview-actions" hidden><p id="preview-summary"></p><div><button id="save-preview" class="button secondary" type="button" data-i18n="web.save_scheme"></button><button id="apply-draft" class="button primary" type="button" data-i18n="web.apply_draft"></button></div></div>
+            </div>
+          </div>
+          <div class="equipment-context"><div id="loadout-stats" class="loadout-stats" hidden></div><section id="loadout-equipment" class="loadout-equipment" data-i18n-aria="web.loadout_equipment"></section>
+          <section id="inspector-panel" class="inspector-panel" hidden>
+            <div id="inspector-empty" class="empty compact"><span class="empty-symbol" aria-hidden="true">◇</span><p data-i18n="web.choose_equipment"></p></div>
+            <div id="inspector" hidden>
+              <div class="item-heading"><div id="item-shape" class="shape large" aria-hidden="true"></div><div class="item-heading-copy"><span id="item-kind" class="field-label" hidden></span><h3 id="item-name"></h3><div id="item-details" class="item-details"></div></div><div id="item-shape-glyph" class="item-shape-glyph" hidden aria-hidden="true"></div><button id="clear-item-selection" class="icon-button inspector-close" type="button" data-i18n-aria="web.board_cancel_selection">×</button></div>
+              <div class="inspector-body" tabindex="0" data-i18n-aria="web.selected_equipment">
+                <div id="attributes" class="attributes"></div>
+                <p id="placement-feedback" class="placement-feedback" role="status"></p>
+                <div class="state-actions"><button id="toggle-lock" class="button quiet" type="button"></button><button id="toggle-discard" class="button quiet" type="button"></button><button id="add-to-draft" class="button quiet" type="button" data-i18n="web.add_to_draft"></button><button id="assess-item" class="button quiet" type="button" data-i18n="web.assessment_run" hidden></button></div>
+                <details class="item-more"><summary data-i18n="web.more_actions"></summary><div class="placement"><label><span data-i18n="web.row"></span><input id="row" type="number" min="1" max="5" step="1" value="1"></label><label><span data-i18n="web.column"></span><input id="column" type="number" min="1" max="5" step="1" value="1"></label></div><p id="item-identity" class="meta mono"></p></details>
+              </div>
+              <div class="item-actions"><button id="equip-item" class="button primary" type="button"></button><button id="unequip-item" class="button secondary" type="button" data-i18n="web.unequip"></button></div>
+            </div>
+          </section>
+          </div>
+          <div id="operation-feedback" class="operation-feedback" role="status" hidden><span id="operation-summary"></span><progress id="operation-progress" max="1" value="0" data-i18n-aria="web.operation_progress" hidden></progress><button id="cancel" class="button quiet" type="button" data-i18n="web.cancel_pending"></button></div>
+
+        </div>
+        <section class="panel inventory-panel">
+          <div class="panel-heading inventory-heading"><h2 data-i18n="web.inventory"></h2><span id="filtered-count" class="meta"></span><button id="inventory-rules" class="button quiet" type="button" data-i18n="web.nav_rules"></button></div>
+          <div class="filters">
+            <label class="search"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"></circle><path d="m16 16 4 4"></path></svg><input id="search" type="search" autocomplete="off" data-i18n-placeholder="web.search" data-i18n-aria="web.search"></label>
+            <div class="filter-row"><div id="kind-pills" class="segmented kind-pills" role="group" data-i18n-aria="web.type"><button type="button" data-kind-value="all" class="active" aria-pressed="true" data-i18n="web.all_types"></button><button type="button" data-kind-value="module" aria-pressed="false" data-i18n="web.module"></button><button type="button" data-kind-value="core" aria-pressed="false" data-i18n="web.core"></button></div><select id="kind-filter" class="visually-hidden" tabindex="-1" aria-hidden="true"><option value="all" data-i18n="web.all_types"></option><option value="module" data-i18n="web.module"></option><option value="core" data-i18n="web.core"></option></select><select id="owner-filter" data-i18n-aria="web.owner"></select></div>
+            <details class="inventory-more-filters"><summary data-i18n="web.filters"></summary><select id="state-filter" data-i18n-aria="web.state"><option value="all" data-i18n="web.all_states"></option><option value="normal" data-i18n="web.normal"></option><option value="locked" data-i18n="web.locked"></option><option value="discarded" data-i18n="web.discarded"></option></select><div id="advanced-filters-root"></div><button id="reset-filters" class="button quiet" type="button" data-i18n="web.reset_filters"></button></details>
+          </div>
+          <div class="selection-toolbar"><label class="check"><input id="select-visible" type="checkbox" data-i18n-aria="web.select_visible"><span data-i18n="web.select_visible"></span></label><span id="selected-count" class="meta"></span><div id="batch-toolbar" class="batch-toolbar" hidden><label><span class="visually-hidden" data-i18n="web.selected_items"></span><select id="batch-action"><option value="locked" data-i18n="web.lock"></option><option value="unlocked" data-i18n="web.unlock"></option><option value="discarded" data-i18n="web.mark_discarded"></option><option value="undiscarded" data-i18n="web.unmark_discarded"></option></select></label><button id="apply-batch" class="button secondary" type="button" data-i18n="web.apply_batch"></button></div></div>
+          <div id="inventory" class="inventory" role="list" tabindex="0" data-i18n-aria="web.inventory"></div>
+          <div class="inventory-pagination"><button id="first-page" class="button quiet" type="button" data-i18n="web.first_page"></button><button id="previous-page" class="button quiet" type="button" data-i18n="web.previous_page"></button><span id="inventory-page" class="meta"></span><button id="next-page" class="button quiet" type="button" data-i18n="web.next_page"></button><button id="last-page" class="button quiet" type="button" data-i18n="web.last_page"></button></div>
+
+        </section>
+      </div>
+    </section>
+    <section id="library-page" class="primary-page panel secondary-page" hidden><div id="library-root"></div></section>
+    <section id="roles-page" class="primary-page panel secondary-page" hidden><div id="roles-root"></div></section>
+    <section id="role-panel-page" class="primary-page panel secondary-page" hidden><div id="role-panel-root"></div></section>
+    <section id="cultivation-page" class="primary-page panel secondary-page" hidden><div id="cultivation-root"></div></section>
+    <section id="multi-page" class="primary-page panel secondary-page" hidden><div id="multi-root"></div></section>
+    <section id="assessment-page" class="primary-page panel secondary-page" hidden><div id="assessment-root"></div></section>
+    <section id="warehouse-rules-page" class="primary-page panel secondary-page" hidden><div id="warehouse-rules-root"></div></section>
+    <section id="blueprint-page" class="primary-page panel secondary-page" hidden><div id="blueprint-root"></div></section>
+    <section id="rewind-page" class="primary-page panel secondary-page" hidden><div id="rewind-root"></div></section>
+    <section id="catalog-page" class="primary-page panel secondary-page" hidden><div id="catalog-root"></div></section>
+    <section id="accounts-page" class="primary-page panel secondary-page" hidden><div id="accounts-root"></div></section>
+    <section id="settings-page" class="primary-page panel secondary-page" hidden><div id="settings-root"></div></section>
+  </main>
+</body>
+</html>

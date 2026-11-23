@@ -94,6 +94,26 @@ bool InvokeDurabilityRepair(const DurabilityRepairBinding& binding, const std::u
 
 }
 
+// Local feature (community port): best-effort slot-type detection from a module's
+// FName text, used when a live-loadout entry is not in the catalog (external or
+// legacy IDs). Order matters: longer/specific tokens before shorter generic ones.
+[[nodiscard]] inline std::uint32_t ModuleTypeFromName(const std::string& name) {
+    static constexpr std::array<std::pair<std::string_view, std::uint32_t>, 27> kTokens{{
+        {"WheelSmoke", 23}, {"WheelMark", 24}, {"EngineHood", 12},
+        {"ExhaustSmoke", 27}, {"FabricColor", 20}, {"StitchColor", 21},
+        {"GearBox", 2}, {"Engine", 1}, {"Brake", 3}, {"Suspension", 4},
+        {"Color", 5}, {"FrontKit", 6}, {"SideKit", 7}, {"BackKit", 8},
+        {"Spoiler", 9}, {"Decal", 10}, {"Wheel", 11}, {"Plate", 13},
+        {"Roof", 14}, {"Tyre", 15}, {"Attachment", 16}, {"LSD", 17},
+        {"Strength", 18}, {"Badge", 22}, {"Hook", 25}, {"ECU", 26},
+        {"Skin", 19},
+    }};
+    for (const auto& token : kTokens) {
+        if (name.find(token.first) != std::string::npos) return token.second;
+    }
+    return 0;
+}
+
 struct Runtime : NativeAccess {
     std::mutex mutex;
     void Tick();
@@ -232,6 +252,54 @@ struct Runtime : NativeAccess {
     std::string vehicle_other_torque_status;
     float vehicle_speed_kmh{};
     bool vehicle_valid{};
+
+    // ---- Local feature (community port): live customization / tuning / effects ----
+    // Factory top speed (km/h) captured when a vehicle is boarded, before any
+    // plugin write; anchors the absolute km/h target slider at 1.0x.
+    float vehicle_stock_top_speed_kmh{};
+    bool vehicle_stock_top_speed_valid{};
+    // Whitelist of module (type, ID-text) pairs accepted even when absent from
+    // the local catalog. The FName ids are resolved lazily on the Game thread
+    // (find_utf8) at build time; entries may carry an explicit "#N" suffix.
+    std::vector<std::pair<std::uint32_t, std::string>> allowed_extra_modules;
+    // Last successfully read live module list of the driven vehicle (native
+    // FName packed value + inferred slot type). Diagnostics and UI only.
+    std::vector<std::pair<std::uint64_t, std::uint32_t>> live_module_entries;
+    // Reflection-resolved advanced powertrain tuning offsets, cached per
+    // movement-component class so per-tick sync and apply-on-drag stay cheap.
+    struct VehicleAdvancedTuning {
+        bool valid{};
+        std::uintptr_t movement{};
+        // Shared top-level fields. MaxLinearVelocity is m/s in the game; the
+        // plugin reports km/h and writes km/h/3.6 back.
+        float max_linear_velocity_kmh{};
+        float reverse_top_speed_kmh{};
+        // Normal transmission setup.
+        float change_up_rpm{};
+        float change_down_rpm{};
+        float gear_change_time{};
+        float final_ratio{};
+        float transmission_efficiency{};
+        // Comfort transmission setup.
+        float comfort_change_up_rpm{};
+        float comfort_change_down_rpm{};
+        float comfort_gear_change_time{};
+        float comfort_final_ratio{};
+        float comfort_transmission_efficiency{};
+    };
+    struct AdvancedTuningOffsets {
+        bool valid{};
+        std::int32_t linear_offset{};      // movement-relative (m/s)
+        std::int32_t reverse_offset{};     // movement-relative (km/h)
+        std::int32_t normal_setup_offset{};
+        std::int32_t comfort_setup_offset{};
+        std::int32_t up_offset{};          // setup-struct-relative
+        std::int32_t down_offset{};
+        std::int32_t time_offset{};
+        std::int32_t ratio_offset{};
+        std::int32_t eff_offset{};
+    };
+    std::map<std::uintptr_t, AdvancedTuningOffsets> advanced_tuning_cache;
 
     [[nodiscard]] bool BuildVehicleBindingLocked(
         const std::uintptr_t function,
@@ -3313,9 +3381,20 @@ struct Runtime : NativeAccess {
                         break;
                     }
                 }
-                if (selected_module == nullptr || selected_module->native_name == 0) {
-                    failure = TextLocalized("backend.the_module_id_or_type_does_not_210", "The module ID or type does not belong to this vehicle model.");
-                    return false;
+                std::uint64_t selected_module_native{};
+                if (selected_module != nullptr && selected_module->native_name != 0) {
+                    selected_module_native = selected_module->native_name;
+                } else {
+                    // Local feature (community port): fall back to the effects
+                    // whitelist and explicit "#N" FName numbers for premium effect
+                    // modules that are absent from the local catalog.
+                    if (!ResolveOverrideModuleLocked(
+                            std::string(module_id), selection.module_type,
+                            selected_module_native) ||
+                        selected_module_native == 0) {
+                        failure = TextLocalized("backend.the_module_id_or_type_does_not_210", "The module ID or type does not belong to this vehicle model.");
+                        return false;
+                    }
                 }
 
                 // Remove every default item in this slot before inserting the chosen module ID.
@@ -3329,7 +3408,7 @@ struct Runtime : NativeAccess {
                     }
                     return false;
                 });
-                build.module_ids.push_back(selected_module->native_name);
+                build.module_ids.push_back(selected_module_native);
             }
             if (build.module_ids.size() > 128U) {
                 failure = TextLocalized("backend.the_combined_module_list_exceeds_the_limit_211", "The combined module list exceeds the limit.");
@@ -3953,6 +4032,1286 @@ struct Runtime : NativeAccess {
         const auto friction = VehicleSetWheelFriction(true);
         if (torque.code != ANOMALY_STATUS_V1_OK) return torque;
         return friction;
+    }
+
+    // ==== Local feature (community port): live customization / tuning / effects ====
+
+    // Force the customization catalog to rebuild on the next read (the plugin's
+    // "reload customization data" button uses this to pick up catalog rows the
+    // first scan dropped or skipped).
+    void InvalidateVehicleCustomizationCache() {
+        std::scoped_lock lock(mutex);
+        vehicle_customization_generation = 0;
+        vehicle_customization_vehicle_sequence = 0;
+        vehicle_customization_vehicle_row_id.clear();
+    }
+
+    void SetAllowedExtraModules(
+        std::vector<std::pair<std::uint32_t, std::string>> value) {
+        std::scoped_lock lock(mutex);
+        allowed_extra_modules = std::move(value);
+    }
+
+    // Diagnostics helper: resolve a UTF-8 name against the FName pool.
+    bool ProbeFNameText(const std::string& text, std::uint32_t* out_name_id) {
+        if (out_name_id != nullptr) *out_name_id = 0;
+        if (names == nullptr || names->find_utf8 == nullptr || text.empty()) return false;
+        std::uint32_t name_id = 0;
+        if (names->find_utf8(names->user,
+                anomaly::sdk::StringView(std::string_view(text)), &name_id).code !=
+                ANOMALY_STATUS_V1_OK || name_id == 0) {
+            return false;
+        }
+        if (out_name_id != nullptr) *out_name_id = name_id;
+        return true;
+    }
+
+    // Resolve one module override text ("CatalogID", "WhitelistBase#N") to its
+    // native FName for the given slot type. Catalog options win; the effects
+    // whitelist and a generic find_utf8 fallback follow.
+    bool ResolveOverrideModuleLocked(const std::string& id_text,
+        const std::uint32_t module_type, std::uint64_t& native) {
+        native = 0;
+        if (id_text.empty()) return false;
+        const auto split_number = [](const std::string& text, std::string& base,
+                                     std::uint32_t& number) {
+            base = text;
+            number = 0;
+            const auto hash = base.rfind('#');
+            if (hash == std::string::npos) return;
+            const std::string digits = base.substr(hash + 1U);
+            if (!digits.empty() && std::ranges::all_of(digits,
+                    [](const char c) { return c >= '0' && c <= '9'; })) {
+                // FName Number semantics: 0 is a plain name; N > 0 renders as
+                // "Name_(N-1)", so the recorded display index is N - 1.
+                const unsigned long parsed = std::stoul(digits);
+                if (parsed < 0xFFFFFFFFUL) number = static_cast<std::uint32_t>(parsed) + 1U;
+                base.resize(hash);
+            }
+        };
+        std::string base;
+        std::uint32_t explicit_number = 0;
+        split_number(id_text, base, explicit_number);
+        for (const auto& option : vehicle_customization_options) {
+            if (option.kind != nte_vehicle::kCustomizationModule ||
+                option.module_type != module_type) continue;
+            if (option.id == id_text || (!base.empty() && option.id == base)) {
+                if (option.native_name != 0) {
+                    native = option.native_name;
+                    return true;
+                }
+            }
+        }
+        const auto resolve_text = [&](const std::string& text,
+                                      const std::uint32_t number,
+                                      std::uint64_t& out) {
+            if (text.empty() || names == nullptr || names->find_utf8 == nullptr) return false;
+            std::uint32_t name_id = 0;
+            if (names->find_utf8(names->user,
+                    anomaly::sdk::StringView(std::string_view(text)), &name_id).code !=
+                    ANOMALY_STATUS_V1_OK || name_id == 0) {
+                return false;
+            }
+            out = static_cast<std::uint64_t>(name_id) |
+                (static_cast<std::uint64_t>(number) << 32U);
+            return true;
+        };
+        for (const auto& entry : allowed_extra_modules) {
+            if (entry.first != module_type) continue;
+            std::string entry_base;
+            std::uint32_t entry_number = 0;
+            split_number(entry.second, entry_base, entry_number);
+            if (entry.second == id_text || entry.second == base) {
+                if (resolve_text(entry_base, entry_number, native)) return true;
+            }
+        }
+        return resolve_text(base, explicit_number, native);
+    }
+
+    // Read the module IDs currently applied on the driven vehicle as
+    // (module_type, id-text) pairs. HTVehicleModificationComponent.CurrentModuleIDList
+    // is server-replicated (RepNotify), so cloud-applied premium wheel effects
+    // show up here on the PC client. Types resolve via the catalog options of
+    // the loaded customization catalog, falling back to an FName-text heuristic.
+    AnomalyStatusV1 VehicleReadCurrentModules(
+        std::vector<std::pair<std::uint32_t, std::string>>* out_list) {
+        if (out_list == nullptr) return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+        out_list->clear();
+        if (GetCurrentThreadId() != game_thread_id.load(std::memory_order_acquire))
+            return Status(ANOMALY_STATUS_V1_CONFLICT,
+                TextLocalized("backend.live_operation_requires_game_thread_900", "live module operations require the Game thread"));
+        if (!ready || names == nullptr || names->resolve_utf8 == nullptr)
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                TextLocalized("backend.backend_not_ready_for_live_operations_901", "the vehicle backend is not ready for live operations"));
+        std::scoped_lock lock(mutex);
+        live_module_entries.clear();
+        if (current_vehicle_object == 0)
+            return Status(ANOMALY_STATUS_V1_NOT_FOUND,
+                TextLocalized("backend.no_identified_vehicle_for_live_operations_902", "no identified vehicle is currently driven"));
+        try {
+            std::uintptr_t vehicle_class = 0;
+            if (!ReadPointerAt(*memory, current_vehicle_object, layout.object_class,
+                    vehicle_class) || vehicle_class == 0)
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                    TextLocalized("backend.module_manager_component_unavailable_903", "the vehicle's ModuleManagerComponent is unavailable"));
+            ReflectedPropertyInfo mm_property;
+            if (!FindReflectedPropertyLocked(vehicle_class, "ModuleManagerComponent",
+                    mm_property, true) ||
+                mm_property.type != "ObjectProperty" || mm_property.element_size != 8 ||
+                mm_property.offset < 0)
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                    TextLocalized("backend.module_manager_component_unavailable_903", "the vehicle's ModuleManagerComponent is unavailable"));
+            std::uintptr_t component = 0;
+            if (!ReadValue(*memory,
+                    current_vehicle_object +
+                        static_cast<std::uintptr_t>(mm_property.offset),
+                    component) || component == 0)
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                    TextLocalized("backend.module_manager_component_unavailable_903", "the vehicle's ModuleManagerComponent is unavailable"));
+            std::uintptr_t component_class = 0;
+            if (!ReadPointerAt(*memory, component, layout.object_class, component_class) ||
+                component_class == 0)
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                    TextLocalized("backend.currentmoduleidlist_unavailable_904", "CurrentModuleIDList is unavailable or unreadable"));
+            ReflectedPropertyInfo list_property;
+            if (!FindReflectedPropertyLocked(component_class, "CurrentModuleIDList",
+                    list_property, true) ||
+                list_property.type != "ArrayProperty" ||
+                list_property.element_size != 16 || list_property.offset < 0)
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                    TextLocalized("backend.currentmoduleidlist_unavailable_904", "CurrentModuleIDList is unavailable or unreadable"));
+            std::uintptr_t list_data = 0;
+            std::int32_t list_count = 0;
+            if (!ReadValue(*memory,
+                    component + static_cast<std::uintptr_t>(list_property.offset),
+                    list_data) ||
+                !ReadValue(*memory,
+                    component + static_cast<std::uintptr_t>(list_property.offset) + 8U,
+                    list_count) ||
+                list_count < 0 || list_count > 256 ||
+                (list_count != 0 && list_data == 0))
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                    TextLocalized("backend.currentmoduleidlist_unavailable_904", "CurrentModuleIDList is unavailable or unreadable"));
+            std::vector<std::pair<std::uint32_t, std::string>> pairs;
+            pairs.reserve(static_cast<std::size_t>(list_count));
+            for (std::int32_t i = 0; i < list_count; ++i) {
+                std::uint32_t comparison = 0;
+                std::uint32_t number = 0;
+                if (!ReadValue(*memory,
+                        list_data + static_cast<std::uintptr_t>(i) * 8U, comparison) ||
+                    !ReadValue(*memory,
+                        list_data + static_cast<std::uintptr_t>(i) * 8U + 4U, number)) {
+                    continue;
+                }
+                const std::uint64_t native =
+                    static_cast<std::uint64_t>(comparison) |
+                    (static_cast<std::uint64_t>(number) << 32U);
+                std::string module_id;
+                if (!ResolveFNameLocked(comparison, number, module_id)) {
+                    module_id = "<unresolved>";
+                }
+                std::uint32_t module_type = 0;
+                for (const auto& option : vehicle_customization_options) {
+                    if (option.kind == nte_vehicle::kCustomizationModule &&
+                        option.native_name == native) {
+                        module_type = option.module_type;
+                        break;
+                    }
+                }
+                if (module_type == 0) module_type = ModuleTypeFromName(module_id);
+                live_module_entries.emplace_back(native, module_type);
+                pairs.emplace_back(module_type, module_id);
+            }
+            *out_list = std::move(pairs);
+            return Status(ANOMALY_STATUS_V1_OK);
+        } catch (...) {
+            return Status(ANOMALY_STATUS_V1_FAILED,
+                TextLocalized("backend.live_module_read_exception_905", "an exception occurred while reading the live module list"));
+        }
+    }
+
+    // Read the driven vehicle's own VehicleID (an FName property on the actor) so
+    // the live page can sync the plugin's vehicle selection to whichever car the
+    // player is riding and load that car's customization catalog.
+    AnomalyStatusV1 VehicleReadCurrentCatalogId(std::string* out_id) {
+        if (out_id == nullptr) return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+        out_id->clear();
+        if (GetCurrentThreadId() != game_thread_id.load(std::memory_order_acquire))
+            return Status(ANOMALY_STATUS_V1_CONFLICT,
+                TextLocalized("backend.live_operation_requires_game_thread_900", "live module operations require the Game thread"));
+        if (!ready || names == nullptr || names->resolve_utf8 == nullptr)
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                TextLocalized("backend.backend_not_ready_for_live_operations_901", "the vehicle backend is not ready for live operations"));
+        std::scoped_lock lock(mutex);
+        if (current_vehicle_object == 0)
+            return Status(ANOMALY_STATUS_V1_NOT_FOUND,
+                TextLocalized("backend.no_identified_vehicle_for_live_operations_902", "no identified vehicle is currently driven"));
+        try {
+            std::uintptr_t vehicle_class = 0;
+            if (!ReadPointerAt(*memory, current_vehicle_object, layout.object_class,
+                    vehicle_class) || vehicle_class == 0)
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                    TextLocalized("backend.vehicle_id_unreadable_907", "the vehicle's VehicleID is unreadable"));
+            ReflectedPropertyInfo id_property;
+            if (!FindReflectedPropertyLocked(vehicle_class, "VehicleID",
+                    id_property, true) ||
+                id_property.type != "NameProperty" ||
+                id_property.element_size != 8 || id_property.offset < 0)
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                    TextLocalized("backend.vehicle_id_unreadable_907", "the vehicle's VehicleID is unreadable"));
+            std::uint32_t comparison = 0;
+            std::uint32_t number = 0;
+            if (!ReadValue(*memory,
+                    current_vehicle_object +
+                        static_cast<std::uintptr_t>(id_property.offset),
+                    comparison) ||
+                !ReadValue(*memory,
+                    current_vehicle_object +
+                        static_cast<std::uintptr_t>(id_property.offset) + 4U,
+                    number) ||
+                (comparison == 0 && number == 0))
+                return Status(ANOMALY_STATUS_V1_NOT_FOUND,
+                    TextLocalized("backend.vehicle_id_empty_plugin_summon_note_906", "the vehicle's VehicleID is empty (plugin-summoned vehicles may not set it)"));
+            std::string id;
+            if (!ResolveFNameLocked(comparison, number, id) || id.empty())
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                    TextLocalized("backend.vehicle_id_unreadable_907", "the vehicle's VehicleID is unreadable"));
+            *out_id = std::move(id);
+            return Status(ANOMALY_STATUS_V1_OK);
+        } catch (...) {
+            return Status(ANOMALY_STATUS_V1_FAILED,
+                TextLocalized("backend.vehicle_id_read_exception_908", "an exception occurred while reading the vehicle's VehicleID"));
+        }
+    }
+
+    // Read the driven vehicle's equipped premium-effect modules at the FName
+    // level. Returns the RAW FName pool base string and the RAW FName Number for
+    // each effect slot, so a whitelist entry ("base#number") can reconstruct the
+    // exact FName regardless of how the text renderer formats numbers.
+    struct VehicleEffectEntry {
+        std::uint32_t type{};    // 23 = WheelSmoke, 24 = WheelMark
+        std::string base;        // raw FName pool string, e.g. "V026_WheelSmoke_10"
+        std::uint32_t number{};  // raw FName Number field (0 = plain name)
+    };
+    AnomalyStatusV1 VehicleCaptureEffects(std::vector<VehicleEffectEntry>* out_entries) {
+        if (out_entries == nullptr) return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+        out_entries->clear();
+        if (GetCurrentThreadId() != game_thread_id.load(std::memory_order_acquire))
+            return Status(ANOMALY_STATUS_V1_CONFLICT,
+                TextLocalized("backend.live_operation_requires_game_thread_900", "live module operations require the Game thread"));
+        if (!ready || names == nullptr || names->resolve_utf8 == nullptr)
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                TextLocalized("backend.backend_not_ready_for_live_operations_901", "the vehicle backend is not ready for live operations"));
+        std::scoped_lock lock(mutex);
+        if (current_vehicle_object == 0)
+            return Status(ANOMALY_STATUS_V1_NOT_FOUND,
+                TextLocalized("backend.no_identified_vehicle_for_live_operations_902", "no identified vehicle is currently driven"));
+        try {
+            std::uintptr_t vehicle_class = 0;
+            if (!ReadPointerAt(*memory, current_vehicle_object, layout.object_class,
+                    vehicle_class) || vehicle_class == 0)
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                    TextLocalized("backend.module_manager_component_unavailable_903", "the vehicle's ModuleManagerComponent is unavailable"));
+            ReflectedPropertyInfo mm_property;
+            if (!FindReflectedPropertyLocked(vehicle_class, "ModuleManagerComponent",
+                    mm_property, true) ||
+                mm_property.type != "ObjectProperty" || mm_property.element_size != 8 ||
+                mm_property.offset < 0)
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                    TextLocalized("backend.module_manager_component_unavailable_903", "the vehicle's ModuleManagerComponent is unavailable"));
+            std::uintptr_t component = 0;
+            if (!ReadValue(*memory,
+                    current_vehicle_object +
+                        static_cast<std::uintptr_t>(mm_property.offset),
+                    component) || component == 0)
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                    TextLocalized("backend.module_manager_component_unavailable_903", "the vehicle's ModuleManagerComponent is unavailable"));
+            std::uintptr_t component_class = 0;
+            if (!ReadPointerAt(*memory, component, layout.object_class, component_class) ||
+                component_class == 0)
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                    TextLocalized("backend.currentmoduleidlist_unavailable_904", "CurrentModuleIDList is unavailable or unreadable"));
+            ReflectedPropertyInfo list_property;
+            if (!FindReflectedPropertyLocked(component_class, "CurrentModuleIDList",
+                    list_property, true) ||
+                list_property.type != "ArrayProperty" ||
+                list_property.element_size != 16 || list_property.offset < 0)
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                    TextLocalized("backend.currentmoduleidlist_unavailable_904", "CurrentModuleIDList is unavailable or unreadable"));
+            std::uintptr_t list_data = 0;
+            std::int32_t list_count = 0;
+            if (!ReadValue(*memory,
+                    component + static_cast<std::uintptr_t>(list_property.offset),
+                    list_data) ||
+                !ReadValue(*memory,
+                    component + static_cast<std::uintptr_t>(list_property.offset) + 8U,
+                    list_count) ||
+                list_count < 0 || list_count > 256 ||
+                (list_count != 0 && list_data == 0))
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                    TextLocalized("backend.currentmoduleidlist_unavailable_904", "CurrentModuleIDList is unavailable or unreadable"));
+            for (std::int32_t i = 0; i < list_count; ++i) {
+                std::uint32_t comparison = 0;
+                std::uint32_t number = 0;
+                if (!ReadValue(*memory,
+                        list_data + static_cast<std::uintptr_t>(i) * 8U, comparison) ||
+                    !ReadValue(*memory,
+                        list_data + static_cast<std::uintptr_t>(i) * 8U + 4U, number)) {
+                    continue;
+                }
+                // Display text decides the pattern; the entry carries the RAW pool
+                // base + RAW number so the FName can be reconstructed exactly.
+                std::string display;
+                if (!ResolveFNameLocked(comparison, number, display)) continue;
+                std::uint32_t effect_type = 0;
+                if (display.find("WheelSmoke_10") != std::string::npos) {
+                    effect_type = 23;
+                } else if (display.find("WheelMark_10") != std::string::npos) {
+                    effect_type = 24;
+                }
+                if (effect_type == 0) continue;
+                VehicleEffectEntry entry;
+                entry.type = effect_type;
+                entry.base = ResolveNameSnapshotLocked(comparison);
+                entry.number = number;
+                if (entry.base.empty()) continue;
+                out_entries->push_back(std::move(entry));
+            }
+            return Status(ANOMALY_STATUS_V1_OK);
+        } catch (...) {
+            return Status(ANOMALY_STATUS_V1_FAILED,
+                TextLocalized("backend.live_effects_read_exception_909", "an exception occurred while reading live effect entries"));
+        }
+    }
+
+    // Apply the plugin's typed module overrides onto the currently driven
+    // vehicle. The live CurrentModuleIDList is read first and merged with the
+    // overrides per slot, then handed to the same UpdateAllModulesWithIDs path
+    // the summon flow uses (full ABI validation, skin material update and
+    // post-verification inside ApplyVehicleConfigurationLocked).
+    AnomalyStatusV1 VehicleApplyCustomizationToCurrent(
+        const std::vector<std::pair<std::uint32_t, std::string>>* overrides,
+        const std::string& fallback_vehicle_id,
+        const std::string& skin_id_text,
+        std::size_t* applied_module_count) {
+        if (applied_module_count != nullptr) *applied_module_count = 0;
+        if (GetCurrentThreadId() != game_thread_id.load(std::memory_order_acquire))
+            return Status(ANOMALY_STATUS_V1_CONFLICT,
+                TextLocalized("backend.live_operation_requires_game_thread_900", "live module operations require the Game thread"));
+        if (!ready || names == nullptr || names->resolve_utf8 == nullptr)
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                TextLocalized("backend.backend_not_ready_for_live_operations_901", "the vehicle backend is not ready for live operations"));
+        std::scoped_lock lock(mutex);
+        if (!RefreshVehicleLocked())
+            return Status(ANOMALY_STATUS_V1_NOT_FOUND,
+                TextLocalized("backend.no_identified_vehicle_for_live_operations_902", "no identified vehicle is currently driven"));
+        if (vehicle_is_water)
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                TextLocalized("backend.live_apply_water_unsupported_922", "live customization is not supported on water vehicles"));
+        if (current_vehicle_object == 0)
+            return Status(ANOMALY_STATUS_V1_NOT_FOUND,
+                TextLocalized("backend.no_identified_vehicle_for_live_operations_902", "no identified vehicle is currently driven"));
+        try {
+            if (!EnsureVehicleCatalogLocked())
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE, vehicle_catalog_failure_reason);
+
+            // VehicleID of the driven vehicle: the actor's own property first,
+            // then the catalog row that carries it, then the selection fallback
+            // text resolved against the FName pool.
+            std::uint64_t vehicle_id = 0;
+            const VehicleCatalogEntry* catalog_entry = nullptr;
+            std::uintptr_t vehicle_class = 0;
+            if (ReadPointerAt(*memory, current_vehicle_object, layout.object_class,
+                    vehicle_class) && vehicle_class != 0) {
+                ReflectedPropertyInfo id_property;
+                std::uint32_t comparison = 0;
+                std::uint32_t number = 0;
+                if (FindReflectedPropertyLocked(vehicle_class, "VehicleID",
+                        id_property, true) &&
+                    id_property.type == "NameProperty" &&
+                    id_property.element_size == 8 && id_property.offset >= 0 &&
+                    ReadValue(*memory,
+                        current_vehicle_object +
+                            static_cast<std::uintptr_t>(id_property.offset),
+                        comparison) &&
+                    ReadValue(*memory,
+                        current_vehicle_object +
+                            static_cast<std::uintptr_t>(id_property.offset) + 4U,
+                        number) &&
+                    (comparison != 0 || number != 0)) {
+                    vehicle_id = static_cast<std::uint64_t>(comparison) |
+                        (static_cast<std::uint64_t>(number) << 32U);
+                    for (const auto& entry : vehicle_catalog) {
+                        if (entry.vehicle_id_valid &&
+                            entry.vehicle_id_comparison_index == comparison &&
+                            entry.vehicle_id_number == number) {
+                            catalog_entry = &entry;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (catalog_entry == nullptr && !fallback_vehicle_id.empty()) {
+                const auto found = std::ranges::find(
+                    vehicle_catalog, fallback_vehicle_id, &VehicleCatalogEntry::id);
+                if (found != vehicle_catalog.end() && found->vehicle_id_valid) {
+                    catalog_entry = &*found;
+                    if (vehicle_id == 0) {
+                        vehicle_id = static_cast<std::uint64_t>(
+                                found->vehicle_id_comparison_index) |
+                            (static_cast<std::uint64_t>(found->vehicle_id_number) << 32U);
+                    }
+                }
+            }
+            if (vehicle_id == 0 && !fallback_vehicle_id.empty()) {
+                std::uint32_t name_id = 0;
+                if (names->find_utf8 != nullptr &&
+                    names->find_utf8(names->user,
+                        anomaly::sdk::StringView(std::string_view(fallback_vehicle_id)),
+                        &name_id).code == ANOMALY_STATUS_V1_OK && name_id != 0) {
+                    vehicle_id = name_id;
+                }
+            }
+            if (vehicle_id == 0)
+                return Status(ANOMALY_STATUS_V1_NOT_FOUND,
+                    TextLocalized("backend.vehicle_id_empty_plugin_summon_note_906", "the vehicle's VehicleID is empty (plugin-summoned vehicles may not set it)"));
+            if (catalog_entry != nullptr &&
+                !EnsureVehicleCustomizationCatalogLocked(*catalog_entry))
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE, vehicle_customization_failure_reason);
+
+            // Skin: an explicitly requested skin wins, then the catalog default,
+            // then FName None (unskinned vehicles).
+            std::uint64_t skin_id = 0;
+            if (!skin_id_text.empty()) {
+                bool resolved = false;
+                for (const auto& option : vehicle_customization_options) {
+                    if (option.kind == nte_vehicle::kCustomizationSkin &&
+                        option.id == skin_id_text && option.native_name != 0) {
+                        skin_id = option.native_name;
+                        resolved = true;
+                        break;
+                    }
+                }
+                if (!resolved && names->find_utf8 != nullptr) {
+                    std::uint32_t name_id = 0;
+                    if (names->find_utf8(names->user,
+                            anomaly::sdk::StringView(std::string_view(skin_id_text)),
+                            &name_id).code == ANOMALY_STATUS_V1_OK && name_id != 0) {
+                        skin_id = name_id;
+                        resolved = true;
+                    }
+                }
+                if (!resolved)
+                    return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT,
+                        TextLocalized("backend.the_selected_skin_does_not_belong_to_203", "The selected skin does not belong to this vehicle model."));
+            } else {
+                for (const auto& option : vehicle_customization_options) {
+                    if (option.kind == nte_vehicle::kCustomizationSkin &&
+                        option.is_default && option.native_name != 0) {
+                        skin_id = option.native_name;
+                        break;
+                    }
+                }
+            }
+
+            // Read the live module list and merge the overrides per slot.
+            std::vector<std::pair<std::uint64_t, std::uint32_t>> live;
+            std::uintptr_t vehicle_class_for_list = 0;
+            bool live_read = false;
+            if (ReadPointerAt(*memory, current_vehicle_object, layout.object_class,
+                    vehicle_class_for_list) && vehicle_class_for_list != 0) {
+                ReflectedPropertyInfo mm_property;
+                std::uintptr_t component = 0;
+                std::uintptr_t component_class = 0;
+                ReflectedPropertyInfo list_property;
+                std::uintptr_t list_data = 0;
+                std::int32_t list_count = 0;
+                if (FindReflectedPropertyLocked(vehicle_class_for_list,
+                        "ModuleManagerComponent", mm_property, true) &&
+                    mm_property.type == "ObjectProperty" &&
+                    mm_property.element_size == 8 && mm_property.offset >= 0 &&
+                    ReadValue(*memory,
+                        current_vehicle_object +
+                            static_cast<std::uintptr_t>(mm_property.offset),
+                        component) && component != 0 &&
+                    ReadPointerAt(*memory, component, layout.object_class,
+                        component_class) && component_class != 0 &&
+                    FindReflectedPropertyLocked(component_class, "CurrentModuleIDList",
+                        list_property, true) &&
+                    list_property.type == "ArrayProperty" &&
+                    list_property.element_size == 16 && list_property.offset >= 0 &&
+                    ReadValue(*memory,
+                        component + static_cast<std::uintptr_t>(list_property.offset),
+                        list_data) &&
+                    ReadValue(*memory,
+                        component + static_cast<std::uintptr_t>(list_property.offset) + 8U,
+                        list_count) &&
+                    list_count >= 0 && list_count <= 256 &&
+                    (list_count == 0 || list_data != 0)) {
+                    live_read = true;
+                    for (std::int32_t i = 0; i < list_count; ++i) {
+                        std::uint32_t comparison = 0;
+                        std::uint32_t number = 0;
+                        if (!ReadValue(*memory,
+                                list_data + static_cast<std::uintptr_t>(i) * 8U,
+                                comparison) ||
+                            !ReadValue(*memory,
+                                list_data + static_cast<std::uintptr_t>(i) * 8U + 4U,
+                                number)) {
+                            continue;
+                        }
+                        const std::uint64_t native =
+                            static_cast<std::uint64_t>(comparison) |
+                            (static_cast<std::uint64_t>(number) << 32U);
+                        std::uint32_t module_type = 0;
+                        for (const auto& option : vehicle_customization_options) {
+                            if (option.kind == nte_vehicle::kCustomizationModule &&
+                                option.native_name == native) {
+                                module_type = option.module_type;
+                                break;
+                            }
+                        }
+                        if (module_type == 0) {
+                            std::string text;
+                            if (ResolveFNameLocked(comparison, number, text))
+                                module_type = ModuleTypeFromName(text);
+                        }
+                        live.emplace_back(native, module_type);
+                    }
+                }
+            }
+            if (!live_read)
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                    TextLocalized("backend.currentmoduleidlist_unavailable_904", "CurrentModuleIDList is unavailable or unreadable"));
+            std::vector<std::uint64_t> module_ids;
+            module_ids.reserve(live.size() + (overrides != nullptr ? overrides->size() : 0U));
+            for (const auto& entry : live) {
+                if (entry.second != 0) module_ids.push_back(entry.first);
+            }
+            if (overrides != nullptr) {
+                for (const auto& override_entry : *overrides) {
+                    if (override_entry.first == 0 ||
+                        override_entry.first >= 28 || override_entry.second.empty()) {
+                        continue;
+                    }
+                    std::uint64_t native = 0;
+                    if (!ResolveOverrideModuleLocked(
+                            override_entry.second, override_entry.first, native) ||
+                        native == 0) {
+                        return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT,
+                            Remember(LocalizedStatus("backend.live_apply_override_unresolved_910", "could not resolve the module override \"{0}\"", {override_entry.second})));
+                    }
+                    std::erase_if(module_ids, [&](const std::uint64_t candidate) {
+                        const auto found = std::ranges::find_if(live,
+                            [&](const auto& item) { return item.first == candidate; });
+                        return found != live.end() && found->second == override_entry.first;
+                    });
+                    module_ids.push_back(native);
+                }
+            }
+            if (module_ids.size() > 128U)
+                return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT,
+                    TextLocalized("backend.live_apply_module_limit_911", "the merged live module list exceeds the limit"));
+
+            VehicleBuildConfiguration build{};
+            build.vehicle_id = vehicle_id;
+            build.skin_id = skin_id;
+            build.module_ids = std::move(module_ids);
+            std::size_t configured_count = 0;
+            std::string apply_failure;
+            if (!ApplyVehicleConfigurationLocked(current_vehicle_object, build,
+                    configured_count, apply_failure)) {
+                return Status(ANOMALY_STATUS_V1_FAILED, Remember(apply_failure));
+            }
+            if (applied_module_count != nullptr) *applied_module_count = configured_count;
+            return Status(ANOMALY_STATUS_V1_OK);
+        } catch (...) {
+            return Status(ANOMALY_STATUS_V1_FAILED,
+                TextLocalized("backend.live_apply_exception_912", "an exception occurred while applying customization to the current vehicle"));
+        }
+    }
+
+    // Apply a skin to the currently driven vehicle via the modification
+    // component's own UpdateVehicleMat(VehicleID, SkinID).
+    AnomalyStatusV1 VehicleApplySkinToCurrent(const std::string& skin_id_text) {
+        if (skin_id_text.empty())
+            return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+        if (GetCurrentThreadId() != game_thread_id.load(std::memory_order_acquire))
+            return Status(ANOMALY_STATUS_V1_CONFLICT,
+                TextLocalized("backend.live_operation_requires_game_thread_900", "live module operations require the Game thread"));
+        if (!ready || names == nullptr || names->resolve_utf8 == nullptr)
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                TextLocalized("backend.backend_not_ready_for_live_operations_901", "the vehicle backend is not ready for live operations"));
+        std::scoped_lock lock(mutex);
+        if (!RefreshVehicleLocked() || current_vehicle_object == 0)
+            return Status(ANOMALY_STATUS_V1_NOT_FOUND,
+                TextLocalized("backend.no_identified_vehicle_for_live_operations_902", "no identified vehicle is currently driven"));
+        try {
+            std::uintptr_t vehicle_class = 0;
+            if (!ReadPointerAt(*memory, current_vehicle_object, layout.object_class,
+                    vehicle_class) || vehicle_class == 0)
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                    TextLocalized("backend.vehicle_id_unreadable_907", "the vehicle's VehicleID is unreadable"));
+            ReflectedPropertyInfo id_property;
+            std::uint32_t comparison = 0;
+            std::uint32_t number = 0;
+            if (!FindReflectedPropertyLocked(vehicle_class, "VehicleID",
+                    id_property, true) ||
+                id_property.type != "NameProperty" ||
+                id_property.element_size != 8 || id_property.offset < 0 ||
+                !ReadValue(*memory,
+                    current_vehicle_object +
+                        static_cast<std::uintptr_t>(id_property.offset),
+                    comparison) ||
+                !ReadValue(*memory,
+                    current_vehicle_object +
+                        static_cast<std::uintptr_t>(id_property.offset) + 4U,
+                    number) ||
+                (comparison == 0 && number == 0))
+                return Status(ANOMALY_STATUS_V1_NOT_FOUND,
+                    TextLocalized("backend.vehicle_id_empty_plugin_summon_note_906", "the vehicle's VehicleID is empty (plugin-summoned vehicles may not set it)"));
+            const std::uint64_t vehicle_id =
+                static_cast<std::uint64_t>(comparison) |
+                (static_cast<std::uint64_t>(number) << 32U);
+            if (!EnsureVehicleCatalogLocked())
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE, vehicle_catalog_failure_reason);
+            std::uint64_t skin_id = 0;
+            bool resolved = false;
+            for (const auto& entry : vehicle_catalog) {
+                if (entry.vehicle_id_valid &&
+                    entry.vehicle_id_comparison_index == comparison &&
+                    entry.vehicle_id_number == number) {
+                    if (EnsureVehicleCustomizationCatalogLocked(entry)) {
+                        for (const auto& option : vehicle_customization_options) {
+                            if (option.kind == nte_vehicle::kCustomizationSkin &&
+                                option.id == skin_id_text && option.native_name != 0) {
+                                skin_id = option.native_name;
+                                resolved = true;
+                                break;
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+            if (!resolved && names->find_utf8 != nullptr) {
+                std::uint32_t name_id = 0;
+                if (names->find_utf8(names->user,
+                        anomaly::sdk::StringView(std::string_view(skin_id_text)),
+                        &name_id).code == ANOMALY_STATUS_V1_OK && name_id != 0) {
+                    skin_id = name_id;
+                    resolved = true;
+                }
+            }
+            if (!resolved || skin_id == 0)
+                return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT,
+                    TextLocalized("backend.the_selected_skin_does_not_belong_to_203", "The selected skin does not belong to this vehicle model."));
+
+            std::uintptr_t module_manager = 0;
+            ReflectedPropertyInfo mm_property;
+            if (!FindReflectedPropertyLocked(vehicle_class, "ModuleManagerComponent",
+                    mm_property, true) ||
+                mm_property.type != "ObjectProperty" ||
+                mm_property.element_size != 8 || mm_property.offset < 0 ||
+                !ReadValue(*memory,
+                    current_vehicle_object +
+                        static_cast<std::uintptr_t>(mm_property.offset),
+                    module_manager) || module_manager == 0)
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                    TextLocalized("backend.module_manager_component_unavailable_903", "the vehicle's ModuleManagerComponent is unavailable"));
+            std::uintptr_t expected_class = 0;
+            std::uintptr_t actual_class = 0;
+            if (!FindExactObjectLocked(
+                    L"/Script/HTGame.HTVehicleModificationComponent", expected_class) ||
+                !ReadPointerAt(*memory, module_manager, layout.object_class, actual_class) ||
+                !IsClassDerivedFromLocked(actual_class, expected_class))
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                    TextLocalized("backend.module_manager_component_unavailable_903", "the vehicle's ModuleManagerComponent is unavailable"));
+            std::uintptr_t update_mat_function = 0;
+            if (!FindExactObjectLocked(
+                    L"/Script/HTGame.HTVehicleModificationComponent.UpdateVehicleMat",
+                    update_mat_function) || update_mat_function == 0)
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                    TextLocalized("backend.updatevehiclemat_is_unavailable_225", "UpdateVehicleMat is unavailable."));
+            std::uintptr_t update_mat_owner = 0;
+            std::uint8_t update_mat_num_parms = 0;
+            std::uint16_t update_mat_parms_size = 0;
+            std::uint16_t update_mat_return_offset = 0;
+            if (!ReadPointerAt(*memory, update_mat_function, layout.object_outer,
+                    update_mat_owner) ||
+                update_mat_owner != expected_class ||
+                !ReadValue(*memory, update_mat_function + layout.ufunction_numParms,
+                    update_mat_num_parms) ||
+                !ReadValue(*memory, update_mat_function + layout.ufunction_parmsSize,
+                    update_mat_parms_size) ||
+                !ReadValue(*memory, update_mat_function + layout.ufunction_returnValueOffset,
+                    update_mat_return_offset) ||
+                update_mat_num_parms != 2 || update_mat_parms_size != 0x10 ||
+                update_mat_return_offset != 0xFFFFu)
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                    TextLocalized("backend.updatevehiclemat_owner_or_parameter_abi_is_incompatible_226", "UpdateVehicleMat owner or parameter ABI is incompatible."));
+            ReflectedPropertyInfo update_mat_vehicle_id;
+            ReflectedPropertyInfo update_mat_skin_id;
+            if (!FindReflectedPropertyLocked(update_mat_function, "VehicleID",
+                    update_mat_vehicle_id, false) ||
+                update_mat_vehicle_id.type != "NameProperty" ||
+                update_mat_vehicle_id.element_size != 8 ||
+                update_mat_vehicle_id.offset != 0 ||
+                update_mat_vehicle_id.array_dim != 1 ||
+                !FindReflectedPropertyLocked(update_mat_function, "SkinID",
+                    update_mat_skin_id, false) ||
+                update_mat_skin_id.type != "NameProperty" ||
+                update_mat_skin_id.element_size != 8 ||
+                update_mat_skin_id.offset != 8 ||
+                update_mat_skin_id.array_dim != 1)
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                    TextLocalized("backend.updatevehiclemat_vehicleid_or_skinid_failed_validation_227", "UpdateVehicleMat.VehicleID or SkinID failed validation."));
+            std::array<std::uint8_t, 0x10> parameters{};
+            std::memcpy(parameters.data() + update_mat_vehicle_id.offset,
+                &vehicle_id, sizeof(vehicle_id));
+            std::memcpy(parameters.data() + update_mat_skin_id.offset,
+                &skin_id, sizeof(skin_id));
+            if (!InvokeProcessEventGuarded(process_event_invoker, module_manager,
+                    update_mat_function, parameters.data(), parameters.size()))
+                return Status(ANOMALY_STATUS_V1_FAILED,
+                    TextLocalized("backend.htvehiclemodificationcomponent_updatevehiclemat_failed_228", "HTVehicleModificationComponent.UpdateVehicleMat failed."));
+            return Status(ANOMALY_STATUS_V1_OK);
+        } catch (...) {
+            return Status(ANOMALY_STATUS_V1_FAILED,
+                TextLocalized("backend.live_skin_apply_exception_923", "an exception occurred while applying the skin to the current vehicle"));
+        }
+    }
+
+    // Capture the driven vehicle's factory top speed (km/h) the moment it is
+    // boarded — before any plugin write — so the km/h target slider has a stable
+    // 1.0x anchor. Must run on the Game thread.
+    bool VehicleCaptureStockTopSpeed() {
+        if (GetCurrentThreadId() != game_thread_id.load(std::memory_order_acquire)) {
+            return false;
+        }
+        std::scoped_lock lock(mutex);
+        if (vehicle_movement_component == 0) {
+            vehicle_stock_top_speed_valid = false;
+            return false;
+        }
+        try {
+            const auto offset = layout.VehicleField("vehicle.topSpeedInKmH");
+            float value = 0;
+            if (offset < 0 ||
+                !ReadValue(*memory,
+                    vehicle_movement_component +
+                        static_cast<std::uintptr_t>(offset),
+                    value) ||
+                !std::isfinite(value) || value <= 0.0F || value > 100000.0F) {
+                vehicle_stock_top_speed_valid = false;
+                return false;
+            }
+            vehicle_stock_top_speed_kmh = value;
+            vehicle_stock_top_speed_valid = true;
+            return true;
+        } catch (...) {
+            vehicle_stock_top_speed_valid = false;
+            return false;
+        }
+    }
+
+    // The captured factory top speed (km/h) — the 1.0x anchor of the km/h
+    // target slider. Callable from any thread; guards the shared member with
+    // the runtime mutex.
+    bool VehicleGetStockTopSpeedKmh(float* out_kmh) {
+        if (out_kmh == nullptr) return false;
+        std::scoped_lock lock(mutex);
+        if (!vehicle_stock_top_speed_valid) return false;
+        *out_kmh = vehicle_stock_top_speed_kmh;
+        return true;
+    }
+
+    const AdvancedTuningOffsets* ResolveAdvancedTuningOffsetsLocked(
+        std::uintptr_t movement_class) {
+        const auto found = advanced_tuning_cache.find(movement_class);
+        if (found != advanced_tuning_cache.end()) {
+            return found->second.valid ? &found->second : nullptr;
+        }
+        AdvancedTuningOffsets offsets{};
+        ReflectedPropertyInfo linear_property;
+        if (!FindReflectedPropertyLocked(movement_class, "MaxLinearVelocity",
+                linear_property, true) ||
+            linear_property.type != "FloatProperty" || linear_property.offset < 0) {
+            advanced_tuning_cache.emplace(movement_class, offsets);
+            return nullptr;
+        }
+        offsets.linear_offset = linear_property.offset;
+        ReflectedPropertyInfo reverse_property;
+        if (FindReflectedPropertyLocked(movement_class, "ReverseTopSpeedInKmH",
+                reverse_property, true) &&
+            reverse_property.type == "FloatProperty" && reverse_property.offset >= 0) {
+            offsets.reverse_offset = reverse_property.offset;
+        }
+        const auto resolve_setup = [&](const char* name) -> std::int32_t {
+            ReflectedPropertyInfo setup_property;
+            if (!FindReflectedPropertyLocked(movement_class, name,
+                    setup_property, true) ||
+                setup_property.type != "StructProperty" ||
+                setup_property.structure == 0 || setup_property.offset < 0) {
+                return -1;
+            }
+            ReflectedPropertyInfo up_property;
+            ReflectedPropertyInfo down_property;
+            ReflectedPropertyInfo time_property;
+            ReflectedPropertyInfo ratio_property;
+            ReflectedPropertyInfo eff_property;
+            if (!FindReflectedPropertyLocked(setup_property.structure, "ChangeUpRPM",
+                    up_property, false) ||
+                up_property.type != "FloatProperty" || up_property.offset < 0 ||
+                !FindReflectedPropertyLocked(setup_property.structure,
+                    "ChangeDownRPM", down_property, false) ||
+                down_property.type != "FloatProperty" || down_property.offset < 0 ||
+                !FindReflectedPropertyLocked(setup_property.structure,
+                    "GearChangeTime", time_property, false) ||
+                time_property.type != "FloatProperty" || time_property.offset < 0 ||
+                !FindReflectedPropertyLocked(setup_property.structure, "FinalRatio",
+                    ratio_property, false) ||
+                ratio_property.type != "FloatProperty" || ratio_property.offset < 0 ||
+                !FindReflectedPropertyLocked(setup_property.structure,
+                    "TransmissionEfficiency", eff_property, false) ||
+                eff_property.type != "FloatProperty" || eff_property.offset < 0) {
+                return -1;
+            }
+            offsets.up_offset = up_property.offset;
+            offsets.down_offset = down_property.offset;
+            offsets.time_offset = time_property.offset;
+            offsets.ratio_offset = ratio_property.offset;
+            offsets.eff_offset = eff_property.offset;
+            return setup_property.offset;
+        };
+        offsets.normal_setup_offset = resolve_setup("TransmissionSetup");
+        offsets.comfort_setup_offset = resolve_setup("ComfortTransmissionSetup");
+        offsets.valid = offsets.normal_setup_offset >= 0;
+        advanced_tuning_cache.emplace(movement_class, offsets);
+        return offsets.valid
+            ? &advanced_tuning_cache.find(movement_class)->second : nullptr;
+    }
+
+    AnomalyStatusV1 VehicleReadAdvancedTuning(VehicleAdvancedTuning* out) {
+        if (out == nullptr) return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+        *out = {};
+        if (GetCurrentThreadId() != game_thread_id.load(std::memory_order_acquire))
+            return Status(ANOMALY_STATUS_V1_CONFLICT,
+                TextLocalized("backend.live_operation_requires_game_thread_900", "live module operations require the Game thread"));
+        if (!ready)
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                TextLocalized("backend.backend_not_ready_for_live_operations_901", "the vehicle backend is not ready for live operations"));
+        std::scoped_lock lock(mutex);
+        if (vehicle_movement_component == 0)
+            return Status(ANOMALY_STATUS_V1_NOT_FOUND,
+                TextLocalized("backend.no_identified_vehicle_for_live_operations_902", "no identified vehicle is currently driven"));
+        try {
+            std::uintptr_t movement_class = 0;
+            if (!ReadPointerAt(*memory, vehicle_movement_component, layout.object_class,
+                    movement_class) || movement_class == 0)
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                    TextLocalized("backend.advanced_tuning_offsets_unresolved_914", "advanced tuning fields could not be resolved (layout changed?)"));
+            const auto* offsets = ResolveAdvancedTuningOffsetsLocked(movement_class);
+            if (offsets == nullptr)
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                    TextLocalized("backend.advanced_tuning_offsets_unresolved_914", "advanced tuning fields could not be resolved (layout changed?)"));
+            out->movement = vehicle_movement_component;
+            float linear_ms = 0;
+            if (!ReadValue(*memory,
+                    vehicle_movement_component +
+                        static_cast<std::uintptr_t>(offsets->linear_offset),
+                    linear_ms))
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                    TextLocalized("backend.advanced_tuning_offsets_unresolved_914", "advanced tuning fields could not be resolved (layout changed?)"));
+            out->max_linear_velocity_kmh = linear_ms * 3.6F;
+            if (offsets->reverse_offset >= 0) {
+                (void)ReadValue(*memory,
+                    vehicle_movement_component +
+                        static_cast<std::uintptr_t>(offsets->reverse_offset),
+                    out->reverse_top_speed_kmh);
+            }
+            const std::uintptr_t normal_base = vehicle_movement_component +
+                static_cast<std::uintptr_t>(offsets->normal_setup_offset);
+            if (!ReadValue(*memory,
+                    normal_base + static_cast<std::uintptr_t>(offsets->up_offset),
+                    out->change_up_rpm) ||
+                !ReadValue(*memory,
+                    normal_base + static_cast<std::uintptr_t>(offsets->down_offset),
+                    out->change_down_rpm) ||
+                !ReadValue(*memory,
+                    normal_base + static_cast<std::uintptr_t>(offsets->time_offset),
+                    out->gear_change_time) ||
+                !ReadValue(*memory,
+                    normal_base + static_cast<std::uintptr_t>(offsets->ratio_offset),
+                    out->final_ratio) ||
+                !ReadValue(*memory,
+                    normal_base + static_cast<std::uintptr_t>(offsets->eff_offset),
+                    out->transmission_efficiency))
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                    TextLocalized("backend.advanced_tuning_offsets_unresolved_914", "advanced tuning fields could not be resolved (layout changed?)"));
+            if (offsets->comfort_setup_offset >= 0) {
+                const std::uintptr_t comfort_base = vehicle_movement_component +
+                    static_cast<std::uintptr_t>(offsets->comfort_setup_offset);
+                (void)ReadValue(*memory,
+                    comfort_base + static_cast<std::uintptr_t>(offsets->up_offset),
+                    out->comfort_change_up_rpm);
+                (void)ReadValue(*memory,
+                    comfort_base + static_cast<std::uintptr_t>(offsets->down_offset),
+                    out->comfort_change_down_rpm);
+                (void)ReadValue(*memory,
+                    comfort_base + static_cast<std::uintptr_t>(offsets->time_offset),
+                    out->comfort_gear_change_time);
+                (void)ReadValue(*memory,
+                    comfort_base + static_cast<std::uintptr_t>(offsets->ratio_offset),
+                    out->comfort_final_ratio);
+                (void)ReadValue(*memory,
+                    comfort_base + static_cast<std::uintptr_t>(offsets->eff_offset),
+                    out->comfort_transmission_efficiency);
+            }
+            out->valid = true;
+            return Status(ANOMALY_STATUS_V1_OK);
+        } catch (...) {
+            return Status(ANOMALY_STATUS_V1_FAILED,
+                TextLocalized("backend.advanced_tuning_read_exception_917", "an exception occurred while reading advanced tuning"));
+        }
+    }
+
+    AnomalyStatusV1 VehicleWriteAdvancedTuning(const VehicleAdvancedTuning& value,
+        const bool comfort_setup) {
+        if (GetCurrentThreadId() != game_thread_id.load(std::memory_order_acquire))
+            return Status(ANOMALY_STATUS_V1_CONFLICT,
+                TextLocalized("backend.live_operation_requires_game_thread_900", "live module operations require the Game thread"));
+        if (!ready)
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                TextLocalized("backend.backend_not_ready_for_live_operations_901", "the vehicle backend is not ready for live operations"));
+        const auto ok_or_unset = [](const float v, const float high) {
+            // Negative = "leave unchanged" (legacy memory entries without this
+            // field); zero and up are validated.
+            return v < 0.0F || (std::isfinite(v) && v >= 0.0F && v <= high);
+        };
+        if (!ok_or_unset(value.max_linear_velocity_kmh, 100000.0F) ||
+            !ok_or_unset(value.reverse_top_speed_kmh, 100000.0F) ||
+            !ok_or_unset(value.change_up_rpm, 100000.0F) ||
+            !ok_or_unset(value.change_down_rpm, 100000.0F) ||
+            !ok_or_unset(value.gear_change_time, 10.0F) ||
+            !ok_or_unset(value.final_ratio, 100.0F) ||
+            !ok_or_unset(value.transmission_efficiency, 100.0F) ||
+            !ok_or_unset(value.comfort_change_up_rpm, 100000.0F) ||
+            !ok_or_unset(value.comfort_change_down_rpm, 100000.0F) ||
+            !ok_or_unset(value.comfort_gear_change_time, 10.0F) ||
+            !ok_or_unset(value.comfort_final_ratio, 100.0F) ||
+            !ok_or_unset(value.comfort_transmission_efficiency, 100.0F))
+            return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT,
+                TextLocalized("backend.advanced_tuning_value_out_of_range_915", "an advanced tuning value is out of range"));
+        std::scoped_lock lock(mutex);
+        if (vehicle_movement_component == 0)
+            return Status(ANOMALY_STATUS_V1_NOT_FOUND,
+                TextLocalized("backend.no_identified_vehicle_for_live_operations_902", "no identified vehicle is currently driven"));
+        try {
+            std::uintptr_t movement_class = 0;
+            if (!ReadPointerAt(*memory, vehicle_movement_component, layout.object_class,
+                    movement_class) || movement_class == 0)
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                    TextLocalized("backend.advanced_tuning_offsets_unresolved_914", "advanced tuning fields could not be resolved (layout changed?)"));
+            const auto write_float = [&](const std::uintptr_t address, const float v,
+                    const char* what) -> AnomalyStatusV1 {
+                if (!memory->Write(address, &v, sizeof(v)))
+                    return Status(ANOMALY_STATUS_V1_FAILED,
+                        Remember(LocalizedStatus("backend.tuning_field_write_failed_924", "could not write {0}.", {std::string(what)})));
+                float readback = 0;
+                if (!ReadValue(*memory, address, readback) ||
+                    std::fabs(readback - v) > 0.0001F * (std::max)(1.0F, std::fabs(v)))
+                    return Status(ANOMALY_STATUS_V1_FAILED,
+                        Remember(LocalizedStatus("backend.tuning_field_write_failed_924", "could not write {0}.", {std::string(what)})));
+                return Status(ANOMALY_STATUS_V1_OK);
+            };
+            const auto* offsets = ResolveAdvancedTuningOffsetsLocked(movement_class);
+            if (offsets == nullptr)
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                    TextLocalized("backend.advanced_tuning_offsets_unresolved_914", "advanced tuning fields could not be resolved (layout changed?)"));
+            // Shared top-level fields — negative values mean "leave unchanged".
+            // MaxLinearVelocity is m/s in this game; the plugin reports km/h and
+            // writes km/h/3.6 back.
+            if (value.max_linear_velocity_kmh >= 0.0F) {
+                std::uintptr_t linear_address = 0;
+                const float linear_ms = value.max_linear_velocity_kmh / 3.6F;
+                if (!AddAddress(vehicle_movement_component,
+                        static_cast<std::uintptr_t>(offsets->linear_offset),
+                        linear_address))
+                    return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                        TextLocalized("backend.advanced_tuning_offsets_unresolved_914", "advanced tuning fields could not be resolved (layout changed?)"));
+                if (const auto write_status = write_float(linear_address, linear_ms,
+                        "MaxLinearVelocity"); write_status.code != ANOMALY_STATUS_V1_OK)
+                    return write_status;
+            }
+            if (value.reverse_top_speed_kmh >= 0.0F && offsets->reverse_offset >= 0) {
+                std::uintptr_t reverse_address = 0;
+                if (!AddAddress(vehicle_movement_component,
+                        static_cast<std::uintptr_t>(offsets->reverse_offset),
+                        reverse_address))
+                    return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                        TextLocalized("backend.advanced_tuning_offsets_unresolved_914", "advanced tuning fields could not be resolved (layout changed?)"));
+                if (const auto write_status = write_float(reverse_address,
+                        value.reverse_top_speed_kmh, "ReverseTopSpeedInKmH");
+                    write_status.code != ANOMALY_STATUS_V1_OK) return write_status;
+            }
+            const auto write_setup = [&](const std::int32_t setup_offset) -> AnomalyStatusV1 {
+                const std::uintptr_t base = vehicle_movement_component +
+                    static_cast<std::uintptr_t>(setup_offset);
+                // Maintainer review fix: the comfort setup takes the comfort_*
+                // fields and the normal setup takes the plain fields — the
+                // caller supplies both sets in one struct.
+                const float up_value = comfort_setup
+                    ? value.comfort_change_up_rpm : value.change_up_rpm;
+                const float down_value = comfort_setup
+                    ? value.comfort_change_down_rpm : value.change_down_rpm;
+                const float time_value = comfort_setup
+                    ? value.comfort_gear_change_time : value.gear_change_time;
+                const float ratio_value = comfort_setup
+                    ? value.comfort_final_ratio : value.final_ratio;
+                const float eff_value = comfort_setup
+                    ? value.comfort_transmission_efficiency : value.transmission_efficiency;
+                std::uintptr_t a = 0;
+                if (up_value >= 0.0F) {
+                    if (!AddAddress(base, static_cast<std::uintptr_t>(offsets->up_offset), a))
+                        return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                            TextLocalized("backend.advanced_tuning_offsets_unresolved_914", "advanced tuning fields could not be resolved (layout changed?)"));
+                    if (const auto s = write_float(a, up_value, "ChangeUpRPM");
+                        s.code != ANOMALY_STATUS_V1_OK) return s;
+                }
+                if (down_value >= 0.0F) {
+                    if (!AddAddress(base, static_cast<std::uintptr_t>(offsets->down_offset), a))
+                        return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                            TextLocalized("backend.advanced_tuning_offsets_unresolved_914", "advanced tuning fields could not be resolved (layout changed?)"));
+                    if (const auto s = write_float(a, down_value, "ChangeDownRPM");
+                        s.code != ANOMALY_STATUS_V1_OK) return s;
+                }
+                if (time_value >= 0.0F) {
+                    if (!AddAddress(base, static_cast<std::uintptr_t>(offsets->time_offset), a))
+                        return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                            TextLocalized("backend.advanced_tuning_offsets_unresolved_914", "advanced tuning fields could not be resolved (layout changed?)"));
+                    if (const auto s = write_float(a, time_value, "GearChangeTime");
+                        s.code != ANOMALY_STATUS_V1_OK) return s;
+                }
+                if (ratio_value >= 0.0F) {
+                    if (!AddAddress(base, static_cast<std::uintptr_t>(offsets->ratio_offset), a))
+                        return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                            TextLocalized("backend.advanced_tuning_offsets_unresolved_914", "advanced tuning fields could not be resolved (layout changed?)"));
+                    if (const auto s = write_float(a, ratio_value, "FinalRatio");
+                        s.code != ANOMALY_STATUS_V1_OK) return s;
+                }
+                if (eff_value >= 0.0F) {
+                    if (!AddAddress(base, static_cast<std::uintptr_t>(offsets->eff_offset), a))
+                        return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                            TextLocalized("backend.advanced_tuning_offsets_unresolved_914", "advanced tuning fields could not be resolved (layout changed?)"));
+                    if (const auto s = write_float(a, eff_value,
+                            "TransmissionEfficiency"); s.code != ANOMALY_STATUS_V1_OK) return s;
+                }
+                return Status(ANOMALY_STATUS_V1_OK);
+            };
+            // Normal and comfort are SEPARATE setups — write only the selected
+            // one so the mode the user is not editing keeps its values.
+            const std::int32_t target_setup = comfort_setup
+                ? offsets->comfort_setup_offset
+                : offsets->normal_setup_offset;
+            if (target_setup < 0)
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                    TextLocalized("backend.transmission_setup_unavailable_916", "the requested transmission setup is unavailable on this vehicle"));
+            if (const auto setup_status = write_setup(target_setup);
+                setup_status.code != ANOMALY_STATUS_V1_OK) return setup_status;
+            // Push the new setup into the physics simulation — without this the
+            // struct changes on paper but the driving behavior keeps the values
+            // the vehicle was initialized with. Best-effort.
+            std::uintptr_t resetup_function = 0;
+            if (FindExactObjectLocked(
+                    L"/Script/HTGame.HTVehicleMovementComponent.ReSetupEngineAndTransmission",
+                    resetup_function) && resetup_function != 0) {
+                std::uintptr_t resetup_owner = 0;
+                std::uint8_t resetup_num_parms = 0;
+                std::uint16_t resetup_parms_size = 0;
+                if (ReadPointerAt(*memory, resetup_function, layout.object_outer,
+                        resetup_owner) &&
+                    resetup_owner == movement_class &&
+                    ReadValue(*memory, resetup_function + layout.ufunction_numParms,
+                        resetup_num_parms) &&
+                    ReadValue(*memory, resetup_function + layout.ufunction_parmsSize,
+                        resetup_parms_size) &&
+                    resetup_num_parms == 0 && resetup_parms_size == 0) {
+                    const std::array<std::uint8_t, 8> no_parameters{};
+                    (void)InvokeProcessEventGuarded(process_event_invoker,
+                        vehicle_movement_component, resetup_function,
+                        const_cast<std::uint8_t*>(no_parameters.data()), 0);
+                }
+            }
+            return Status(ANOMALY_STATUS_V1_OK);
+        } catch (...) {
+            return Status(ANOMALY_STATUS_V1_FAILED,
+                TextLocalized("backend.advanced_tuning_write_exception_918", "an exception occurred while writing advanced tuning"));
+        }
+    }
+
+    // Local diagnostics: enumerate every object in the registry, keep UDataTable
+    // instances and describe each (name, outer chain, row-struct type, row count,
+    // row keys). Purpose: locate tables holding shop-only customization entries
+    // the vehicle-asset module table does not contain (e.g. premium wheel
+    // effects such as the Neon Realm smoke or the Realistic Flame tyre mark).
+    AnomalyStatusV1 SweepAllDataTables(std::string* out_text) {
+        if (out_text == nullptr) return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
+        out_text->clear();
+        if (GetCurrentThreadId() != game_thread_id.load(std::memory_order_acquire))
+            return Status(ANOMALY_STATUS_V1_CONFLICT,
+                TextLocalized("backend.sweep_requires_game_thread_919", "the data table sweep requires the Game thread"));
+        if (!ready || names == nullptr || names->resolve_utf8 == nullptr ||
+            layout.dataTable_rowMap < 0 || object_registry.items == 0)
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                TextLocalized("backend.sweep_backend_not_ready_920", "the data table sweep requires the names service, the DataTable layout and the object registry"));
+        std::scoped_lock lock(mutex);
+        ObjectRegistryState registry;
+        if (!LoadRegistry(registry) || registry.count == 0)
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                TextLocalized("backend.sweep_registry_unavailable_921", "the object registry is unavailable"));
+        std::map<std::uintptr_t, bool> datatable_class_cache;
+        std::uint32_t tables = 0;
+        constexpr std::size_t kMaxOutputBytes = 12U * 1024U * 1024U;
+        constexpr std::size_t kMaxKeysPerTable = 128;
+        constexpr std::int32_t kMaxRowsPerTable = 65536;
+        for (std::uint32_t index = 0; index < registry.count; ++index) {
+            std::uintptr_t object = 0;
+            std::uint32_t serial = 0;
+            if (!ReadObjectSlot(*memory, registry, index, object, serial) || object == 0) {
+                continue;
+            }
+            std::uintptr_t klass = 0;
+            if (!ReadPointerAt(*memory, object, layout.object_class, klass) || klass == 0) {
+                continue;
+            }
+            bool is_datatable = false;
+            const auto cached = datatable_class_cache.find(klass);
+            if (cached != datatable_class_cache.end()) {
+                is_datatable = cached->second;
+            } else {
+                std::uint32_t class_name_id = 0;
+                std::string class_name;
+                is_datatable =
+                    ReadValue(*memory,
+                        klass + static_cast<std::uintptr_t>(layout.object_nameOffset),
+                        class_name_id) &&
+                    ResolveFNameLocked(class_name_id, 0, class_name) &&
+                    class_name == "DataTable";
+                datatable_class_cache.emplace(klass, is_datatable);
+            }
+            if (!is_datatable) continue;
+            ++tables;
+            std::uint32_t name_id = 0;
+            std::string table_name = "<unresolved>";
+            if (ReadValue(*memory,
+                    object + static_cast<std::uintptr_t>(layout.object_nameOffset),
+                    name_id)) {
+                ResolveFNameLocked(name_id, 0, table_name);
+            }
+            std::string outer_text;
+            std::uintptr_t outer = 0;
+            if (ReadPointerAt(*memory, object, layout.object_outer, outer) && outer != 0) {
+                std::uint32_t outer_name_id = 0;
+                std::string outer_name;
+                if (ReadValue(*memory,
+                        outer + static_cast<std::uintptr_t>(layout.object_nameOffset),
+                        outer_name_id) &&
+                    ResolveFNameLocked(outer_name_id, 0, outer_name)) {
+                    outer_text = outer_name;
+                }
+                std::uintptr_t outer_parent = 0;
+                if (ReadPointerAt(*memory, outer, layout.object_outer, outer_parent) &&
+                    outer_parent != 0) {
+                    std::uint32_t parent_name_id = 0;
+                    std::string parent_name;
+                    if (ReadValue(*memory,
+                            outer_parent +
+                                static_cast<std::uintptr_t>(layout.object_nameOffset),
+                            parent_name_id) &&
+                        ResolveFNameLocked(parent_name_id, 0, parent_name)) {
+                        outer_text = parent_name + "/" + outer_text;
+                    }
+                }
+            }
+            std::uintptr_t row_struct = 0;
+            std::string row_struct_name;
+            if (!ReadPointerAt(*memory, object, layout.dataTable_rowStruct, row_struct) ||
+                row_struct == 0 ||
+                !ReadReflectedObjectNameLocked(row_struct, row_struct_name)) {
+                row_struct_name = "<unreadable>";
+            }
+            out_text->append("== ");
+            out_text->append(table_name);
+            out_text->append(" | outer=");
+            out_text->append(outer_text.empty() ? "-" : outer_text);
+            out_text->append(" | rowstruct=");
+            out_text->append(row_struct_name);
+            SparseMapView view{};
+            if (layout.dataTable_rowMap < 0 ||
+                !ReadSparseMapViewLocked(
+                    object + static_cast<std::uintptr_t>(layout.dataTable_rowMap), view) ||
+                view.num <= 0 || view.num > kMaxRowsPerTable) {
+                out_text->append(" | rowmap unreadable or abnormal row count\n");
+                continue;
+            }
+            out_text->append(" | rows=");
+            out_text->append(std::to_string(view.num));
+            out_text->append("\n");
+            if (view.stride <= 0 || view.stride > 4096 ||
+                static_cast<std::size_t>(view.num) >
+                    (std::numeric_limits<std::size_t>::max)() /
+                        static_cast<std::size_t>(view.stride)) {
+                out_text->append("keys: <abnormal stride>\n");
+                continue;
+            }
+            std::vector<std::uint8_t> elements(
+                static_cast<std::size_t>(view.num) *
+                static_cast<std::size_t>(view.stride), 0);
+            if (!memory->Read(view.data, elements.data(), elements.size())) {
+                out_text->append("keys: <element array unreadable>\n");
+                continue;
+            }
+            std::string keys;
+            std::uint32_t keys_logged = 0;
+            for (std::int32_t slot = 0; slot < view.num; ++slot) {
+                const auto u_slot = static_cast<std::uint32_t>(slot);
+                if ((view.flags[static_cast<std::size_t>(u_slot) / 32U] &
+                        (1U << (u_slot & 31U))) == 0) {
+                    continue;
+                }
+                const auto* element = elements.data() +
+                    static_cast<std::size_t>(slot) * static_cast<std::size_t>(view.stride);
+                std::uint32_t key_comparison = 0;
+                std::uint32_t key_number = 0;
+                std::memcpy(&key_comparison, element, sizeof(key_comparison));
+                std::memcpy(&key_number, element + 4, sizeof(key_number));
+                if (keys_logged >= kMaxKeysPerTable) {
+                    keys.append(", ...");
+                    break;
+                }
+                std::string key;
+                if (!ResolveFNameLocked(key_comparison, key_number, key)) {
+                    key = "<unresolved>";
+                }
+                if (keys_logged != 0) keys.append(", ");
+                keys.append(key);
+                if (key_number != 0) keys.append("#" + std::to_string(key_number));
+                ++keys_logged;
+            }
+            out_text->append("keys: ");
+            out_text->append(keys);
+            out_text->append("\n");
+            if (out_text->size() >= kMaxOutputBytes) {
+                out_text->append("== output limit reached, truncated (tables so far: ")
+                    .append(std::to_string(tables)).append(")==\n");
+                break;
+            }
+        }
+        out_text->append("== ");
+        out_text->append(std::to_string(tables));
+        out_text->append(" DataTables total ==\n");
+        return Status(ANOMALY_STATUS_V1_OK);
     }
 
 };

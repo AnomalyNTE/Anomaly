@@ -69,7 +69,7 @@ foreach ($name in $Plugin) {
     $catalogKeys = @{}
     foreach ($property in $document.messages.PSObject.Properties) {
         $key = $property.Name
-        if ($key -notmatch '\A[a-z0-9._-]{1,255}\z') { Write-Host "  非法 key: $key"; $ok = $false; continue }
+        if ($key -cnotmatch '\A[a-z0-9._-]{1,255}\z') { Write-Host "  非法 key: $key"; $ok = $false; continue }
         if ($property.Value -isnot [string] -or $property.Value.Length -eq 0) { Write-Host "  消息为空或非字符串: $key"; $ok = $false; continue }
         if (-not (Test-Format $property.Value)) { Write-Host "  花括号未转义: $key"; $ok = $false; continue }
         $bytes = [Text.Encoding]::UTF8.GetByteCount($property.Value)
