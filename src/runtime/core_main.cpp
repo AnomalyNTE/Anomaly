@@ -20,6 +20,7 @@
 #include "anomaly/structured_logger.hpp"
 #include "anomaly/telemetry.hpp"
 #include "anomaly/websocket_server.hpp"
+#include "anomaly/web_server.hpp"
 #include "config.hpp"
 #include "pipe_server.hpp"
 #include "platform_host.hpp"
@@ -73,6 +74,7 @@ struct CoreContext {
     std::shared_ptr<anomaly::TelemetryClient> telemetry;
     std::shared_ptr<anomaly::PlatformSettingsStore> settings;
     std::shared_ptr<anomaly::WebSocketServer> websocket;
+    std::shared_ptr<anomaly::WebServer> web;
     HMODULE game_module{};
     std::shared_ptr<anomaly::NteProfileRuntime> profile_runtime;
     mutable std::mutex pak_mods_mutex;
@@ -607,6 +609,42 @@ DWORD PrepareWebSocketService(
         context, anomaly::LogLevel::Info, "websocket.ready",
         "websocket=ready address=127.0.0.1:14514");
     return stop_token.stop_requested() ? ERROR_CANCELLED : ERROR_SUCCESS;
+}
+
+DWORD PrepareWebService(
+    const std::shared_ptr<CoreContext>& context, std::stop_token stop_token) {
+    if (stop_token.stop_requested()) return ERROR_CANCELLED;
+    const auto weak_session = context->session;
+    auto server = std::make_shared<anomaly::WebServer>(
+        [weak_session](std::string owner, std::uint64_t generation, std::function<void()> work) {
+            const auto session = weak_session.lock();
+            return session != nullptr && static_cast<bool>(session->Dispatchers().Post(
+                anomaly::ExecutionDomain::Worker, std::string(ANOMALY_WEB_SERVICE_V1_ID) + "." + owner,
+                generation, std::move(work)));
+        });
+    if (!server->Start()) {
+        const DWORD error = server->LastError() != ERROR_SUCCESS ? server->LastError() : ERROR_OPEN_FAILED;
+        RuntimeLog(context, anomaly::LogLevel::Warning, "web.unavailable",
+            "web=unavailable reason=listen-failed error=" + std::to_string(error));
+        return ERROR_SUCCESS;
+    }
+    if (!anomaly::ProcessAdapterServices().Publish(anomaly::kWebProviderId, 1,
+            server->Provider(), {}, std::static_pointer_cast<const void>(server))) {
+        server->Stop();
+        RuntimeLog(context, anomaly::LogLevel::Warning, "web.unavailable",
+            "web=unavailable reason=provider-publish-failed error=" + std::to_string(ERROR_INVALID_DATA));
+        return ERROR_SUCCESS;
+    }
+    context->web = std::move(server);
+    RuntimeLog(context, anomaly::LogLevel::Info, "web.ready", "web=ready");
+    return stop_token.stop_requested() ? ERROR_CANCELLED : ERROR_SUCCESS;
+}
+
+void StopWebService(const std::shared_ptr<CoreContext>& context) noexcept {
+    auto server = std::exchange(context->web, {});
+    if (server == nullptr) return;
+    static_cast<void>(anomaly::ProcessAdapterServices().Revoke(anomaly::kWebProviderId, server->Provider()));
+    server->Stop();
 }
 
 void StopWebSocketService(const std::shared_ptr<CoreContext>& context) noexcept {
@@ -1589,6 +1627,19 @@ anomaly::RuntimeSessionOptions BuildSessionOptions(
             static_cast<int>(result), std::system_category(), "register websocket service");
     }
 
+    anomaly::ServiceDescriptor web;
+    // This node completes optional listener initialization. Public SDK readiness
+    // is determined solely by the published, versioned provider.
+    web.id = anomaly::kWebServerServiceId;
+    web.startup = anomaly::ServiceStartup::Blocking;
+    web.affinity = anomaly::ServiceAffinity::Lifecycle;
+    web.start = [context](std::stop_token token) { return PrepareWebService(context, token); };
+    web.stop = [context] { StopWebService(context); };
+    result = services->Register(std::move(web));
+    if (result != ERROR_SUCCESS) {
+        throw std::system_error(static_cast<int>(result), std::system_category(), "register loopback web service");
+    }
+
     anomaly::ServiceDescriptor pattern;
     pattern.id = "anomaly.internal.pattern";
     pattern.lifetime = anomaly::ServiceLifetime::Provided;
@@ -1681,6 +1732,7 @@ anomaly::RuntimeSessionOptions BuildSessionOptions(
     plugin_host.affinity = anomaly::ServiceAffinity::Lifecycle;
     plugin_host.required_dependencies.push_back({"anomaly.config", 1});
     plugin_host.required_dependencies.push_back({ANOMALY_WEBSOCKET_SERVICE_V1_ID, 1});
+    plugin_host.optional_dependencies.push_back({anomaly::kWebServerServiceId, 1});
     plugin_host.required_dependencies.push_back({"anomaly.internal.nte-profile", 1});
     plugin_host.required_dependencies.push_back({std::string(anomaly::kPakModRuntimeServiceId), 1});
     plugin_host.required_dependencies.push_back({"anomaly.repository.coordinator", 1});

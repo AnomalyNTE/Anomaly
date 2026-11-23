@@ -99,6 +99,7 @@ Every required (non-optional) service needs the capability listed in the table b
 | `anomaly.scheduler` | `scheduler` |
 | `anomaly.ipc` | `ipc` |
 | `anomaly.websocket` | `websocket` |
+| `anomaly.web` | `web` |
 | `anomaly.commands` | `commands` |
 | `anomaly.notifications` | `notifications` |
 | `anomaly.interop.signature` | `interop-signature` |
