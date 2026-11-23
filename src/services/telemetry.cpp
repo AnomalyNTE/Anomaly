@@ -1,4 +1,5 @@
 #include "anomaly/telemetry.hpp"
+#include "anomaly/sdk/version.h"
 
 #include <Windows.h>
 #include <bcrypt.h>
@@ -57,7 +58,12 @@ std::filesystem::path DefaultIdentityFile() {
     return root / L"Anomaly" / L"telemetry" / L"identity-v1";
 }
 
-std::string LoadIdentity(const std::filesystem::path& path, std::stop_token stop) {
+struct TelemetryIdentity {
+    std::string uuid;
+    std::string first_started_at;
+};
+
+TelemetryIdentity LoadIdentity(const std::filesystem::path& path, std::stop_token stop) {
     if (path.empty()) return {};
     std::error_code error;
     std::filesystem::create_directories(path.parent_path(), error);
@@ -77,13 +83,24 @@ std::string LoadIdentity(const std::filesystem::path& path, std::stop_token stop
     if (!GetFileInformationByHandle(file.value, &info) ||
         (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
         info.nFileSizeHigh != 0) return {};
+    // The shared identity is created on the first telemetry-enabled start. Its
+    // persisted creation time also lets existing installations report that start
+    // without replacing their UUID or inventing an upgrade-time first start.
+    SYSTEMTIME created{};
+    if (!FileTimeToSystemTime(&info.ftCreationTime, &created)) return {};
+    char timestamp[21]{};
+    std::snprintf(timestamp, sizeof(timestamp), "%04u-%02u-%02uT%02u:%02u:%02uZ",
+        created.wYear, created.wMonth, created.wDay, created.wHour, created.wMinute, created.wSecond);
+    TelemetryIdentity identity;
+    identity.first_started_at = timestamp;
     if (info.nFileSizeLow != 0) {
         if (info.nFileSizeLow != 36) return {};
         std::string uuid(36, '\0');
         DWORD read{};
         if (!ReadFile(file.value, uuid.data(), 36, &read, nullptr) || read != 36 || !ValidUuid(uuid))
             return {};
-        return uuid;
+        identity.uuid = std::move(uuid);
+        return identity;
     }
     std::array<unsigned char, 16> bytes{};
     if (BCryptGenRandom(nullptr, bytes.data(), static_cast<ULONG>(bytes.size()),
@@ -101,7 +118,8 @@ std::string LoadIdentity(const std::filesystem::path& path, std::stop_token stop
     DWORD written{};
     if (!WriteFile(file.value, uuid.data(), 36, &written, nullptr) || written != 36 ||
         !FlushFileBuffers(file.value)) return {};
-    return uuid;
+    identity.uuid = std::move(uuid);
+    return identity;
 }
 
 struct DailyState {
@@ -295,8 +313,8 @@ void ReportLauncherUsage(const TelemetryOptions& options,
             (options.language != "en-US" && options.language != "zh-CN") ||
             std::ranges::find(themes, usage.theme) == themes.end() || !ParseEndpoint(options, endpoint)) return;
         const auto identity = options.identity_file.empty() ? DefaultIdentityFile() : options.identity_file;
-        const auto uuid = LoadIdentity(identity, stop);
-        if (uuid.empty() || stop.stop_requested()) return;
+        const auto client = LoadIdentity(identity, stop);
+        if (client.uuid.empty() || stop.stop_requested()) return;
         auto path = identity;
         path += L".launcher-daily-v1";
         FileHandle file{CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
@@ -321,7 +339,8 @@ void ReportLauncherUsage(const TelemetryOptions& options,
             !WriteFile(file.value, day.data(), 10, &written, nullptr) || written != 10 ||
             !FlushFileBuffers(file.value)) return;
         const auto body = nlohmann::json{{"schemaVersion", 2}, {"source", "launcher"},
-            {"uuid", uuid}, {"day", day}, {"language", options.language},
+            {"uuid", client.uuid}, {"day", day}, {"language", options.language},
+            {"version", ANOMALY_SDK_VERSION_STRING}, {"firstStartedAt", client.first_started_at},
             {"theme", usage.theme}, {"customBackground", usage.custom_background}}.dump();
         static_cast<void>(Send(endpoint, body, stop));
     } catch (...) {} // Optional statistics never fail launcher initialization.
@@ -356,8 +375,8 @@ public:
             (options.language != "en-US" && options.language != "zh-CN") ||
             !ParseEndpoint(options, endpoint)) return;
         const auto identity = options.identity_file.empty() ? DefaultIdentityFile() : options.identity_file;
-        const auto uuid = LoadIdentity(identity, stop);
-        if (uuid.empty()) return;
+        const auto client = LoadIdentity(identity, stop);
+        if (client.uuid.empty()) return;
         auto state_path = identity;
         state_path += L".daily-v1";
         const auto started = std::chrono::steady_clock::now();
@@ -420,7 +439,8 @@ public:
                     batch.push_back(id);
                 }
             }
-            nlohmann::json report{{"schemaVersion", 1}, {"uuid", uuid}, {"day", request_day},
+            nlohmann::json report{{"schemaVersion", 1}, {"uuid", client.uuid}, {"day", request_day},
+                {"version", ANOMALY_SDK_VERSION_STRING}, {"firstStartedAt", client.first_started_at},
                 {"language", options.language}, {"plugins", batch}};
             if (!options.mode.empty()) {
                 report["schemaVersion"] = 2;

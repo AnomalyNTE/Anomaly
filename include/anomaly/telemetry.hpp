@@ -15,6 +15,8 @@ struct TelemetryOptions {
     std::wstring endpoint{L"https://telemetry.anomalynte.com/v1/collect"};
     bool allow_loopback_http{};
     // Empty selects the per-Windows-user LocalAppData identity shared by installations.
+    // Its creation time is the first telemetry-enabled start (UTC, whole seconds);
+    // both launcher and core send it as firstStartedAt alongside the build version.
     std::filesystem::path identity_file;
     // Effective host UI locale, never an OS locale or IP-derived location.
     std::string language{"en-US"};
