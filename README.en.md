@@ -71,20 +71,21 @@ If Anomaly is useful to you, you can support the project's continued maintenance
 - 🪟 **In-game management UI**: press `Insert` to open the Chinese or English UI and manage plugin enablement, disabling, reload, and settings in one place.
 - 🌐 **Third-party plugin downloads**: browse and install community plugins under **Plugins > Available**, upgrade them under **Updates**, and add trusted plugin sources yourself.
 - 🔥 **Hot mod loading**: in hot mode, enabling, swapping, or removing a mod takes effect immediately — appearances are refreshed in place, resources that cannot be rebound fall back to the **Mod Manager** plugin's world reload, and the game never restarts.
-- 🔌 **Practical built-in plugins**: the package ships 35 user-facing plugins covering coordinates and health, entity ESP, combat statistics, camera and blur removal, skins and model replacement, vehicles, scene switching, audio replacement, and automation scripts — all disabled by default and enabled on demand.
+- 🔌 **Practical built-in plugins**: the package ships 40 user-facing plugins covering coordinates and health, world map markers, entity ESP, combat statistics, equipment management and remote shopping, camera and FPS unlocking, skins and model replacement, vehicles, scene switching, audio replacement, and automation scripts — all disabled by default and enabled on demand.
 - 🤖 **Automation tasks**: Resource Auto Pickup, Combat Resource Points, Clone Enter, WalletCollector, and 999 Nights Script can teleport, fight, or pick up automatically, and you can stop them at any time from the plugin window.
 - 🧩 **Open plugin framework**: a pure C ABI v1 SDK and unified V1 services, so a plugin project needs neither the runtime source nor the C++ ABI.
 - 🔍 **Memory analysis and developer tools**: inspect process modules, PE sections, and memory regions, with a byte signature scan, an offline TestHost, and other developer tools.
 
 ### 🔌 Built-in plugins
 
-The runtime package ships **35** user-facing built-in plugins, all disabled by default and enabled on demand. Each plugin is described in detail under [built-in plugins](docs/en/user-guide/built-in-plugins.md).
+The runtime package ships **40** user-facing built-in plugins, all disabled by default and enabled on demand. Each plugin is described in detail under [built-in plugins](docs/en/user-guide/built-in-plugins.md).
 
 **UI and information**
 
 | Plugin | Purpose |
 | --- | --- |
 | **Coordinate Display** | Player and camera coordinates, session state, and snapshot sampling metrics |
+| **Better Map** | Marks Oracle Stones, Twenty-One's Gifts, enemy spawn points, and city crime locations on the world map, with monster filters, hide-completed, and click-to-teleport |
 | **Entity ESP** | Configurable 2D/3D bounding boxes and labels for NTE entities |
 | **Health Display** | Independent health bars with current/max HP for monsters and characters, adjustable range, size, and text |
 | **NTE Combat Tracker** | FF14-style DPS panel: capture runs inside the plugin, rendering in a bundled standalone overlay process |
@@ -95,6 +96,7 @@ The runtime package ships **35** user-facing built-in plugins, all disabled by d
 
 | Plugin | Purpose |
 | --- | --- |
+| **FPS Unlocker** | Removes the UE frame rate cap, remembers the toggle, and restores the original cap when switched off |
 | **Camera Blur Fix** | Removes camera fading for the player, NPCs, and crowds, including pitch-based fading and close-range hiding |
 | **Camera Tools** | View distance and FOV adjustment, forced camera rotation blocking, free camera, and optional scene loading around it |
 | **Model Scale** | Rescales the local character mesh without touching movement or collision |
@@ -126,6 +128,13 @@ The runtime package ships **35** user-facing built-in plugins, all disabled by d
 | **HiFi Vehicle Music** | Replaces in-vehicle music with a local lossless library over WASAPI exclusive/shared, DirectSound, or ASIO |
 | **Better TV** | Replaces the residence TV video with a local clip or a Bilibili link; memory only, no game files written |
 
+**Equipment and utilities**
+
+| Plugin | Purpose |
+| --- | --- |
+| **Equipment Manager** | Local web UI synced with live inventory for equipping, transfers, single/multi-character loadout optimization, presets, item appraisal, rewind, and build planning |
+| **Remote Shop** | Browse merchants, search and favorite products, choose a branch, and batch-buy custom quantities |
+
 **Automation**
 
 | Plugin | Purpose |
@@ -135,6 +144,7 @@ The runtime package ships **35** user-facing built-in plugins, all disabled by d
 | **Clone Enter** | Enters a dungeon by dungeon and difficulty, fights, claims rewards, exits, and optionally loops |
 | **WalletCollector** | Scans wallet spawn points, plans a route for the target count, and collects the wallets automatically |
 | **Night 999** | Loops enemy farming in Crimson Dragon Castle for the configured number of rounds: camp respawn plus automatic combat at two fight points |
+| **Haunted House** | One-click 18-step haunted-house main flow and boss-room shortcut, plus on-demand scans and auto-pickup for flyers, batteries, sanity spray, and gingerbread |
 | **AutoFish** | Automatic casting, hooking, and reeling with continuous fishing, bait restocking, and selling past a threshold |
 | **AutoTaxi** | Completes taxi orders automatically and shows the completion count the game confirms |
 | **AutoClaw** | Picks a doll in the active machine, auto-submits one capture after you pay a round, and shows the server's response |
