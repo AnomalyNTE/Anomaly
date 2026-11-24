@@ -32,3 +32,10 @@ export function suitLabel(t, item) {
   const name = item?.suit_name || (item?.kind === "core" && item.name !== item.item_id ? item.name : "");
   return name && name !== item?.suit_id && !/^Suit\d+$/i.test(name) ? name : t("web.unknown_suit");
 }
+
+export function cartridgeSetProgress(core, modules) {
+  const required = core?.required_shapes;
+  if (core?.required_shapes_complete !== true || !Array.isArray(required) || required.length !== 4 || new Set(required).size !== 4) return null;
+  const present = new Set(modules.filter(item => item.kind === "module").map(item => item.shape_id));
+  return { required: 4, matched: required.filter(shape => present.has(shape)).length };
+}

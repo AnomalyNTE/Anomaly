@@ -120,16 +120,20 @@ export function recommendedCoreForRole(role) {
   return core && typeof core.suit_id === "string" && core.suit_id ? core : null;
 }
 
+export function optimizationSetMode(preference) {
+  return preference.require_core === false ? "none" : "four_piece";
+}
+
 export function resolveCorePreference(role, preference) {
   const manual = role?.official === false || preference.core_suit_source === "manual" ||
     (preference.core_suit_source == null && Boolean(preference.core_suit_id));
-  return { ...preference, core_suit_source: manual ? "manual" : "recommended",
+  return { ...preference, set_effect_mode: optimizationSetMode(preference), core_suit_source: manual ? "manual" : "recommended",
     core_suit_id: manual ? preference.core_suit_id || "" : recommendedCoreForRole(role)?.suit_id || "" };
 }
 
 export function rolePreference(role = {}) {
   const preference = { weights: role.weights || {}, main_weights: role.main_weights || role.weights || {}, shared_main_weights: false,
-    require_core: role.require_core !== false, set_effect_mode: role.set_effect_mode || "four_piece", core_suit_id: role.core_suit_id || "", core_main_stats: role.core_main_stats || [],
+    require_core: role.require_core !== false, set_effect_mode: optimizationSetMode(role), core_suit_id: role.core_suit_id || "", core_main_stats: role.core_main_stats || [],
     core_suit_source: role.core_suit_source || (role.core_suit_id || role.official === false ? "manual" : "recommended"),
     priority_stats: role.priority_stats || [], priority_equal: role.priority_equal === true, priority_min_grade: role.priority_min_grade || "A",
     filters: role.filters || {}, property_limits: role.property_limits || [], allow_missing_core: role.allow_missing_core === true,
@@ -179,7 +183,7 @@ export function resolveOptimizationPreference(role = {}, stored, initial = null)
 export function optimizationPreferenceFields(preference, items = [], character = null) {
   const result = {
     weights: structuredClone(preference.weights || {}), require_core: preference.require_core !== false,
-    set_effect_mode: preference.require_core === false ? "none" : preference.set_effect_mode || "four_piece",
+    set_effect_mode: optimizationSetMode(preference),
     include_discarded: preference.include_discarded === true, allow_borrow: preference.allow_borrow !== false,
     priority_stats: structuredClone(preference.priority_stats || []), priority_equal: preference.priority_equal === true,
     priority_min_grade: preference.priority_min_grade || "A",

@@ -11,7 +11,7 @@ import { createSearchProgress } from "./search_progress.js";
 import { arrangeBoard } from "./board_layout.js";
 import { createLoadoutSlots } from "./loadout_slots.js";
 import { loadoutMatchesInventory, sameLoadout } from "./loadout_state.js";
-import { propertyLabel, qualityLabel, suitLabel } from "./equipment_display.js";
+import { propertyLabel, qualityLabel, suitLabel, cartridgeSetProgress } from "./equipment_display.js";
 import { createCharacterRail } from "./character_rail.js";
 import { setRecommendedWeightsCatalog, getRecommendedWeightsCatalog } from "./weight_preferences.js";
 
@@ -526,13 +526,9 @@ function renderBoardTelemetry(boardCharacter, layout, sourceItems, coreUid, plac
   const totalCells = boardCharacter?.allowed_cells?.length || 0;
   if (!totalCells) { container.hidden = true; container.replaceChildren(); return; }
   const usedCells = layout.cells.size;
-  const suitCounts = new Map();
   const equipped = [...(coreUid ? [coreUid] : []), ...placements.map((placement) => placement.equipment)]
     .map((uid) => sourceItems.find((candidate) => sameUid(candidate.uid, uid))).filter(Boolean);
-  for (const item of equipped) {
-    const suit = item.suit_id ? suitLabel(t, item) : "";
-    if (suit) suitCounts.set(suit, (suitCounts.get(suit) || 0) + 1);
-  }
+  const core = equipped.find(item => item.kind === "core"), set = cartridgeSetProgress(core, equipped);
   const occupancy = node("span", "telemetry-occupancy");
   const fillBar = node("span", "telemetry-meter");
   const fill = node("i");
@@ -540,10 +536,11 @@ function renderBoardTelemetry(boardCharacter, layout, sourceItems, coreUid, plac
   fillBar.append(fill);
   occupancy.append(fillBar, node("strong", "", `${usedCells}/${totalCells}`));
   const chips = [occupancy];
-  for (const [suit, count] of [...suitCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 2)) {
-    const badge = node("span", `telemetry-set${count >= 4 ? " set-four" : count >= 2 ? " set-two" : ""}`);
-    badge.append(node("span", "telemetry-set-name", suit), node("strong", "", `×${count}`));
-    badge.title = `${suit} ×${count}`;
+  if (set) {
+    const badge = node("span", `telemetry-set${set.matched === 4 ? " set-four" : set.matched >= 2 ? " set-two" : ""}`);
+    const progress = t("web.set_four_progress", set.matched, set.required);
+    badge.append(node("strong", "", progress));
+    badge.title = `${suitLabel(t, core)} · ${progress}`;
     chips.push(badge);
   }
   container.replaceChildren(...chips);

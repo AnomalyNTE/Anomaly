@@ -953,6 +953,7 @@
     "web.unknown_suit": "未知套装",
     "web.optimize_recommended_suit": "角色推荐：{0}",
     "web.optimize_recommended_suit_pending": "角色推荐",
-    "web.optimize_recommended_suit_missing": "尚未读到{0}的推荐卡带，请同步库存或手动选择套装"
+    "web.optimize_recommended_suit_missing": "尚未读到{0}的推荐卡带，请同步库存或手动选择套装",
+    "web.set_four_progress": "四件套 {0}/{1}"
   }
 }

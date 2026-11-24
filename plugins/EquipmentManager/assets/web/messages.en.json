@@ -923,5 +923,6 @@
   "web.unknown_suit": "Unknown set",
   "web.optimize_recommended_suit": "Role recommendation: {0}",
   "web.optimize_recommended_suit_pending": "Role recommendation",
-  "web.optimize_recommended_suit_missing": "No recommended cartridge found for {0} Sync inventory or select a set manually"
+  "web.optimize_recommended_suit_missing": "No recommended cartridge found for {0} Sync inventory or select a set manually",
+  "web.set_four_progress": "Four-piece {0}/{1}"
 }

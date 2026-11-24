@@ -64,6 +64,15 @@ bool Flag(const Json& input, const char* key, bool fallback) {
     return found->get<bool>();
 }
 
+std::map<std::string, int, std::less<>> FourPieceShapes(const Json& shapes) {
+    if (!shapes.is_array() || shapes.size() != 4) Reject(AlgorithmFailure::incomplete_set);
+    std::map<std::string, int, std::less<>> result;
+    for (const auto& shape : shapes)
+        if (!result.emplace(Id(shape, AlgorithmFailure::incomplete_set), 1).second)
+            Reject(AlgorithmFailure::incomplete_set);
+    return result;
+}
+
 std::vector<std::string> Ids(const Json& input, const char* key, std::size_t maximum = 32) {
     const auto found = input.find(key);
     if (found == input.end()) return {};
@@ -617,8 +626,7 @@ Json Optimize(const Json& request, const Json& inventory, const AlgorithmCancelC
     const bool borrow = Flag(request, "allow_borrow", true);
     const bool discarded = Flag(request, "include_discarded", false);
     const auto set_mode = request.value("set_effect_mode", std::string(require_core ? "four_piece" : "none"));
-    if (set_mode != "four_piece" && set_mode != "two_piece" && set_mode != "none") Reject(AlgorithmFailure::invalid_request);
-    if (!require_core && set_mode != "none") Reject(AlgorithmFailure::invalid_request);
+    if (set_mode != (require_core ? "four_piece" : "none")) Reject(AlgorithmFailure::invalid_request);
     const auto core_suit = request.contains("core_suit_id") ? Id(request.at("core_suit_id"), AlgorithmFailure::invalid_request) : std::string{};
     const auto mains = Ids(request, "core_main_stats");
     std::set<std::uint64_t> excluded;
@@ -675,13 +683,11 @@ Json Optimize(const Json& request, const Json& inventory, const AlgorithmCancelC
             scored.uid = uid;
             if (core) {
                 Core candidate{std::move(scored)};
-                if (set_mode != "none") {
-                    const auto shapes = item.find("required_shapes");
-                    if (shapes == item.end() || !shapes->is_array() || shapes->empty() || shapes->size() > 25)
-                        Reject(AlgorithmFailure::incomplete_set);
-                    for (const auto& shape : *shapes) ++candidate.shapes[Id(shape, AlgorithmFailure::incomplete_set)];
-                    candidate.required = set_mode == "two_piece" ? std::min(2, static_cast<int>(shapes->size())) : static_cast<int>(shapes->size());
-                }
+                const auto shapes = item.find("required_shapes");
+                if (shapes == item.end() || !item.value("required_shapes_complete", true))
+                    Reject(AlgorithmFailure::incomplete_set);
+                candidate.shapes = FourPieceShapes(*shapes);
+                candidate.required = 4;
                 search.cores.push_back(std::move(candidate)); ++candidate_cores;
             } else {
                 if (const auto fixed = kept.find(uid); fixed != kept.end()) {
@@ -723,13 +729,9 @@ Json Optimize(const Json& request, const Json& inventory, const AlgorithmCancelC
     bool missing_core{};
     if (require_core && search.cores.empty() && Flag(request, "allow_missing_core", false) && !kept_core) {
         Core fallback;
-        if (set_mode != "none") {
-            if (!request.contains("required_shapes") || !request.at("required_shapes").is_array() || request.at("required_shapes").empty())
-                Reject(AlgorithmFailure::incomplete_set);
-            for (const auto& shape : request.at("required_shapes")) ++fallback.shapes[Id(shape, AlgorithmFailure::incomplete_set)];
-            fallback.required = set_mode == "two_piece" ? std::min<int>(2, static_cast<int>(request.at("required_shapes").size())) :
-                static_cast<int>(request.at("required_shapes").size());
-        }
+        if (!request.contains("required_shapes")) Reject(AlgorithmFailure::incomplete_set);
+        fallback.shapes = FourPieceShapes(request.at("required_shapes"));
+        fallback.required = 4;
         search.cores.push_back(std::move(fallback)); missing_core = true;
     }
     for (auto& group : search.groups) {

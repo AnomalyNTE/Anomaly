@@ -1,6 +1,6 @@
 import { renderPlanPreview, renderSearchSummary } from "./optimization_results.js";
 import { createOptimizerConstraints } from "./optimizer_constraints.js";
-import { generalOutputWeights, generalWeights, recommendedWeightsForRole, recommendedCoreForRole, resolveCorePreference, getRecommendedWeightsCatalog, rolePreference, resolveOptimizationPreference, optimizationPreferenceFields } from "./weight_preferences.js";
+import { generalOutputWeights, generalWeights, recommendedWeightsForRole, recommendedCoreForRole, resolveCorePreference, optimizationSetMode, getRecommendedWeightsCatalog, rolePreference, resolveOptimizationPreference, optimizationPreferenceFields } from "./weight_preferences.js";
 import { propertyLabel, suitLabel } from "./equipment_display.js";
 import { sameLoadout } from "./loadout_state.js";
 
@@ -291,7 +291,8 @@ export function createOptimizer({ jobController, features, workspace, t, node, i
     $("optimizer-exclude-label").textContent = t("web.optimize_exclude_selected", selectedUids().length);
     const locked = !loaded || active || posting;
     for (const control of $("optimizer-form").querySelectorAll("input,select")) control.disabled = locked;
-    $("opt-set-mode").disabled = locked || !preferences.require_core;
+    $("opt-set-mode").value = optimizationSetMode(preferences);
+    $("opt-set-mode").disabled = true;
     $("opt-core-suit").disabled = locked || !preferences.require_core;
     $("opt-core-main").disabled = locked || !preferences.require_core;
     const needsVerifiedSuit = preferences.allow_missing_core && preferences.require_core && preferences.set_effect_mode !== "none";
@@ -316,11 +317,11 @@ export function createOptimizer({ jobController, features, workspace, t, node, i
 
   for (const [id, field] of [["opt-require-core", "require_core"], ["opt-shared-main", "shared_main_weights"], ["opt-priority-equal", "priority_equal"], ["opt-discarded", "include_discarded"], ["opt-borrow", "allow_borrow"], ["opt-exclude-selected", "exclude_selected"]]) $(id).onchange = () => {
     preferences[field] = $(id).checked;
-    if (field === "require_core" && !preferences.require_core) { preferences.set_effect_mode = "none"; $("opt-set-mode").value = "none"; }
+    if (field === "require_core") preferences.set_effect_mode = optimizationSetMode(preferences);
     if (field === "shared_main_weights" && !preferences.shared_main_weights) for (const input of $("weight-rows").querySelectorAll("[data-weight-field=main_weights]")) input.value = String(preferences.main_weights[input.dataset.stat] ?? 0);
     changed();
   };
-  for (const [id, field] of [["opt-set-mode", "set_effect_mode"], ["opt-priority-grade", "priority_min_grade"]]) $(id).onchange = () => { preferences[field] = $(id).value; changed(); };
+  $("opt-priority-grade").onchange = () => { preferences.priority_min_grade = $("opt-priority-grade").value; changed(); };
   $("opt-core-suit").onchange = () => {
     preferences.core_suit_source = $("opt-core-suit").value === recommendedSuitOption ? "recommended" : "manual";
     preferences.core_suit_id = preferences.core_suit_source === "manual" ? $("opt-core-suit").value : "";

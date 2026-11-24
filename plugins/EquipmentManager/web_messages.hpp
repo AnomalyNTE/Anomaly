@@ -935,7 +935,8 @@ inline nlohmann::json BuildWebMessages(const anomaly::sdk::Localizer& localizer)
         {"web.unknown_suit", localizer.Text("web.unknown_suit", "Unknown set")},
         {"web.optimize_recommended_suit", localizer.Format("web.optimize_recommended_suit", "Role recommendation: {0}", placeholders)},
         {"web.optimize_recommended_suit_pending", localizer.Text("web.optimize_recommended_suit_pending", "Role recommendation")},
-        {"web.optimize_recommended_suit_missing", localizer.Format("web.optimize_recommended_suit_missing", "No recommended cartridge found for {0} Sync inventory or select a set manually", placeholders)}
+        {"web.optimize_recommended_suit_missing", localizer.Format("web.optimize_recommended_suit_missing", "No recommended cartridge found for {0} Sync inventory or select a set manually", placeholders)},
+        {"web.set_four_progress", localizer.Format("web.set_four_progress", "Four-piece {0}/{1}", placeholders)}
     };
 }
 
