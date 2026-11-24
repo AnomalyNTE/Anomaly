@@ -25,7 +25,8 @@
     "Serial": 16,
     "ChunkSize": 65536,
     "RegistryLoad": 0,
-    "RegistrySubtract": 16
+    "RegistrySubtract": 16,
+    "ControllerIgnoreMoveInputGetterSlot": 2160
   },
   "symbols": [
     {
@@ -34,6 +35,16 @@
         {
           "pattern": "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3 33 C0 48 8B 00 C3",
           "entry": "48 8B 05",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "ControllerIgnoreMoveInputGetter",
+      "candidates": [
+        {
+          "pattern": "80 B9 59 03 00 00 00 0F 97 C0 C3",
+          "entry": "80 B9 59 03 00 00 00 0F 97 C0 C3",
           "values": {}
         }
       ]
