@@ -6,7 +6,7 @@
   "author": "b1ank",
   "license": "AGPL-3.0-only",
   "audience": "developer",
-  "version": "0.1.25",
+  "version": "0.1.26",
   "entry": "plugin.dll",
   "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
   "games": ["nte"],

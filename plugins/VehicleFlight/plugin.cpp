@@ -11,7 +11,7 @@ namespace vehicle_flight {
 using namespace anomaly::sdk;
 constexpr auto Id = "b1ank.vehicle-flight";
 constexpr auto Name = "Vehicle Flight";
-constexpr auto Version = "0.1.25";
+constexpr auto Version = "0.1.26";
 using Clock = std::chrono::steady_clock;
 
 enum class Status { Off, Starting, Flying, CameraUnavailable, Blocked, PositionCorrected, NoVehicle, SceneChanged, Unavailable, Restoring };
@@ -281,7 +281,7 @@ void Tick(Context& ctx, double seconds) {
         ctx.reported_flying = true;
         const auto* core = ctx.access.engine.core;
         if (core && core->log) core->log(core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
-            StringView("Vehicle Flight 0.1.25: flight controls are active using the standard host API"));
+            StringView("Vehicle Flight 0.1.26: flight controls are active using the standard host API"));
     }
 }
 
