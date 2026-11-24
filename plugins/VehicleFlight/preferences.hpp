@@ -9,8 +9,7 @@ namespace vehicle_flight {
 struct Preferences {
     int speed{DefaultSpeed};
     Binding toggle;
-    bool noclip{};
-    Mode mode{Mode::Keyboard};
+    bool noclip{true};
 };
 
 class PreferencesStore {
@@ -28,7 +27,8 @@ public:
         using namespace anomaly::sdk;
         const auto config = host.Query<AnomalyConfigServiceV1>(ANOMALY_CONFIG_SERVICE_V1_ID);
         const auto scheduler = host.Query<AnomalySchedulerServiceV1>(ANOMALY_SCHEDULER_SERVICE_V1_ID);
-        if (scheduler && scheduler->struct_size >= sizeof(*scheduler.get()) && scheduler->schedule)
+        if (scheduler && scheduler->struct_size >= offsetof(AnomalySchedulerServiceV1, cancel) +
+                sizeof(scheduler->cancel) && scheduler->schedule)
             scheduler_ = scheduler.get();
         AnomalyGenerationHandleV1 handle{};
         if (!config || config->struct_size < sizeof(*config.get()) || !config->register_schema ||
@@ -59,7 +59,6 @@ public:
         result.speed = static_cast<int>(number("speed", MinSpeed, MaxSpeed, DefaultSpeed));
         result.toggle.key = number("key", 0, 255, 0);
         result.toggle.modifiers = number("modifiers", 0, Modifiers, 0);
-        result.mode = static_cast<Mode>(number("mode", 0, 1, 0));
         if (!Bindable(result.toggle.key)) result.toggle = {};
         AnomalyGenerationHandleV1 noclip{};
         if (json->boolean_value && Succeeded(json->object_find(json->user, root, StringView("noclip"), &noclip))) {
@@ -104,8 +103,7 @@ public:
             const auto document = "{\"speed\":" + std::to_string(settings->speed) +
                 ",\"key\":" + std::to_string(settings->toggle.key) +
                 ",\"modifiers\":" + std::to_string(settings->toggle.modifiers) +
-                ",\"noclip\":" + (settings->noclip ? "true" : "false") +
-                ",\"mode\":" + std::to_string(static_cast<int>(settings->mode)) + "}";
+                ",\"noclip\":" + (settings->noclip ? "true" : "false") + "}";
             if (anomaly::sdk::Succeeded(config_->write_atomic(config_->user, anomaly::sdk::StringView(Id), 1, Bytes(document)))) {
                 failed_ = false;
                 return;

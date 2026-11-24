@@ -2,11 +2,11 @@
   "schemaVersion": 2,
   "id": "b1ank.vehicle-flight",
   "name": "Vehicle Flight",
-  "description": "Fly the vehicle you are driving using keyboard movement or camera direction.",
+  "description": "Move the driven vehicle freely with view-relative keyboard controls and isolated driving input.",
   "author": "b1ank",
   "license": "AGPL-3.0-only",
   "audience": "developer",
-  "version": "0.1.6",
+  "version": "0.1.25",
   "entry": "plugin.dll",
   "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
   "games": ["nte"],
@@ -23,6 +23,7 @@
     {"id": "anomaly.profile", "minVersion": 1},
     {"id": "anomaly.json", "minVersion": 1},
     {"id": "anomaly.interop.signature", "minVersion": 1},
+    {"id": "anomaly.interop.hook", "minVersion": 1},
     {"id": "anomaly.ue5.names", "minVersion": 1},
     {"id": "anomaly.ue5.objects", "minVersion": 1},
     {"id": "anomaly.ue5.framework", "minVersion": 1},
@@ -31,7 +32,7 @@
     {"id": "anomaly.nte.player", "minVersion": 1, "optional": true}
   ],
   "capabilities": [
-    "ui", "ui-window", "input", "json", "memory-read", "interop-signature",
+    "ui", "ui-window", "input", "json", "memory-read", "interop-signature", "interop-hook",
     "ue5-names", "ue5-objects", "game-events", "nte-session-snapshot", "nte-player-snapshot",
     "configuration", "scheduler"
   ]
