@@ -86,7 +86,7 @@ private:
     static bool Ignored(void* controller) noexcept {
         auto* self = owner_.load();
         const auto original = original_.load();
-        if (!self || !original || self->controller_.load() != reinterpret_cast<uintptr_t>(controller))
+        if (!self || !original)
             return original ? original(controller) : false;
         AnomalyGenerationHandleV1 lease{};
         if (!anomaly::sdk::Succeeded(self->hooks_->begin_callback(self->hooks_->user, self->handle_, &lease)))
