@@ -4,6 +4,7 @@
 #include "teleport_hotkey.hpp"
 #include "map_pin_guard.hpp"
 #include "preferences.hpp"
+#include "point_export.hpp"
 #include <anomaly/sdk/localization.hpp>
 #include <atomic>
 #include <chrono>
@@ -14,7 +15,7 @@ using namespace anomaly::sdk;
 using Clock = std::chrono::steady_clock;
 constexpr auto Id = "b1ank.better-map";
 constexpr auto Title = "Better Map";
-constexpr auto Version = "0.1.17";
+constexpr auto Version = "0.1.19";
 
 enum class Status { Idle, Waiting, Unavailable, Ready, Incomplete };
 
@@ -72,6 +73,7 @@ struct Context {
     TeleportHotkey teleport_hotkey{teleport};
     MapPinGuard map_pin;
     PreferencesStore preferences_store;
+    PointExporter exporter;
     MapPreferences preferences;
     std::atomic<std::shared_ptr<const std::vector<std::string>>> hidden_monsters;
     Catalog catalog;
@@ -470,6 +472,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** output) n
         ctx->map_pin.Resolve(ctx->services, ctx->engine, ctx->profile);
         ctx->teleport_hotkey.Load(ctx->services);
         ctx->preferences = ctx->preferences_store.Load(ctx->services);
+        ctx->exporter.Load(ctx->services);
         *output = ctx.release();
         return Ok();
     } catch (...) { return {ANOMALY_STATUS_V1_FAILED, 0, {}}; }
@@ -531,6 +534,7 @@ void ANOMALY_CALL Update(void* raw, double) noexcept {
         }
     }
     if (!ctx.framework->is_game_thread || !ctx.framework->is_game_thread(ctx.framework->user)) return;
+    ctx.exporter.Update(ctx.engine, ctx.profile, ctx.localizer);
     ctx.teleport.Update(ctx.services, ctx.engine, ctx.framework, ctx.worlds, ctx.players, now);
     if (now >= ctx.next_update) {
         ctx.next_update = now + std::chrono::milliseconds(50);
@@ -741,6 +745,7 @@ void DrawContent(Context& ctx, const AnomalyUiServiceV1* ui) noexcept {
             }
             (ui->text_wrapped ? ui->text_wrapped : ui->text)(ui->user, StringView(hint));
         }
+        ctx.exporter.Draw(ui, ctx.localizer);
         const auto status = ctx.status.load();
         std::string message;
         switch (status) {

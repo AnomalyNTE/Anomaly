@@ -18,6 +18,50 @@
 
 开启地图点击传送期间，游戏大地图点击时的「创建图钉」弹窗会被屏蔽。关闭开关后即可照常创建图钉。
 
+## 分类导出点位
+
+进入主场景后点击「分类导出全部点位」。导出覆盖谕石、21 的赠礼、怪物图鉴固定刷新点和城市违规行径，
+不受显示开关、怪物筛选或「隐藏已完成」影响。数据来自现有的静态数据表读取逻辑，不扫描附近实体，
+不导出账号收集进度。游戏线程复制坐标和标识，Worker 负责序列化与原子写文件。
+
+文件直接写入运行包的 `Anomaly/state/plugins/b1ank.better-map/`，首次导出无需手动创建子目录：
+
+```text
+b1ank.better-map/
+  index.json              # 本次文件清单及各类数据表是否可用
+  oracle-stone.json        # 谕石
+  gift-21.json             # 21 的赠礼
+  city-crime.json          # 城市违规行径
+  monster-<稳定标识>.json  # 每种怪物一个文件，名称与图鉴行名见文件内部
+```
+
+`index.json` 仅保存清单，不聚合点位。每个分类文件使用 `schemaVersion: 1`、
+`source: "b1ank.better-map"`、`coordinateSystem: "ue-world-centimeters"`，包含
+`kind`、`groupId`、`name` 和 `points`。每条点位保留双精度 `x/y/z`、稳定的游戏行名标识、
+`level`、区域与楼层信息。怪物身份由图鉴行名和坐标构成，数组重排不改变身份；同一怪物的重复坐标只导出一次。
+城市事件的坐标与插件地图图标一致，包含游戏配置的图标偏移（`positionKind: "map-icon"`），
+表示事件可能发生的位置，不能用来判断事件正在发生。
+
+部分数据表不可用时仍可导出其他分类，界面会提示，清单的 `datasets` 对应项为 `false`。
+没有任何数据可导出时不写文件。重复导出直接覆盖当前分类文件；导入必须以当前 `index.json` 为准，
+不要枚举目录中旧的分类文件。当前路径不包含宝箱的其他种类、电话亭、打卡和随机刷新资源。
+
+在 MaaNTE-Map 仓库根目录执行：
+
+```powershell
+npm run import:bettermap -- "<运行包>/Anomaly/state/plugins/b1ank.better-map" --dry-run
+npm run import:bettermap -- "<运行包>/Anomaly/state/plugins/b1ank.better-map"
+npm run merge:locations -- output/imports/bettermap --dry-run
+npm run merge:locations -- output/imports/bettermap
+```
+
+也可以只传入某个分类 JSON。转换结果按地图分类分文件，保留已有点位的 ID、名称、截图和备注。
+首次按同类点位的邻近坐标匹配，默认阈值为 1700 厘米；多候选或多条源数据争用同一旧点位时跳过并报告，
+可通过 `--match-distance` 调整。后续优先按记录的 `betterMapId` 匹配，默认模式不删除导出中缺失的旧点位。
+
+需要完全以本次游戏数据为准时，转换命令加 `--authoritative`。该模式按最近的一一对应关系复用旧记录，
+全部采用游戏坐标，并清理已导出分类中没有对应源点位的旧记录；未导出的分类保持原样。
+
 ## 构建
 
 在 Anomaly 仓库根目录执行以下命令。
