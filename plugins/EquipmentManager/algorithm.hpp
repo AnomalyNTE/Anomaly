@@ -8,12 +8,12 @@
 namespace equipment_manager {
 
 namespace algorithm_limits {
-inline constexpr int kDefaultTimeLimitMs = 10000;
 inline constexpr int kMaximumTimeLimitMs = 120000;
-inline constexpr int kDefaultNodes = 2000000;
-inline constexpr int kMaximumNodes = 100000000;
-inline constexpr int kDefaultCombinations = 20000;
+inline constexpr int kDefaultTimeLimitMs = kMaximumTimeLimitMs;
+inline constexpr int kMaximumNodes = 1000000000;
+inline constexpr int kDefaultNodes = kMaximumNodes;
 inline constexpr int kMaximumCombinations = 5000000;
+inline constexpr int kDefaultCombinations = kMaximumCombinations;
 inline constexpr int kMaximumTopK = 20;
 } // namespace algorithm_limits
 
@@ -49,6 +49,8 @@ struct AlgorithmProgressSnapshot {
     std::int64_t elapsed_ms{}, time_limit_ms{};
     std::uint64_t nodes{}, max_nodes{}, combinations{}, combination_budget{};
     std::uint32_t current_group{}, groups_total{}, groups_visited{}, roles_completed{}, roles_total{};
+    std::uint32_t worker_count{1};
+    double solver_ms{}, preparation_ms{};
     bool combinations_available{}, multi_role{};
 };
 using AlgorithmProgressCallback = std::function<void(const AlgorithmProgressSnapshot&)>;

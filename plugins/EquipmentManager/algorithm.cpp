@@ -3,15 +3,22 @@
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <charconv>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
+#include <exception>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <numeric>
 #include <set>
 #include <string>
+#include <thread>
+#include <tuple>
 #include <vector>
 
 namespace equipment_manager {
@@ -306,6 +313,25 @@ struct ScoredItem {
     double maximum_weight{1};
 };
 
+struct LoadoutScoring {
+    enum class Eligibility { unknown, rejected, accepted };
+    struct Item {
+        const Json* source{};
+        std::uint64_t uid{};
+        Eligibility eligibility{Eligibility::unknown};
+        const ScoredItem* scored{};
+        std::size_t group{};
+        bool core{};
+    };
+    using GroupKey = std::tuple<std::string, std::vector<Cell>, int, Weights>;
+    Preferences preferences;
+    std::map<std::uint64_t, ScoredItem> items;
+    std::vector<Item> inventory;
+    std::map<GroupKey, std::size_t> groups;
+    bool inventory_complete{};
+    explicit LoadoutScoring(const Json& request) : preferences(ReadPreferences(request)) {}
+};
+
 ScoredItem Score(const Json& item, const Preferences& preferences) {
     if (!item.is_object() || !item.contains("kind") || !item.at("kind").is_string())
         Reject(AlgorithmFailure::invalid_inventory);
@@ -421,13 +447,17 @@ struct Group {
     std::string shape;
     std::vector<Cell> cells;
     int depth{};
-    std::vector<ScoredItem> items;
+    // Built and sorted before RunSearch, then read-only until active workers
+    // finish the solve. Search copies keep their own used count.
+    std::shared_ptr<std::vector<const ScoredItem*>> items{std::make_shared<std::vector<const ScoredItem*>>()};
     std::vector<Placement> placements;
     std::size_t used{};
     Weights stats;
+    std::vector<std::size_t> capacities;
 };
 struct Choice { std::size_t group{}, placement{}; };
 struct Pick { std::size_t group{}, item{}, placement{}; };
+struct StockBoundItem { std::size_t group{}, item{}, count{}; };
 struct Core {
     ScoredItem item;
     std::map<std::string, int, std::less<>> shapes;
@@ -456,10 +486,23 @@ bool BetterItem(const ScoredItem& left, const ScoredItem& right) {
     return left.uid < right.uid;
 }
 
+enum class ParallelStop { running, node_budget, time_budget, aborted };
+struct ParallelSearch {
+    std::atomic<std::size_t> claimed_nodes{};
+    std::atomic<std::int64_t> best_score{-1};
+    std::atomic<ParallelStop> stop{ParallelStop::running};
+
+    void Stop(ParallelStop reason) {
+        auto expected = ParallelStop::running;
+        stop.compare_exchange_strong(expected, reason, std::memory_order_relaxed);
+    }
+};
+
 struct Search {
     std::vector<Group> groups;
     std::array<std::vector<Choice>, 25> choices;
     std::vector<Core> cores;
+    std::vector<std::size_t> density_order;
     std::uint32_t board{};
     std::map<std::string, int, std::less<>> shape_counts;
     std::vector<Pick> picks, best_picks;
@@ -472,10 +515,15 @@ struct Search {
     const AlgorithmCancelCheck& cancel;
     algorithm_detail::ProgressReporter progress;
     std::size_t sample_checks{};
+    std::size_t worker_count{1}, node_credits{};
+    ParallelSearch* parallel{};
+    std::atomic<std::size_t>* published_nodes{};
     bool priorities{}, exhausted{}, first_feasible{};
     const Preferences* preferences{};
     Weights stats;
     Weights best_stats;
+    std::vector<std::size_t> capacity_limits, capacity_used;
+    mutable std::vector<StockBoundItem> stock_bound;
     const char* stop_reason{"complete"};
 
     Search(std::size_t budget, Clock::time_point start, Clock::time_point end,
@@ -485,6 +533,11 @@ struct Search {
           priorities(with_priorities) { progress.Sample(0, 0, true); }
 
     bool Stop() {
+        if (parallel) {
+            if ((++sample_checks & 127U) == 0 && Clock::now() >= deadline) parallel->Stop(ParallelStop::time_budget);
+            exhausted = parallel->stop.load(std::memory_order_relaxed) != ParallelStop::running;
+            return exhausted;
+        }
         if (cancel && cancel()) Reject(AlgorithmFailure::cancelled);
         if ((++sample_checks & 127U) == 0) progress.Sample(nodes, 0);
         if (nodes >= maximum_nodes) { exhausted = true; stop_reason = "node_budget"; }
@@ -496,6 +549,99 @@ struct Search {
         if (best_score < 0) return true;
         if (priorities && depth_counts != best_depths) return depth_counts > best_depths;
         return ranking > best_ranking;
+    }
+
+    bool CountNode() {
+        if (parallel) {
+            if (!node_credits) {
+                // Reserve small disjoint batches rather than contend on one
+                // atomic for every DFS node. Unused credits are never reported.
+                constexpr std::size_t batch = 128;
+                const auto begin = parallel->claimed_nodes.fetch_add(batch, std::memory_order_relaxed);
+                if (begin >= maximum_nodes) {
+                    parallel->Stop(ParallelStop::node_budget); exhausted = true; return false;
+                }
+                node_credits = std::min(batch, maximum_nodes - begin);
+            }
+            --node_credits;
+        }
+        ++nodes;
+        if (published_nodes && (nodes & 127U) == 0) published_nodes->store(nodes, std::memory_order_relaxed);
+        return true;
+    }
+
+    bool CanImprove(std::uint32_t occupied, std::int64_t score) const {
+        const auto known = parallel ? parallel->best_score.load(std::memory_order_relaxed) : best_score;
+        if (priorities || preferences->extra_area != 0 || known < 0) return true;
+        std::int64_t numerator{};
+        std::size_t denominator{1};
+        for (const auto index : density_order) {
+            const auto& group = groups[index];
+            // The initial item is an upper bound for this entire group, and
+            // subsequent groups have no higher initial density.
+            if (!HigherDensity(group.items->front()->score, group.cells.size(), numerator, denominator)) break;
+            if (group.used == group.items->size() || !CapacityAvailable(group)) continue;
+            const auto value = (*group.items)[group.used]->score;
+            if (HigherDensity(value, group.cells.size(), numerator, denominator)) {
+                numerator = value; denominator = group.cells.size();
+            }
+        }
+        const auto remaining = static_cast<std::int64_t>(std::popcount(board & ~occupied));
+        if (ScoreUpperBound(score, remaining, numerator, denominator) <= known) return false;
+        if (capacity_limits.empty()) return true;
+        // A reserved pool can leave just a few high-scoring items. Treating
+        // their density as unlimited would still enumerate every impossible
+        // arrangement while proving a feasible lower-scoring loadout optimal.
+        // Fractional packing ignores geometry and relaxes shared capacities
+        // between groups, so it remains an optimistic bound.
+        stock_bound.clear(); stock_bound.reserve(density_order.size());
+        const auto lower_density = [&](const StockBoundItem& left, const StockBoundItem& right) {
+            const auto& l = groups[left.group]; const auto& r = groups[right.group];
+            return HigherDensity((*r.items)[right.item]->score, r.cells.size(), (*l.items)[left.item]->score, l.cells.size());
+        };
+        std::size_t next_group{};
+        auto cells = static_cast<std::size_t>(remaining); auto upper = score;
+        while (cells) {
+            // Unseen groups are ordered by their initial maximum density.
+            // Once the current heap top reaches that bound, no unseen group
+            // can precede it; materialize more heads only as that density falls.
+            while (next_group < density_order.size()) {
+                const auto index = density_order[next_group];
+                const auto& group = groups[index];
+                if (!stock_bound.empty()) {
+                    const auto& top = stock_bound.front();
+                    const auto& leading = groups[top.group];
+                    if (!HigherDensity(group.items->front()->score, group.cells.size(),
+                                       (*leading.items)[top.item]->score, leading.cells.size())) break;
+                }
+                ++next_group;
+                auto count = group.items->size() - group.used;
+                for (const auto capacity : group.capacities)
+                    count = std::min(count, capacity_limits[capacity] - capacity_used[capacity]);
+                if (count) {
+                    stock_bound.push_back({index, group.used, count});
+                    std::push_heap(stock_bound.begin(), stock_bound.end(), lower_density);
+                }
+            }
+            if (stock_bound.empty()) return false;
+            std::pop_heap(stock_bound.begin(), stock_bound.end(), lower_density);
+            auto candidate = stock_bound.back(); stock_bound.pop_back();
+            const auto& group = groups[candidate.group];
+            const auto area = std::min(cells, group.cells.size());
+            upper = ScoreUpperBound(upper, static_cast<std::int64_t>(area), (*group.items)[candidate.item]->score, group.cells.size());
+            cells -= area;
+            if (--candidate.count && cells) {
+                ++candidate.item; stock_bound.push_back(candidate);
+                std::push_heap(stock_bound.begin(), stock_bound.end(), lower_density);
+            }
+        }
+        return cells == 0 && upper > known;
+    }
+
+    bool CapacityAvailable(const Group& group) const {
+        return std::all_of(group.capacities.begin(), group.capacities.end(), [&](std::size_t index) {
+            return capacity_used[index] < capacity_limits[index];
+        });
     }
 
     bool LimitsSatisfied() const {
@@ -525,63 +671,232 @@ struct Search {
             const int placed = found == shape_counts.end() ? 0 : found->second;
             if (placed >= count) continue;
             std::size_t available{};
-            for (const auto& group : groups) if (group.shape == shape) available += group.items.size() - group.used;
+            for (const auto& group : groups) if (group.shape == shape) available += group.items->size() - group.used;
             possible += std::min(count - placed, static_cast<int>(available));
         }
         return possible >= core.required;
     }
 
-    void Visit(const Core& core, std::uint32_t occupied, std::int64_t score, double ranking) {
-        if (Stop()) return;
-        ++nodes;
+    bool Enter(const Core& core, std::uint32_t occupied, std::int64_t score, double ranking) {
+        if (Stop() || !CountNode()) return false;
         if (occupied == board) {
             if (Matches(core) >= core.required && LimitsSatisfied() && Better(ranking)) {
                 best_score = score; best_picks = picks; best_depths = depth_counts; best_core = &core;
                 best_ranking = ranking; best_stats = stats;
+                if (parallel) {
+                    auto previous = parallel->best_score.load(std::memory_order_relaxed);
+                    while (score > previous && !parallel->best_score.compare_exchange_weak(previous, score, std::memory_order_relaxed)) {}
+                }
                 if (first_feasible) { exhausted = true; stop_reason = "first_feasible"; }
             }
-            return;
+            return false;
         }
-        if (!PossibleSet(core)) return;
-        if (!priorities && preferences->extra_area == 0 && best_score >= 0) {
-            std::int64_t numerator{};
-            std::size_t denominator{1};
-            for (const auto& group : groups) if (group.used < group.items.size()) {
-                const auto value = group.items[group.used].score;
-                if (HigherDensity(value, group.cells.size(), numerator, denominator)) {
-                    numerator = value; denominator = group.cells.size();
-                }
-            }
-            const auto remaining = static_cast<std::int64_t>(std::popcount(board & ~occupied));
-            const auto upper = ScoreUpperBound(score, remaining, numerator, denominator);
-            if (upper <= best_score) return;
-        }
+        return CanImprove(occupied, score);
+    }
+
+    void Visit(const Core& core, std::uint32_t occupied, std::int64_t score, double ranking) {
+        if (!Enter(core, occupied, score, ranking)) return;
         const auto target = std::countr_zero(board & ~occupied);
         for (const auto& choice : choices[target]) {
-            auto& group = groups[choice.group];
-            const auto& placement = group.placements[choice.placement];
-            if (group.used == group.items.size() || (placement.mask & occupied)) continue;
-            const auto index = group.used++;
-            const auto& item = group.items[index];
-            picks.push_back({choice.group, index, choice.placement});
-            ++shape_counts[group.shape];
-            if (item.depth) ++depth_counts[4 - item.depth];
-            if (item.score > INT64_MAX - score) Reject(AlgorithmFailure::invalid_inventory);
-            for (const auto& [id, value] : item.stats) stats[id] += value;
-            Visit(core, occupied | placement.mask, score + item.score, ranking + item.ranking);
-            for (const auto& [id, value] : item.stats) stats[id] -= value;
-            if (item.depth) --depth_counts[4 - item.depth];
-            --shape_counts[group.shape];
-            picks.pop_back();
-            --group.used;
+            Place(core, choice, occupied, score, ranking);
             if (exhausted) return;
         }
     }
+
+    template<class Visitor>
+    void WithChoice(const Choice& choice, std::uint32_t occupied, std::int64_t score, double ranking, Visitor&& visitor) {
+        auto& group = groups[choice.group];
+        const auto& placement = group.placements[choice.placement];
+        if (group.used == group.items->size() || (placement.mask & occupied) || !CapacityAvailable(group)) return;
+        const auto index = group.used++;
+        const auto& item = *(*group.items)[index];
+        picks.push_back({choice.group, index, choice.placement});
+        ++shape_counts[group.shape];
+        if (item.depth) ++depth_counts[4 - item.depth];
+        if (item.score > INT64_MAX - score) Reject(AlgorithmFailure::invalid_inventory);
+        for (const auto& [id, value] : item.stats) stats[id] += value;
+        for (const auto capacity : group.capacities) ++capacity_used[capacity];
+        visitor(occupied | placement.mask, score + item.score, ranking + item.ranking);
+        for (const auto capacity : group.capacities) --capacity_used[capacity];
+        for (const auto& [id, value] : item.stats) stats[id] -= value;
+        if (item.depth) --depth_counts[4 - item.depth];
+        --shape_counts[group.shape]; picks.pop_back(); --group.used;
+    }
+
+    void Place(const Core& core, const Choice& choice, std::uint32_t occupied, std::int64_t score, double ranking) {
+        WithChoice(choice, occupied, score, ranking, [&](auto next_occupied, auto next_score, auto next_ranking) {
+            Visit(core, next_occupied, next_score, next_ranking);
+        });
+    }
 };
 
+struct SearchTask {
+    std::size_t core{}, depth{};
+    std::array<Choice, 3> path{};
+};
+
+template<class Visitor>
+void ReplayTask(Search& search, const SearchTask& task, std::size_t depth, std::uint32_t occupied,
+                std::int64_t score, double ranking, Visitor& visitor) {
+    if (depth == task.depth) { visitor(occupied, score, ranking); return; }
+    search.WithChoice(task.path[depth], occupied, score, ranking, [&](auto next_occupied, auto next_score, auto next_ranking) {
+        ReplayTask(search, task, depth + 1, next_occupied, next_score, next_ranking, visitor);
+    });
+}
+
+void RunSearch(Search& search, unsigned requested_workers, std::uint32_t fixed_occupied,
+               std::int64_t fixed_score, double fixed_ranking, const Weights& fixed_stats,
+               const std::array<int, 4>& fixed_depths, algorithm_detail::SearchExecutor* executor) {
+    const auto prepare = [&](Search& state, const Core& core) {
+        state.depth_counts = fixed_depths;
+        if (core.item.depth) ++state.depth_counts[4 - core.item.depth];
+        state.stats = fixed_stats;
+        for (const auto& [id, value] : core.item.stats) state.stats[id] += value;
+        if (core.item.score > INT64_MAX - fixed_score) Reject(AlgorithmFailure::invalid_inventory);
+    };
+    const auto serial = [&] {
+        for (const auto& core : search.cores) {
+            if (search.Stop()) break;
+            // Placed + unused inventory counts are invariant throughout DFS.
+            // Placement checks still enforce geometry; leaves require all four shapes.
+            if (!search.PossibleSet(core)) continue;
+            prepare(search, core);
+            search.Visit(core, fixed_occupied, core.item.score + fixed_score, core.item.ranking + fixed_ranking);
+        }
+    };
+    if (requested_workers <= 1 || search.first_feasible || search.maximum_nodes < 4096 || fixed_occupied == search.board) {
+        serial(); return;
+    }
+    // A short serial pass supplies a useful incumbent and avoids starting
+    // threads for small or immediately bounded searches.
+    const auto maximum = search.maximum_nodes;
+    search.maximum_nodes = std::min<std::size_t>(512, maximum / 8);
+    search.first_feasible = true;
+    serial();
+    search.maximum_nodes = maximum; search.first_feasible = false;
+    if (!search.exhausted || std::string_view(search.stop_reason) == "time_budget") return;
+    search.exhausted = false; search.stop_reason = "complete";
+
+    std::vector<SearchTask> tasks;
+    const auto target = std::countr_zero(search.board & ~fixed_occupied);
+    for (std::size_t core_index{}; core_index < search.cores.size(); ++core_index) {
+        if (search.Stop()) break;
+        const auto& core = search.cores[core_index];
+        if (!search.PossibleSet(core)) continue;
+        prepare(search, core);
+        if (!search.CanImprove(fixed_occupied, core.item.score + fixed_score)) continue;
+        for (const auto& choice : search.choices[target]) {
+            const auto& group = search.groups[choice.group];
+            if (group.used != group.items->size() && search.CapacityAvailable(group) && !(group.placements[choice.placement].mask & fixed_occupied)) {
+                SearchTask task; task.core = core_index; task.depth = 1; task.path[0] = choice;
+                tasks.push_back(task);
+            }
+        }
+    }
+    const auto desired_tasks = static_cast<std::size_t>(requested_workers) * 4;
+    while (!search.exhausted && tasks.size() < desired_tasks) {
+        if (search.Stop()) break;
+        auto selected = tasks.size();
+        for (std::size_t i{}; i < tasks.size(); ++i)
+            if (tasks[i].depth < tasks[i].path.size() &&
+                (selected == tasks.size() || tasks[i].depth < tasks[selected].depth)) selected = i;
+        if (selected == tasks.size()) break;
+        const auto task = tasks[selected]; const auto& core = search.cores[task.core];
+        prepare(search, core);
+        std::vector<SearchTask> children;
+        auto expand = [&](auto occupied, auto score, auto ranking) {
+            // This prefix is evaluated here exactly once. Workers replay its
+            // choices without recounting it, and evaluate only frontier leaves.
+            if (!search.Enter(core, occupied, score, ranking)) return;
+            const auto cell = std::countr_zero(search.board & ~occupied);
+            for (const auto& choice : search.choices[cell]) {
+                const auto& group = search.groups[choice.group];
+                if (group.used == group.items->size() || !search.CapacityAvailable(group) || (group.placements[choice.placement].mask & occupied)) continue;
+                auto child = task; child.path[child.depth++] = choice; children.push_back(child);
+            }
+        };
+        ReplayTask(search, task, 0, fixed_occupied, core.item.score + fixed_score, core.item.ranking + fixed_ranking, expand);
+        tasks.erase(tasks.begin() + static_cast<std::ptrdiff_t>(selected));
+        tasks.insert(tasks.begin() + static_cast<std::ptrdiff_t>(selected), children.begin(), children.end());
+    }
+    if (search.exhausted || tasks.empty()) return;
+    if (tasks.size() == 1) {
+        const auto& core = search.cores[tasks.front().core]; prepare(search, core);
+        auto visit = [&](auto occupied, auto score, auto ranking) { search.Visit(core, occupied, score, ranking); };
+        ReplayTask(search, tasks.front(), 0, fixed_occupied, core.item.score + fixed_score, core.item.ranking + fixed_ranking, visit);
+        return;
+    }
+    const auto count = std::min<std::size_t>(requested_workers, tasks.size());
+    struct Worker {
+        Search state;
+        std::atomic<std::size_t> nodes{};
+        std::exception_ptr failure;
+        explicit Worker(const Search& source) : state(source) { state.progress.callback = {}; state.nodes = 0; }
+    };
+    ParallelSearch shared;
+    shared.claimed_nodes.store(search.nodes, std::memory_order_relaxed);
+    shared.best_score.store(search.best_score, std::memory_order_relaxed);
+    std::atomic<std::size_t> next{};
+    std::vector<std::unique_ptr<Worker>> results;
+    for (std::size_t i{}; i < count; ++i) {
+        auto worker = std::make_unique<Worker>(search);
+        worker->state.parallel = &shared; worker->state.published_nodes = &worker->nodes;
+        results.push_back(std::move(worker));
+    }
+    search.worker_count = count;
+    search.progress.value.worker_count = static_cast<std::uint32_t>(count);
+    std::unique_ptr<algorithm_detail::SearchExecutor> local_executor;
+    if (!executor) {
+        local_executor = std::make_unique<algorithm_detail::SearchExecutor>(requested_workers);
+        executor = local_executor.get();
+    }
+    executor->Execute(count,
+        [&](std::size_t i) {
+            auto& worker = *results[i];
+            try {
+                while (!worker.state.Stop()) {
+                    const auto index = next.fetch_add(1, std::memory_order_relaxed);
+                    if (index >= tasks.size()) break;
+                    const auto& task = tasks[index]; const auto& core = search.cores[task.core];
+                    prepare(worker.state, core);
+                    auto visit = [&](auto occupied, auto score, auto ranking) { worker.state.Visit(core, occupied, score, ranking); };
+                    ReplayTask(worker.state, task, 0, fixed_occupied, core.item.score + fixed_score, core.item.ranking + fixed_ranking, visit);
+                }
+            } catch (...) { worker.failure = std::current_exception(); shared.Stop(ParallelStop::aborted); }
+            worker.nodes.store(worker.state.nodes, std::memory_order_relaxed);
+        },
+        [&] {
+            if (search.cancel && search.cancel()) Reject(AlgorithmFailure::cancelled);
+            if (Clock::now() >= search.deadline) shared.Stop(ParallelStop::time_budget);
+            std::size_t nodes = search.nodes;
+            for (const auto& worker : results) nodes += worker->nodes.load(std::memory_order_relaxed);
+            search.progress.Sample(nodes, 0);
+        },
+        [&] { shared.Stop(ParallelStop::aborted); });
+    for (const auto& worker : results) {
+        if (worker->failure) std::rethrow_exception(worker->failure);
+        const auto& candidate = worker->state;
+        search.nodes += candidate.nodes;
+        if (candidate.best_score < 0 || (search.best_score >= 0 &&
+            (search.priorities && candidate.best_depths != search.best_depths ? candidate.best_depths < search.best_depths
+             : candidate.best_ranking <= search.best_ranking))) continue;
+        search.best_score = candidate.best_score; search.best_ranking = candidate.best_ranking;
+        search.best_depths = candidate.best_depths; search.best_core = candidate.best_core;
+        search.best_picks = candidate.best_picks; search.best_stats = candidate.best_stats;
+    }
+    const auto reason = shared.stop.load(std::memory_order_relaxed);
+    search.exhausted = reason != ParallelStop::running;
+    if (reason == ParallelStop::node_budget) search.stop_reason = "node_budget";
+    else if (reason == ParallelStop::time_budget) search.stop_reason = "time_budget";
+}
+
 Json Optimize(const Json& request, const Json& inventory, const AlgorithmCancelCheck& cancel,
-              const AlgorithmProgressCallback& progress, bool first_feasible = false) {
-    const auto preferences = ReadPreferences(request);
+              const AlgorithmProgressCallback& progress, bool first_feasible = false,
+              const algorithm_detail::InventoryCapacities& capacities = {}, LoadoutScoring* scoring = nullptr,
+              algorithm_detail::SearchExecutor* executor = nullptr) {
+    const auto transient = scoring ? nullptr : std::make_unique<LoadoutScoring>(request);
+    if (!scoring) scoring = transient.get();
+    const auto& preferences = scoring->preferences;
     if (!inventory.is_object() || !inventory.value("complete", false) || !inventory.contains("snapshot_id") ||
         !inventory.at("snapshot_id").is_string() || !inventory.contains("characters") || !inventory.at("characters").is_array() ||
         !inventory.contains("items") || !inventory.at("items").is_array()) Reject(AlgorithmFailure::inventory_unavailable);
@@ -610,10 +925,16 @@ Json Optimize(const Json& request, const Json& inventory, const AlgorithmCancelC
     const auto started = Clock::now();
     const auto maximum_nodes = request.contains("max_nodes") ? Integer(request.at("max_nodes"), 1, algorithm_limits::kMaximumNodes) : algorithm_limits::kDefaultNodes;
     const auto milliseconds = request.contains("time_limit_ms") ? Integer(request.at("time_limit_ms"), 1, algorithm_limits::kMaximumTimeLimitMs) : algorithm_limits::kDefaultTimeLimitMs;
+    const auto workers = algorithm_detail::SearchWorkers(request);
     Search search(static_cast<std::size_t>(maximum_nodes), started,
                   started + std::chrono::milliseconds(milliseconds), cancel, !preferences.priority.empty(), progress);
     search.preferences = &preferences;
     search.first_feasible = first_feasible;
+    std::map<std::uint64_t, std::vector<std::size_t>> capacity_membership;
+    for (std::size_t index{}; index < capacities.size(); ++index) {
+        search.capacity_limits.push_back(capacities[index].maximum); search.capacity_used.push_back(0);
+        for (const auto uid : capacities[index].items) capacity_membership[uid].push_back(index);
+    }
     for (const auto& cell : target->at("allowed_cells")) {
         if (!cell.is_array() || cell.size() != 2) Reject(AlgorithmFailure::invalid_inventory);
         const auto row = Integer(cell[0], 1, 5, AlgorithmFailure::invalid_inventory);
@@ -659,30 +980,57 @@ Json Optimize(const Json& request, const Json& inventory, const AlgorithmCancelC
     std::array<int, 4> fixed_depths{};
     std::size_t fixed_count{};
     std::set<std::uint64_t> all_uids;
+    std::map<std::pair<std::size_t, std::vector<std::size_t>>, std::size_t> group_indices;
     std::size_t candidate_modules{}, candidate_cores{};
-    for (const auto& item : inventory.at("items")) {
-        if (search.Stop()) break;
-        if (!item.is_object() || !item.contains("uid")) Reject(AlgorithmFailure::invalid_inventory);
-        const auto uid = UidKey(item.at("uid"), AlgorithmFailure::invalid_inventory);
-        if (!all_uids.insert(uid).second) Reject(AlgorithmFailure::invalid_inventory);
-        if (excluded.contains(uid) || (!discarded && item.value("discarded", false))) continue;
-        if (!borrow && item.contains("character") && !item.at("character").is_null() &&
-            (software || UidKey(item.at("character"), AlgorithmFailure::invalid_inventory) != character)) continue;
-        const bool core = item.value("kind", std::string{}) == "core";
-        if (core && kept.contains(uid)) Reject(AlgorithmFailure::invalid_request);
-        if (core && !require_core) continue;
-        if (core && kept_core && uid != kept_core) continue;
-        if (!kept.contains(uid) && uid != kept_core && !Eligible(item, preferences)) continue;
-        if (core && !core_suit.empty() && item.value("suit_id", std::string{}) != core_suit) continue;
-        if (core && !mains.empty() && item.contains("main_stat") && item.at("main_stat").is_object()) {
-            const auto main_id = item.at("main_stat").value("id", std::string{});
-            if (std::find(mains.begin(), mains.end(), main_id) == mains.end()) continue;
+    const auto& inventory_items = inventory.at("items");
+    if (scoring->inventory.empty()) scoring->inventory.resize(inventory_items.size());
+    bool inventory_complete{true};
+    for (std::size_t position{}; position < inventory_items.size(); ++position) {
+        if (search.Stop()) { inventory_complete = false; break; }
+        auto& cached = scoring->inventory[position];
+        if (!cached.source) {
+            const auto& source = inventory_items[position];
+            if (!source.is_object() || !source.contains("uid")) Reject(AlgorithmFailure::invalid_inventory);
+            cached.uid = UidKey(source.at("uid"), AlgorithmFailure::invalid_inventory);
+            cached.source = &source;
         }
+        const auto& item = *cached.source;
+        const auto uid = cached.uid;
+        if (!scoring->inventory_complete && !all_uids.insert(uid).second) Reject(AlgorithmFailure::invalid_inventory);
+        if (excluded.contains(uid)) continue;
+        if (cached.eligibility == LoadoutScoring::Eligibility::unknown) {
+            // Check each solve's exclusions before these frozen rules, so
+            // excluded malformed data is never inspected or scored.
+            const bool eligible = [&] {
+                if (!discarded && item.value("discarded", false)) return false;
+                if (!borrow && item.contains("character") && !item.at("character").is_null() &&
+                    (software || UidKey(item.at("character"), AlgorithmFailure::invalid_inventory) != character)) return false;
+                cached.core = item.value("kind", std::string{}) == "core";
+                if (cached.core && kept.contains(uid)) Reject(AlgorithmFailure::invalid_request);
+                if (cached.core && (!require_core || (kept_core && uid != kept_core))) return false;
+                if (!kept.contains(uid) && uid != kept_core && !Eligible(item, preferences)) return false;
+                if (cached.core && !core_suit.empty() && item.value("suit_id", std::string{}) != core_suit) return false;
+                if (cached.core && !mains.empty() && item.contains("main_stat") && item.at("main_stat").is_object()) {
+                    const auto main_id = item.at("main_stat").value("id", std::string{});
+                    if (std::find(mains.begin(), mains.end(), main_id) == mains.end()) return false;
+                }
+                return true;
+            }();
+            cached.eligibility = eligible ? LoadoutScoring::Eligibility::accepted : LoadoutScoring::Eligibility::rejected;
+        }
+        if (cached.eligibility == LoadoutScoring::Eligibility::rejected) continue;
         {
-            auto scored = Score(item, preferences);
-            scored.uid = uid;
-            if (core) {
-                Core candidate{std::move(scored)};
+            if (!cached.scored) {
+                auto found = scoring->items.find(uid);
+                if (found == scoring->items.end()) {
+                    auto scored = Score(item, preferences); scored.uid = uid;
+                    found = scoring->items.emplace(uid, std::move(scored)).first;
+                }
+                cached.scored = &found->second;
+            }
+            const auto& scored = *cached.scored;
+            if (cached.core) {
+                Core candidate{scored};
                 const auto shapes = item.find("required_shapes");
                 if (shapes == item.end() || !item.value("required_shapes_complete", true))
                     Reject(AlgorithmFailure::incomplete_set);
@@ -690,6 +1038,8 @@ Json Optimize(const Json& request, const Json& inventory, const AlgorithmCancelC
                 candidate.required = 4;
                 search.cores.push_back(std::move(candidate)); ++candidate_cores;
             } else {
+                const auto capacity = capacity_membership.find(uid);
+                const std::vector<std::size_t> membership = capacity == capacity_membership.end() ? std::vector<std::size_t>{} : capacity->second;
                 if (const auto fixed = kept.find(uid); fixed != kept.end()) {
                     auto placement = fixed->second;
                     for (const auto& cell : scored.cells) {
@@ -707,23 +1057,31 @@ Json Optimize(const Json& request, const Json& inventory, const AlgorithmCancelC
                     ++search.shape_counts[scored.shape];
                     search.picks.push_back({search.groups.size(), 0, 0});
                     Group group{scored.shape, scored.cells, scored.depth};
-                    group.items.push_back(std::move(scored)); group.placements.push_back(placement); group.used = 1;
+                    group.capacities = membership;
+                    for (const auto index : membership) ++search.capacity_used[index];
+                    group.items->push_back(&scored); group.placements.push_back(placement); group.used = 1;
                     search.groups.push_back(std::move(group)); ++fixed_count; ++candidate_modules;
                     continue;
                 }
-                auto found = std::find_if(search.groups.begin(), search.groups.end(), [&](const Group& group) {
-                    return group.used == 0 && group.shape == scored.shape && group.cells == scored.cells &&
-                        group.depth == scored.depth && group.stats == scored.stats;
-                });
-                if (found == search.groups.end()) {
-                    search.groups.push_back({scored.shape, scored.cells, scored.depth});
-                    found = search.groups.end() - 1;
-                    found->stats = scored.stats;
+                if (!cached.group) {
+                    auto key = LoadoutScoring::GroupKey{scored.shape, scored.cells, scored.depth, scored.stats};
+                    cached.group = scoring->groups.emplace(std::move(key), scoring->groups.size() + 1).first->second;
                 }
-                found->items.push_back(std::move(scored)); ++candidate_modules;
+                const auto partition = std::make_pair(cached.group, membership);
+                auto found = group_indices.find(partition);
+                if (found == group_indices.end()) {
+                    const auto index = search.groups.size();
+                    search.groups.push_back({scored.shape, scored.cells, scored.depth});
+                    auto& group = search.groups.back();
+                    group.stats = scored.stats;
+                    group.capacities = membership;
+                    found = group_indices.emplace(partition, index).first;
+                }
+                search.groups[found->second].items->push_back(&scored); ++candidate_modules;
             }
         }
     }
+    if (inventory_complete) scoring->inventory_complete = true;
     if (!search.exhausted && fixed_count != kept.size()) Reject(AlgorithmFailure::invalid_request);
     if (!require_core) search.cores.emplace_back();
     bool missing_core{};
@@ -737,9 +1095,9 @@ Json Optimize(const Json& request, const Json& inventory, const AlgorithmCancelC
     for (auto& group : search.groups) {
         if (search.Stop()) break;
         if (group.used) continue;
-        std::sort(group.items.begin(), group.items.end(), [&](const ScoredItem& left, const ScoredItem& right) {
+        std::sort(group.items->begin(), group.items->end(), [&](const ScoredItem* left, const ScoredItem* right) {
             if (cancel && cancel()) Reject(AlgorithmFailure::cancelled);
-            return BetterItem(left, right);
+            return BetterItem(*left, *right);
         });
         for (int row = 1; row <= 5; ++row) for (int column = 1; column <= 5; ++column) {
             std::uint32_t mask{};
@@ -760,12 +1118,12 @@ Json Optimize(const Json& request, const Json& inventory, const AlgorithmCancelC
         const auto& l = search.groups[left.group]; const auto& r = search.groups[right.group];
         if (l.depth != r.depth) return l.depth > r.depth;
         if (preferences.extra_area) {
-            const auto a = l.items.front().ranking / static_cast<double>(l.cells.size());
-            const auto b = r.items.front().ranking / static_cast<double>(r.cells.size());
+            const auto a = l.items->front()->ranking / static_cast<double>(l.cells.size());
+            const auto b = r.items->front()->ranking / static_cast<double>(r.cells.size());
             if (a != b) return a > b;
         }
-        if (HigherDensity(l.items.front().score, l.cells.size(), r.items.front().score, r.cells.size())) return true;
-        if (HigherDensity(r.items.front().score, r.cells.size(), l.items.front().score, l.cells.size())) return false;
+        if (HigherDensity(l.items->front()->score, l.cells.size(), r.items->front()->score, r.cells.size())) return true;
+        if (HigherDensity(r.items->front()->score, r.cells.size(), l.items->front()->score, l.cells.size())) return false;
         return left.group < right.group;
     });
     std::stable_sort(search.cores.begin(), search.cores.end(), [&](const Core& left, const Core& right) {
@@ -783,17 +1141,20 @@ Json Optimize(const Json& request, const Json& inventory, const AlgorithmCancelC
         })) distinct.push_back(std::move(core));
     }
     search.cores = std::move(distinct);
+    for (std::size_t index{}; index < search.groups.size(); ++index)
+        if (search.groups[index].used < search.groups[index].items->size()) search.density_order.push_back(index);
+    std::stable_sort(search.density_order.begin(), search.density_order.end(), [&](std::size_t left, std::size_t right) {
+        const auto& l = search.groups[left]; const auto& r = search.groups[right];
+        return HigherDensity(l.items->front()->score, l.cells.size(), r.items->front()->score, r.cells.size());
+    });
+    const auto prepared = Clock::now();
+    search.progress.value.preparation_ms = std::chrono::duration<double, std::milli>(prepared - started).count();
     search.progress.value.phase = AlgorithmProgressPhase::searching;
     search.progress.Sample(search.nodes, 0, true);
-    for (const auto& core : search.cores) {
-        if (search.Stop()) break;
-        search.depth_counts = fixed_depths;
-        if (core.item.depth) ++search.depth_counts[4 - core.item.depth];
-        search.stats = fixed_stats;
-        for (const auto& [id, value] : core.item.stats) search.stats[id] += value;
-        if (core.item.score > INT64_MAX - fixed_score) Reject(AlgorithmFailure::invalid_inventory);
-        search.Visit(core, fixed_occupied, core.item.score + fixed_score, core.item.ranking + fixed_ranking);
-    }
+    bool capacity_feasible{true};
+    for (std::size_t index{}; index < search.capacity_used.size(); ++index)
+        if (search.capacity_used[index] > search.capacity_limits[index]) capacity_feasible = false;
+    if (!search.exhausted && capacity_feasible) RunSearch(search, workers, fixed_occupied, fixed_score, fixed_ranking, fixed_stats, fixed_depths, executor);
     if (cancel && cancel()) Reject(AlgorithmFailure::cancelled);
     search.progress.Sample(search.nodes, 0, true);
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - started).count();
@@ -803,7 +1164,9 @@ Json Optimize(const Json& request, const Json& inventory, const AlgorithmCancelC
         {"assignment_scores", Json::array()}, {"score", nullptr}, {"grade", nullptr},
         {"search", {{"exhaustive", !search.exhausted}, {"stop_reason", search.stop_reason},
             {"nodes", search.nodes}, {"elapsed_ms", elapsed}, {"candidate_modules", candidate_modules},
-            {"candidate_cores", candidate_cores}}}};
+            {"candidate_cores", candidate_cores}, {"worker_count", search.worker_count}}}};
+    result["search"]["preparation_ms"] = std::chrono::duration<double, std::milli>(prepared - started).count();
+    result["search"]["elapsed_ms_exact"] = std::chrono::duration<double, std::milli>(Clock::now() - started).count();
     if (request.contains("role_id")) result["role_id"] = request.at("role_id");
     if (search.best_score < 0) {
         result["reason"] = search.exhausted ? "budget_exhausted" : "no_solution";
@@ -820,7 +1183,7 @@ Json Optimize(const Json& request, const Json& inventory, const AlgorithmCancelC
     }
     for (const auto& pick : search.best_picks) {
         const auto& group = search.groups[pick.group];
-        const auto& item = group.items[pick.item];
+        const auto& item = *(*group.items)[pick.item];
         const auto& place = group.placements[pick.placement];
         result["placements"].push_back({{"equipment", item.source->at("uid")}, {"row", place.row}, {"column", place.column}});
         add_score(item);
@@ -876,6 +1239,107 @@ Json OptimizeLoadout(const Json& request, const Json& frozen_inventory, const Al
 }
 
 namespace algorithm_detail {
+struct SearchExecutor::State {
+    unsigned workers;
+    std::mutex mutex;
+    std::condition_variable ready, finished;
+    std::vector<std::jthread> threads;
+    std::size_t generation{}, count{}, remaining{};
+    bool stopping{};
+    const std::function<void(std::size_t)>* work{};
+    std::exception_ptr failure;
+
+    explicit State(unsigned requested) : workers(requested) {}
+    ~State() { Stop(); }
+
+    void Stop() {
+        { std::lock_guard lock(mutex); stopping = true; }
+        ready.notify_all(); threads.clear();
+    }
+    void Run(std::size_t index, std::size_t observed) {
+        std::unique_lock lock(mutex);
+        for (;;) {
+            ready.wait(lock, [&] { return stopping || generation != observed; });
+            if (stopping) return;
+            observed = generation;
+            if (index >= count) continue;
+            const auto* function = work;
+            lock.unlock();
+            std::exception_ptr problem;
+            try { (*function)(index); } catch (...) { problem = std::current_exception(); }
+            lock.lock();
+            if (problem && !failure) failure = problem;
+            // The entire function invocation, including its local destructors,
+            // has returned before its borrowed search state can be released.
+            --remaining;
+            finished.notify_one();
+        }
+    }
+    void Start(std::size_t requested) {
+        try {
+            const auto total = std::max<std::size_t>(workers, requested);
+            threads.reserve(total);
+            while (threads.size() < total) {
+                const auto index = threads.size(), observed = generation;
+                threads.emplace_back([this, index, observed] { Run(index, observed); });
+            }
+        } catch (...) { Stop(); throw; }
+    }
+};
+
+SearchExecutor::SearchExecutor(unsigned workers) : state_(std::make_unique<State>(workers)) {}
+SearchExecutor::~SearchExecutor() = default;
+void SearchExecutor::Execute(std::size_t count, const std::function<void(std::size_t)>& worker,
+                             const std::function<void()>& caller_monitor, const std::function<void()>& abort) {
+    if (!count) { caller_monitor(); return; }
+    auto& state = *state_;
+    state.Start(count);
+    {
+        std::lock_guard lock(state.mutex);
+        state.work = &worker; state.failure = {};
+        state.count = count; state.remaining = count; ++state.generation;
+    }
+    state.ready.notify_all();
+    std::exception_ptr problem;
+    try {
+        for (;;) {
+            caller_monitor();
+            std::unique_lock lock(state.mutex);
+            if (state.failure) { problem = state.failure; break; }
+            if (!state.remaining) break;
+            state.finished.wait_for(lock, std::chrono::milliseconds(5), [&] { return !state.remaining || state.failure; });
+        }
+    } catch (...) { problem = std::current_exception(); }
+    if (problem) {
+        try { abort(); } catch (...) { /* Always drain borrowed search state. */ }
+    }
+    {
+        std::unique_lock lock(state.mutex);
+        state.finished.wait(lock, [&] { return !state.remaining; });
+        state.work = nullptr;
+    }
+    if (problem) std::rethrow_exception(problem);
+}
+
+struct PreparedLoadout::State {
+    const Json& inventory;
+    LoadoutScoring scoring;
+    SearchExecutor* executor;
+    State(const Json& request, const Json& frozen, SearchExecutor* execution) : inventory(frozen), scoring(request), executor(execution) {}
+};
+PreparedLoadout::PreparedLoadout(const Json& request, const Json& inventory, SearchExecutor* executor)
+    : state_(std::make_unique<State>(request, inventory, executor)) {}
+PreparedLoadout::~PreparedLoadout() = default;
+Json PreparedLoadout::Solve(const Json& request, const InventoryCapacities& capacities, const AlgorithmCancelCheck& cancel,
+                            const AlgorithmProgressCallback& progress, bool first_feasible) {
+    try { return Optimize(request, state_->inventory, cancel, progress, first_feasible, capacities, &state_->scoring, state_->executor); }
+    catch (const Json::exception&) { Reject(AlgorithmFailure::invalid_request); }
+}
+Json OptimizeReservedLoadout(const Json& request, const Json& inventory, const InventoryCapacities& capacities,
+                            const AlgorithmCancelCheck& cancel, const AlgorithmProgressCallback& progress) {
+    try { return Optimize(request, inventory, cancel, progress, false, capacities); }
+    catch (const Json::exception&) { Reject(AlgorithmFailure::invalid_request); }
+}
 Json OptimizeFirstLoadout(const Json& request, const Json& inventory, const AlgorithmCancelCheck& cancel,
                           const AlgorithmProgressCallback& progress) {
     try { return Optimize(request, inventory, cancel, progress, true); }

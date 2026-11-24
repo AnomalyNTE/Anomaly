@@ -208,13 +208,9 @@ void ValidateReservations(const Context& c, const Json& request) {
 }
 
 Json WarehouseInputsLocked(const Context& c) {
-    Json roles = Json::array(), excluded = Json::array();
-    for (const auto& source : c.workspace_view.at("roles")) {
-        Json role{{"id", source.at("id")}};
-        for (const auto* key : {"weights", "main_weights", "usable_shape_ids", "usable_suit_ids"})
-            if (source.contains(key)) role[key] = source[key];
-        roles.push_back(std::move(role));
-    }
+    auto roles = ResolveWarehouseScoringRoles(c.workspace_view, c.settings.value("filters", Json::object()),
+        c.recommended_weights.Snapshot());
+    Json excluded = Json::array();
     Json reservations = Json::object(); AddReservations(c, reservations); excluded = reservations.at("exclude_uids");
     std::sort(excluded.begin(), excluded.end());
     return {{"roles", roles}, {"exclude_uids", excluded}};
@@ -434,6 +430,9 @@ Json OptimizationProgress(const Optimization& job) {
         {"budget_elapsed_ms", sample ? Json(sample->elapsed_ms) : Json(nullptr)},
         {"time_limit_ms", sample ? Json(sample->time_limit_ms) : Json(nullptr)},
         {"nodes", sample ? Json(sample->nodes) : Json(nullptr)},
+        {"worker_count", sample ? Json(sample->worker_count) : Json(nullptr)},
+        {"solver_ms", sample ? Json(sample->solver_ms) : Json(nullptr)},
+        {"preparation_ms", sample ? Json(sample->preparation_ms) : Json(nullptr)},
         {"max_nodes", sample ? Json(sample->max_nodes) : Json(nullptr)},
         {"combinations", sample && sample->combinations_available ? Json(sample->combinations) : Json(nullptr)},
         {"combination_budget", sample && sample->combinations_available ? Json(sample->combination_budget) : Json(nullptr)}};

@@ -1450,6 +1450,8 @@ main:has(#equipment-page:not([hidden])) > .calculation-progress:is([data-status=
 .optimizer-options > label { display: grid; gap: 5px; color: var(--muted); font-size: .78rem; }
 .optimizer-options input[type=number], .optimizer-options select { width: 100%; min-width: 0; }
 .optimizer-options small { line-height: 1.4; font-size: .72rem; }
+.field-error { display: block; color: var(--status-danger); font-size: .75rem; line-height: 1.45; overflow-wrap: anywhere; }
+input[aria-invalid="true"] { border-color: var(--status-danger); }
 .optimizer-check { display: inline-flex !important; align-items: center; gap: 7px; color: var(--ink); font-size: .8rem; line-height: 1.4; cursor: pointer; }
 .optimizer-options > .optimizer-check { min-height: 30px; }
 
@@ -2274,7 +2276,7 @@ main:has(#equipment-page:not([hidden])) > .calculation-progress:is([data-status=
 .multi-advanced:hover { border-color: var(--line); }
 .multi-advanced > summary { color: var(--ink); font-size: .82rem; font-weight: 620; padding: 9px 0; }
 .multi-advanced[open] { padding-bottom: 12px; }
-.multi-options { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 10px 14px; margin: 6px 0 10px; }
+.multi-options { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); align-items: start; gap: 10px 14px; margin: 6px 0 10px; }
 .multi-options input[type=number] { width: 100%; }
 .multi-options .optimizer-check { grid-column: span 2; }
 .multi-plan-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 16px; margin-top: 14px; }
@@ -2666,6 +2668,7 @@ main:has(#equipment-page:not([hidden])) > .calculation-progress:is([data-status=
 .tool-options {
   display: grid;
   grid-template-columns: repeat(4, minmax(130px, 1fr));
+  align-items: start;
   gap: 14px;
   padding: 14px 16px;
   margin-bottom: 14px;

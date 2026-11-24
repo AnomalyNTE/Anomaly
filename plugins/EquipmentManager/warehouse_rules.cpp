@@ -8,6 +8,74 @@ namespace equipment_manager {
 namespace {
 using namespace algorithm_detail;
 struct UnknownRuleData {};
+bool HasPositiveWeight(const Json& value) {
+    return value.is_object() && std::any_of(value.begin(), value.end(), [](const Json& weight) {
+        return weight.is_number() && std::isfinite(weight.get<double>()) && weight.get<double>() > 0;
+    });
+}
+bool ValidWeights(const Json& value, bool positive) {
+    if (!value.is_object() || value.size() > 128) return false;
+    for (const auto& [id, weight] : value.items()) {
+        if (id.empty() || id.size() > 128 || !weight.is_number()) return false;
+        const auto number = weight.get<double>();
+        if (!std::isfinite(number) || number < 0 || number > 1) return false;
+    }
+    return !positive || HasPositiveWeight(value);
+}
+
+Json ScoringRoles(const Json& workspace, const Json& filters, const Json& catalog) {
+    const auto empty = Json::object();
+    auto stored = empty;
+    bool stored_valid{true};
+    if (filters.contains("optimizer_roles")) {
+        const auto& encoded = filters.at("optimizer_roles");
+        if (encoded.is_string()) stored = Json::parse(encoded.get_ref<const std::string&>(), nullptr, false);
+        stored_valid = encoded.is_string() && stored.is_object();
+    }
+    const auto& recommended = catalog.contains("characters") && catalog.at("characters").is_object() ? catalog.at("characters") : empty;
+    std::map<std::string, Json, std::less<>> sources;
+    for (const auto* field : {"roles", "archived_roles"}) if (workspace.contains(field))
+        for (const auto& role : workspace.at(field)) sources.emplace(Id(role.at("id")), role);
+    for (const auto& [id, value] : recommended.items()) if (!sources.contains(id))
+        sources.emplace(id, Json{{"id", id}, {"name", value.value("name", id)}, {"official", true}});
+    Json result = Json::array();
+    for (const auto& [id, role] : sources) {
+        if (role.value("archived", false)) continue;
+        Json resolved{{"id", id}, {"scoring_weights_complete", false}};
+        for (const auto* key : {"name", "usable_shape_ids", "usable_suit_ids"}) if (role.contains(key)) resolved[key] = role[key];
+        const Json* recommendation{};
+        if (role.value("official", true)) {
+            for (const auto& candidate : {id, role.value("observed", empty).value("item_id", std::string{})})
+                if (recommended.contains(candidate)) { recommendation = &recommended.at(candidate); break; }
+        }
+        const Json* saved = stored_valid && stored.contains(id) && !stored.at(id).is_null() ? &stored.at(id) : nullptr;
+        const Json* source{}; std::string preset;
+        bool shared_main{};
+        if (stored_valid && (!saved || saved->is_object())) {
+            if (saved) {
+                preset = saved->value("preset", saved->contains("weights") || saved->contains("main_weights") ? std::string("custom") : std::string("general"));
+                if (preset == "general") { if (catalog.contains("general")) source = &catalog.at("general"); }
+                else if (preset == "role") source = &role;
+                else if (preset == "recommended") {
+                    if (recommendation) source = recommendation;
+                    else if (saved->contains("weights") && ValidWeights(saved->at("weights"), true)) { source = saved; preset = "custom"; }
+                } else source = saved;
+                shared_main = source == saved && saved->value("shared_main_weights", false);
+            } else if (role.contains("weights") && HasPositiveWeight(role.at("weights"))) { source = &role; preset = "role"; }
+            else if (recommendation) { source = recommendation; preset = "recommended"; }
+        }
+        if (source && source->contains("weights") && ValidWeights(source->at("weights"), true)) {
+            const auto& weights = source->at("weights");
+            const auto& main = !shared_main && source->contains("main_weights") ? source->at("main_weights") : weights;
+            if (ValidWeights(main, false)) {
+                resolved["weights"] = weights; resolved["main_weights"] = main;
+                resolved["scoring_weights_complete"] = true; resolved["weight_source"] = preset;
+            }
+        }
+        result.push_back(std::move(resolved));
+    }
+    return result;
+}
 int Grade(const Json& value) {
     const auto grade = Id(value);
     constexpr std::array<std::string_view, 8> grades{"D", "C", "B", "A", "S", "SS", "SSS", "ACE"};
@@ -134,7 +202,7 @@ Json Preview(const Json& request, const Json& inventory, const AlgorithmCancelCh
                 for (const auto& role_id : selected) {
                     if (budget.Stop()) Fail(AlgorithmFailure::budget_exhausted); ++budget.nodes;
                     const auto found = roles.find(role_id);
-                    if (found == roles.end() || !found->second->contains("weights") || !found->second->at("weights").is_object()) { unknown = true; continue; }
+                    if (found == roles.end() || !found->second->contains("weights") || !ValidWeights(found->second->at("weights"), true)) { unknown = true; continue; }
                     const auto& role = *found->second;
                     const auto shape = item.value("shape_id", std::string{}), suit = item.value("suit_id", std::string{});
                     const auto compatibility_key = item.at("kind") == "module" ? "usable_shape_ids" : "usable_suit_ids";
@@ -159,7 +227,12 @@ Json Preview(const Json& request, const Json& inventory, const AlgorithmCancelCh
                 }
                 // An uncertain earlier rule blocks fallthrough to a broader
                 // destructive rule; absent values never stand in for grade D.
-                if (unknown) { ++skipped["incomplete_score"]; complete = false; matched = true; break; }
+                const bool proven_lock = rule.action == "lock" && !rule.has_maximum && !best.is_null() &&
+                    (!rule.has_minimum || Grade(best.at("grade")) >= rule.minimum);
+                if (unknown) {
+                    complete = false;
+                    if (!proven_lock) { ++skipped["incomplete_score"]; matched = true; break; }
+                }
                 if (!eligible || best.is_null()) { ++skipped["no_eligible_role"]; matched = true; break; }
                 const auto grade = Grade(best.at("grade"));
                 if ((rule.has_minimum && grade < rule.minimum) || (rule.has_maximum && grade > rule.maximum)) continue;
@@ -183,6 +256,10 @@ Json Preview(const Json& request, const Json& inventory, const AlgorithmCancelCh
         {"evaluated", evaluated}, {"total", inventory.at("items").size()}, {"search", budget.Report()}};
 }
 } // namespace
+nlohmann::json ResolveWarehouseScoringRoles(const nlohmann::json& workspace,
+    const nlohmann::json& filters, const nlohmann::json& recommended_catalog) {
+    return ScoringRoles(workspace, filters, recommended_catalog);
+}
 nlohmann::json PreviewWarehouseRules(const nlohmann::json& request, const nlohmann::json& frozen_inventory,
                                     const AlgorithmCancelCheck& cancel_check) {
     try { return Preview(request, frozen_inventory, cancel_check); } catch (const Json::exception&) { Fail(); }

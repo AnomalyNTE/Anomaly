@@ -1,18 +1,20 @@
 import { observedEquipmentCatalog, shapeThumbnail } from "./equipment_catalog.js";
 import { renderSearchSummary } from "./optimization_results.js";
 import { arrangeBoard } from "./board_layout.js";
+import { createNumberValidation } from "./number_validation.js";
 
-const defaults = { role_id: "", counts: {}, set_effect_mode: "none", suit_id: "", extra_shape_area: "", layout_variants: false, max_solutions: 100, max_nodes: 2000000, time_limit_ms: 10000 };
+const defaults = { role_id: "", counts: {}, set_effect_mode: "none", suit_id: "", extra_shape_area: "", layout_variants: false, max_solutions: 100, max_nodes: 1000000000, time_limit_ms: 120000 };
 export function createBlueprintPanel({ mount, t, node, inventory, workspace, jobController, readPreference, savePreference }) {
   let preferences = structuredClone(defaults), resultPage = 1, resultJob, loaded = false, signature = "", error = "", renderedOutputKey = "";
   const heading = node("div", "page-heading"); heading.append(node("div")); heading.firstChild.append(node("h2", "", t("web.blueprint_title")), node("p", "meta", t("web.blueprint_hint")));
   const phase = node("span", "badge"); heading.append(phase);
   const form = node("form", "tool-form"), options = node("div", "tool-options"), fields = {};
+  const validateNumbers = createNumberValidation(form, t, ".tool-options input[type=number]");
   for (const [field, key] of [["role_id", "web.blueprint_board"], ["suit_id", "web.filter_suit"], ["set_effect_mode", "web.optimize_set_effect"], ["extra_shape_area", "web.blueprint_extra_area"]]) {
     const label = node("label", "page-field"), select = node("select"); select.onchange = () => { preferences[field] = select.value; persist(); };
     label.append(node("span", "", t(key)), select); fields[field] = select; options.append(label);
   }
-  for (const [field, key, min, max, scale = 1] of [["max_solutions", "web.blueprint_max_solutions", 1, 2000], ["max_nodes", "web.optimize_node_limit", 1, 100000000], ["time_limit_ms", "web.optimize_time_limit_seconds", 0.001, 120, 1000]]) {
+  for (const [field, key, min, max, scale = 1] of [["max_solutions", "web.blueprint_max_solutions", 1, 2000], ["max_nodes", "web.optimize_node_limit", 1, 1000000000], ["time_limit_ms", "web.optimize_time_limit_seconds", 0.001, 120, 1000]]) {
     const label = node("label", "page-field"), input = node("input"); input.type = "number"; input.min = min; input.max = max; input.step = scale === 1000 ? "0.001" : "1"; input.required = true;
     input.oninput = () => { if (input.checkValidity()) { preferences[field] = Math.round(input.valueAsNumber * scale); persist(); } }; fields[field] = input;
     label.append(node("span", "", t(key)), input); options.append(label);
@@ -103,6 +105,7 @@ export function createBlueprintPanel({ mount, t, node, inventory, workspace, job
     cancel.textContent = t(cancelling ? "web.search_progress_cancelling" : "web.optimize_cancel");
     notice.textContent = error || jobError || (job.kind === "blueprints" ? job.message : "") || ""; notice.hidden = !notice.textContent;
     notice.classList.toggle("error", Boolean(error || jobError) || job.status === "failed");
+    validateNumbers();
     renderResults();
   }
   form.onsubmit = async (event) => {

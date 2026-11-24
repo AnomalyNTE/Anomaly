@@ -178,6 +178,31 @@ export function resolveOptimizationPreference(role = {}, stored, initial = null)
   return resolveCorePreference(role, scoringPreference(role, stored, initial));
 }
 
+// Warehouse grading shares the calculation's per-character presets. Missing
+// character weights stay unknown instead of silently receiving a general preset.
+export function warehouseScoringRoles(workspace = {}, stored = {}) {
+  const known = new Map([...(workspace?.roles || []), ...(workspace?.archived_roles || [])].map((role) => [role.id, role]));
+  for (const [id, entry] of Object.entries(recommendedCatalog.characters || {})) {
+    if (!known.has(id)) known.set(id, { id, name: entry.name || id, official: true });
+  }
+  const validStored = stored && typeof stored === "object" && !Array.isArray(stored);
+  return [...known.values()].filter((role) => !role.archived).map((role) => {
+    const saved = validStored ? stored[role.id] : null, recommended = recommendedWeightsForRole(role);
+    const hasRoleWeights = validWeightMap(role.weights, true);
+    const unavailable = !validStored || (saved != null && (typeof saved !== "object" || Array.isArray(saved))) ||
+      (!saved && !hasRoleWeights && !recommended) ||
+      (saved?.preset === "role" && !hasRoleWeights) ||
+      (saved?.preset === "recommended" && !recommended && !validWeightMap(saved.weights, true));
+    const preference = unavailable ? null : resolveOptimizationPreference(role, saved);
+    const weights = preference && validWeightMap(preference.weights, true);
+    const main = weights && (preference.shared_main_weights === true ? weights : validWeightMap(preference.main_weights || preference.weights));
+    const result = { ...role, scoring_weights_complete: Boolean(weights && main) };
+    delete result.weights; delete result.main_weights;
+    if (result.scoring_weights_complete) Object.assign(result, { weights, main_weights: main, weight_source: preference.preset });
+    return result;
+  });
+}
+
 // Single and team requests use the same scoring preferences and raw units.
 // An empty suit means "any suit", so it must not enter the nonempty-ID field.
 export function optimizationPreferenceFields(preference, items = [], character = null) {

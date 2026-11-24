@@ -2,9 +2,10 @@ import { renderPlanPreview } from "./optimization_results.js";
 import { createLoadoutSave } from "./save_loadouts.js";
 import { characterAvatar, updateCharacterAvatar } from "./asset_images.js";
 import { resolveOptimizationPreference, optimizationPreferenceFields } from "./weight_preferences.js";
+import { createNumberValidation } from "./number_validation.js";
 
 const keyOf = (uid) => uid ? `${uid.slot}:${uid.serial}` : "";
-const defaults = { roles: {}, top_k: 5, combination_budget: 20000, max_nodes: 2000000, time_limit_ms: 10000, include_role_top_k: false, exclude_selected: false };
+const defaults = { roles: {}, top_k: 5, combination_budget: 5000000, max_nodes: 1000000000, time_limit_ms: 120000, worker_count: 0, include_role_top_k: false, exclude_selected: false };
 
 export function createMultiOptimizer({ mount, api, t, node, workspace, inventory, jobController, canRun,
   readPreference, savePreference, readRolePreferences, openPreference, selectedUids, loadDraft, loadPlans, applyPlans, saveSoftwarePlan, reloadWorkspace, readSaveSlots, saveSaveSlots }) {
@@ -14,6 +15,7 @@ export function createMultiOptimizer({ mount, api, t, node, workspace, inventory
   heading.append(node("h2", "", t("web.multi_title")));
   const phase = node("span", "badge"); heading.append(phase);
   const form = node("form", "multi-form"), mainColumn = node("div", "multi-main"), rows = node("div", "multi-roles");
+  const validateNumbers = createNumberValidation(form, t, ".multi-options input[type=number]");
   const sidebar = node("aside", "multi-sidebar");
   const queueSection = node("div", "multi-queue-section"), queueHeader = node("div", "multi-queue-header"), queueHint = node("span", "multi-queue-hint", t("web.multi_priority")), queueList = node("div", "multi-queue");
   const count = node("span", "multi-selected-count");
@@ -30,7 +32,7 @@ export function createMultiOptimizer({ mount, api, t, node, workspace, inventory
   queueSection.append(queueHeader, queueList, toolbar);
   const advanced = node("details", "multi-advanced"); advanced.append(node("summary", "", t("web.advanced_options")));
   const options = node("div", "multi-options"), controls = {};
-  for (const [field, key, min, max, scale = 1] of [["top_k", "web.multi_candidate_limit", 1, 20], ["combination_budget", "web.multi_combination_budget", 1, 5000000], ["max_nodes", "web.optimize_node_limit", 1, 100000000], ["time_limit_ms", "web.optimize_time_limit_seconds", 0.001, 120, 1000]]) {
+  for (const [field, key, min, max, scale = 1] of [["top_k", "web.multi_candidate_limit", 1, 20], ["combination_budget", "web.multi_combination_budget", 1, 5000000], ["max_nodes", "web.optimize_node_limit", 1, 1000000000], ["time_limit_ms", "web.optimize_time_limit_seconds", 0.001, 120, 1000], ["worker_count", "web.optimize_worker_count", 0, 32]]) {
     const label = node("label", "page-field"), input = node("input"); input.type = "number"; input.min = min; input.max = max; input.step = scale === 1000 ? "0.001" : "1"; input.required = true;
     input.oninput = () => { if (input.checkValidity()) { preferences[field] = Math.round(input.valueAsNumber * scale); persist(); } };
     controls[field] = input; label.append(node("span", "", t(key)), input); options.append(label);
@@ -60,7 +62,7 @@ export function createMultiOptimizer({ mount, api, t, node, workspace, inventory
     preferences = structuredClone(defaults);
     try {
       const saved = JSON.parse(readPreference() || "{}");
-      if (!saved || typeof saved !== "object" || Array.isArray(saved) || (Object.hasOwn(saved, "roles") && (!saved.roles || typeof saved.roles !== "object" || Array.isArray(saved.roles)))) throw new Error();
+      if (!saved || typeof saved !== "object" || Array.isArray(saved) || (Object.hasOwn(saved, "roles") && (!saved.roles || typeof saved.roles !== "object" || Array.isArray(saved.roles))) || (Object.hasOwn(saved, "worker_count") && (!Number.isInteger(saved.worker_count) || saved.worker_count < 0 || saved.worker_count > 32))) throw new Error();
       preferences = { ...preferences, ...saved };
     } catch { error = t("web.multi_invalid_preferences"); }
     for (const [field, input] of Object.entries(controls)) if (input.type === "checkbox") input.checked = preferences[field] === true; else input.value = field === "time_limit_ms" ? preferences[field] / 1000 : preferences[field];
@@ -280,6 +282,7 @@ export function createMultiOptimizer({ mount, api, t, node, workspace, inventory
     run.disabled = disabled || !canRun() || !selected.length || Boolean(preferenceError); run.textContent = t(active ? "web.calculating" : "web.multi_run");
     notice.textContent = error || preferenceError || jobError || (job.kind === "multi" && ["failed", "cancelled"].includes(job.status) ? job.message || "" : ""); notice.hidden = !notice.textContent;
     notice.classList.toggle("error", Boolean(error || preferenceError || jobError) || job.status === "failed");
+    validateNumbers();
     renderResults();
   }
   form.onsubmit = async (event) => {
@@ -311,7 +314,7 @@ export function createMultiOptimizer({ mount, api, t, node, workspace, inventory
     error = "";
     await jobController.run("api/optimize", { snapshot_id: inventory().snapshot_id, groups: [...groups].sort(([left], [right]) => right - left).map(([, roles]) => roles),
       top_k: preferences.top_k, include_role_top_k: preferences.include_role_top_k, combination_budget: preferences.combination_budget,
-      max_nodes: preferences.max_nodes, time_limit_ms: preferences.time_limit_ms,
+      max_nodes: preferences.max_nodes, time_limit_ms: preferences.time_limit_ms, worker_count: preferences.worker_count,
       ...(preferences.exclude_selected ? { exclude_uids: selectedUids() } : {}) });
   };
   jobController.subscribe(render);

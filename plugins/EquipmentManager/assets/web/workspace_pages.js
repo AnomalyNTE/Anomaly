@@ -73,6 +73,8 @@ export function createWorkspacePages({ api, t, node, workspace, inventory, featu
     readPreference: () => read("warehouse_rules"), savePreference: (value) => write("warehouse_rules", value) });
   const tidy = createQuickTidy({ api, t, node, workspace, inventory, currentRole, jobController, canRun, reloadWorkspace, refreshInventory, trackOperation, cancelOperations,
     readPreference: () => read("quick_tidy"), savePreference: (value) => write("quick_tidy", value),
+    readRolePreferences: () => read("optimizer_roles"),
+    saveRolePreferences: (value) => write("optimizer_roles", value),
     openAdvanced: () => navigation.go("warehouse_rules") });
   for (const description of document.querySelectorAll(".page-heading p.meta")) description.remove();
   navigation = createNavigation({

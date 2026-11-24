@@ -1,4 +1,5 @@
 import { renderPlanPreview, renderSearchSummary } from "./optimization_results.js";
+import { createNumberValidation } from "./number_validation.js";
 import { createOptimizerConstraints } from "./optimizer_constraints.js";
 import { generalOutputWeights, generalWeights, recommendedWeightsForRole, recommendedCoreForRole, resolveCorePreference, optimizationSetMode, getRecommendedWeightsCatalog, rolePreference, resolveOptimizationPreference, optimizationPreferenceFields } from "./weight_preferences.js";
 import { propertyLabel, suitLabel } from "./equipment_display.js";
@@ -10,7 +11,7 @@ const defaults = {
   set_effect_mode: "four_piece", require_core: true, core_suit_id: "", core_main_stats: [],
   priority_stats: [], priority_equal: false, priority_min_grade: "A",
   include_discarded: false, allow_borrow: true, exclude_selected: false,
-  max_nodes: 2000000, time_limit_ms: 10000, top_k: 1, keep_current: false, allow_missing_core: false, custom_role_id: "",
+  max_nodes: 1000000000, time_limit_ms: 120000, worker_count: 0, top_k: 1, keep_current: false, allow_missing_core: false, custom_role_id: "",
 };
 const keyOf = (uid) => uid ? `${uid.slot}:${uid.serial}` : "";
 const recommendedSuitOption = "@recommended";
@@ -23,6 +24,7 @@ export function createOptimizer({ jobController, features, workspace, t, node, i
   let renderedOutputKey = "";
   let contextId = "", rolePreferences = {}, preset = "general", autoPreviewId = "", ownJobId = "", remembering = false, preferenceMessage = "";
   let optionJobId = "", selectedOption = 0, shownOptionKey = "";
+  const validateNumbers = createNumberValidation($("optimizer-form"), t, "#opt-node-limit, #opt-time-limit, #opt-worker-count, #opt-top-k");
 
   const stateItems = () => inventory()?.items || [];
   const targetRole = () => preferences.custom_role_id ? (workspace()?.roles || []).find((role) => role.id === preferences.custom_role_id && role.official === false) : selectedCharacter();
@@ -123,7 +125,7 @@ export function createOptimizer({ jobController, features, workspace, t, node, i
         const validFilters = !Object.hasOwn(candidate, "filters") || (candidate.filters && typeof candidate.filters === "object" && !Array.isArray(candidate.filters) && Object.values(candidate.filters).every((filter) => filter && typeof filter === "object" && !Array.isArray(filter) && ["qualities", "main_allow", "main_blacklist", "sub_blacklist"].every((field) => !Object.hasOwn(filter, field) || ids(filter[field]))));
         const validLimits = !Object.hasOwn(candidate, "property_limits") || (Array.isArray(candidate.property_limits) && candidate.property_limits.every((limit) => limit && typeof limit.id === "string" && ["minimum", "maximum"].every((field) => !Object.hasOwn(limit, field) || Number.isFinite(limit[field]))));
         if (!value || typeof value !== "object" || Array.isArray(value) ||
-            !validFilters || !validLimits ||
+            !validFilters || !validLimits || !Number.isInteger(candidate.worker_count) || candidate.worker_count < 0 || candidate.worker_count > 32 ||
             (value.preset != null && !["recommended", "general", "role", "custom"].includes(value.preset)) ||
             !validWeights(candidate.weights) || !validWeights(candidate.main_weights) ||
             !ids(candidate.priority_stats) || candidate.priority_stats.length > 4 || !ids(candidate.core_main_stats) ||
@@ -150,6 +152,7 @@ export function createOptimizer({ jobController, features, workspace, t, node, i
     $("opt-priority-grade").value = preferences.priority_min_grade;
     $("opt-node-limit").value = preferences.max_nodes;
     $("opt-time-limit").value = preferences.time_limit_ms / 1000;
+    $("opt-worker-count").value = preferences.worker_count;
     $("opt-top-k").value = preferences.top_k;
     loaded = true;
   }
@@ -178,7 +181,7 @@ export function createOptimizer({ jobController, features, workspace, t, node, i
       snapshot_id: inventory().snapshot_id, character: software ? null : character.uid,
       ...(software ? { role_id: character.id, allowed_cells: character.allowed_cells } : {}),
       ...optimizationPreferenceFields(preferences, stateItems(), software ? null : character.uid),
-      max_nodes: Number($("opt-node-limit").value), time_limit_ms: Math.round(Number($("opt-time-limit").value) * 1000),
+      max_nodes: Number($("opt-node-limit").value), time_limit_ms: Math.round(Number($("opt-time-limit").value) * 1000), worker_count: Number($("opt-worker-count").value),
     };
     if (preferences.exclude_selected) result.exclude_uids = selectedUids();
     if (features().optimize_top_k === true) result.top_k = Number($("opt-top-k").value);
@@ -312,6 +315,7 @@ export function createOptimizer({ jobController, features, workspace, t, node, i
     $("optimize-cancel").disabled = !active || posting || cancelling; $("optimize-cancel").hidden = !active || globalProgressVisible;
     $("optimize-cancel").textContent = t(cancelling ? "web.search_progress_cancelling" : "web.optimize_cancel");
     constraints.render(locked, Boolean(preferences.custom_role_id));
+    validateNumbers();
     renderResult();
   }
 
@@ -350,7 +354,7 @@ export function createOptimizer({ jobController, features, workspace, t, node, i
     finally { remembering = false; render(); }
   };
   for (let index = 1; index <= 4; index++) $(`opt-priority-${index}`).onchange = () => { preferences.priority_stats = Array.from({ length: 4 }, (_, position) => $(`opt-priority-${position + 1}`).value).filter(Boolean); changed(); };
-  for (const [id, field] of [["opt-node-limit", "max_nodes"], ["opt-time-limit", "time_limit_ms"], ["opt-top-k", "top_k"]]) $(id).oninput = () => {
+  for (const [id, field] of [["opt-node-limit", "max_nodes"], ["opt-time-limit", "time_limit_ms"], ["opt-worker-count", "worker_count"], ["opt-top-k", "top_k"]]) $(id).oninput = () => {
     if ($(id).checkValidity()) { preferences[field] = Math.round($(id).valueAsNumber * (field === "time_limit_ms" ? 1000 : 1)); changed(true); } else render();
   };
   $("opt-increase-budget").onclick = () => {
