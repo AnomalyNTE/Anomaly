@@ -896,9 +896,12 @@ Json Api(Context& c, std::string_view method, std::string_view path, std::string
         Json settings = Json::object();
         for (const auto* field : {"filters", "selected_character", "draft"})
             if (input.contains(field)) settings[field] = input[field];
-        c.settings = std::move(settings);
-        ++c.settings_revision;
-        if (!c.save_task.id) {
+        if (settings != c.settings) {
+            c.settings = std::move(settings);
+            ++c.settings_revision;
+        }
+        // An identical request can retry a failed save without creating a new revision.
+        if (c.settings_revision != c.saved_revision && !c.save_task.id) {
             const auto status = c.scheduler->schedule(c.scheduler->user, 50, SaveWorker, &c, &c.save_task);
             if (status.code != ANOMALY_STATUS_V1_OK) {
                 c.save_task = {};

@@ -2,6 +2,7 @@ import { equipmentIcon } from "./asset_images.js";
 const keyOf = (uid) => uid ? `${uid.slot}:${uid.serial}` : "";
 export function createRoleComparisons({ controlsMount, resultMount, t, node, inventory, workspace,
   selectedRole, selectedSlot, preferences, persist, features, jobController, inspectItem }) {
+  let resultPage = 1, resultJob;
   const modeLabel = node("label", "page-field comparison-mode"), mode = node("select");
   for (const [value, key] of [["panel", "web.panel_mode_attributes"], ["contributions", "web.panel_mode_contributions"], ["replacements", "web.panel_mode_replacements"]]) { const option = node("option", "", t(key)); option.value = value; mode.append(option); }
   modeLabel.append(node("span", "", t("web.panel_calculation_mode")), mode); mode.onchange = () => { preferences().calculation_kind = mode.value; persist(); };
@@ -40,7 +41,8 @@ export function createRoleComparisons({ controlsMount, resultMount, t, node, inv
   }
   function renderResults() {
     const { job } = jobController.state(), result = job.result;
-    const key = `${job.id || ""}|${job.status}|${job.stale}|${job.profile_stale}|${inventory()?.snapshot_id}|${preferences().replacement_result_page}`; if (key === renderedKey) return; renderedKey = key;
+    if (job.id !== resultJob) { resultJob = job.id; resultPage = 1; }
+    const key = `${job.id || ""}|${job.status}|${job.stale}|${job.profile_stale}|${inventory()?.snapshot_id}|${resultPage}`; if (key === renderedKey) return; renderedKey = key;
     output.replaceChildren(); output.hidden = job.status !== "completed" || !["contributions", "replacements"].includes(job.kind) || !result;
     if (output.hidden) return;
     output.append(node("h3", "", t(job.kind === "contributions" ? "web.panel_mode_contributions" : "web.panel_mode_replacements")), node("p", "meta", t("web.comparison_frozen")));
@@ -58,8 +60,8 @@ export function createRoleComparisons({ controlsMount, resultMount, t, node, inv
     if (job.kind === "replacements" && result.equipment) {
       output.append(node("p", "comparison-target", t("web.comparison_for", itemName(result.equipment))), node("p", "meta", t("web.comparison_ranking_hint")), node("p", "meta", t("web.comparison_current_scores", number(result.current_score), number(result.current_direct_damage_score))), node("p", "meta", t("web.comparison_returned", result.candidates?.length ?? 0, result.total ?? "—")));
       if (result.truncated) output.append(node("p", "draft-warning", t("web.comparison_truncated")));
-      const pages = Math.max(1, Math.ceil((result.candidates?.length || 0) / 50)), page = Math.max(1, Math.min(pages, Number(preferences().replacement_result_page) || 1)), paging = node("div", "result-paging");
-      for (const [key, value, disabled] of [["web.previous_page", page - 1, page === 1], ["web.next_page", page + 1, page === pages]]) { const button = node("button", "button quiet", t(key)); button.type = "button"; button.disabled = disabled; button.onclick = () => { preferences().replacement_result_page = value; persist(); }; paging.append(button); } paging.append(node("span", "meta", t("web.inventory_page", page, pages))); output.append(paging);
+      const pages = Math.max(1, Math.ceil((result.candidates?.length || 0) / 50)), page = Math.min(pages, resultPage), paging = node("div", "result-paging");
+      for (const [key, value, disabled] of [["web.previous_page", page - 1, page === 1], ["web.next_page", page + 1, page === pages]]) { const button = node("button", "button quiet", t(key)); button.type = "button"; button.disabled = disabled; button.onclick = () => { resultPage = value; renderResults(); }; paging.append(button); } paging.append(node("span", "meta", t("web.inventory_page", page, pages))); output.append(paging);
       const table = node("table", "data-table"), head = node("thead"), header = node("tr"); for (const key of ["web.inventory", "web.optimize_score", "web.optimize_grade", "web.comparison_damage", "web.panel_gain", "web.comparison_direct_score"]) header.append(node("th", "", t(key))); head.append(header); table.append(head); const body = node("tbody");
       for (const candidate of (result.candidates || []).slice((page - 1) * 50, page * 50)) { const row = node("tr"), name = node("th"); name.append(equipmentIcon(findItem(candidate.equipment), node, "small"), node("span", "", itemName(candidate.equipment)), inspectButton(candidate.equipment, result.role_id)); row.append(name, node("td", "", number(candidate.score)), node("td", "", candidate.grade ?? "—"), node("td", "", number(candidate.damage)), node("td", "", gain(candidate.gain_percent)), node("td", "", number(candidate.direct_damage_score))); body.append(row); } table.append(body); output.append(table);
       if (result.errors?.length) {

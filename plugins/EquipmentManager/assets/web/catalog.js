@@ -6,14 +6,14 @@ const domains = [
   { id: "modifiers", sections: ["player_modify", "fork_modify", "equipment_modify", "likeability_modify"] },
 ];
 export function createCatalogPanel({ mount, api, t, node, readPreference, savePreference }) {
-  let preferences = { section: "characters", offset: 0 }, loaded = false, posting = false, reading = false, error = "", job = { status: "idle" }, page = null, timer;
+  let preferences = { section: "characters" }, offset = 0, loaded = false, posting = false, reading = false, error = "", job = { status: "idle" }, page = null, timer;
   let renderedPage, renderedStale, renderedActive;
   const heading = node("div", "page-heading"); heading.append(node("div")); heading.firstChild.append(node("h2", "", t("web.catalog_title")), node("p", "meta", t("web.catalog_hint")));
   const phase = node("span", "badge"); heading.append(phase);
   const toolbar = node("div", "catalog-toolbar"), domainLabel = node("label", "page-field"), domain = node("select"), sectionLabel = node("label", "page-field"), section = node("select");
   for (const value of domains) { const option = node("option", "", t(`web.catalog_domain_${value.id}`)); option.value = value.id; domain.append(option); }
   domainLabel.append(node("span", "", t("web.catalog_domain")), domain); sectionLabel.append(node("span", "", t("web.catalog_section")), section);
-  const read = node("button", "button primary", t("web.catalog_read")); read.type = "button"; read.onclick = () => readPage(preferences.offset);
+  const read = node("button", "button primary", t("web.catalog_read")); read.type = "button"; read.onclick = () => readPage(offset);
   const refreshStatus = node("button", "button quiet", t("web.catalog_check_status")); refreshStatus.type = "button"; refreshStatus.onclick = () => poll();
   toolbar.append(domainLabel, sectionLabel, read, refreshStatus);
   const notice = node("p", "tool-message"); notice.setAttribute("role", "status");
@@ -27,22 +27,22 @@ export function createCatalogPanel({ mount, api, t, node, readPreference, savePr
     const selected = domains.find((value) => value.id === domain.value) || domains[2];
     section.replaceChildren(...selected.sections.map((id) => { const option = node("option", "", t(`web.catalog_section_${id}`)); option.value = id; return option; })); section.value = preferences.section;
   }
-  domain.onchange = () => { preferences.section = domains.find((value) => value.id === domain.value).sections[0]; preferences.offset = 0; page = null; populateSections(); save(); render(); };
-  section.onchange = () => { preferences.section = section.value; preferences.offset = 0; page = null; save(); render(); };
+  domain.onchange = () => { preferences.section = domains.find((value) => value.id === domain.value).sections[0]; offset = 0; page = null; populateSections(); save(); render(); };
+  section.onchange = () => { preferences.section = section.value; offset = 0; page = null; save(); render(); };
   function initialize() {
     try {
       const saved = JSON.parse(readPreference() || "{}");
-      if (!saved || !domains.some((domain) => domain.sections.includes(saved.section ?? preferences.section)) || (Object.hasOwn(saved, "offset") && (!Number.isSafeInteger(saved.offset) || saved.offset < 0))) throw new Error();
+      if (!saved || !domains.some((domain) => domain.sections.includes(saved.section ?? preferences.section))) throw new Error();
       preferences = { ...preferences, ...saved };
     } catch { error = t("web.catalog_invalid_preferences"); }
     domain.value = domains.find((value) => value.sections.includes(preferences.section)).id; populateSections(); loaded = true;
   }
-  async function readPage(offset) {
+  async function readPage(requestedOffset) {
     if (posting || active()) return;
     posting = true; error = ""; render();
     try {
-      job = await api("api/catalog/read", { section: preferences.section, offset, limit: 32 });
-      preferences.offset = offset; save(); await poll();
+      job = await api("api/catalog/read", { section: preferences.section, offset: requestedOffset, limit: 32 });
+      offset = requestedOffset; await poll();
     } catch (failure) { error = failure.message; }
     finally { posting = false; render(); }
   }

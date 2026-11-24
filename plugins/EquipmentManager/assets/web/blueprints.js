@@ -2,9 +2,9 @@ import { observedEquipmentCatalog, shapeThumbnail } from "./equipment_catalog.js
 import { renderSearchSummary } from "./optimization_results.js";
 import { arrangeBoard } from "./board_layout.js";
 
-const defaults = { role_id: "", counts: {}, set_effect_mode: "none", suit_id: "", extra_shape_area: "", layout_variants: false, max_solutions: 100, max_nodes: 2000000, time_limit_ms: 10000, result_page: 1 };
+const defaults = { role_id: "", counts: {}, set_effect_mode: "none", suit_id: "", extra_shape_area: "", layout_variants: false, max_solutions: 100, max_nodes: 2000000, time_limit_ms: 10000 };
 export function createBlueprintPanel({ mount, t, node, inventory, workspace, jobController, readPreference, savePreference }) {
-  let preferences = structuredClone(defaults), loaded = false, signature = "", error = "", renderedOutputKey = "";
+  let preferences = structuredClone(defaults), resultPage = 1, resultJob, loaded = false, signature = "", error = "", renderedOutputKey = "";
   const heading = node("div", "page-heading"); heading.append(node("div")); heading.firstChild.append(node("h2", "", t("web.blueprint_title")), node("p", "meta", t("web.blueprint_hint")));
   const phase = node("span", "badge"); heading.append(phase);
   const form = node("form", "tool-form"), options = node("div", "tool-options"), fields = {};
@@ -71,16 +71,17 @@ export function createBlueprintPanel({ mount, t, node, inventory, workspace, job
   }
   function renderResults() {
     const { job } = jobController.state(), result = job.result;
-    const key = `${job.id || ""}|${job.status}|${preferences.result_page}`; if (key === renderedOutputKey) return; renderedOutputKey = key;
+    if (job.id !== resultJob) { resultJob = job.id; resultPage = 1; }
+    const key = `${job.id || ""}|${job.status}|${resultPage}`; if (key === renderedOutputKey) return; renderedOutputKey = key;
     output.replaceChildren();
     if (job.status !== "completed" || !Array.isArray(result?.blueprints)) return;
     output.append(renderSearchSummary({ result, t, node }));
     output.append(node("p", "meta", t("web.blueprint_result_count", result.blueprints.length)));
     if (!result.blueprints.length) output.append(node("p", "draft-warning", t("web.optimize_no_solution")));
-    const pages = Math.max(1, Math.ceil(result.blueprints.length / 20)), page = Math.max(1, Math.min(pages, Number(preferences.result_page) || 1));
+    const pages = Math.max(1, Math.ceil(result.blueprints.length / 20)), page = Math.min(pages, resultPage);
     const paging = node("div", "result-paging"), previous = node("button", "button quiet", t("web.previous_page")), next = node("button", "button quiet", t("web.next_page"));
     previous.type = "button"; next.type = "button"; previous.disabled = page === 1; next.disabled = page === pages;
-    const go = (value) => { preferences.result_page = value; savePreference(JSON.stringify(preferences)); renderResults(); };
+    const go = (value) => { resultPage = value; renderResults(); };
     previous.onclick = () => go(page - 1); next.onclick = () => go(page + 1); paging.append(previous, node("span", "meta", t("web.inventory_page", page, pages)), next); output.append(paging);
     for (const [relative, blueprint] of result.blueprints.slice((page - 1) * 20, page * 20).entries()) {
       const index = (page - 1) * 20 + relative;

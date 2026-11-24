@@ -4,7 +4,7 @@ import { propertyLabel } from "./equipment_display.js";
 
 const keyOf = (uid) => uid ? `${uid.slot}:${uid.serial}` : "";
 export function createWarehouseRules({ mount, api, t, node, inventory, workspace, jobController, canApply, readPreference, savePreference, refreshInventory, openActivity, cancelOperations }) {
-  let preferences = { rules: [], include_equipped: false, strict_compatibility: false, protected_shape_ids: [], protected_suit_ids: [], result_page: 1 }, loaded = false, applying = false, appliedPreview = "", error = "", message = "", catalogSignature = "", renderedOutputKey = "";
+  let preferences = { rules: [], include_equipped: false, strict_compatibility: false, protected_shape_ids: [], protected_suit_ids: [] }, resultPage = 1, resultJob, loaded = false, applying = false, appliedPreview = "", error = "", message = "", catalogSignature = "", renderedOutputKey = "";
   const heading = node("div", "page-heading"); heading.append(node("div")); heading.firstChild.append(node("h2", "", t("web.rules_title")), node("p", "meta", t("web.rules_hint")));
   const phase = node("span", "badge"); heading.append(phase);
   const form = node("form", "warehouse-rules-form"), options = node("div", "rule-global-options"), list = node("div", "warehouse-rule-list");
@@ -49,7 +49,8 @@ export function createWarehouseRules({ mount, api, t, node, inventory, workspace
   function current() { const { job } = jobController.state(); return job.kind === "warehouse_rules" && job.status === "completed" && !job.stale && job.result?.source_snapshot_id === inventory()?.snapshot_id && canApply(); }
   function renderResults() {
     const { job } = jobController.state(), result = job.result;
-    const key = `${job.id || ""}|${job.status}|${job.stale}|${current()}|${preferences.result_page}|${applying}|${appliedPreview}`; if (key === renderedOutputKey) return; renderedOutputKey = key;
+    if (job.id !== resultJob) { resultJob = job.id; resultPage = 1; }
+    const key = `${job.id || ""}|${job.status}|${job.stale}|${current()}|${resultPage}|${applying}|${appliedPreview}`; if (key === renderedOutputKey) return; renderedOutputKey = key;
     output.replaceChildren(); if (job.status !== "completed" || job.kind !== "warehouse_rules" || !result) return;
     const counts = { lock: 0, discard: 0, normal: 0 }; for (const change of result.changes) counts[change.state]++;
     output.append(node("h3", "", t("web.rules_summary", counts.lock, counts.discard, counts.normal)), node("p", "meta mono", t("web.snapshot", result.source_snapshot_id)));
@@ -66,8 +67,8 @@ export function createWarehouseRules({ mount, api, t, node, inventory, workspace
     const activity = node("button", "button quiet", t("web.rules_activity")); activity.type = "button"; activity.onclick = openActivity;
     const cancel = node("button", "button quiet", t("web.cancel_pending")); cancel.type = "button"; cancel.onclick = cancelOperations;
     actions.append(apply, activity, cancel); output.append(actions);
-    const pages = Math.max(1, Math.ceil(result.changes.length / 100)), page = Math.max(1, Math.min(pages, Number(preferences.result_page) || 1)), paging = node("div", "result-paging");
-    for (const [label, value, disabled] of [["web.previous_page", page - 1, page === 1], ["web.next_page", page + 1, page === pages]]) { const button = node("button", "button quiet", t(label)); button.type = "button"; button.disabled = disabled; button.onclick = () => { preferences.result_page = value; persist(); }; paging.append(button); } paging.append(node("span", "meta", t("web.inventory_page", page, pages))); output.append(paging);
+    const pages = Math.max(1, Math.ceil(result.changes.length / 100)), page = Math.min(pages, resultPage), paging = node("div", "result-paging");
+    for (const [label, value, disabled] of [["web.previous_page", page - 1, page === 1], ["web.next_page", page + 1, page === pages]]) { const button = node("button", "button quiet", t(label)); button.type = "button"; button.disabled = disabled; button.onclick = () => { resultPage = value; renderResults(); }; paging.append(button); } paging.append(node("span", "meta", t("web.inventory_page", page, pages))); output.append(paging);
     const table = node("table", "data-table"), head = node("thead"), header = node("tr"); for (const key of ["web.inventory", "web.rules_previous_state", "web.rules_target_state", "web.rules_name", "web.optimize_score", "web.optimize_grade"]) header.append(node("th", "", t(key))); head.append(header); table.append(head); const body = node("tbody");
     for (const change of result.changes.slice((page - 1) * 100, page * 100)) {
       const item = inventory()?.items?.find((item) => keyOf(item.uid) === keyOf(change.equipment)), rule = result.rules_snapshot?.find((rule) => rule.id === change.rule_id), row = node("tr");

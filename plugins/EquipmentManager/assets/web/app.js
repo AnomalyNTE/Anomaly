@@ -19,9 +19,10 @@ const $ = (id) => document.getElementById(id);
 const token = new URLSearchParams(location.hash.slice(1)).get("token") || "";
 const model = {
   messages: { ...fallbackMessages }, state: null, workspace: null, features: {}, connected: false, bootstrapped: false, requestBusy: false, changingAccount: false,
-  selected: "", checked: new Set(), view: "current", preview: null, inspectPreview: false, hoverAnchor: null, placementMode: false, operationId: null, pendingAction: "",
-  settings: { filters: { search: "", kind: "all", state: "all", owner: "all", loadout_view: "current", workbench_view: "optimize", color_theme: "naiwa", inventory_page: "1" }, selected_character: null, draft: null },
+  selected: "", checked: new Set(), view: "current", workbench: "optimize", inventoryPage: 1, preview: null, inspectPreview: false, hoverAnchor: null, placementMode: false, operationId: null, pendingAction: "",
+  settings: { filters: { search: "", kind: "all", state: "all", owner: "all", color_theme: "naiwa" }, selected_character: null, draft: null },
   saveTimer: null, savePending: false, saving: false,
+  savedSettingsDocument: "", savingSettingsDocument: null,
   settingsEdit: 0, submittedSettingsEdit: 0, settingsStatus: "",
   notice: null,
   syncPosting: false, syncRequest: null,
@@ -120,10 +121,10 @@ function displayPlan() { const preview = activePreview(); return preview?.readOn
 function knownShape(item) { return item?.kind === "core" || (item?.kind === "module" && Array.isArray(item.cells) && item.cells.length > 0); }
 function stagedPlans() { return Array.isArray(model.settings.draft?.plans) ? model.settings.draft.plans : []; }
 function copyPlan(plan) { return structuredClone({ character: plan.character, placements: plan.placements, core: plan.core || null }); }
-function setView(view) { model.view = view; if (view !== "draft" || !activePreview()?.readOnly) model.settings.filters.loadout_view = view; }
+function setView(view) { model.view = view; }
 function setWorkbench(view) {
-  const changed = model.settings.filters.workbench_view !== view;
-  model.settings.filters.workbench_view = view;
+  const changed = model.workbench !== view;
+  model.workbench = view;
   renderWorkbench();
   return changed;
 }
@@ -185,7 +186,7 @@ function renderHeader() {
 }
 
 function renderWorkbench() {
-  const active = ["details", "plans", "optimize"].includes(model.settings.filters.workbench_view) ? model.settings.filters.workbench_view : "optimize";
+  const active = model.workbench;
   for (const [id, panel] of [["details", "draft-panel"], ["plans", "schemes-panel"], ["optimize", "optimizer-panel"]]) {
     const selected = id === active;
     $(`${id}-tab`).classList.toggle("active", selected);
@@ -198,8 +199,8 @@ function renderWorkbench() {
 
 function renderSaveState() {
   const status = model.savePending || model.saving ? "saving" : model.settingsStatus;
-  const key = { saving: "web.saving", queued: "web.settings_queued", saved: "web.saved", failed: "web.save_failed" }[status];
-  $("save-state").textContent = key ? t(key) : "";
+  $("save-state").textContent = status === "failed" ? t("web.save_failed") : "";
+  $("save-state").hidden = status !== "failed";
   $("retry-save").hidden = status !== "failed" || !model.workspace?.account || model.changingAccount;
 }
 
@@ -240,11 +241,9 @@ function syncInventoryCapacity() {
     changed = true;
   }
   if (nextSize !== dynamicInventoryPageSize) {
-    const requested = Number(model.settings.filters.inventory_page);
-    const currentPage = Math.max(1, Number.isInteger(requested) ? requested : 1);
-    const firstIndex = (currentPage - 1) * dynamicInventoryPageSize;
+    const firstIndex = (model.inventoryPage - 1) * dynamicInventoryPageSize;
     dynamicInventoryPageSize = nextSize;
-    model.settings.filters.inventory_page = String(Math.floor(firstIndex / nextSize) + 1);
+    model.inventoryPage = Math.floor(firstIndex / nextSize) + 1;
     changed = true;
   }
   return changed;
@@ -258,8 +257,8 @@ function inventoryPage() {
   const inventoryPageSize = Math.max(1, dynamicInventoryPageSize);
   const all = filteredItems();
   const pages = Math.max(1, Math.ceil(all.length / inventoryPageSize));
-  const requested = Number(model.settings.filters.inventory_page);
-  const page = Math.min(Math.max(Number.isInteger(requested) ? requested : 1, 1), pages);
+  const page = Math.min(model.inventoryPage, pages);
+  model.inventoryPage = page;
   return { all, pages, page, items: all.slice((page - 1) * inventoryPageSize, page * inventoryPageSize) };
 }
 
@@ -283,7 +282,7 @@ function chooseItem(item, { place = true, toggle = false } = {}) {
   model.hoverAnchor = null; boardHoverKey = ""; boardPositionChosen = false;
   const anchor = firstPlacement(item);
   if (anchor) { $("row").value = String(anchor.row); $("column").value = String(anchor.column); }
-  if (model.view !== "current") { setView("current"); saveSoon(); }
+  if (model.view !== "current") setView("current");
   renderInventory();
   renderBoard();
   renderInspector();
@@ -1038,31 +1037,50 @@ function reconcileAppliedLoadout(inventory) {
 }
 
 function saveSoon() {
+  clearTimeout(model.saveTimer);
+  model.saveTimer = null;
+  const document = JSON.stringify(model.settings);
+  if (document === (model.savingSettingsDocument ?? model.savedSettingsDocument)) {
+    model.savePending = false;
+    if (!model.saving) model.submittedSettingsEdit = model.settingsEdit;
+    renderSaveState();
+    return;
+  }
   ++model.settingsEdit;
   model.savePending = true;
   model.settingsStatus = "saving";
   renderSaveState();
-  clearTimeout(model.saveTimer);
-  model.saveTimer = setTimeout(saveSettings, 300);
+  model.saveTimer = setTimeout(() => { model.saveTimer = null; saveSettings(); }, 600);
 }
 
-async function saveSettings() {
+async function saveSettings(force = false) {
   if (!model.bootstrapped || !model.workspace?.account || model.changingAccount || model.saving || !model.savePending) return;
+  clearTimeout(model.saveTimer); model.saveTimer = null;
   const sentEdit = model.settingsEdit;
-  model.saving = true;
+  const document = JSON.stringify(model.settings);
   model.savePending = false;
+  if (!force && document === model.savedSettingsDocument) {
+    model.submittedSettingsEdit = sentEdit;
+    renderSaveState();
+    return;
+  }
+  model.saving = true;
+  model.savingSettingsDocument = document;
   renderSaveState();
   try {
-    await api("api/settings", model.settings);
-    model.submittedSettingsEdit = sentEdit;
+    await api("api/settings", JSON.parse(document));
+    model.savedSettingsDocument = document;
+    model.submittedSettingsEdit = document === JSON.stringify(model.settings) ? model.settingsEdit : sentEdit;
     model.settingsStatus = "queued";
   } catch (error) {
+    model.savedSettingsDocument = null;
     model.settingsStatus = "failed";
     notify(error.message);
   } finally {
     model.saving = false;
+    model.savingSettingsDocument = null;
     renderSaveState();
-    if (model.savePending) saveSettings();
+    if (model.savePending && model.saveTimer === null) saveSettings();
   }
 }
 
@@ -1155,8 +1173,17 @@ async function loadBootstrap() {
       if (bootstrap.locale) document.documentElement.lang = bootstrap.locale;
       const saved = bootstrap.settings || {};
       model.settings = { filters: { ...model.settings.filters, ...saved.filters }, selected_character: saved.selected_character ?? null, draft: saved.draft ?? null };
-      setView(model.settings.filters.loadout_view === "draft" ? "draft" : "current");
+      for (const field of ["inventory_page", "loadout_view", "workbench_view", "primary_page"]) delete model.settings.filters[field];
+      for (const [key, field] of [["blueprint_preferences", "result_page"], ["warehouse_rules", "result_page"], ["panel_preferences", "replacement_result_page"], ["catalog_preferences", "offset"]]) {
+        try {
+          const preference = JSON.parse(model.settings.filters[key]);
+          if (preference && Object.hasOwn(preference, field)) {
+            delete preference[field]; model.settings.filters[key] = JSON.stringify(preference);
+          }
+        } catch { /* Let each panel report its existing invalid-preference error. */ }
+      }
       model.settings.filters.color_theme = applyPalette(model.settings.filters.color_theme);
+      model.savedSettingsDocument = JSON.stringify(model.settings);
       for (const [id, field] of [["search", "search"], ["kind-filter", "kind"], ["state-filter", "state"], ["owner-filter", "owner"]]) $(id).value = model.settings.filters[field];
       translateDocument();
       model.bootstrapped = true;
@@ -1265,7 +1292,7 @@ async function reloadWorkspace() {
   if (staleNotice && model.notice === staleNotice && staleNotice.revision !== undefined && BigInt(workspace.revision) > BigInt(staleNotice.revision)) {
     model.notice = null; $("notice").hidden = true;
   }
-  if (model.savePending) saveSettings();
+  if (model.savePending && model.saveTimer === null) saveSettings();
   return workspace;
 }
 
@@ -1313,14 +1340,14 @@ function bindEvents() {
   $("manage-roles").onclick = () => pages.go("roles");
   $("inventory-rules").onclick = () => pages.openTidy();
   $("clear-item-selection").onclick = cancelPlacement;
-  $("save-preview").onclick = () => { setWorkbench("plans"); saveSoon(); };
+  $("save-preview").onclick = () => setWorkbench("plans");
   $("dismiss-notice").onclick = () => { model.notice = null; $("notice").hidden = true; };
-  $("retry-save").onclick = () => { saveSoon(); clearTimeout(model.saveTimer); saveSettings(); };
+  $("retry-save").onclick = () => { ++model.settingsEdit; model.savePending = true; model.settingsStatus = "saving"; saveSettings(true); };
   $("refresh").onclick = syncInventory;
   for (const [id, field] of [["search", "search"], ["kind-filter", "kind"], ["state-filter", "state"], ["owner-filter", "owner"]]) {
     $(id).addEventListener(id === "search" ? "input" : "change", () => {
       model.settings.filters[field] = $(id).value;
-      model.settings.filters.inventory_page = "1";
+      model.inventoryPage = 1;
       saveSoon();
       renderInventory();
     });
@@ -1331,7 +1358,7 @@ function bindEvents() {
       if (!value || model.settings.filters.kind === value) return;
       model.settings.filters.kind = value;
       $("kind-filter").value = value;
-      model.settings.filters.inventory_page = "1";
+      model.inventoryPage = 1;
       saveSoon();
       renderInventory();
     });
@@ -1339,20 +1366,20 @@ function bindEvents() {
   $("character-select").onchange = () => {
     selectCharacter(characters().find((character) => uidKey(character.uid) === $("character-select").value)?.uid || null);
   };
-  $("view-current").onclick = () => { setView("current"); model.inspectPreview = false; if (selectedItem()) chooseItem(selectedItem()); else { renderBoard(); renderInspector(); optimizer?.render(); } saveSoon(); renderDraft(); };
-  $("view-draft").onclick = () => { setView("draft"); model.inspectPreview = true; model.placementMode = false; saveSoon(); renderBoard(); renderInspector(); renderDraft(); optimizer?.render(); };
-  for (const view of ["details", "plans", "optimize"]) $(`${view}-tab`).onclick = () => { setWorkbench(view); saveSoon(); };
+  $("view-current").onclick = () => { setView("current"); model.inspectPreview = false; if (selectedItem()) chooseItem(selectedItem()); else { renderBoard(); renderInspector(); optimizer?.render(); } renderDraft(); };
+  $("view-draft").onclick = () => { setView("draft"); model.inspectPreview = true; model.placementMode = false; renderBoard(); renderInspector(); renderDraft(); optimizer?.render(); };
+  for (const view of ["details", "plans", "optimize"]) $(`${view}-tab`).onclick = () => setWorkbench(view);
   document.querySelector(".workbench-tabs").addEventListener("keydown", (event) => {
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
-    const views = ["optimize", "plans", "details"], index = Math.max(0, views.indexOf(model.settings.filters.workbench_view));
+    const views = ["optimize", "plans", "details"], index = Math.max(0, views.indexOf(model.workbench));
     const view = event.key === "Home" ? views[0] : event.key === "End" ? views[2] : views[(index + (event.key === "ArrowRight" ? 1 : 2)) % views.length];
-    setWorkbench(view); saveSoon(); $(`${view}-tab`).focus();
+    setWorkbench(view); $(`${view}-tab`).focus();
   });
   for (const [id, destination] of [["first-page", () => 1], ["previous-page", (page) => page.page - 1], ["next-page", (page) => page.page + 1], ["last-page", (page) => page.pages]]) $(id).onclick = () => {
     const page = inventoryPage();
-    model.settings.filters.inventory_page = String(destination(page));
-    saveSoon(); renderInventory();
+    model.inventoryPage = destination(page);
+    renderInventory();
     $("inventory").scrollTop = 0;
   };
   for (const id of ["row", "column"]) $(id).oninput = () => {
@@ -1364,7 +1391,8 @@ function bindEvents() {
     renderInventory();
   };
   $("reset-filters").onclick = () => {
-    Object.assign(model.settings.filters, { search: "", kind: "all", state: "all", owner: "all", inventory_page: "1" });
+    Object.assign(model.settings.filters, { search: "", kind: "all", state: "all", owner: "all" });
+    model.inventoryPage = 1;
     for (const [id, field] of [["search", "search"], ["kind-filter", "kind"], ["state-filter", "state"], ["owner-filter", "owner"]]) $(id).value = model.settings.filters[field];
     warehouse.reset(); saveSoon(); renderInventory();
   };
@@ -1448,8 +1476,9 @@ function bindEvents() {
   $("cancel").onclick = () => command("cancel");
   window.addEventListener("pagehide", () => {
     if (!model.bootstrapped || !model.workspace?.account || model.changingAccount || !model.savePending) return;
-    clearTimeout(model.saveTimer);
-    api("api/settings", model.settings, { keepalive: true }).catch(() => {});
+    clearTimeout(model.saveTimer); model.saveTimer = null;
+    const document = JSON.stringify(model.settings);
+    if (document !== (model.savingSettingsDocument ?? model.savedSettingsDocument)) api("api/settings", JSON.parse(document), { keepalive: true }).catch(() => {});
   });
 }
 
@@ -1498,7 +1527,7 @@ async function start() {
     mount: $("advanced-filters-root"), t, node, inventory: () => model.state,
     readPreference: () => model.settings.filters.advanced_filters,
     savePreference: (value) => { model.settings.filters.advanced_filters = value; saveSoon(); },
-    changed: () => { model.settings.filters.inventory_page = "1"; renderInventory(); },
+    changed: () => { model.inventoryPage = 1; renderInventory(); },
   });
   pages = createWorkspacePages({
     api, t, node, workspace: () => model.workspace, inventory: () => model.state,
@@ -1510,15 +1539,15 @@ async function start() {
     jobController: optimizationJob, canRun: canChange,
     syncInventory,
     trackOperation: (id) => { model.operationId = id; model.pendingAction = "apply_warehouse_rules"; renderActivity(); },
-    settingsChanged: render,
+    settingsChanged: render, resetInventoryPage: () => { model.inventoryPage = 1; },
     refreshInventory: async () => { try { await refresh(true); } catch (error) { reportError(error); } },
-    openOptimization: () => { setWorkbench("optimize"); saveSoon(); },
+    openOptimization: () => setWorkbench("optimize"),
     cancelOperations: () => command("cancel"),
     inspectItem: (uid, roleId) => {
       const item = findItem(uid); if (!item) return;
       const character = characters().find((character) => (character.role_id || character.item_id) === roleId);
       if (character) selectCharacter(character.uid);
-      chooseItem(item); saveSoon();
+      chooseItem(item);
     },
     selectedUids: () => items().filter((item) => model.checked.has(uidKey(item.uid))).map((item) => item.uid),
     loadPlans: (plans) => {
@@ -1566,8 +1595,7 @@ async function start() {
     if (target === page.page) return;
     event.preventDefault();
     inventoryWheelAt = now;
-    model.settings.filters.inventory_page = String(target);
-    saveSoon();
+    model.inventoryPage = target;
     renderInventory();
   }, { passive: false });
   bindEvents();

@@ -1,7 +1,7 @@
 import { palettes, applyPalette } from "./appearance.js";
 
 const defaults = { enabled: true, bindings: { refresh: "Alt+R", search: "Alt+F", equipment: "Alt+1", library: "Alt+2", roles: "Alt+3", optimize: "Alt+4", multi: "Alt+5" } };
-export function createSettingsPanel({ mount, t, node, settings, persist, changed, actions, features }) {
+export function createSettingsPanel({ mount, t, node, settings, persist, changed, resetInventoryPage, actions, features }) {
   let preferences = structuredClone(defaults), loaded = false, error = "";
   const heading = node("div", "page-heading"); heading.append(node("div")); heading.firstChild.append(node("h2", "", t("web.settings_title")), node("p", "meta", t("web.settings_hint")));
   const content = node("div", "settings-content"), appearance = node("section", "settings-appearance management-section");
@@ -19,7 +19,7 @@ export function createSettingsPanel({ mount, t, node, settings, persist, changed
   sizeLabel.hidden = true;
   for (const value of [20, 40, 80]) { const option = node("option", "", t("web.settings_page_size_value", value)); option.value = String(value); size.append(option); }
   sizeLabel.append(node("span", "", t("web.settings_page_size")), size);
-  size.onchange = () => { settings().filters.inventory_page_size = size.value; settings().filters.inventory_page = "1"; persist(); changed(); };
+  size.onchange = () => { settings().filters.inventory_page_size = size.value; resetInventoryPage(); persist(); changed(); };
   appearance.append(themeLabel, sizeLabel);
   const shortcuts = node("details", "shortcut-settings management-section"); shortcuts.append(node("summary", "", t("web.shortcuts_title")), node("p", "meta", t("web.shortcuts_hint")));
   const enabledLabel = node("label", "optimizer-check"), enabled = node("input"); enabled.type = "checkbox";

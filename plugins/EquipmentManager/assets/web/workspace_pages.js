@@ -15,10 +15,11 @@ import { createQuickTidy } from "./quick_tidy.js";
 
 export function createWorkspacePages({ api, t, node, workspace, inventory, features, settings,
   persist, isReady, currentRole, getDraft, loadDraft, selectedItem, reloadWorkspace,
-  openCalculation, selectedAccountChanged, jobController, canRun, selectedUids, loadPlans, applyPlans, settingsChanged, refreshInventory, syncInventory, openOptimization, cancelOperations, inspectItem, trackOperation }) {
+  openCalculation, selectedAccountChanged, jobController, canRun, selectedUids, loadPlans, applyPlans, settingsChanged, resetInventoryPage, refreshInventory, syncInventory, openOptimization, cancelOperations, inspectItem, trackOperation }) {
   const $ = (id) => document.getElementById(id);
   const read = (key) => settings().filters[key];
-  const write = (key, value) => { settings().filters[key] = value; persist(); };
+  const write = (key, value) => { if (settings().filters[key] !== value) { settings().filters[key] = value; persist(); } };
+  let primaryPage = "equipment";
   let navigation;
   const library = createLibraryPanel({
     mount: $("library-root"), api, t, node, workspace, inventory, isReady, currentRole,
@@ -50,7 +51,7 @@ export function createWorkspacePages({ api, t, node, workspace, inventory, featu
     readPreference: () => read("blueprint_preferences"), savePreference: (value) => write("blueprint_preferences", value) });
   const rewind = createRewindPanel({ mount: $("rewind-root"), api, t, node, workspace, inventory, isReady,
     readPreference: () => read("rewind_preferences"), savePreference: (value) => write("rewind_preferences", value) });
-  const preferences = createSettingsPanel({ mount: $("settings-root"), t, node, settings, persist, changed: settingsChanged, features,
+  const preferences = createSettingsPanel({ mount: $("settings-root"), t, node, settings, persist, changed: settingsChanged, resetInventoryPage, features,
     actions: [
       { id: "refresh", label: "web.shortcuts_refresh", run: syncInventory },
       { id: "search", label: "web.shortcuts_search", run: () => { navigation.go("equipment"); $("search").focus(); } },
@@ -76,7 +77,7 @@ export function createWorkspacePages({ api, t, node, workspace, inventory, featu
   for (const description of document.querySelectorAll(".page-heading p.meta")) description.remove();
   navigation = createNavigation({
     mount: $("primary-navigation"), t, node, features,
-    readPage: () => read("primary_page"), savePage: (id) => write("primary_page", id),
+    readPage: () => primaryPage, savePage: (id) => { primaryPage = id; },
     ready: () => Boolean(workspace()?.account),
     entries: [
       { id: "equipment", label: "web.nav_equipment", element: $("equipment-page") },
