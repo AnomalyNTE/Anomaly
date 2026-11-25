@@ -1767,7 +1767,8 @@ void ANOMALY_CALL Draw(void* user, const AnomalyUiServiceV1* ui) noexcept {
     auto& c = *static_cast<Context*>(user);
     try {
         const auto title = c.localizer.Text("window.title", "Equipment Manager");
-        anomaly::sdk::UiWindow window(ui, title);
+        int open = 1;
+        anomaly::sdk::UiWindow window(ui, title, &open);
         if (!window) return;
         std::scoped_lock lock(c.mutex);
         const auto message = c.inventory->value("message", std::string{});
