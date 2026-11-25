@@ -74,6 +74,7 @@ struct Context {
     bool player_position_valid{};
     std::mutex mutex;
     Snapshot snapshot{};
+    bool local_world_allowed{};
     std::string status;
     std::string selected_vehicle_id{"Vehicle007"};
     std::string pending_vehicle_id;
@@ -2206,6 +2207,27 @@ void TickLiveFeatures() {
     }
 }
 
+void DiscardWorldRequests() {
+    for (auto* flag : {&g_context.refresh_customization_requested, &g_context.refresh_catalog_requested,
+             &g_context.apply_speed_target_requested, &g_context.apply_speed, &g_context.apply_torque,
+             &g_context.apply_other_speed, &g_context.apply_other_torque, &g_context.reset,
+             &g_context.summon, &g_context.summon_customized, &g_context.friction_toggle,
+             &g_context.durability_guard_toggle, &g_context.hotkey_summon_requested,
+             &g_context.export_modules_requested, &g_context.durability_auto_full_requested,
+             &g_context.apply_current_modules_requested, &g_context.apply_skin_requested,
+             &g_context.read_modules_requested, &g_context.realtime_sync_requested,
+             &g_context.save_modules_to_memory_requested, &g_context.capture_effects_requested,
+             &g_context.adv_apply_requested, &g_context.adv_read_requested,
+             &g_context.save_tune_requested, &g_context.reset_tune_requested,
+             &g_context.probe_requested, &g_context.sweep_requested}) {
+        flag->store(false, std::memory_order_release);
+    }
+    std::scoped_lock lock(g_context.mutex);
+    g_context.pending_vehicle_id.clear();
+    g_context.hotkey_summon_vehicle_id.clear();
+    g_context.hotkey_binding_mode = false;
+}
+
 void Update() {
     if (!g_context.vehicle || !g_context.started.load(std::memory_order_acquire)) return;
 
@@ -2230,6 +2252,40 @@ void Update() {
                     "The K hotkey could not toggle the vehicle menu"),
                 toggle_status));
         }
+    }
+
+    const bool allowed = g_context.vehicle->LocalWorldAllowed();
+    bool previously_allowed{};
+    {
+        std::scoped_lock lock(g_context.mutex);
+        previously_allowed = g_context.local_world_allowed;
+        g_context.local_world_allowed = allowed;
+        if (previously_allowed != allowed) {
+            g_context.snapshot = {};
+            g_context.player_position_valid = false;
+            g_context.adv_synced_movement = 0;
+            g_context.adv_stock_top_speed_valid = false;
+            g_context.adv_baseline_valid = false;
+            g_context.current_vehicle_modules_valid = false;
+            g_context.realtime_vehicle_id.clear();
+            g_context.vehicle_ids.clear();
+            g_context.vehicle_labels.clear();
+            g_context.customization_options.clear();
+            g_context.customization_vehicle_id.clear();
+            g_context.tuning_baselines.clear();
+        }
+    }
+    if (!allowed || !previously_allowed) DiscardWorldRequests();
+    if (!allowed) {
+        // Consume key edges here so holding a key through PVP/travel cannot
+        // replay a summon or drift action when the local world becomes ready.
+        for (std::uint32_t vk = 0x08; vk < 0xFE; ++vk)
+            g_context.prev_key_state[vk] = (GetAsyncKeyState(static_cast<int>(vk)) & 0x8000) ? 1 : 0;
+        g_context.drift_prev_shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) ? 0x80 : 0;
+        return;
+    }
+    if (!previously_allowed) {
+        g_context.refresh_catalog_requested.store(true, std::memory_order_release);
     }
 
     // 钩子装好时碰撞伤害已在扣耐久前被中止；Local feature:耐久自动保持开关
@@ -4419,7 +4475,7 @@ void DrawDebugPanel(
     const std::string& status, const std::string& selected,
     std::size_t catalog_size, bool player_position_valid) {
     DrawText(ui, g_context.localizer.Text("detail.build_marker",
-        "Build marker: NTE Vehicle 0.14.0"));
+        "Build marker: NTE Vehicle 0.14.2"));
     DrawText(ui, g_context.localizer.Text("detail.build_marker_abi",
         "Build marker: manifest schema v2 / Plugin API v1"));
     const std::array plugin_id_arguments{
@@ -4749,6 +4805,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
     g_context.friction_enabled = true;
 
     g_context.snapshot = {};
+    g_context.local_world_allowed = false;
     g_context.snapshot.vehicle_snapshot_status = g_context.localizer.Text(
         "status.snapshot_pending",
         "The current driving vehicle state has not been read yet.");
@@ -4838,6 +4895,7 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void* plugin_context, std::uint32_t) try {
     {
         std::scoped_lock lock(g_context.mutex);
         g_context.durability_guard_installed = false;
+        g_context.local_world_allowed = false;
     }
     nte_vehicle::StopBackend();
     // Maintainer review fix: stop the worker before the final save so nothing
@@ -4869,6 +4927,7 @@ void ANOMALY_CALL Unload(void* plugin_context) try {
     {
         std::scoped_lock lock(g_context.mutex);
         g_context.durability_guard_installed = false;
+        g_context.local_world_allowed = false;
     }
     nte_vehicle::StopBackend();
     g_context.save_worker_exit.store(true, std::memory_order_release);
@@ -4917,6 +4976,6 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         anomaly::sdk::StringView("anomaly.nte-vehicle"),
         anomaly::sdk::StringView("Vehicle Control"), anomaly::sdk::StringView("Anomaly"),
-        anomaly::sdk::StringView("0.14.0"), Load, Start, Stop, Unload, UpdateCallback, DrawCallback};
+        anomaly::sdk::StringView("0.14.2"), Load, Start, Stop, Unload, UpdateCallback, DrawCallback};
     return anomaly::sdk::Ok();
 }

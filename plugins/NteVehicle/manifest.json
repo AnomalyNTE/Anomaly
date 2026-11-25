@@ -2,11 +2,11 @@
   "schemaVersion": 2,
   "id": "anomaly.nte-vehicle",
   "name": "Vehicle Control",
-  "description": "Vehicle control: plain vehicle summoning, per-model customized summoning with per-vehicle memory, live modification of the driven vehicle, per-vehicle transmission tuning, drift effect rotation, wheel friction, collision damage guard and automatic durability repair for the current land vehicle (never writing the server-owned durability value), and diagnostics with log export.",
+  "description": "Vehicle control: summoning, customization, performance tuning, wheel friction, collision damage guard, automatic durability repair, and diagnostics.",
   "author": "Anomaly",
   "license": "AGPL-3.0-only",
   "audience": "user",
-  "version": "0.14.0",
+  "version": "0.14.2",
   "entry": "plugin.dll",
   "api": {
     "major": 1,
@@ -39,6 +39,10 @@
     },
     {
       "id": "anomaly.nte.player",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.nte.session",
       "minVersion": 1
     },
     {
@@ -96,6 +100,7 @@
     "ui-window",
     "input",
     "nte-player-snapshot",
+    "nte-session-snapshot",
     "configuration",
     "memory-read",
     "memory-write",

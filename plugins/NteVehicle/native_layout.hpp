@@ -58,6 +58,8 @@ struct NativeLayout {
     std::int64_t ustruct_propertyLink{};
     std::int64_t ustruct_superStruct{};
     std::int64_t world_levels{};
+    std::int64_t world_instructionDisplacement{};
+    std::int64_t world_instructionSize{};
     std::int64_t vehicle_movementComponent{-1};
     std::int64_t vehicle_movementComponentSize{-1};
     std::int64_t vehicle_enableTopSpeedLimit{-1};
@@ -130,6 +132,8 @@ struct NativeLayout {
         ustruct_propertyLink = profile.Value("ustruct.propertyLink", 65536, 8);
         ustruct_superStruct = profile.Value("ustruct.superStruct", 65536, 8);
         world_levels = profile.Value("world.levels", 65536, 8);
+        world_instructionDisplacement = profile.Value("world.instructionDisplacement", 15, 1);
+        world_instructionSize = profile.Value("world.instructionSize", 15, 1);
         vehicle_frictionSetup = profile.Value("vehicle.frictionSetup", 65536, 8);
         vehicle_frictionState = profile.Value("vehicle.frictionState", 65536, 8);
         vehicle_frictionEnabled = profile.Value("vehicle.frictionEnabled", 65536, 1);

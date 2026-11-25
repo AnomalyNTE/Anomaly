@@ -325,6 +325,8 @@ The plugin stores the current selection, filters, summon settings and presets th
 
 Enable the plugin on the **Plugins** page, then press **K** to open the vehicle menu. Developer mode is not required. Select a model for a plain summon, or choose modules and a skin before using **Summon customized vehicle**; models without available skins use the game's default materials. The menu displays summon results and failure reasons.
 
+The plugin performs vehicle operations only in a verified local world. In online PVP, multiplayer racing rooms, travel and unknown world states, the menu remains visible while background vehicle operations are silently ignored and queued requests are discarded. No restriction or recovery message is shown. Durability hooks apply only to vehicles in the approved world and also check the racing mode when the event occurs. Operations become available again after returning to a local world; saved preferences are preserved.
+
 Disabling the plugin stops ongoing speed and durability maintenance. To restore the current vehicle's parameters, use **Restore defaults** before disabling it. Vehicle functionality is owned and called entirely within the plugin.
 
 ## Developer-mode debugging plugins

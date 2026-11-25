@@ -2,7 +2,8 @@
   "schemaVersion": 1,
   "locale": "zh-CN",
   "messages": {
-    "plugin.description": "载具控制插件：提供普通载具召唤、按车型选择改装并召唤、性能调校、车轮摩擦、当前陆地载具碰撞伤害拦截（阻止扣除载具耐久，插件不写由服务器持有的耐久值）与诊断。",
+    "plugin.description": "载具控制：提供载具召唤、改装、性能调校、车轮摩擦、碰撞耐久保护、自动修车与诊断。",
+    "backend.local_world_required": "载具控制仅限已确认的本地世界使用。",
     "window.title": "载具控制",
     "text.status_with_message": "{0}：{1}",
     "text.status_with_code": "{0}（插件 状态码 {1}）",
@@ -100,7 +101,7 @@
     "hint.position_invalid": "当前玩家位置快照无效；可以提交请求，但 插件 会拒绝未验证坐标的召唤。",
     "hint.speed_slider": "当前载具车速倍率（拖动后立即应用，范围 0.05x–100.0x）",
     "hint.menu_keys": "K：打开/关闭载具菜单；按住 Alt 呼出游戏原生光标。",
-    "detail.build_marker": "构建标记：NTE Vehicle 0.13.0",
+    "detail.build_marker": "构建标记：NTE Vehicle 0.14.2",
     "detail.build_marker_abi": "构建标记：manifest schema v2 / Plugin API v1",
     "detail.plugin_id": "Plugin ID：{0}",
     "detail.manifest": "Manifest：schemaVersion=2 / entry=plugin.dll / loadPhase=game-ready / games=nte / builds=nte-*",

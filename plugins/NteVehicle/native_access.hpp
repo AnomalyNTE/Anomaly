@@ -1,6 +1,7 @@
 #pragma once
 #include <Windows.h>
 #include "native_layout.hpp"
+#include "local_world.hpp"
 #include <anomaly/sdk/localization.hpp>
 #include <anomaly/sdk/services/nte.h>
 #include <anomaly/sdk/services/ue5.h>
@@ -103,8 +104,9 @@ struct NativeAccess {
     const AnomalyUe5ProcessEventServiceV1* events{};
     const AnomalyUe5FrameworkServiceV1* framework{};
     const AnomalyNtePlayerServiceV1* player{};
+    const AnomalyNteSessionServiceV1* session{};
     ObjectRegistryState object_registry;
-    std::uintptr_t registry_address{}, player_pawn{}, player_controller{}, world_pointer{};
+    std::uintptr_t registry_address{}, world_address{}, player_pawn{}, player_controller{}, world_pointer{};
     std::uint64_t object_generation{};
     std::atomic<DWORD> game_thread_id{};
     bool ready{};
@@ -114,9 +116,17 @@ struct NativeAccess {
 
 #include "reflection.inl"
 
+    struct LocalWorldBindings {
+        std::uintptr_t function{}, receiver{};
+        std::int64_t world_game_state{-1}, racing_mode{-1};
+        std::uint64_t generation{};
+    } local_world_bindings;
+
     bool Load(const AnomalyHostApiV1* api);
     bool Refresh();
     bool ResolveVehicleLayout();
+    bool ResolveLocalWorldBindings();
+    bool ReadLocalWorldPermission() const;
     // The NTE bridge publishes its services once the world and the local player exist,
     // which happens long after plugin load. Bind what is available and retry from the
     // Game thread instead of failing the whole plugin.

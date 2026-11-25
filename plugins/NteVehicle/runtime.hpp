@@ -118,6 +118,11 @@ struct Runtime : NativeAccess {
     std::mutex mutex;
     void Tick();
     void ClearObjectCaches();
+    bool LocalWorldAllowed() {
+        std::scoped_lock lock(mutex);
+        return ready;
+    }
+    void RestoreLocalVehicleChangesLocked(std::uintptr_t previous_world);
 
     struct VehicleFunctionBinding {
         std::uintptr_t function{};
@@ -236,6 +241,8 @@ struct Runtime : NativeAccess {
     bool vehicle_wheel_friction_enabled{true};
     // SetEnableWheelFriction 的实现只写一个字节；关闭插件时按同一地址写回原值即可还原摩擦。
     std::uintptr_t vehicle_friction_flag{};
+    std::uintptr_t vehicle_friction_owner{};
+    AnomalyGenerationHandleV1 vehicle_friction_owner_handle{};
     std::uint8_t vehicle_friction_flag_original{};
     bool vehicle_friction_flag_captured{};
     // 按非玩家载具的 MovementComponent 分别保存速率倍率和原始扭矩基准，绝不与玩家载具共用状态。
@@ -3691,6 +3698,8 @@ struct Runtime : NativeAccess {
             return Status(ANOMALY_STATUS_V1_CONFLICT, TextLocalized("backend.vehicle_summon_requires_game_thread_236", "vehicle summon requires Game thread"));
 
         std::scoped_lock lock(mutex);
+        if (!ready) return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+            TextLocalized("backend.local_world_required", "Vehicle control is available only in a verified local world."));
         if (player_controller == 0 || player_pawn == 0) {
             return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
                 TextLocalized("backend.summon_failed_the_local_player_controller_or_237", "Summon failed: the local player controller or pawn is unavailable."));
@@ -3926,6 +3935,8 @@ struct Runtime : NativeAccess {
             std::uint8_t flag_after{};
             if (ReadValue(*memory, flag_address, flag_after) && flag_after == 0) {
                 vehicle_friction_flag = flag_address;
+                vehicle_friction_owner = vehicle_movement_component;
+                vehicle_friction_owner_handle = movement_handle;
                 vehicle_friction_flag_original = flag_before;
                 vehicle_friction_flag_captured = true;
             }
@@ -3943,12 +3954,19 @@ struct Runtime : NativeAccess {
     void RestoreWheelFrictionLocked() {
         if (!vehicle_friction_flag_captured) return;
         std::uint8_t current{};
-        if (ReadValue(*memory, vehicle_friction_flag, current) && current == 0) {
+        std::uintptr_t setup{}, state{}, flag{};
+        if (IsCurrentObject(vehicle_friction_owner_handle, vehicle_friction_owner) &&
+            ReadPointerAt(*memory, vehicle_friction_owner, layout.vehicle_frictionSetup, setup) &&
+            ReadPointerAt(*memory, setup, layout.vehicle_frictionState, state) &&
+            AddAddress(state, layout.vehicle_frictionEnabled, flag) && flag == vehicle_friction_flag &&
+            ReadValue(*memory, flag, current) && current == 0) {
             const std::uint8_t original = vehicle_friction_flag_original;
             static_cast<void>(memory->Write(vehicle_friction_flag, &original, sizeof(original)));
         }
         vehicle_friction_flag_captured = false;
         vehicle_friction_flag = 0;
+        vehicle_friction_owner = 0;
+        vehicle_friction_owner_handle = {};
         vehicle_wheel_friction_enabled = true;
     }
 

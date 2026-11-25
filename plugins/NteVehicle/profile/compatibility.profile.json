@@ -58,11 +58,23 @@
     "vehicle.frictionState": 416,
     "vehicle.frictionEnabled": 218,
     "world.levels": 464,
+    "world.instructionDisplacement": 3,
+    "world.instructionSize": 7,
     "objects.instructionDisplacement": 3,
     "objects.instructionSize": 7,
     "objects.registrySubtract": 16
   },
   "symbols": [
+    {
+      "name": "World",
+      "candidates": [
+        {
+          "pattern": "48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01",
+          "entry": "48 8B 1D",
+          "values": {}
+        }
+      ]
+    },
     {
       "name": "Objects",
       "candidates": [

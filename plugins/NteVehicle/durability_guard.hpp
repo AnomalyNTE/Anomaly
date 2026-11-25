@@ -1,5 +1,6 @@
 #pragma once
 #include "anomaly/sdk/cpp.hpp"
+#include "local_world.hpp"
 
 #include <cstdint>
 #include <string>
@@ -13,6 +14,7 @@ bool InstallDurabilityGuard(const AnomalyHostApiV1* host, std::uintptr_t take_da
                             std::uintptr_t impact, std::string& error);
 void ReleaseDurabilityGuard();
 void SetDurabilityGuardEnabled(bool enabled) noexcept;
+void SetDurabilityGuardWorld(const LocalWorldGuardView& view) noexcept;
 [[nodiscard]] bool DurabilityGuardEnabled() noexcept;
 
 } // namespace nte_vehicle

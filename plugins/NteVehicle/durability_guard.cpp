@@ -14,9 +14,12 @@ namespace {
 using TakeDamageFn = float(ANOMALY_CALL*)(void* self, float damage, void* a3, void* a4, void* a5);
 using ImpactFn = void(ANOMALY_CALL*)(void* self, int a2, void* a3, void* a4, int a5, void* a6);
 
-// detour 只碰原子量：不调宿主服务、不打日志、不分配内存。
+// Detours read the approved actor world without UE calls, logging or allocation.
 std::atomic_bool g_enabled{};
 std::atomic_bool g_installed{};
+std::atomic<std::uintptr_t> g_allowed_world{};
+std::atomic<std::uintptr_t> g_world_address{};
+std::atomic<std::int64_t> g_object_outer{}, g_world_game_state{}, g_racing_mode{};
 std::atomic<std::uintptr_t> g_take_damage_original{};
 std::atomic<std::uintptr_t> g_impact_original{};
 std::atomic<std::uint64_t> g_take_damage_handle_id{};
@@ -24,6 +27,29 @@ std::atomic<std::uint64_t> g_take_damage_handle_generation{};
 std::atomic<std::uint64_t> g_impact_handle_id{};
 std::atomic<std::uint64_t> g_impact_handle_generation{};
 const AnomalyHookServiceV1* g_hook{};
+
+bool AllowsActor(void* self) noexcept {
+    const auto world = g_allowed_world.load(std::memory_order_acquire);
+    if (!world || !self || !g_enabled.load(std::memory_order_relaxed)) return false;
+    const auto outer = g_object_outer.load(std::memory_order_relaxed);
+    const auto world_address = g_world_address.load(std::memory_order_relaxed);
+    const auto state_offset = g_world_game_state.load(std::memory_order_relaxed);
+    const auto mode_offset = g_racing_mode.load(std::memory_order_relaxed);
+    __try {
+        if (*reinterpret_cast<const std::uintptr_t*>(world_address) != world) return false;
+        // Actor -> Level -> World, or Component -> Actor -> Level -> World.
+        auto object = reinterpret_cast<std::uintptr_t>(self);
+        for (unsigned depth = 0; object && depth < 8; ++depth) {
+            object = *reinterpret_cast<const std::uintptr_t*>(object + outer);
+            if (object != world) continue;
+            const auto state = *reinterpret_cast<const std::uintptr_t*>(world + state_offset);
+            return state && IsLocalRacingMode(*reinterpret_cast<const std::uint8_t*>(state + mode_offset)) &&
+                g_allowed_world.load(std::memory_order_acquire) == world;
+        }
+    } __except (1) {
+    }
+    return false;
+}
 
 bool AcquireLease(const std::atomic<std::uint64_t>& handle_id,
                   const std::atomic<std::uint64_t>& handle_generation,
@@ -51,7 +77,6 @@ void ReleaseLease(AnomalyGenerationHandleV1& lease) noexcept {  // NOLINT(readab
 
 float ANOMALY_CALL TakeDamageDetour(void* self, float damage, void* a3, void* a4,
                                     void* a5) noexcept {
-    if (g_enabled.load(std::memory_order_relaxed)) return 0.0F;
     const auto original =
         reinterpret_cast<TakeDamageFn>(g_take_damage_original.load(std::memory_order_acquire));
     if (original == nullptr) return 0.0F;
@@ -60,7 +85,7 @@ float ANOMALY_CALL TakeDamageDetour(void* self, float damage, void* a3, void* a4
         return 0.0F;
     float result = 0.0F;
     __try {
-        result = original(self, damage, a3, a4, a5);
+        if (!AllowsActor(self)) result = original(self, damage, a3, a4, a5);
     } __except (1) {
         result = 0.0F;
     }
@@ -69,14 +94,13 @@ float ANOMALY_CALL TakeDamageDetour(void* self, float damage, void* a3, void* a4
 }
 
 void ANOMALY_CALL ImpactDetour(void* self, int a2, void* a3, void* a4, int a5, void* a6) noexcept {
-    if (g_enabled.load(std::memory_order_relaxed)) return;
     const auto original =
         reinterpret_cast<ImpactFn>(g_impact_original.load(std::memory_order_acquire));
     if (original == nullptr) return;
     AnomalyGenerationHandleV1 lease{};
     if (!AcquireLease(g_impact_handle_id, g_impact_handle_generation, lease)) return;
     __try {
-        original(self, a2, a3, a4, a5, a6);
+        if (!AllowsActor(self)) original(self, a2, a3, a4, a5, a6);
     } __except (1) {
     }
     ReleaseLease(lease);
@@ -168,6 +192,7 @@ bool InstallDurabilityGuard(const AnomalyHostApiV1* host, std::uintptr_t take_da
 }
 
 void ReleaseDurabilityGuard() {
+    SetDurabilityGuardWorld({});
     g_enabled.store(false, std::memory_order_release);
     ReleaseOne(g_take_damage_original, g_take_damage_handle_id, g_take_damage_handle_generation);
     ReleaseOne(g_impact_original, g_impact_handle_id, g_impact_handle_generation);
@@ -178,6 +203,16 @@ void ReleaseDurabilityGuard() {
 void SetDurabilityGuardEnabled(bool enabled) noexcept {
     g_enabled.store(enabled && g_installed.load(std::memory_order_acquire),
         std::memory_order_release);
+}
+
+void SetDurabilityGuardWorld(const LocalWorldGuardView& view) noexcept {
+    g_allowed_world.store(0, std::memory_order_release);
+    if (!view.world) return;
+    g_world_address.store(view.world_address, std::memory_order_relaxed);
+    g_object_outer.store(view.object_outer, std::memory_order_relaxed);
+    g_world_game_state.store(view.world_game_state, std::memory_order_relaxed);
+    g_racing_mode.store(view.racing_mode, std::memory_order_relaxed);
+    g_allowed_world.store(view.world, std::memory_order_release);
 }
 
 bool DurabilityGuardEnabled() noexcept { return g_enabled.load(std::memory_order_acquire); }
