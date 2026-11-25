@@ -42,14 +42,14 @@ export function createOptimizer({ jobController, features, workspace, t, node, i
     render();
   }
 
-  function selectOptions(element, entries, selected, multiple = false) {
+  function selectOptions(element, entries, selected) {
     if (JSON.stringify([...element.options].map((option) => [option.value, option.textContent])) !== JSON.stringify(entries)) element.replaceChildren(...entries.map(([value, label]) => {
       const option = node("option", "", label);
       option.value = value;
-      option.selected = multiple ? selected.includes(value) : value === selected;
+      option.selected = value === selected;
       return option;
     }));
-    for (const option of element.options) option.selected = multiple ? selected.includes(option.value) : option.value === selected;
+    for (const option of element.options) option.selected = option.value === selected;
   }
 
   function catalog() {
@@ -111,8 +111,33 @@ export function createOptimizer({ jobController, features, workspace, t, node, i
     }
     $("weight-rows").replaceChildren(...rows);
     selectOptions($("opt-core-suit"), suitOptions, selectedSuit);
-    selectOptions($("opt-core-main"), [...mains].sort().map((id) => [id, stats.get(id) || id]), preferences.core_main_stats, true);
+    selectOptions($("opt-core-main"), [["", t("web.optimize_any_main")], ...[...mains].sort().map((id) => [id, stats.get(id) || id])], "");
     for (let index = 0; index < 4; index++) selectOptions($(`opt-priority-${index + 1}`), [["", t("web.optimize_no_priority")], ...[...subStats].sort().map((id) => [id, stats.get(id) || id])], preferences.priority_stats[index] || "");
+  }
+
+  function renderCoreMainStats(disabled) {
+    const select = $("opt-core-main"), selected = $("opt-core-main-selected"), clear = $("opt-core-main-clear");
+    select.disabled = disabled;
+    select.options[0].textContent = t(preferences.core_main_stats.length ? "web.optimize_add_main" : "web.optimize_any_main");
+    for (const option of select.options) option.disabled = !option.value || preferences.core_main_stats.includes(option.value);
+    const names = new Map([...select.options].map((option) => [option.value, option.textContent]));
+    const entries = preferences.core_main_stats.map((id) => [id, names.get(id) || propertyLabel(t, id)]);
+    const signature = JSON.stringify(entries);
+    if (selected.dataset.signature !== signature) {
+      selected.dataset.signature = signature;
+      selected.replaceChildren(...entries.map(([id, name]) => {
+        const remove = node("button", "button secondary optimizer-main-stat"); remove.type = "button";
+        remove.setAttribute("aria-label", t("web.optimize_remove_main", name));
+        const icon = node("span", "", "×"); icon.setAttribute("aria-hidden", "true");
+        remove.append(node("span", "", name), icon);
+        remove.onclick = () => { preferences.core_main_stats = preferences.core_main_stats.filter((value) => value !== id); changed(); select.focus(); };
+        return remove;
+      }));
+    }
+    selected.hidden = !entries.length;
+    clear.hidden = !entries.length;
+    clear.disabled = disabled;
+    for (const button of selected.querySelectorAll("button")) button.disabled = disabled;
   }
 
   function initialize(saved = readPreference()) {
@@ -297,7 +322,7 @@ export function createOptimizer({ jobController, features, workspace, t, node, i
     $("opt-set-mode").value = optimizationSetMode(preferences);
     $("opt-set-mode").disabled = true;
     $("opt-core-suit").disabled = locked || !preferences.require_core;
-    $("opt-core-main").disabled = locked || !preferences.require_core;
+    renderCoreMainStats(locked || !preferences.require_core);
     const needsVerifiedSuit = preferences.allow_missing_core && preferences.require_core && preferences.set_effect_mode !== "none";
     $("opt-core-suit").setCustomValidity(suitMessage || (needsVerifiedSuit && !stateItems().some((item) => item.kind === "core" && item.suit_id === preferences.core_suit_id && item.required_shapes_complete === true) ? t("web.constraints_missing_core_suit") : ""));
     for (const input of $("weight-rows").querySelectorAll("[data-weight-field=main_weights]")) {
@@ -331,7 +356,12 @@ export function createOptimizer({ jobController, features, workspace, t, node, i
     preferences.core_suit_id = preferences.core_suit_source === "manual" ? $("opt-core-suit").value : "";
     changed();
   };
-  $("opt-core-main").onchange = () => { preferences.core_main_stats = [...$("opt-core-main").selectedOptions].map((option) => option.value); changed(); };
+  $("opt-core-main").onchange = () => {
+    const select = $("opt-core-main");
+    if (!select.value) return;
+    preferences.core_main_stats.push(select.value); select.value = ""; changed();
+  };
+  $("opt-core-main-clear").onclick = () => { preferences.core_main_stats = []; changed(); $("opt-core-main").focus(); };
   $("opt-role-target").onchange = () => { preferences.custom_role_id = $("opt-role-target").value; selectContext(true); changed(true); };
   $("opt-preset").onchange = () => {
     preset = $("opt-preset").value;

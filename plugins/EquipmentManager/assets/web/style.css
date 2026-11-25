@@ -1447,9 +1447,15 @@ main:has(#equipment-page:not([hidden])) > .calculation-progress:is([data-status=
 .optimizer-software-hint { margin: 8px 0; }
 
 .optimizer-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 10px 12px; padding: 6px 0 10px; }
-.optimizer-options > label { display: grid; gap: 5px; color: var(--muted); font-size: .78rem; }
+.optimizer-options > label, .optimizer-main-field { display: grid; gap: 5px; min-width: 0; color: var(--muted); font-size: .78rem; }
 .optimizer-options input[type=number], .optimizer-options select { width: 100%; min-width: 0; }
 .optimizer-options small { line-height: 1.4; font-size: .72rem; }
+.optimizer-main-controls { display: flex; align-items: center; gap: 6px; }
+.optimizer-main-controls select { flex: 1; }
+.optimizer-main-controls > button { flex-shrink: 0; }
+.optimizer-main-selected { display: flex; flex-wrap: wrap; gap: 5px; }
+.optimizer-main-selected .optimizer-main-stat { min-height: 26px; max-width: 100%; padding: 3px 8px; font-size: .76rem; }
+.optimizer-main-stat > span:first-child { overflow: hidden; text-overflow: ellipsis; }
 .field-error { display: block; color: var(--status-danger); font-size: .75rem; line-height: 1.45; overflow-wrap: anywhere; }
 input[aria-invalid="true"] { border-color: var(--status-danger); }
 .optimizer-check { display: inline-flex !important; align-items: center; gap: 7px; color: var(--ink); font-size: .8rem; line-height: 1.4; cursor: pointer; }
