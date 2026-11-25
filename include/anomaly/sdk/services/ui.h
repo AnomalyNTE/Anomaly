@@ -289,6 +289,11 @@ typedef struct AnomalyUiServiceV1 {
         size_t count);
     // Optional on_draw widget. Draws a square check box and returns 1 when value changes.
     int (ANOMALY_CALL *checkbox_square)(void* user, AnomalyStringViewV1 label, int* value);
+    // Optional on_draw button. Selection uses the host accent and contrasting
+    // text; labels wrap within the resolved width. Zero height fits the label.
+    int (ANOMALY_CALL *button_selected)(
+        void* user, AnomalyStringViewV1 label, float width, float height,
+        int selected, int enabled);
 } AnomalyUiServiceV1;
 
 #ifdef __cplusplus

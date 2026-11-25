@@ -646,6 +646,46 @@ int ANOMALY_CALL ButtonEnabled(
     return enabled != 0 && pressed ? 1 : 0;
 }
 
+int ANOMALY_CALL ButtonSelected(
+    void*, AnomalyStringViewV1 label, float width, float height,
+    int selected, int enabled) {
+    const std::string text = Copy(label);
+    const char* const visible_end = ImGui::FindRenderedTextEnd(text.c_str());
+    const auto& style = ImGui::GetStyle();
+    const float natural_width = ImGui::CalcTextSize(text.c_str(),visible_end).x + style.FramePadding.x*2;
+    const float resolved_width = ImGui::CalcItemSize(ImVec2(width,height),natural_width,ImGui::GetFrameHeight()).x;
+    const float wrap_width = (std::max)(1.0F,resolved_width-style.FramePadding.x*2);
+    std::string wrapped;
+    for (const char* cursor = text.c_str(); cursor < visible_end;) {
+        const char* end = ImGui::GetFont()->CalcWordWrapPositionA(
+            ImGui::GetFontSize()/ImGui::GetFont()->FontSize,cursor,visible_end,wrap_width);
+        if (end == cursor) {
+            unsigned int character{};
+            end += (std::max)(1,ImTextCharFromUtf8(&character,cursor,visible_end));
+        }
+        wrapped.append(cursor,end);
+        cursor = end;
+        while (cursor < visible_end && (*cursor == ' ' || *cursor == '\t')) ++cursor;
+        if (cursor < visible_end && *cursor == '\n') ++cursor;
+        if (cursor < visible_end) wrapped.push_back('\n');
+    }
+    // Preserve the original ID when wrapping or changing selection state.
+    wrapped += "###";
+    wrapped += text;
+    if (selected != 0) {
+        const auto& theme = PlatformUiTheme();
+        ImGui::PushStyleColor(ImGuiCol_Button,ThemeColor(theme.accent));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,ThemeColor(theme.accent_hovered));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,ThemeColor(theme.accent_active));
+        ImGui::PushStyleColor(ImGuiCol_Text,ThemeColor(theme.inverse_text));
+    }
+    ImGui::BeginDisabled(enabled == 0);
+    const bool pressed = ImGui::Button(wrapped.c_str(),ImVec2(resolved_width,height));
+    ImGui::EndDisabled();
+    if (selected != 0) ImGui::PopStyleColor(4);
+    return enabled != 0 && pressed ? 1 : 0;
+}
+
 void ANOMALY_CALL SameLine(
     void*, const float offset_from_start_x, const float spacing) {
     if (!std::isfinite(offset_from_start_x) || !std::isfinite(spacing)) return;
@@ -1446,7 +1486,7 @@ const AnomalyUiServiceV1 kUiService{
     TextWrapped, BeginChildAutoFitY, SliderFloatEnabled, SetNextItemWidth,
     OverlayViewportSize, OverlayGlass, OverlayRectFilled, OverlayLine, OverlayCircle,
     OverlayRingSector, OverlayMeasureText, OverlayText, OverlayGlassRingSector,
-    DrawScreenPrimitives, CheckboxSquare};
+    DrawScreenPrimitives, CheckboxSquare, ButtonSelected};
 
 }  // namespace
 

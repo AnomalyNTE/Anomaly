@@ -831,6 +831,21 @@ int ANOMALY_CALL ProxyButtonEnabled(
         : 0;
 }
 
+int ANOMALY_CALL ProxyButtonSelected(
+    void* user, AnomalyStringViewV1 label, float width, float height,
+    int selected, int enabled) {
+    const auto* context = UiProxyContext(user);
+    auto callback = AcquireUiCallback(context);
+    if (context != nullptr && context->scope != nullptr && !callback) return 0;
+    return context != nullptr &&
+            HasUiField<decltype(AnomalyUiServiceV1::button_selected)>(
+                context->service, offsetof(AnomalyUiServiceV1, button_selected)) &&
+            context->service->button_selected != nullptr
+        ? context->service->button_selected(
+              context->service->user, label, width, height, selected, enabled)
+        : 0;
+}
+
 int ANOMALY_CALL ProxyColorEdit4(
     void* user, AnomalyStringViewV1 label, float rgba[4]) {
     const auto* context = UiProxyContext(user);
@@ -1460,8 +1475,15 @@ AnomalyUiServiceV1 MakeUiProxy(PluginUiProxyContext* context) noexcept {
             advertised_size,
             offsetof(AnomalyUiServiceV1, draw_screen_primitives));
     }
-    if (advertised_size >= sizeof(proxy) && context->service->checkbox_square != nullptr) {
+    if (HasUiField<decltype(AnomalyUiServiceV1::checkbox_square)>(
+            context->service, offsetof(AnomalyUiServiceV1, checkbox_square)) &&
+        context->service->checkbox_square != nullptr) {
         proxy.checkbox_square = ProxyCheckboxSquare;
+    }
+    if (HasUiField<decltype(AnomalyUiServiceV1::button_selected)>(
+            context->service, offsetof(AnomalyUiServiceV1, button_selected)) &&
+        context->service->button_selected != nullptr) {
+        proxy.button_selected = ProxyButtonSelected;
     }
     proxy.struct_size = static_cast<std::uint32_t>(advertised_size);
     return proxy;
