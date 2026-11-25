@@ -2,39 +2,31 @@
 #include "engine.hpp"
 #include "motion.hpp"
 #include "physics.hpp"
+#include "drivetrain.hpp"
 
 namespace vehicle_flight {
 class VehicleAccess {
-    struct alignas(8) LocationParameters {
+    struct TeleportParameters {
         Vector location;
-        uint8_t sweep{};
-        std::array<uint8_t, 7> alignment{};
-        std::array<uint8_t, 264> hit{};
-        uint8_t teleport{1}, result{};
+        Vector rotation;
+        uint8_t result{};
     };
-    static_assert(offsetof(LocationParameters, result) == 297);
+    static_assert(offsetof(TeleportParameters, result) == 48);
     struct ComponentParameters {
         uintptr_t type{}, result{};
     };
-
-    struct alignas(8) SteerParameters {
-        Vector location;
+    struct FacingParameters {
         Vector rotation;
-        uint8_t sweep{};
-        std::array<uint8_t, 7> alignment{};
-        std::array<uint8_t, 264> hit{};
-        uint8_t teleport{1};
-        uint8_t result{};
+        uint8_t teleport{1}, result{};
     };
-    static_assert(offsetof(SteerParameters, result) == 321);
 
 public:
-    VehicleAccess() : physics_(engine) {}
+    VehicleAccess() : physics_(engine), drivetrain_(engine) {}
     Engine engine;
 
     bool Bind() {
-        if (location_.function && driver_.function && rotation_.function && steer_.function && root_.function)
-            return physics_.Bind();
+        if (location_.function && driver_.function && rotation_.function && teleport_.function && facing_.function && root_.function)
+            return physics_.Bind() && drivetrain_.Bind();
         const auto location = engine.Bind("Engine", "Actor", "K2_GetActorLocation", 1, sizeof(Vector),
             {{"ReturnValue", 0, sizeof(Vector), "StructProperty"}});
         const auto driver = engine.Bind("HTGame", "HTPlayerController", "BP_GetCurrentDriveVehicle", 1, sizeof(uintptr_t),
@@ -44,24 +36,14 @@ public:
         driver_ = driver;
         rotation_ = engine.Bind("Engine", "Actor", "K2_GetActorRotation", 1, sizeof(Vector),
             {{"ReturnValue", 0, sizeof(Vector), "StructProperty"}});
-        steer_ = engine.Bind("Engine", "Actor", "K2_SetActorLocationAndRotation", 6, offsetof(SteerParameters, result) + 1,
-            {{"NewLocation", 0, sizeof(Vector), "StructProperty"},
-             {"NewRotation", offsetof(SteerParameters, rotation), sizeof(Vector), "StructProperty"},
-             {"bSweep", offsetof(SteerParameters, sweep), 1, "BoolProperty"},
-             {"SweepHitResult", offsetof(SteerParameters, hit), sizeof(SteerParameters::hit), "StructProperty"},
-             {"bTeleport", offsetof(SteerParameters, teleport), 1, "BoolProperty"},
-             {"ReturnValue", offsetof(SteerParameters, result), 1, "BoolProperty"}});
-        position_ = engine.Bind("Engine", "Actor", "K2_SetActorLocation", 5, offsetof(LocationParameters, result) + 1,
-            {{"NewLocation", 0, sizeof(Vector), "StructProperty"},
-             {"bSweep", offsetof(LocationParameters, sweep), 1, "BoolProperty"},
-             {"SweepHitResult", offsetof(LocationParameters, hit), sizeof(LocationParameters::hit), "StructProperty"},
-             {"bTeleport", offsetof(LocationParameters, teleport), 1, "BoolProperty"},
-             {"ReturnValue", offsetof(LocationParameters, result), 1, "BoolProperty"}});
-        const auto hit = engine.Find("/Script/Engine.HitResult");
-        if (engine.IsA(hit, "ScriptStruct")) {
-            const int offset = engine.Field(hit.address, "Normal", sizeof(Vector), "StructProperty");
-            if (offset >= 0 && offset + sizeof(Vector) <= sizeof(SteerParameters::hit)) normal_offset_ = offset;
-        }
+        facing_ = engine.Bind("Engine", "Actor", "K2_SetActorRotation", 3, offsetof(FacingParameters, result) + 1,
+            {{"NewRotation", 0, sizeof(Vector), "StructProperty"},
+             {"bTeleportPhysics", offsetof(FacingParameters, teleport), 1, "BoolProperty"},
+             {"ReturnValue", offsetof(FacingParameters, result), 1, "BoolProperty"}});
+        teleport_ = engine.Bind("Engine", "Actor", "K2_TeleportTo", 3, offsetof(TeleportParameters, result) + 1,
+            {{"DestLocation", 0, sizeof(Vector), "StructProperty"},
+             {"DestRotation", offsetof(TeleportParameters, rotation), sizeof(Vector), "StructProperty"},
+             {"ReturnValue", offsetof(TeleportParameters, result), 1, "BoolProperty"}});
         water_ = engine.Bind("HTGame", "HTPlayerCharacter", "GetBoardWaterVehicle", 1, sizeof(uintptr_t),
             {{"ReturnValue", 0, sizeof(uintptr_t), "ObjectProperty"}});
         water_driver_ = engine.Bind("HTGame", "HTVirtualWaterVehicleBasePawn", "GetDriver", 1, sizeof(uintptr_t),
@@ -72,10 +54,12 @@ public:
             {{"ComponentClass", 0, sizeof(uintptr_t), "ClassProperty"},
              {"ReturnValue", offsetof(ComponentParameters, result), sizeof(uintptr_t), "ObjectProperty"}});
         mesh_class_ = engine.Find("/Script/Engine.SkeletalMeshComponent");
-        movement_ = engine.Bind("Engine", "Pawn", "GetMovementComponent", 1, sizeof(uintptr_t),
+        camera_manager_ = engine.Bind("HTGame", "HTPlayerController", "GetHTPlayerCameraManager", 1, sizeof(uintptr_t),
             {{"ReturnValue", 0, sizeof(uintptr_t), "ObjectProperty"}});
-        clear_inputs_ = engine.Bind("HTGame", "HTVehicleMovementComponent", "ClearAllInputs", 0, 0, {});
-        return rotation_.function && steer_.function && root_.function && physics_.Bind();
+        camera_rotation_ = engine.Bind("Engine", "PlayerCameraManager", "GetCameraRotation", 1, sizeof(Vector),
+            {{"ReturnValue", 0, sizeof(Vector), "StructProperty"}});
+        return rotation_.function && teleport_.function && facing_.function &&
+            root_.function && physics_.Bind() && drivetrain_.Bind();
     }
 
     Ref DrivenVehicle(AnomalyGenerationHandleV1 controller, AnomalyGenerationHandleV1 pawn, Ref current) {
@@ -99,7 +83,13 @@ public:
     }
 
     bool Rotation(Ref vehicle, Vector& rotation) const {
-        return steer_.function && engine.Call(vehicle, rotation_, &rotation, sizeof(rotation)) && Finite(rotation);
+        return engine.Call(vehicle, rotation_, &rotation, sizeof(rotation)) && Finite(rotation);
+    }
+
+    bool ViewRotation(Ref controller, Vector& rotation) const {
+        if (!camera_manager_.function || !camera_rotation_.function) return false;
+        const auto manager = engine.Reference(ReturnedObject(controller, camera_manager_));
+        return engine.Call(manager, camera_rotation_, &rotation, sizeof(rotation)) && Finite(rotation);
     }
 
     Ref PhysicsRoot(Ref vehicle) {
@@ -114,72 +104,49 @@ public:
         return engine.IsA(component, "SkeletalMeshComponent") ? component : Ref{};
     }
 
-    bool ClearDrivingInput(Ref vehicle) {
-        if (!movement_.function || !clear_inputs_.function) return true;
-        if (!(vehicle == input_vehicle_)) {
-            input_vehicle_ = vehicle;
-            movement_component_ = engine.Reference(ReturnedObject(vehicle, movement_));
-            if (!engine.IsA(movement_component_, "HTVehicleMovementComponent")) movement_component_ = {};
-        }
-        return !movement_component_ || engine.Call(movement_component_, clear_inputs_, nullptr, 0);
+    bool SuspendDriving(Ref vehicle) {
+        return drivetrain_.Hold(vehicle);
     }
 
-    bool Move(Ref vehicle, Ref root, const Vector& position, const Vector* rotation, bool sweep, bool& moved,
+    bool Move(Ref vehicle, Ref root, const Vector& position, const Vector* rotation, bool collision, bool& moved,
               const Vector* observed = nullptr) {
         moved = false;
         Vector current{}, original{};
         if (observed) current = *observed;
         else if (!Location(vehicle, current)) return false;
         if (!Rotation(vehicle, original)) return false;
-        const double yaw = rotation ? (*rotation)[1] : original[1];
-        const Vector upright{0.0, yaw, 0.0};
-        if (Length(Difference(position, current)) > 0.02 ||
-            std::abs(original[0]) > 0.02 || std::abs(original[2]) > 0.02 ||
-            std::abs(std::remainder(upright[1] - original[1], 360.0)) > 0.02) {
-            SteerParameters params{position, upright, static_cast<uint8_t>(sweep)};
-            if (!engine.Call(vehicle, steer_, &params, steer_.size)) return false;
-            moved = params.result != 0;
-            if (!sweep && !moved) {
+        const Vector upright{0.0, rotation ? (*rotation)[1] : original[1], 0.0};
+        const bool translate = Length(Difference(position, current)) > 0.02;
+        const bool turn = std::abs(original[0]) > 0.02 || std::abs(original[2]) > 0.02 ||
+            std::abs(std::remainder(upright[1] - original[1], 360.0)) > 0.02;
+        if (turn) {
+            FacingParameters facing{upright};
+            if (!engine.Call(vehicle, facing_, &facing, facing_.size)) return false;
+        }
+        moved = true;
+        if (translate) {
+            // Match the observed implementation: native teleport performs destination
+            // collision checks when collision is enabled on the vehicle.
+            TeleportParameters parameters{position, upright};
+            if (!engine.Call(vehicle, teleport_, &parameters, teleport_.size)) return false;
+            moved = parameters.result != 0;
+            if (!collision && !moved) {
                 Vector actual{};
                 if (!Location(vehicle, actual)) return false;
-                if (Length(Difference(position, actual)) > 0.02 && position_.function) {
-                    LocationParameters retry{position};
-                    if (!engine.Call(vehicle, position_, &retry, position_.size) || !Location(vehicle, actual)) return false;
-                }
-                // A false pose return need not mean the translation failed.
                 moved = Length(Difference(position, actual)) <= 0.02;
-            } else if (sweep && normal_offset_ >= 0) {
-                Vector normal{};
-                std::memcpy(normal.data(), params.hit.data() + normal_offset_, sizeof(normal));
-                const double length = Length(normal);
-                if (Finite(normal) && length > 0.5 && length < 1.5) {
-                    Vector actual{};
-                    if (!Location(vehicle, actual)) return false;
-                    for (auto& axis : normal) axis /= length;
-                    const auto remaining = Difference(position, actual);
-                    const double into = remaining[0]*normal[0] + remaining[1]*normal[1] + remaining[2]*normal[2];
-                    Vector slide{};
-                    for (size_t axis=0; axis<slide.size(); ++axis) slide[axis] = remaining[axis] - into*normal[axis];
-                    if (into < 0.0 && Length(slide) > 0.02) {
-                        for (size_t axis=0; axis<slide.size(); ++axis) slide[axis] += actual[axis];
-                        SteerParameters tangent{slide, upright, 1};
-                        if (!engine.Call(vehicle, steer_, &tangent, steer_.size)) return false;
-                        moved = moved || tangent.result != 0;
-                    }
-                }
             }
-        } else moved = true;
+        }
         return physics_.Brake(root);
     }
 
-    void ResetPhysics() {
-        input_vehicle_ = {};
-        movement_component_ = {};
-    }
-
     bool BeginFlightPhysics(Ref vehicle, Ref root, bool noclip = true) { return physics_.Begin(vehicle, root, noclip); }
-    bool RestoreFlightPhysics() { return physics_.Restore(); }
-    bool HasFlightPhysics() const { return physics_.Active(); }
+    bool RestoreFlightPhysics() {
+        if (drivetrain_.Active()) physics_.RebuildOnRestore();
+        // Physics creation copies the drivetrain configuration. Restore it before
+        // enabling chassis collision, including flight that already has collision.
+        return drivetrain_.Restore() && physics_.Restore();
+    }
+    bool HasFlightPhysics() const { return physics_.Active() || drivetrain_.Active(); }
 
 
 private:
@@ -188,11 +155,11 @@ private:
         return engine.Call(object, function, &address, sizeof(address)) ? address : 0;
     }
 
-    Bound driver_, water_, water_driver_, location_, rotation_, steer_, root_;
-    Bound position_;
-    int normal_offset_{-1};
-    Bound movement_, clear_inputs_, component_;
-    Ref input_vehicle_, movement_component_, mesh_class_;
+    Bound driver_, water_, water_driver_, location_, rotation_, teleport_, facing_, root_;
+    Bound component_;
+    Bound camera_manager_, camera_rotation_;
+    Ref mesh_class_;
     PhysicsControl physics_;
+    DrivetrainControl drivetrain_;
 };
 }

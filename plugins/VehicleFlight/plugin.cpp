@@ -11,7 +11,7 @@ namespace vehicle_flight {
 using namespace anomaly::sdk;
 constexpr auto Id = "b1ank.vehicle-flight";
 constexpr auto Name = "Vehicle Flight";
-constexpr auto Version = "0.1.26";
+constexpr auto Version = "0.1.31";
 using Clock = std::chrono::steady_clock;
 
 enum class Status { Off, Starting, Flying, CameraUnavailable, Blocked, PositionCorrected, NoVehicle, SceneChanged, Unavailable, Restoring };
@@ -68,6 +68,7 @@ struct Context {
     std::atomic<int> speed{DefaultSpeed};
     int fallback_open{1};
     bool reported_flying{};
+    bool moving{};
 
     void SetRequested(bool enabled) {
         if (enabled && input_state.load() == InputState::Failed) input_state = InputState::Pending;
@@ -101,12 +102,12 @@ struct Context {
     bool ResetVehicle() {
         if (!access.RestoreFlightPhysics()) return false;
         input_gate.Release();
-        access.ResetPhysics();
         reported_flying = false;
         vehicle = {};
         physics = {};
         next_move_log = {};
         anchor = {};
+        moving = false;
         measured_frames = 0;
         update_milliseconds = 0.0;
         longest_update = 0.0;
@@ -198,8 +199,9 @@ void Tick(Context& ctx, double seconds) {
         ctx.Unavailable("Vehicle Flight: previous vehicle physics could not be restored");
         return;
     }
-    if (!ctx.input_gate.Hold(ctx.access.engine.Resolve(controller)) || !ctx.access.ClearDrivingInput(vehicle)) {
-        ctx.Unavailable("Vehicle Flight: driving input could not be isolated");
+    const auto local_controller = ctx.access.engine.Resolve(controller);
+    if (!ctx.input_gate.Hold(local_controller) || !ctx.access.SuspendDriving(vehicle)) {
+        ctx.Unavailable("Vehicle Flight: driving input or drivetrain could not be suspended");
         return;
     }
     Vector observed{};
@@ -223,11 +225,16 @@ void Tick(Context& ctx, double seconds) {
     seconds = std::min(seconds, 0.05);
 
     AnomalyNteCameraSnapshotV1 camera{sizeof(camera)};
-    const bool has_camera = ctx.player->camera_snapshot &&
+    Vector view{};
+    bool has_camera = ctx.access.ViewRotation(local_controller, view);
+    if (!has_camera && ctx.player->camera_snapshot &&
         Succeeded(ctx.player->camera_snapshot(ctx.player->user, &camera)) && Same(camera.world, scene.world) &&
         (camera.flags & ANOMALY_NTE_SNAPSHOT_V1_VALID) &&
         !(camera.flags & (ANOMALY_NTE_SNAPSHOT_V1_STALE | ANOMALY_NTE_SNAPSHOT_V1_PARTIAL)) &&
-        std::isfinite(camera.rotation[0]) && std::isfinite(camera.rotation[1]);
+        std::isfinite(camera.rotation[0]) && std::isfinite(camera.rotation[1])) {
+        std::copy_n(camera.rotation, view.size(), view.begin());
+        has_camera = true;
+    }
     AnomalyInputSnapshotV1 input{sizeof(input)};
     const bool controlling = HasFocus() && Succeeded(ctx.input->snapshot(ctx.input->user, &input)) &&
         !(input.capture_flags & (ANOMALY_INPUT_CAPTURE_V1_TEXT | ANOMALY_INPUT_CAPTURE_V1_KEYBOARD));
@@ -242,22 +249,27 @@ void Tick(Context& ctx, double seconds) {
         const int vertical = static_cast<int>(Down(input, VK_SPACE)) -
             (Down(input, VK_CONTROL) || Down(input, VK_LCONTROL) || Down(input, VK_RCONTROL));
         camera_unavailable = (forward || sideways) && !has_camera;
-        direction = Direction(has_camera ? camera.rotation[1] : 0.0,
+        direction = Direction(has_camera ? view[1] : 0.0,
             has_camera ? forward : 0, has_camera ? sideways : 0, vertical);
         boost = (input.modifiers & ANOMALY_INPUT_MODIFIER_V1_SHIFT) != 0;
         if (has_camera && (forward || sideways)) {
-            facing = {0.0, camera.rotation[1], 0.0};
+            facing = {0.0, view[1], 0.0};
             facing_pointer = &facing;
         }
     }
+    const bool moving = Length(direction) > 0.0;
+    // Apply each movement delta to the position the engine actually accepted.
+    // On release, hover at that position instead of snapping to a prior target.
+    if (moving || ctx.moving) ctx.anchor = observed;
+    ctx.moving = moving;
     const auto target = Advance(ctx.anchor, direction, seconds, ctx.speed.load(), boost);
     bool moved{};
     if (!ctx.access.Move(vehicle, ctx.physics, target, facing_pointer, !noclip, moved, &observed)) {
         ctx.End(Status::Unavailable);
         return;
     }
-    // Swept moves can stop partway. Unswept moves are checked against the next
-    // tick's observation, avoiding a second location query on the fast path.
+    // Teleport can adjust a destination or reject it when collision is enabled.
+    // Noclip is checked against the next tick to avoid a second query on its fast path.
     if ((!noclip || !moved) && !ctx.access.Location(vehicle, observed)) {
         ctx.End(Status::Unavailable);
         return;
@@ -281,7 +293,7 @@ void Tick(Context& ctx, double seconds) {
         ctx.reported_flying = true;
         const auto* core = ctx.access.engine.core;
         if (core && core->log) core->log(core->user, ANOMALY_CORE_LOG_LEVEL_V1_INFO,
-            StringView("Vehicle Flight 0.1.26: flight controls are active using the standard host API"));
+            StringView("Vehicle Flight 0.1.31: flight controls are active using the standard host API"));
     }
 }
 
