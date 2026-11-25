@@ -356,7 +356,8 @@ void ChainTick(const double delta_seconds) {
         case Stage::DailyRewards: {
             if (!state.stage_entered) {
                 state.stage_entered = true;
-                // 反射先领探索指南那一批，再走控件链切「全部」页领活跃度与最终奖励。
+                // 反射先领探索指南那一批，再走控件链切「全部」页：
+                // 先领下方单独活跃任务（活跃度到账），再点上方「全部奖励」。
                 static_cast<void>(ClaimDaily(-1));
                 StartRewardChain(RewardGroup::Daily);
                 return;

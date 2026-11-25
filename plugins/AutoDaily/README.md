@@ -5,7 +5,7 @@
 
 - 插件 id：`yu-1021.daily`
 - 包目录：`Anomaly/plugins/AutoDaily`
-- 版本：4.3.1（与 `manifest.json` 一致）
+- 版本：4.3.7（与 `manifest.json` 一致）
 
 ## 功能
 
@@ -14,7 +14,7 @@
 | 等世界 | `anomaly.nte.session` 报 `WORLD_READY`，且游戏内才有的控件（`W_HTButton_AdventureManual` / `W_BoundActionButton_Close_C`）出现在目录里且不是隐藏状态，才算真的进了游戏；期间每秒检测一次登录按钮 `UI_Button_Login`（最多 8 次），就绪后再等 `world_settle_seconds` 秒 | nte.session（可选）+ ui-buttons |
 | 打副本 | 经 `anomaly.ipc` 调 `ccyellowstar.clone-enter.onekey`：`start` / `status` / `stop`；`start` 里固定带 `"melee":true`，平A模式常开、没有开关 | Clone Enter ≥ 0.2.16（可选） |
 | 领一咖舍 | `ServerStoreManagementRPC`（Type=17）直发，再逐层关弹窗：`Button_Sure`「确定」→ `ButtonDeactivate` → `WB_CommonDeactivate`（最外层 `UI_CommonAwardsPopUpWindows_C_<实例号>`） | 反射 + ui-buttons |
-| 领每日活跃奖励 | 反射领取探索指南五类，再走控件链：开面板 → **「全部」tab（每日活跃页）** → 活跃度奖励 → 最终领取 → 关弹窗 → 关面板 | 反射 + ui-buttons |
+| 领每日活跃奖励 | 反射领取探索指南五类，再走控件链：开面板 → **「全部」tab（每日活跃页）** → **先领下方单独活跃任务** → **再点上方「全部奖励」** → 关弹窗 → 关面板 | 反射 + ui-buttons |
 | 领环期任务奖励 | 控件链：**`W_HTButton_CombatAward`（HUD 入口，不先开面板）** → **「环期任务」tab** → **`BtnSubmitAllQuest`「全部领取」** → 关弹窗 → 关面板 | ui-buttons |
 
 阶段顺序固定为 **打副本 → 领一咖舍 → 领每日活跃奖励 → 领环期任务奖励**：一咖舍的 RPC 与弹窗都
@@ -22,9 +22,14 @@
 `cafe stage finished` / `daily reward stage finished`。
 
 两种领取是**两条独立链路**：设置里各有一个开关（`stages.daily_rewards` /
-`stages.periodic_rewards`），面板上也有各自的一键按钮，可以只跑其中一种。前者按
-`ReceiveButton`（活跃度奖励）→ `ButtonAccept`（最终领取）的顺序点，并把同名按钮**全部**
-点一遍；后者点 `BtnSubmitAllQuest` 一次性全部领取。
+`stages.periodic_rewards`），面板上也有各自的一键按钮，可以只跑其中一种。前者**先点下方每一条
+单独活跃任务的领取按钮（`ButtonAccept`，活跃度到账），再点上方「全部奖励」（`ReceiveButton`）**，
+顺序不能反——否则会按领取前的活跃度去领奖励，少领甚至领不到；后者点 `BtnSubmitAllQuest`
+一次性全部领取。
+
+设置项里的每个开关都是**独立**的：打开/关闭一个不会连带改另一个。后台配置热读（每 2 秒一次）
+只在**面板没开着、且没有未保存改动**时才把磁盘文档应用到内存，面板开着时一律以面板里的开关为准，
+不会再出现「勾了环期任务、别的开关自己关掉」「总开关开了又自己关」这类问题。
 
 领取按钮是**幂等**的：控件在目录里但宿主说不可点击（已经领过 / 条件不满足）时，直接记
 `reward step … nothing to claim, skipping` 往下走，不耗重试、不回退页签；只有「页面没切过去」
@@ -84,8 +89,9 @@ caption 属于游戏数据，代码里写成 UTF-8 字节转义与原文本逐�
 ## 配置
 
 配置文件：`Anomaly/config/plugins/yu-1021.daily/config-yu-1021.daily.settings.json`
-（外层是宿主信封 `{"data":{...},"schemaVersion":1}`，改里面的 `data` 即可；插件每 2 秒热读
-一次，改完保存就生效，不用重启）。
+（外层是宿主信封 `{"data":{...},"schemaVersion":1}`，改里面的 `data` 即可；插件在**设置面板没开着、
+且没有未保存改动**时每 2 秒热读一次，改完保存会自动生效，不用重启。面板开着时以面板里的开关为准，
+手改文件不会把正在点的开关覆盖掉）。
 
 ```jsonc
 {

@@ -116,6 +116,9 @@ struct State {
     std::atomic_int request_placeholders{};
     std::atomic_bool stop_requested{};
     std::atomic_bool settings_dirty{};
+    // 面板最近一次绘制的时间（steady_clock 毫秒；0 表示面板没画过/已关）。
+    // 面板开着时以内存里的开关为准：Worker 的配置热读不许拿磁盘文档覆盖用户正在点的开关。
+    std::atomic<std::int64_t> settings_ui_milliseconds{0};
 
     // 热键
     AnomalyGenerationHandleV1 stop_hotkey{};

@@ -25,6 +25,7 @@
 #include "settings_model.hpp"
 #include "state.hpp"
 
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -76,23 +77,47 @@ void RegisterHotkey() {
 
 // ---- Worker 线程：配置写入与配置文件热更新 ----
 
+std::int64_t SteadyMilliseconds() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+// 设置界面（首次向导 / 常规面板）此刻是否正在画。
+// 面板开着时用户点出来的开关就是权威状态，后台热读不许拿磁盘文档覆盖它。
+bool SettingsEditorActive() {
+    const std::int64_t drawn = S().settings_ui_milliseconds.load(std::memory_order_acquire);
+    return drawn != 0 && SteadyMilliseconds() - drawn < 1500;
+}
+
+void ScheduleSave();
+
 void ANOMALY_CALL SaveTask(void*, AnomalyGenerationHandleV1) {
     State& state = S();
-    state.save_in_flight.store(false, std::memory_order_release);
     if (!state.config_store.Write(state.settings)) {
         WinLog("configuration save failed");
+    }
+    state.save_in_flight.store(false, std::memory_order_release);
+    // 写盘期间又改过设置：补一次保存，别让最后一次点击丢在内存里。
+    if (state.settings_dirty.exchange(false, std::memory_order_acq_rel)) {
+        ScheduleSave();
     }
 }
 
 void ScheduleSave() {
     State& state = S();
     if (state.scheduler == nullptr || state.scheduler->schedule == nullptr) return;
-    if (state.save_in_flight.exchange(true, std::memory_order_acq_rel)) return;
+    if (state.save_in_flight.exchange(true, std::memory_order_acq_rel)) {
+        // 已经有一次保存在路上：把改动重新标记为待保存，那次写完后会再补一次。
+        state.settings_dirty.store(true, std::memory_order_release);
+        return;
+    }
     AnomalyGenerationHandleV1 task{};
     const AnomalyStatusV1 status =
         state.scheduler->schedule(state.scheduler->user, 0, &SaveTask, nullptr, &task);
     if (status.code != ANOMALY_STATUS_V1_OK) {
         state.save_in_flight.store(false, std::memory_order_release);
+        state.settings_dirty.store(true, std::memory_order_release);
         WinLog("configuration save could not be scheduled");
     }
 }
@@ -116,21 +141,38 @@ void DisarmAutoRun(Settings& settings) {
 
 void ANOMALY_CALL ReloadTask(void*, AnomalyGenerationHandleV1) {
     State& state = S();
+    // 以下三种情况下内存里的设置才是权威的，热读一律不覆盖：
+    //   1. 设置面板正开着（用户正在勾/取消开关）；
+    //   2. 有改动还没写盘（settings_dirty）；
+    //   3. 保存还在路上（save_in_flight）。
+    // 以前不判断这些，热读每 2 秒就把用户刚点的开关按磁盘旧文档覆盖回去，
+    // 表现就是「开一个开关把别的开关关掉」「总开关开了又自己关」。
+    if (SettingsEditorActive() || state.settings_dirty.load(std::memory_order_acquire) ||
+        state.save_in_flight.load(std::memory_order_acquire)) {
+        ScheduleReload();
+        return;
+    }
     Settings stored{};
     if (state.config_store.Read(stored)) {
         const std::uint32_t previous_vk = state.settings.stop_vk;
         const std::uint32_t previous_modifiers = state.settings.stop_modifiers;
         const bool previous_enabled = state.settings.enabled;
-        // 武装状态只在界面里改，配置文件里的值不生效（避免手改文件就地触发一次）。
+        // 只由界面维护的字段不跟着文件走：自动运行武装状态、首次配置完成标记。
         stored.auto_run_pending = state.settings.auto_run_pending;
         stored.auto_run_pid = state.settings.auto_run_pid;
         stored.auto_run_stamp = state.settings.auto_run_stamp;
-        state.settings = stored;
-        if (stored.stop_vk != previous_vk || stored.stop_modifiers != previous_modifiers) {
-            state.hotkey_dirty.store(true, std::memory_order_release);
-        }
-        if (stored.enabled != previous_enabled) {
-            WinLogf("configuration reloaded: enabled=%d", stored.enabled ? 1 : 0);
+        stored.configured = state.settings.configured;
+        NormalizeSettings(stored);
+        // 磁盘文档和内存一致就什么都不做：自己刚保存的内容不要再读回来覆盖一遍。
+        if (SerializeSettings(stored) != SerializeSettings(state.settings)) {
+            if (stored.stop_vk != previous_vk || stored.stop_modifiers != previous_modifiers) {
+                state.hotkey_dirty.store(true, std::memory_order_release);
+            }
+            if (stored.enabled != previous_enabled) {
+                WinLogf("configuration reloaded: enabled=%d", stored.enabled ? 1 : 0);
+            }
+            state.settings = stored;
+            WinLog("configuration hot-reloaded from disk");
         }
     }
     ScheduleReload();
@@ -217,7 +259,11 @@ void ScopedLabel(const AnomalyUiServiceV1* ui, const char* key, const char* fall
 bool Checkbox(const AnomalyUiServiceV1* ui, const char* key, const char* fallback, bool& value) {
     if (!HAS(ui, AnomalyUiServiceV1, checkbox)) return false;
     int flag = value ? 1 : 0;
-    const std::string label = TextLocalized(key, fallback);
+    // 显示文案后面挂「##稳定 id」：控件 id 只跟 key 走，不随翻译/同名文案变化，
+    // 免得两个开关在宿主里撞成同一个 id 而互相连动。
+    std::string label = TextLocalized(key, fallback);
+    label += "##";
+    label += key;
     if (ui->checkbox(ui->user, Str(label.data(), label.size()), &flag) == 0) return false;
     value = flag != 0;
     return true;
@@ -409,7 +455,12 @@ void DrawFirstRun(const AnomalyUiServiceV1* ui) {
         changed = true;
     }
     if (DrawDungeonPicker(ui, settings)) changed = true;
-    if (changed) NormalizeSettings(settings);
+    if (changed) {
+        NormalizeSettings(settings);
+        // 向导里改的开关也要落盘：以前只有点「保存并开始使用」才写，
+        // 中途被后台热读按旧文档覆盖回去，看起来就是开关自己乱跳。
+        state.settings_dirty.store(true, std::memory_order_release);
+    }
 
     if (HAS(ui, AnomalyUiServiceV1, separator)) ui->separator(ui->user);
     ScopedLabel(ui, "setup.table_hint", "Dungeon reference (index / game entry / subs / level):");
@@ -680,10 +731,14 @@ void ANOMALY_CALL Draw(void*, const AnomalyUiServiceV1* ui_service) {
     const std::string title = TextLocalized("window.title", "Auto Daily");
     if (ui->begin_window(ui->user, Str(title.data(), title.size()), &g_panel_open, 0u) ==
         0) {
+        // 窗口收起/关掉：设置界面不在画了，后台热读可以恢复。
+        S().settings_ui_milliseconds.store(0, std::memory_order_release);
         ui->end_window(ui->user);
         return;
     }
     State& state = S();
+    // 标记「设置界面正在画」：Worker 热读看到这个时间戳就不会用磁盘文档覆盖面板里的开关。
+    state.settings_ui_milliseconds.store(SteadyMilliseconds(), std::memory_order_release);
     DrawStatus(ui);
     if (HAS(ui, AnomalyUiServiceV1, separator)) ui->separator(ui->user);
     if (state.first_run_popup || !state.settings.configured) {
@@ -714,7 +769,7 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
                    Str("yu-1021.daily"),
                    Str("Auto Daily"),
                    Str("YU-1021"),
-                   Str("4.3.6"),
+                   Str("4.3.7"),
                    daily::Load,
                    daily::Start,
                    daily::Stop,

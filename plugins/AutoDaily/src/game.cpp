@@ -86,13 +86,15 @@ constexpr const char* kPanelTabName = "BPUI_RadioBox_Table_1";
 constexpr const char* kPanelClosePrefix = "W_BoundActionButton_Close";
 
 // 两种领取是两条独立链路，各自一套步骤，配置里也是两个开关。
-// 每日活跃奖励：探索指南 -> 「全部」(每日活跃页) -> 活跃度奖励 -> 最终领取 -> 关窗（验证关掉）
+// 每日活跃奖励：探索指南 -> 「全部」(每日活跃页) -> 下方单独活跃任务 -> 上方「全部奖励」 -> 关窗（验证关掉）
 constexpr RewardStep kDailyRewardSteps[] = {
     {8, "W_HTButton_AdventureManual", 120, "open-panel", true, nullptr, false},
     {0, "BPUI_RadioBox_Table_1", 120, "daily-tab-all", true, kCaptionAll, false},
     {3, "", 60, "daily-page-ready", true, nullptr, false},
-    {1, "ReceiveButton", 30, "activity-reward", false, nullptr, true},
-    {1, "ButtonAccept", 30, "final-claim", false, nullptr, true},
+    // 顺序不能反：先把下方每一条单独活跃任务领掉，活跃度才会涨；
+    // 活跃度到账后才点上方「全部奖励」，否则会按旧的活跃度领奖，少领甚至领不到。
+    {1, "ButtonAccept", 45, "daily-task-claims", false, nullptr, true},
+    {1, "ReceiveButton", 45, "activity-reward", false, nullptr, true},
     // 关窗是一步「验证式收尾」：弹窗和面板都从屏幕上消失才算完，关不掉就停在这里，
     // 绝不带着开着的面板进下一条链路（面板会把 HUD 上的入口按钮挡成不可点击）。
     {7, "", 30, "close-reward-ui", true, nullptr, false},
