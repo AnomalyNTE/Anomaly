@@ -71,14 +71,14 @@ If Anomaly is useful to you, you can support the project's continued maintenance
 - 🪟 **In-game management UI**: press `Insert` to open the Chinese or English UI and manage plugin enablement, disabling, reload, and settings in one place.
 - 🌐 **Third-party plugin downloads**: browse and install community plugins under **Plugins > Available**, upgrade them under **Updates**, and add trusted plugin sources yourself.
 - 🔥 **Hot mod loading**: in hot mode, enabling, swapping, or removing a mod takes effect immediately — appearances are refreshed in place, resources that cannot be rebound fall back to the **Mod Manager** plugin's world reload, and the game never restarts.
-- 🔌 **Practical built-in plugins**: the package ships 40 user-facing plugins covering coordinates and health, world map markers, entity ESP, combat statistics, equipment management and remote shopping, camera and FPS unlocking, skins and model replacement, vehicles, scene switching, audio replacement, and automation scripts — all disabled by default and enabled on demand.
+- 🔌 **Practical built-in plugins**: the package ships 41 user-facing plugins covering coordinates and health, world map markers, entity ESP, combat statistics, equipment management and remote shopping, camera and FPS unlocking, skins and model replacement, vehicles, world building, scene switching, audio replacement, and automation scripts — all disabled by default and enabled on demand.
 - 🤖 **Automation tasks**: Resource Auto Pickup, Combat Resource Points, Clone Enter, WalletCollector, and 999 Nights Script can teleport, fight, or pick up automatically, and you can stop them at any time from the plugin window.
 - 🧩 **Open plugin framework**: a pure C ABI v1 SDK and unified V1 services, so a plugin project needs neither the runtime source nor the C++ ABI.
 - 🔍 **Memory analysis and developer tools**: inspect process modules, PE sections, and memory regions, with a byte signature scan, an offline TestHost, and other developer tools.
 
 ### 🔌 Built-in plugins
 
-The runtime package ships **40** user-facing built-in plugins, all disabled by default and enabled on demand. Each plugin is described in detail under [built-in plugins](docs/en/user-guide/built-in-plugins.md).
+The runtime package ships **41** user-facing built-in plugins, all disabled by default and enabled on demand. Each plugin is described in detail under [built-in plugins](docs/en/user-guide/built-in-plugins.md).
 
 **UI and information**
 
@@ -123,6 +123,7 @@ The runtime package ships **40** user-facing built-in plugins, all disabled by d
 | Plugin | Purpose |
 | --- | --- |
 | **Vehicle Control** | Vehicle catalog, plain or customized summoning, speed/torque/wheel-friction tuning, and full durability for the current land vehicle |
+| **CreativeMode** | Browses model thumbnails, places furniture, shapes, roads and parked vehicles in the current world, and edits/saves layouts with transform handles |
 | **Scene Loader** | Lists the game's scenes and switches through the game's own entrances, including in-scene entrances, world return, and data layers |
 | **Deserted** | Stops crowd and traffic spawning without affecting stationary NPCs |
 | **HiFi Vehicle Music** | Replaces in-vehicle music with a local lossless library over WASAPI exclusive/shared, DirectSound, or ASIO |

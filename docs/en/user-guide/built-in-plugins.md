@@ -252,6 +252,24 @@ Besides ordinary buttons, the catalog also lists tabs / radio buttons (type show
 
 **Button pickup**: hover over a button in the game and press F8 (rebindable in the panel), and the top of the panel shows the buttons under the cursor, with the innermost one first when they are nested. **Pick after 3 seconds** covers situations where pressing a hotkey is inconvenient. With **Show UI layers** checked you can see which interfaces each UI layer currently shows, and which interfaces are judged to occlude the layers beneath them.
 
+## CreativeMode
+
+| | |
+| --- | --- |
+| **ID** | `anomaly.creative-mode` |
+| **Purpose** | Browses rendered model thumbnails, places furniture, roads, shapes and parked vehicles in the current world, and edits/saves placements with world-space handles. |
+| **Required services** | `anomaly.ui/window/input/texture/texture.gpu/localization/core/config/storage/scheduler/profile/json`, `anomaly.interop.signature`, `anomaly.ue5.build/ahud/objects/framework`, and `anomaly.nte.session/player` (V1); `anomaly.ue5.names` (V2) |
+| **Requires Profile** | Yes; the packaged `profile/compatibility.profile.json` and reflected native function contracts must validate. |
+
+The **Asset browser** has categories and folders on the left, thumbnail cards in the center, and a model viewer on the right. The engine renders models offscreen and shares their GPU textures directly, without CPU readback. It generates 256×256 images one at a time for the current page and selected model, caching up to 64 images. A single material-preview pipeline retains base color and emissive materials with fixed exposure, a plain dark background and no vignette or world color grading. Right-drag to orbit and use the wheel to zoom. Dragging prioritizes the viewer, reuses its model, render target and imported GPU texture, and coalesces requests every 33 ms. Hiding the browser stops capture. UI, categories and common object names support Chinese; resource paths retain their original identifiers. The catalog comes from the engine asset registry, including unloaded StaticMesh and SkeletalMesh assets. A Worker builds the catalog and caches it by game build under the plugin state directory's `asset-catalog-v1-*.json`. The same version reads this cache directly; a changed game build or manual refresh queries the registry again. Cache shards stay below the Host's 4 MiB entry limit, commit their index last, and rebuild when damaged. Enter a complete mesh path under **Fine adjustment** if needed. Selecting or dropping an unloaded model starts asynchronous loading and completes its preview or placement afterward, without visiting its original area. Time waiting in the queue does not count as a generation timeout.
+
+With the host menu open and the cursor released, drag an asset card out of the window and release over a world surface to place the model there. Cards can also be selected and placed while their thumbnail is loading or unavailable. Alternatively, **Place** starts a collision-free preview with a yellow outline that follows the view, and **Place here** fixes it. Dragging a preview handle stops it following the camera; start the preview again to resume following.
+
+Click a placed object in the world or select it in **Edit placements**. The selected object has a blue outline. Move arrows, rotation rings and scale squares are visible together by default; drag the appropriate handle to adjust the same object without switching modes. The toolbar and W / E / R independently toggle each handle group's visibility. Hold Shift for fine adjustment or Ctrl to snap, and right-click or press Esc to cancel the current drag. Numeric fields are collapsed under **Details and fine adjustment**. Duplicate along world X, snap to grid, or delete from the placement panel. Up to 512 objects can be placed. Vehicles are fixed models without driving or vehicle interactions. Collision requires the mesh's original collision body or physics asset; scaled basic cubes are useful for solid platforms.
+
+Settings save automatically through `anomaly.config`. **Save current layout** separately replaces the previously saved layout and excludes the preview. Restore requires an empty placement list in the same world, adds one object per update, and can be stopped while keeping completed placements. Restoration is manual and the game's original map data is never changed.
+Disabling or reloading lets engine-owned lifespans remove the objects within five unpaused game seconds. Save before stopping. Camera Tools' free camera can be used alongside this plugin.
+
 ## Scene Loader
 
 | | |

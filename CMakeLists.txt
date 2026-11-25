@@ -1536,6 +1536,13 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/SummonLab")
     target_link_libraries(anomaly_builtin_summon_lab PRIVATE nlohmann_json::nlohmann_json)
     target_compile_options(anomaly_builtin_summon_lab PRIVATE /utf-8)
+    anomaly_add_plugin(anomaly_builtin_creative_mode
+        SOURCES plugins/CreativeMode/plugin.cpp
+        MANIFEST plugins/CreativeMode/manifest.json
+        PACKAGE_NAME CreativeMode
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/CreativeMode")
+    target_link_libraries(anomaly_builtin_creative_mode PRIVATE nlohmann_json::nlohmann_json)
+    target_compile_options(anomaly_builtin_creative_mode PRIVATE /utf-8)
     anomaly_add_plugin(anomaly_builtin_health_display
         SOURCES plugins/HealthDisplay/plugin.cpp
         MANIFEST plugins/HealthDisplay/manifest.json
@@ -2247,7 +2254,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         anomaly_builtin_autoclaw anomaly_builtin_character_studio anomaly_builtin_better_map
         anomaly_builtin_deserted anomaly_builtin_jelly anomaly_builtin_night999
         anomaly_builtin_npc_summon anomaly_builtin_training_dummy
-        anomaly_builtin_summon_lab anomaly_builtin_health_display anomaly_builtin_memory_dump anomaly_builtin_nailong
+        anomaly_builtin_summon_lab anomaly_builtin_creative_mode anomaly_builtin_health_display anomaly_builtin_memory_dump anomaly_builtin_nailong
         anomaly_builtin_better_tv anomaly_builtin_nte_combat_tracker)
 
     if(ANOMALY_BUILD_TEST_PLUGINS)

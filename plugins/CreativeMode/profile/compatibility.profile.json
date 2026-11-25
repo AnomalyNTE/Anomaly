@@ -1,0 +1,167 @@
+{
+  "schemaVersion": 1,
+  "game": "nte",
+  "module": "HTGame.exe",
+  "section": ".text",
+  "contract": "creative-mode-v1",
+  "layout": {
+    "object.internalIndex": 12,
+    "object.class": 16,
+    "object.name": 24,
+    "object.outer": 32,
+    "objects.itemsOffset": 16,
+    "objects.countOffset": 36,
+    "objects.numChunksOffset": 44,
+    "objects.chunkSize": 65536,
+    "objects.itemStride": 24,
+    "objects.objectOffset": 0,
+    "objects.serialOffset": 16,
+    "struct.super": 64,
+    "struct.propertyLink": 112,
+    "struct.size": 88,
+    "field.class": 8,
+    "field.name": 32,
+    "fieldClass.name": 0,
+    "property.arrayDim": 48,
+    "property.size": 52,
+    "property.offset": 68,
+    "property.next": 72,
+    "property.struct": 112,
+    "bool.byteOffset": 113,
+    "bool.fieldMask": 115,
+    "function.flags": 176,
+    "function.count": 180,
+    "function.size": 182,
+    "function.return": 184,
+    "function.nativeFlag": 1024,
+    "renderTarget.baseOffset": 80,
+    "renderTarget.rhiRefVtableOffset": 32,
+    "rhiTexture.nativeResourceVtableOffset": 40,
+    "registry.queryVtableOffset": 48,
+    "assetData.size": 104,
+    "assetData.package": 0,
+    "assetData.name": 16
+  },
+  "symbols": [
+    {
+      "name": "ue5.GWorld",
+      "candidates": [
+        {
+          "pattern": "48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01",
+          "entry": "48 8B 1D",
+          "values": {
+            "displacementOffset": 3,
+            "instructionSize": 7,
+            "subtract": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "ue5.GObjects",
+      "candidates": [
+        {
+          "pattern": "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8B 04 D1 C3 33 C0 48 8B 00 C3",
+          "entry": "48 8B 05",
+          "values": {
+            "displacementOffset": 3,
+            "instructionSize": 7,
+            "subtract": 16
+          }
+        }
+      ]
+    },
+    {
+      "name": "ue5.ProcessEvent.prologue",
+      "candidates": [
+        {
+          "pattern": "40 55 56 57 41 54 41 55 41 56 41 57 48 81 EC 00 01 00 00 48 8D 6C 24 30 48 89 9D 28 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C5 48 89 85 C0 00 00 00 8B 41 08 4D 8B F0 C1 E8 1E 48 8B FA F6 D0 4C 8B F9 A8 01 0F 84 ?? ?? ?? ?? 33 F6 F7 82 B0 00 00 00 00 04 00 00",
+          "entry": "40 55 56 57 41 54 41 55 41 56 41 57 48 81 EC 00 01 00 00 48 8D 6C 24 30 48 89 9D 28 01 00 00",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "ue5.ProcessEvent",
+      "candidates": [
+        {
+          "pattern": "54 41 55 41 56 41 57 48 81 EC 00 01 00 00 48 8D 6C 24 30 48 89 9D 28 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C5 48 89 85 C0 00 00 00 8B 41 08 4D 8B F0 C1 E8 1E 48 8B FA F6 D0 4C 8B F9 A8 01 0F 84 ?? ?? ?? ?? 33 F6 F7 82 B0 00 00 00 00 04 00 00",
+          "entry": "54 41 55 41 56 41 57 48 81 EC 00 01 00 00 48 8D 6C 24 30 48 89 9D 28 01 00 00 48 8B 05",
+          "values": {
+            "entryOffset": 5
+          }
+        }
+      ]
+    },
+    {
+      "name": "ue5.SceneCapture.Deferred",
+      "candidates": [
+        {
+          "pattern": "40 53 57 48 83 EC 28 48 8B B9 B0 00 00 00 48 8B D9 48 85 FF 75 11 E8 ?? ?? ?? ?? 48 8B F8 48 85 C0 0F 84 ?? ?? ?? ?? 48 83 BF 58 02 00 00 00 0F 84 ?? ?? ?? ?? 48 8B 03 48 8B CB FF 90 50 05 00 00 84 C0 0F 84 ?? ?? ?? ?? 48 8B CB E8 ?? ?? ?? ?? 84 C0 0F 85 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? 48 89 74 24 20 FF 15 ?? ?? ?? ??",
+          "entry": "40 53 57 48 83 EC 28 48 8B B9 B0 00 00 00 48 8B D9",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "ue5.Texture.GetResource",
+      "candidates": [
+        {
+          "pattern": "40 53 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 84 C0 75 43 E8 ?? ?? ?? ?? 84 C0 75 3A E8 ?? ?? ?? ?? 84 C0 75 31 FF 15 ?? ?? ?? ?? 84 C0 75 27 E8 ?? ?? ?? ?? 84 C0 75 11 E8 ?? ?? ?? ?? 84 C0 75 08 33 C0 48 83 C4 20 5B C3 48 8B 83 40 01 00 00 48 83 C4 20 5B C3 48 8B 83 38 01 00 00 48 83 C4 20 5B C3",
+          "entry": "40 53 48 83 EC 20 48 8B D9",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "ue5.RenderTarget.RhiRef.entry",
+      "candidates": [
+        {
+          "pattern": "48 8D 41 C0 C3",
+          "entry": "48 8D 41 C0 C3",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "ue5.RHITexture.NativeResource.entry",
+      "candidates": [
+        {
+          "pattern": "40 53 48 83 EC 20 48 8B 81 D0 00 00 00 33 DB 48 85 C0 74 09 48 8B 58 20 48 85 DB 75 21 48 8B 01 FF 50 38 48 85 C0 74 16 48 8B 80 D0 00 00 00 48 85 C0 74 0A 48 8B 40 20 48 83 C4 20 5B C3 48 8B C3 48 83 C4 20 5B C3",
+          "entry": "40 53 48 83 EC 20 48 8B 81 D0 00 00 00 33 DB 48 85 C0",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "ue5.AssetRegistry.Query.entry",
+      "candidates": [
+        {
+          "pattern": "48 89 5C 24 10 55 56 57 48 81 EC 80 01 00 00",
+          "entry": "48 89 5C 24 10 55 56 57 48 81 EC 80 01 00 00",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "ue5.AssetData.DestroyRange",
+      "candidates": [
+        {
+          "pattern": "85 D2 0F 84 83 00 00 00 56 48 83 EC 20 48 89 5C 24 30 8B F2 48 89 7C 24 38 48 8D 79 48 0F 1F 00 48 8B 4F 10 48 85 C9 74 05 E8 ?? ?? ?? ?? 48 8B 1F 48 85 DB 74 34 B8 FF FF FF FF F0 0F C1 43 08 83 F8 01 75 25 48 8B 03 48 8B CB FF 10 B8 FF FF FF FF F0 0F C1 43 0C",
+          "entry": "85 D2 0F 84 83 00 00 00 56 48 83 EC 20",
+          "values": {}
+        }
+      ]
+    },
+    {
+      "name": "ue5.FMemory.Free",
+      "candidates": [
+        {
+          "pattern": "48 85 C9 74 2E 53 48 83 EC 20 48 8B D9 48 8B 0D ?? ?? ?? ?? 48 85 C9 75 0C E8 ?? ?? ?? ?? 48 8B 0D ?? ?? ?? ?? 48 8B 01 48 8B D3 FF 50 48 48 83 C4 20 5B C3",
+          "entry": "48 85 C9 74 2E 53 48 83 EC 20",
+          "values": {}
+        }
+      ]
+    }
+  ]
+}

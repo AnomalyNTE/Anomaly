@@ -1,0 +1,126 @@
+{
+  "schemaVersion": 2,
+  "id": "anomaly.creative-mode",
+  "name": "CreativeMode",
+  "description": "Browse GPU-rendered model previews and place furniture, roads and parked vehicles in the current world with interactive transform handles",
+  "author": "Anomaly",
+  "license": "AGPL-3.0-only",
+  "audience": "user",
+  "version": "1.0.10",
+  "entry": "plugin.dll",
+  "api": {
+    "major": 1,
+    "minMinor": 0,
+    "maxMinor": 0
+  },
+  "games": [
+    "nte"
+  ],
+  "builds": [
+    "nte-*"
+  ],
+  "loadPhase": "game-ready",
+  "services": [
+    {
+      "id": "anomaly.ui",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.window",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.input",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.ue5.ahud",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.texture",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.texture.gpu",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.localization",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.core",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.config",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.scheduler",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.profile",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.json",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.interop.signature",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.ue5.objects",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.ue5.names",
+      "minVersion": 2
+    },
+    {
+      "id": "anomaly.ue5.framework",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.nte.session",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.nte.player",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.storage",
+      "minVersion": 1
+    },
+    {
+      "id": "anomaly.ue5.build",
+      "minVersion": 1
+    }
+  ],
+  "capabilities": [
+    "ui",
+    "ui-window",
+    "ui-overlay",
+    "input",
+    "ue5-ahud",
+    "configuration",
+    "scheduler",
+    "json",
+    "memory-read",
+    "game-events",
+    "interop-signature",
+    "ue5-objects",
+    "ue5-names",
+    "nte-session-snapshot",
+    "nte-player-snapshot",
+    "ui-texture",
+    "memory-write",
+    "storage",
+    "ue5-build"
+  ]
+}
