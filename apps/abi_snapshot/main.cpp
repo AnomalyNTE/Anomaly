@@ -212,6 +212,8 @@ std::string BuildSnapshot() {
     AppendUnsigned(output, ANOMALY_FONT_SERVICE_V1_VERSION);
     output.append(",\n    \"ANOMALY_TEXTURE_SERVICE_V1_VERSION\": ");
     AppendUnsigned(output, ANOMALY_TEXTURE_SERVICE_V1_VERSION);
+    output.append(",\n    \"ANOMALY_GPU_TEXTURE_SERVICE_V1_VERSION\": ");
+    AppendUnsigned(output, ANOMALY_GPU_TEXTURE_SERVICE_V1_VERSION);
     output.append(",\n    \"ANOMALY_INPUT_SERVICE_V1_VERSION\": ");
     AppendUnsigned(output, ANOMALY_INPUT_SERVICE_V1_VERSION);
     output.append(",\n    \"ANOMALY_LOCALIZATION_SERVICE_V1_VERSION\": ");
@@ -738,6 +740,14 @@ std::string BuildSnapshot() {
         alignof(AnomalyTextureFormatV1),
         {{"ANOMALY_TEXTURE_FORMAT_V1_AUTO", ANOMALY_TEXTURE_FORMAT_V1_AUTO},
          {"ANOMALY_TEXTURE_FORMAT_V1_RGBA8", ANOMALY_TEXTURE_FORMAT_V1_RGBA8}},
+        false);
+    AppendEnum(
+        output,
+        "AnomalyGpuTextureFlagsV1",
+        sizeof(AnomalyGpuTextureFlagsV1),
+        alignof(AnomalyGpuTextureFlagsV1),
+        {{"ANOMALY_GPU_TEXTURE_V1_NONE", ANOMALY_GPU_TEXTURE_V1_NONE},
+         {"ANOMALY_GPU_TEXTURE_V1_FORCE_OPAQUE", ANOMALY_GPU_TEXTURE_V1_FORCE_OPAQUE}},
         false);
     AppendEnum(
         output,
@@ -1590,6 +1600,16 @@ std::string BuildSnapshot() {
          {"state", offsetof(AnomalyTextureServiceV1, state)},
          {"draw", offsetof(AnomalyTextureServiceV1, draw)},
          {"draw_overlay", offsetof(AnomalyTextureServiceV1, draw_overlay)}},
+        false);
+    AppendStruct(
+        output,
+        "AnomalyGpuTextureServiceV1",
+        sizeof(AnomalyGpuTextureServiceV1),
+        alignof(AnomalyGpuTextureServiceV1),
+        {{"struct_size", offsetof(AnomalyGpuTextureServiceV1, struct_size)},
+         {"service_version", offsetof(AnomalyGpuTextureServiceV1, service_version)},
+         {"user", offsetof(AnomalyGpuTextureServiceV1, user)},
+         {"request_shared_d3d12", offsetof(AnomalyGpuTextureServiceV1, request_shared_d3d12)}},
         false);
     AppendStruct(
         output,
@@ -2589,6 +2609,8 @@ std::string BuildSnapshot() {
         ANOMALY_FONT_SERVICE_V1_VERSION, "AnomalyFontServiceV1", false);
     AppendService(output, ANOMALY_TEXTURE_SERVICE_V1_ID,
         ANOMALY_TEXTURE_SERVICE_V1_VERSION, "AnomalyTextureServiceV1", false);
+    AppendService(output, ANOMALY_GPU_TEXTURE_SERVICE_V1_ID,
+        ANOMALY_GPU_TEXTURE_SERVICE_V1_VERSION, "AnomalyGpuTextureServiceV1", false);
     AppendService(output, ANOMALY_INPUT_SERVICE_V1_ID,
         ANOMALY_INPUT_SERVICE_V1_VERSION, "AnomalyInputServiceV1", false);
     AppendService(output, ANOMALY_LOCALIZATION_SERVICE_V1_ID,

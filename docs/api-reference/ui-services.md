@@ -207,7 +207,7 @@ typedef struct AnomalyUiGlassStyleV1 {
 
 ## UI 资源服务（`ui_resources.h`）
 
-以下三个资源服务与 `anomaly.input` 让插件拥有 scoped 的窗口、字体、纹理与输入，无需接触 ImGui 类型。所有 handle 绑定 generation。
+以下资源服务与 `anomaly.input` 让插件拥有 scoped 的窗口、字体、纹理与输入，无需接触 ImGui 类型。所有 handle 绑定 generation。
 
 ### `anomaly.window`
 
@@ -306,6 +306,32 @@ typedef struct AnomalyTextureServiceV1 {
 ```
 
 可从相对路径或内嵌 `encoded_bytes` 请求纹理，`draw` 在当前窗口按尺寸与 tint 绘制。`draw_overlay` 是追加的可选字段（先用 `struct_size` 确认），不需要窗口，把纹理画在所有窗口之上，适合与 `overlay_*` 搭配的 HUD。
+
+### `anomaly.texture.gpu`
+
+- **ID**：`"anomaly.texture.gpu"` · **版本** 1 · **capability** `ui-texture`
+
+```c
+typedef struct AnomalyGpuTextureServiceV1 {
+    uint32_t struct_size; uint32_t service_version; void* user;
+    AnomalyStatusV1 (ANOMALY_CALL *request_shared_d3d12)(
+        void* user, uint64_t shared_nt_handle, uint32_t width, uint32_t height,
+        uint32_t flags, AnomalyGenerationHandleV1* handle);
+} AnomalyGpuTextureServiceV1;
+// AnomalyGpuTextureFlagsV1: NONE=0, FORCE_OPAQUE=1<<0
+```
+
+导入同一适配器上的 D3D12 共享 NT 纹理句柄，不传递 UE 对象、COM 指针或 CPU 像素缓冲。
+支持单层、单 mip、单采样的 RGBA8/BGRA8 UNORM 或 TYPELESS 二维纹理；尺寸必须与请求一致。
+调用会复制借用的 NT 句柄，返回后调用方可以关闭原句柄。宿主在 Render 域打开资源并建立 SRV，
+不回读像素，不等待 GPU 完成；D3D11 后端或不兼容资源通过纹理状态报告 `FAILED`。
+
+生产者必须在宿主图形队列中保证写入先于采样，并在每次更新后将资源恢复到像素着色器可读状态。
+同一资源可持续更新，已导入的纹理句柄和 SRV 可直接复用；跨队列同步由生产者负责。
+`FORCE_OPAQUE` 将 SRV 的 alpha 分量映射为 1，适合引擎输出 alpha 为 0
+的模型预览。返回句柄属于 `anomaly.texture` 域，用其 `state` / `draw` / `release` 操作；未就绪时
+查询到 `QUEUED`。资源计入同一缓存预算，描述符和资源按提交栅栏延迟销毁，停止或重载由 Scope 撤销。
+这是独立的版本化服务，原 `AnomalyTextureServiceV1` 布局不变；使用方需要在 manifest 声明服务依赖。
 
 ### `anomaly.input`
 

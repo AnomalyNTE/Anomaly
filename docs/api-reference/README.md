@@ -127,6 +127,7 @@ void*    user;             // 调用每个函数时作为第一个参数回传
 | `anomaly.window` | 1 | `ui-window` | [window](ui-services.md#anomalywindow) |
 | `anomaly.font` | 1 | `ui-font` | [font](ui-services.md#anomalyfont) |
 | `anomaly.texture` | 1 | `ui-texture` | [texture](ui-services.md#anomalytexture) |
+| `anomaly.texture.gpu` | 1 | `ui-texture` | [texture.gpu](ui-services.md#anomalytexturegpu) |
 | `anomaly.input` | 1 | `input` | [input](ui-services.md#anomalyinput) |
 | `anomaly.ue5.build` | 1 | `ue5-build` | [ue5.build](ue5-services.md#anomalyue5build) |
 | `anomaly.ue5.ahud` | 1 | `ue5-ahud` | [ue5.ahud](ue5-services.md#anomalyue5ahud) |

@@ -11,6 +11,7 @@
 #include <backends/imgui_impl_dx12.h>
 
 #include <wrl/client.h>
+#include "shared_texture_import.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -387,13 +388,17 @@ public:
             const auto state = registry.TextureState(scope, handle);
             if (!state || state->resource.resource_id != resource_id ||
                 state->resource.state == anomaly::UiResourceState::Failed ||
-                state->request.format != anomaly::UiTextureFormat::Rgba8 ||
+                (state->request.format != anomaly::UiTextureFormat::Rgba8 &&
+                 state->request.format != anomaly::UiTextureFormat::SharedD3D12) ||
                 state->request.encoded_bytes.empty()) {
                 return;
             }
-            const std::uint64_t byte_size = state->request.encoded_bytes.size();
+            const bool shared = state->request.format == anomaly::UiTextureFormat::SharedD3D12;
+            const std::uint64_t byte_size = shared ?
+                static_cast<std::uint64_t>(state->request.width)*state->request.height*4U :
+                state->request.encoded_bytes.size();
             std::uint64_t maximum_upload_bytes{};
-            if (!EstimateTextureUploadBytes(
+            if (!shared && !EstimateTextureUploadBytes(
                     state->request, &maximum_upload_bytes, ImmediateMode())) {
                 static_cast<void>(registry.MarkTextureFailed(scope, handle));
                 return;
@@ -680,6 +685,20 @@ private:
     [[nodiscard]] bool CreateTexture(
         TextureEntry& entry, const anomaly::UiTextureRequest& request,
         const std::uint64_t maximum_upload_bytes) noexcept {
+        if (request.format == anomaly::UiTextureFormat::SharedD3D12) {
+            if (ImmediateMode() || state_.device == nullptr || !request.shared_d3d12_handle) return false;
+            DXGI_FORMAT view_format{};
+            if (FAILED(OpenSharedTexture(state_.device,request.shared_d3d12_handle.get(),
+                    request.width,request.height,entry.texture,view_format))) return false;
+            if (!state_.shader_descriptors.Allocate(&entry.cpu,&entry.gpu)) return false;
+            const auto view = SharedTextureView(view_format,
+                (request.flags & ANOMALY_GPU_TEXTURE_V1_FORCE_OPAQUE) != 0);
+            state_.device->CreateShaderResourceView(entry.texture.Get(),&view,entry.cpu);
+            entry.release_fence = state_.next_fence_value;
+            entry.upload_byte_size = 0;
+            entry.upload_fence = 0;
+            return true;
+        }
         if (request.width == 0 || request.height == 0 || request.encoded_bytes.empty() ||
             static_cast<std::uint64_t>(request.width) * request.height * 4U !=
                 request.encoded_bytes.size()) {

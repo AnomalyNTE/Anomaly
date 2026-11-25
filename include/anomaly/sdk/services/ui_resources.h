@@ -8,6 +8,8 @@
 #define ANOMALY_FONT_SERVICE_V1_VERSION 1u
 #define ANOMALY_TEXTURE_SERVICE_V1_ID "anomaly.texture"
 #define ANOMALY_TEXTURE_SERVICE_V1_VERSION 1u
+#define ANOMALY_GPU_TEXTURE_SERVICE_V1_ID "anomaly.texture.gpu"
+#define ANOMALY_GPU_TEXTURE_SERVICE_V1_VERSION 1u
 #define ANOMALY_INPUT_SERVICE_V1_ID "anomaly.input"
 #define ANOMALY_INPUT_SERVICE_V1_VERSION 1u
 
@@ -222,6 +224,27 @@ typedef struct AnomalyTextureServiceV1 {
         void* user, AnomalyGenerationHandleV1 handle, float x, float y, float width,
         float height, uint32_t tint_rgba);
 } AnomalyTextureServiceV1;
+
+// Imports a shader-readable D3D12 texture on the current graphics
+// adapter. No pixels cross the CPU and no GPU completion wait is performed.
+// The producer must order writes before sampling on the host graphics queue,
+// restoring the pixel-shader-readable state after every update. Cross-queue
+// synchronization is the producer's responsibility. The Host duplicates the borrowed NT handle
+// during this call, owns the imported texture until release, and retires GPU
+// descriptors behind the submission fence. The returned handle belongs to the
+// anomaly.texture domain: use that service's state/draw/release functions.
+typedef struct AnomalyGpuTextureServiceV1 {
+    uint32_t struct_size;
+    uint32_t service_version;
+    void* user;
+    AnomalyStatusV1 (ANOMALY_CALL *request_shared_d3d12)(
+        void* user, uint64_t shared_nt_handle, uint32_t width, uint32_t height, uint32_t flags,
+        AnomalyGenerationHandleV1* handle);
+} AnomalyGpuTextureServiceV1;
+typedef enum AnomalyGpuTextureFlagsV1 {
+    ANOMALY_GPU_TEXTURE_V1_NONE = 0,
+    ANOMALY_GPU_TEXTURE_V1_FORCE_OPAQUE = 1u << 0u
+} AnomalyGpuTextureFlagsV1;
 
 typedef struct AnomalyInputServiceV1 {
     uint32_t struct_size;

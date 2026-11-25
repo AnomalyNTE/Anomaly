@@ -57,7 +57,8 @@ bool ValidGlyphRange(const UiGlyphRange range) noexcept {
 }
 
 bool ValidTextureFormat(const UiTextureFormat format) noexcept {
-    return format == UiTextureFormat::Auto || format == UiTextureFormat::Rgba8;
+    return format == UiTextureFormat::Auto || format == UiTextureFormat::Rgba8 ||
+        format == UiTextureFormat::SharedD3D12;
 }
 
 bool ValidWindowRequest(const UiWindowRequest& request) noexcept {
@@ -77,6 +78,10 @@ bool ValidFontRequest(const UiFontRequest& request) noexcept {
 }
 
 bool ValidTextureRequest(const UiTextureRequest& request) noexcept {
+    if (request.format == UiTextureFormat::SharedD3D12) {
+        return request.shared_d3d12_handle && request.relative_path.empty() &&
+            request.encoded_bytes.size() == 16 && request.width > 0 && request.height > 0;
+    }
     return HasOptionalText(request.relative_path) &&
         (!request.relative_path.empty() || !request.encoded_bytes.empty()) &&
         ValidTextureFormat(request.format);
@@ -924,7 +929,9 @@ public:
         const auto snapshot = SnapshotLocked(lease->second, handle);
         if (!snapshot) return std::nullopt;
         return UiTextureSnapshot{*snapshot, resource->second.texture,
-            resource->second.texture.encoded_bytes.size(), resource->second.texture_width,
+            resource->second.texture.format == UiTextureFormat::SharedD3D12 ?
+                static_cast<std::size_t>(resource->second.texture.width)*resource->second.texture.height*4U :
+                resource->second.texture.encoded_bytes.size(), resource->second.texture_width,
             resource->second.texture_height};
     }
 

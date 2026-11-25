@@ -64,6 +64,7 @@ enum class UiGlyphRange : std::uint32_t {
 enum class UiTextureFormat : std::uint32_t {
     Auto = 0,
     Rgba8 = 1,
+    SharedD3D12 = 2,
 };
 
 struct UiWindowConstraints final {
@@ -141,6 +142,9 @@ struct UiTextureRequest final {
     UiTextureFormat format{UiTextureFormat::Auto};
     std::uint32_t width{};
     std::uint32_t height{};
+    // Host-owned duplicate of a shared NT handle. The opaque ownership type
+    // keeps this registry independent of D3D and game-specific objects.
+    std::shared_ptr<void> shared_d3d12_handle;
 };
 
 struct UiResourceSnapshot final {

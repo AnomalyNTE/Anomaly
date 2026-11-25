@@ -1619,6 +1619,8 @@ struct PluginServiceContext {
     AnomalyWindowServiceV1 window{};
     AnomalyFontServiceV1 font{};
     AnomalyTextureServiceV1 texture{};
+    AnomalyGpuTextureServiceV1 gpu_texture{};
+    std::atomic<std::uint64_t> next_gpu_texture_identity{1};
     AnomalyInputServiceV1 input_service{};
     std::shared_ptr<AhudProxyState> ahud_state;
     AnomalyUe5AhudServiceV1 ahud{};
@@ -3128,6 +3130,40 @@ AnomalyStatusV1 ANOMALY_CALL RequestTextureV1(
     });
 }
 
+AnomalyStatusV1 ANOMALY_CALL RequestSharedGpuTextureV1(
+    void* user, const std::uint64_t shared_nt_handle, const std::uint32_t width,
+    const std::uint32_t height, const std::uint32_t flags, AnomalyGenerationHandleV1* handle) {
+    if (handle == nullptr) return StatusV1(ANOMALY_STATUS_V1_INVALID_ARGUMENT, "texture handle is null");
+    *handle = {};
+    if (shared_nt_handle == 0 || shared_nt_handle == UINT64_MAX || width == 0 || height == 0 ||
+        width > anomaly::kDefaultUiResourceImageDimensionLimit ||
+        height > anomaly::kDefaultUiResourceImageDimensionLimit ||
+        (flags & ~ANOMALY_GPU_TEXTURE_V1_FORCE_OPAQUE) != 0 ||
+        static_cast<std::uint64_t>(width) * height * 4U > anomaly::kDefaultUiResourceDecodedByteLimit) {
+        return StatusV1(ANOMALY_STATUS_V1_INVALID_ARGUMENT, "shared GPU texture request is invalid");
+    }
+    return InvokeUiResourceService(user, [&](PluginServiceContext& context) {
+        HANDLE duplicate{};
+        if (!DuplicateHandle(GetCurrentProcess(), reinterpret_cast<HANDLE>(shared_nt_handle),
+                GetCurrentProcess(), &duplicate, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
+            return StatusV1(ANOMALY_STATUS_V1_INVALID_ARGUMENT, "shared GPU texture handle is invalid");
+        }
+        anomaly::UiTextureRequest request;
+        request.shared_d3d12_handle = std::shared_ptr<void>(duplicate, [](void* value) { CloseHandle(value); });
+        request.format = anomaly::UiTextureFormat::SharedD3D12;
+        request.width = width; request.height = height; request.flags = flags;
+        const std::array<std::uint64_t,2> identity{
+            reinterpret_cast<std::uint64_t>(duplicate),
+            context.next_gpu_texture_identity.fetch_add(1,std::memory_order_relaxed)};
+        const auto* bytes = reinterpret_cast<const std::uint8_t*>(identity.data());
+        request.encoded_bytes.assign(bytes,bytes+sizeof(identity));
+        const auto resource = context.ui_resources->RequestTexture(context.scope,std::move(request));
+        if (!resource) return StatusV1(ANOMALY_STATUS_V1_UNAVAILABLE, "shared GPU texture request was rejected");
+        *handle = GenerationHandle(context,resource);
+        return StatusV1(ANOMALY_STATUS_V1_OK);
+    });
+}
+
 AnomalyStatusV1 ANOMALY_CALL ReleaseTextureV1(
     void* user, const AnomalyGenerationHandleV1 handle) {
     return InvokeUiResourceService(user, [&](PluginServiceContext& context) {
@@ -3781,6 +3817,11 @@ AnomalyStatusV1 ANOMALY_CALL QueryServiceV1(
     if (id == ANOMALY_TEXTURE_SERVICE_V1_ID &&
         minimum_version <= context->texture.service_version) {
         *service = &context->texture;
+        return StatusV1(ANOMALY_STATUS_V1_OK);
+    }
+    if (id == ANOMALY_GPU_TEXTURE_SERVICE_V1_ID &&
+        minimum_version <= context->gpu_texture.service_version) {
+        *service = &context->gpu_texture;
         return StatusV1(ANOMALY_STATUS_V1_OK);
     }
     if (id == ANOMALY_INPUT_SERVICE_V1_ID &&
@@ -4732,6 +4773,9 @@ bool PluginManager::Activate(LoadedPlugin& plugin) {
         &plugin.service_context,
         RequestTextureV1, ReleaseTextureV1, TextureStateV1, DrawTextureV1,
         DrawTextureOverlayV1};
+    plugin.service_context.gpu_texture = {
+        sizeof(AnomalyGpuTextureServiceV1), ANOMALY_GPU_TEXTURE_SERVICE_V1_VERSION,
+        &plugin.service_context, RequestSharedGpuTextureV1};
     plugin.service_context.input_service = {
         sizeof(AnomalyInputServiceV1), ANOMALY_INPUT_SERVICE_V1_VERSION,
         &plugin.service_context,
@@ -6709,6 +6753,8 @@ PluginRuntimeDiagnosticsSnapshot PluginManager::DiagnosticsSnapshot() const {
                     plugin.service_context.font.service_version, true},
                 ServiceCandidate{ANOMALY_TEXTURE_SERVICE_V1_ID,
                     plugin.service_context.texture.service_version, true},
+                ServiceCandidate{ANOMALY_GPU_TEXTURE_SERVICE_V1_ID,
+                    plugin.service_context.gpu_texture.service_version, true},
                 ServiceCandidate{ANOMALY_INPUT_SERVICE_V1_ID,
                     plugin.service_context.input_service.service_version, true},
             };
