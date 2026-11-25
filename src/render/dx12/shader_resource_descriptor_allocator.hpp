@@ -13,7 +13,10 @@ namespace ue5mem::embedded {
 // The ImGui DX12 backend consumes the first allocation for its font atlas.
 // Keeping every UI SRV in this one shader-visible heap lets future host-owned
 // textures use their GPU descriptor handles as ImTextureID values.
-inline constexpr UINT kEmbeddedShaderResourceDescriptorCapacity = 128;
+// The heap is shared by every plugin. A shop catalog alone can hold more than
+// 128 icons, so leave room for the model browser's 64 previews and in-flight
+// replacements while keeping descriptor allocation bounded.
+inline constexpr UINT kEmbeddedShaderResourceDescriptorCapacity = 512;
 
 class ShaderResourceDescriptorAllocator final {
 public:
