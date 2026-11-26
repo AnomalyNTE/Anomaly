@@ -54,7 +54,8 @@ public:
         };
         convert_ = reinterpret_cast<MapToWorld>(symbol("MapClickToWorld"));
         map_data_ = reinterpret_cast<ReadMapData>(symbol("BigMapData"));
-        map_extent_ = reinterpret_cast<ReadVector>(symbol("BigMapExtent"));
+        const auto extent = anomaly::sdk::ResolveProfileSymbol(signatures.get(), engine.core, profile, "BigMapExtent");
+        map_extent_ = reinterpret_cast<ReadVector>(extent.address);
         map_center_ = reinterpret_cast<ReadVector>(symbol("BigMapCenter"));
         layout_valid_ = symbol("BigMapLayout") != 0;
         level_offset_ = profile.Value("ClickMapLevel", 0x2000);
@@ -62,9 +63,13 @@ public:
         floor_area_offset_ = profile.Value("ClickMapFloorArea", 0x2000);
         floor_offset_ = profile.Value("ClickMapFloor", 0x2000);
         bounds_offset_ = profile.Value("ClickMapBounds", 0x100);
-        data_slot_ = profile.Value("ClickMapDataSlot", 0x1000);
-        extent_slot_ = profile.Value("ClickMapExtentSlot", 0x1000);
-        center_slot_ = profile.Value("ClickMapCenterSlot", 0x1000);
+        if (extent.candidate) {
+            anomaly::sdk::Profile layout;
+            layout.layout = extent.candidate->values;
+            data_slot_ = layout.Value("ClickMapDataSlot", 0x1000, sizeof(uintptr_t));
+            extent_slot_ = layout.Value("ClickMapExtentSlot", 0x1000, sizeof(uintptr_t));
+            center_slot_ = layout.Value("ClickMapCenterSlot", 0x1000, sizeof(uintptr_t));
+        }
     }
 
     AnomalyStatusV1 Detach() noexcept {

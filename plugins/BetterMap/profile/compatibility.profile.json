@@ -35,9 +35,6 @@
     "ClickMapFloorArea": 4520,
     "ClickMapFloor": 4528,
     "ClickMapBounds": 80,
-    "ClickMapDataSlot": 2280,
-    "ClickMapExtentSlot": 2160,
-    "ClickMapCenterSlot": 2120,
     "PinDialogTagOffset": 384,
     "MapIconRowSize": 816,
     "MapIconImageSize": 120
@@ -132,7 +129,12 @@
         {
           "pattern": "40 53 48 83 EC 20 48 8B 01 48 8B DA FF 90 F8 08 00 00 48 8B C3 48 83 C4 20 5B C3",
           "entry": "40 53 48 83 EC 20 48 8B 01 48 8B DA FF 90 F8 08 00 00",
-          "values": {}
+          "values": {"ClickMapDataSlot": 2280, "ClickMapExtentSlot": 2160, "ClickMapCenterSlot": 2120}
+        },
+        {
+          "pattern": "40 53 48 83 EC 20 48 8B 01 48 8B DA FF 90 00 09 00 00 48 8B C3 48 83 C4 20 5B C3",
+          "entry": "40 53 48 83 EC 20 48 8B 01 48 8B DA FF 90 00 09 00 00",
+          "values": {"ClickMapDataSlot": 2288, "ClickMapExtentSlot": 2168, "ClickMapCenterSlot": 2128}
         }
       ]
     },

@@ -15,7 +15,7 @@ using namespace anomaly::sdk;
 using Clock = std::chrono::steady_clock;
 constexpr auto Id = "b1ank.better-map";
 constexpr auto Title = "Better Map";
-constexpr auto Version = "0.1.19";
+constexpr auto Version = "0.1.20";
 
 enum class Status { Idle, Waiting, Unavailable, Ready, Incomplete };
 
