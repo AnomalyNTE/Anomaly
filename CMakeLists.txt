@@ -613,6 +613,8 @@ add_library(anomaly_adapter_services STATIC
     src/game/ue5/adapter_service_registry.cpp
     src/game/ue5/ue5_assets.cpp
     src/game/ue5/ue5_pak.cpp
+    src/game/ue5/ue5_cooked_properties.cpp
+    src/game/ue5/ue5_cooked_schema.cpp
     src/game/ue5/ue5_mod_compatibility.cpp
     src/game/ue5/ue5_object_lookup.cpp
     src/game/ue5/ue5_process_event.cpp
@@ -621,6 +623,7 @@ add_library(anomaly_adapter_services STATIC
     src/game/ue5/ue5_damage_function_hook.cpp
     src/game/ue5/ue5_nte_adapter.cpp
     src/game/nte/nte_navigation_input_policy.cpp
+    src/game/nte/nte_mod_compatibility.cpp
     src/game/nte/nte_ui_buttons.cpp
     src/game/ue5/game_tick_hook.cpp
     src/game/ue5/ue5_streaming_source_override.cpp

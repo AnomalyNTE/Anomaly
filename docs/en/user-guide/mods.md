@@ -171,6 +171,16 @@ Unreadable formats, inseparable new dependencies and unsupported optional packag
 A refused replacement keeps its previous mount, and other containers continue. Synchronization errors identify
 the failed container and the reason. This inspection covers supported Zen package formats;
 legacy standalone pak files keep their existing path, and schema compatibility does not guarantee script behavior.
+Inherited Blueprint, struct and enum definitions are checked even when the mod does not include them.
+For verified native vehicle property insertions, the Runtime validates the complete default-value stream
+and remaps old property indices into a separate container. Original mod files, Blueprint bytecode and
+property values are preserved; defaults already using the current layout are left unchanged.
+Conversion runs only during Worker mount preflight, with no Tick or Present work. Re-enabling an unchanged
+disk container reuses a session cache; source files, game baselines, resolution order or cache-file changes invalidate it.
+If mounted base and patch layers disagree on a dependency's serialized layout, the mod child's cooked
+layout cannot be established and the current game child package is retained. Models and materials can
+still be replaced, while custom logic in retained Blueprints falls back to the game version.
+Unsupported or ambiguous vehicle defaults also use this package-level fallback.
 
 Unmount drains async package loading on the Game thread, then removes the source before its compatibility
 container. Partial failures retain ownership for cleanup on a later pass and block new replacement mounts.

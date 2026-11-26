@@ -1,4 +1,5 @@
 #include "anomaly/ue5_mod_compatibility.hpp"
+#include "anomaly/ue5_cooked_properties.hpp"
 #include "anomaly/memory_files.hpp"
 
 #include <Windows.h>
@@ -579,6 +580,63 @@ Schema ReadSchema(const Package& p, std::size_t index) {
     return out;
 }
 
+std::string ScriptName(const Package::TypeReference& reference, const ScriptNames& scripts) {
+    if (!reference.identity.starts_with("script:")) return {};
+    const auto found = scripts.find(std::stoull(reference.identity.substr(7)));
+    return found == scripts.end() ? std::string{} : found->second;
+}
+Ue5CookedType CookedType(const Field& field, const ScriptNames& scripts) {
+    Ue5CookedType type{field.type};
+    if (type.kind == "ClassProperty") type.kind = "ObjectProperty";
+    else if (type.kind == "SoftClassProperty") type.kind = "SoftObjectProperty";
+    else if (type.kind == "MulticastInlineDelegateProperty" || type.kind == "MulticastSparseDelegateProperty") type.kind = "MulticastDelegateProperty";
+    else if (type.kind == "ByteProperty" && !field.references.empty() && field.references[0].identity != "null") {
+        type.kind = "EnumProperty"; type.enum_size = 1;
+    }
+    if (type.kind == "StructProperty") {
+        if (field.references.size() != 1) throw Invalid("invalid cooked struct declaration");
+        const auto name = ScriptName(field.references[0], scripts);
+        if (name.empty()) throw Invalid("user-defined cooked struct requires a separate migration contract");
+        type.structure = name.substr(name.find_last_of('/') + 1);
+    } else if (field.type == "EnumProperty") {
+        if (field.inner.size() != 1) throw Invalid("invalid cooked enum declaration");
+        const auto& t = field.inner[0].type;
+        type.enum_size = t == "ByteProperty" || t == "Int8Property" ? 1 : t == "UInt16Property" || t == "Int16Property" ? 2 :
+            t == "IntProperty" || t == "UInt32Property" ? 4 : t == "Int64Property" || t == "UInt64Property" ? 8 : 0;
+        if (!type.enum_size) throw Invalid("invalid cooked enum underlying type");
+    } else for (const auto& inner : field.inner) type.inner.push_back(CookedType(inner, scripts));
+    return type;
+}
+void RewriteDefaults(Package& package, const std::map<std::size_t, Bytes>& replacements) {
+    // Zen offsets are relative to the export-data start. Keep all gaps, native
+    // class records, functions and script bytecode exactly as supplied by the mod.
+    std::vector<std::size_t> order;
+    for (std::size_t i{}; i < package.exports.size(); ++i) order.push_back(i);
+    std::sort(order.begin(), order.end(), [&](auto a, auto b) {
+        const auto& x = package.exports[a]; const auto& y = package.exports[b];
+        return x.offset == y.offset ? x.size < y.size : x.offset < y.offset;
+    });
+    Bytes output(package.bytes.begin(), package.bytes.begin() + package.header);
+    std::size_t cursor = package.header;
+    const auto export_map = Reader{package.bytes}.At<std::uint32_t>(32);
+    for (const auto index : order) {
+        auto& e = package.exports[index];
+        const auto start = package.header + static_cast<std::size_t>(e.offset);
+        const auto end = start + static_cast<std::size_t>(e.size);
+        if (start < cursor || end > package.bytes.size()) throw Invalid("overlapping cooked exports cannot be migrated");
+        Append(output, std::span(package.bytes).subspan(cursor, start - cursor));
+        e.offset = output.size() - package.header;
+        if (const auto replacement = replacements.find(index); replacement != replacements.end()) {
+            Append(output, replacement->second); e.size = replacement->second.size();
+        } else Append(output, std::span(package.bytes).subspan(start, end - start));
+        Put(output, export_map + index * 72, e.offset);
+        Put(output, export_map + index * 72 + 8, e.size);
+        cursor = end;
+    }
+    Append(output, std::span(package.bytes).subspan(cursor));
+    package.bytes = std::move(output);
+}
+
 std::vector<std::string> EnumNames(const Package& p, std::size_t index) {
     const auto bytes = p.Data(index);
     unsigned matches{};
@@ -735,6 +793,34 @@ std::filesystem::path WriteOverlay(const std::filesystem::path& candidate,
 } // namespace
 
 struct Ue5ModCompatibility::Impl {
+    struct FileState {
+        std::filesystem::path path;
+        std::uint64_t stamp{}, size{};
+        bool exists{};
+        bool operator==(const FileState&) const = default;
+    };
+    static FileState State(const std::filesystem::path& path) {
+        WIN32_FILE_ATTRIBUTE_DATA attributes{};
+        FileState state{path};
+        if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &attributes)) {
+            const auto error = GetLastError();
+            if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND)
+                throw Invalid("cannot inspect cooked compatibility input");
+            return state;
+        }
+        state.exists = true;
+        state.stamp = std::uint64_t(attributes.ftLastWriteTime.dwHighDateTime) << 32 | attributes.ftLastWriteTime.dwLowDateTime;
+        state.size = std::uint64_t(attributes.nFileSizeHigh) << 32 | attributes.nFileSizeLow;
+        return state;
+    }
+    struct Prepared {
+        std::vector<std::filesystem::path> official;
+        std::filesystem::path directory;
+        std::vector<FileState> files;
+        bool migration_provider{};
+        Ue5ModCompatibilityPlan plan;
+    };
+    std::map<std::filesystem::path, Prepared> prepared;
     struct Cached {
         std::filesystem::file_time_type stamp;
         std::uintmax_t size{};
@@ -749,11 +835,14 @@ struct Ue5ModCompatibility::Impl {
         auto value = std::make_shared<Container>(path, codecs);
         official.insert_or_assign(path, Cached{stamp, size, value}); return value;
     }
+    Ue5ModCompatibilityPlan Run(const std::filesystem::path& candidate,
+        const std::vector<std::filesystem::path>& official_containers,
+        const std::filesystem::path& output_directory, const Ue5ContainerCodecs& codecs);
 };
 Ue5ModCompatibility::Ue5ModCompatibility() : impl_(std::make_unique<Impl>()) {}
 Ue5ModCompatibility::~Ue5ModCompatibility() = default;
 
-Ue5ModCompatibilityPlan Ue5ModCompatibility::Prepare(const std::filesystem::path& candidate,
+Ue5ModCompatibilityPlan Ue5ModCompatibility::Impl::Run(const std::filesystem::path& candidate,
     const std::vector<std::filesystem::path>& official_containers, const std::filesystem::path& output_directory,
     const Ue5ContainerCodecs& codecs) {
     auto toc = candidate; toc.replace_extension(L".utoc");
@@ -769,11 +858,11 @@ Ue5ModCompatibilityPlan Ue5ModCompatibility::Prepare(const std::filesystem::path
         auto original = path; original.replace_extension(L".utoc");
         if (!std::filesystem::is_regular_file(original)) continue;
         inspected_baseline = true;
-        const auto container = impl_->Get(original, codecs);
+        const auto container = Get(original, codecs);
         baseline_containers.push_back(container);
         const auto global = original.parent_path() / L"global.utoc";
         if (script_tables.insert(global).second && std::filesystem::is_regular_file(global)) {
-            const auto names = ReadScriptNames(*impl_->Get(global, codecs), codecs);
+            const auto names = ReadScriptNames(*Get(global, codecs), codecs);
             scripts.insert(names.begin(), names.end());
         }
         for (const auto& [id, index] : container->packages) {
@@ -810,21 +899,138 @@ Ue5ModCompatibilityPlan Ue5ModCompatibility::Prepare(const std::filesystem::path
     const auto base_package = [&](const std::uint64_t id) -> Package& {
         auto [found, inserted] = base_type_packages.try_emplace(id);
         static_cast<void>(inserted);
-        if (!found->second) found->second = std::make_unique<Package>(*base.at(id), id, codecs, true);
+        if (!found->second) {
+            if (!base.contains(id)) {
+                for (const auto& container : baseline_containers) if (container->packages.contains(id)) {
+                    base.emplace(id, container); break;
+                }
+            }
+            if (!base.contains(id)) throw Invalid("game dependency package unavailable: " + std::to_string(id));
+            found->second = std::make_unique<Package>(*base.at(id), id, codecs, true);
+        }
         return *found->second;
     };
 
     std::set<std::uint64_t> retain;
+    std::set<std::string> checked_defaults;
+    std::set<std::uint64_t> checked_packages;
+    std::set<std::uint64_t> migrated;
+    const auto migration = codecs.property_migration ? codecs.property_migration() : nullptr;
+    if (migration) for (const auto& [id, package] : classes) {
+        std::map<std::size_t, Bytes> replacements;
+        std::vector<std::string> checked;
+        bool failed{};
+        for (const auto& [index, kind] : package->Definitions(scripts)) {
+            if (kind != DefinitionKind::Struct) continue;
+            try {
+                std::vector<Field> fields;
+                std::set<std::string> ancestry;
+                auto* owner = package.get(); auto declaration = index;
+                bool vehicle{};
+                for (unsigned depth{}; depth < 32; ++depth) {
+                    if (!ancestry.insert(owner->Identity(declaration)).second) throw Invalid("cyclic cooked class inheritance");
+                    const auto schema = ReadSchema(*owner, declaration);
+                    fields.insert(fields.end(), schema.fields.begin(), schema.fields.end());
+                    if (!schema.parent.package_id) {
+                        vehicle = ScriptName(schema.parent, scripts) == migration->native_path;
+                        break;
+                    }
+                    owner = mod.packages.contains(schema.parent.package_id) ? &mod_package(schema.parent.package_id) : &base_package(schema.parent.package_id);
+                    const auto parent = owner->FindExport(schema.parent);
+                    if (!parent) throw Invalid("cooked class parent unavailable");
+                    declaration = *parent;
+                }
+                if (!vehicle) continue;
+                if (!(Reader{package->bytes}.At<std::uint32_t>(16) & 0x2000u))
+                    throw Invalid("vehicle index migration requires unversioned properties");
+                std::vector<Ue5CookedProperty> prefix;
+                for (const auto& field : fields) if (!field.serialized_flags) {
+                    const auto type = CookedType(field, scripts);
+                    for (std::uint32_t i{}; i < field.dimension; ++i) prefix.push_back({field.name, i, type});
+                }
+                unsigned defaults{};
+                for (std::size_t e{}; e < package->exports.size(); ++e) if (package->exports[e].type == index) {
+                    // Serialized actor instances have another tail/native serialization
+                    // contract. Keep the existing package fallback until it is verified.
+                    if (!(package->exports[e].flags & 0x10u)) throw Invalid("non-default vehicle export requires its own migration contract");
+                    ++defaults;
+                    auto result = MigrateUe5CookedDefault(package->Data(e), prefix, *migration,
+                        package->names.size(), package->imports.size(), package->exports.size());
+                    if (!result.compatible) throw Invalid("vehicle defaults have an unsupported or ambiguous cooked layout");
+                    if (!result.converted.empty()) replacements.emplace(e, std::move(result.converted));
+                }
+                if (defaults != 1) throw Invalid("vehicle class must have one cooked default export");
+                checked.push_back(package->Identity(index));
+            } catch (const Invalid&) { failed = true; break; }
+        }
+        if (failed) { retain.insert(id); continue; }
+        if (!replacements.empty()) {
+            RewriteDefaults(*package, replacements);
+            migrated.insert(id);
+        }
+        checked_defaults.insert(checked.begin(), checked.end());
+        if (!checked.empty()) checked_packages.insert(id);
+    }
     std::set<std::uint64_t> incompatible_type_packages;
     std::set<std::string> active_schemas;
+    std::set<std::string> unstable_baselines;
+    std::function<bool(const Package::TypeReference&, DefinitionKind)> baseline_stable;
+    std::function<bool(const Field&)> baseline_field_stable;
     std::function<bool(const Package&, std::size_t, const Package&, std::size_t)> schema_compatible;
-    std::function<bool(const Package::TypeReference&, const Package::TypeReference&, DefinitionKind)> definition_compatible;
+    std::function<bool(const Package::TypeReference&, const Package::TypeReference&, DefinitionKind, bool)> definition_compatible;
     std::function<bool(const Field&, const Field&)> field_compatible;
 
+    baseline_field_stable = [&](const Field& field) {
+        for (const auto& definition : field.definitions)
+            if (!baseline_stable(definition.type, definition.kind)) return false;
+        return std::all_of(field.inner.begin(), field.inner.end(), baseline_field_stable);
+    };
+    baseline_stable = [&](const Package::TypeReference& reference, const DefinitionKind kind) {
+        if (!reference.package_id) return true; // Native types have no cooked declaration.
+        const auto key = "baseline:" + reference.identity + ":" + std::to_string(static_cast<unsigned>(kind));
+        if (unstable_baselines.contains(key)) return false;
+        if (active_schemas.contains(key)) return true;
+        active_schemas.insert(key);
+        bool compatible = true;
+        std::optional<Schema> schema;
+        std::optional<std::vector<std::string>> enumerators;
+        std::set<const Container*> inspected;
+        for (const auto& container : baseline_containers) {
+            if (!container->packages.contains(reference.package_id) || !inspected.insert(container.get()).second) continue;
+            Package package(*container, reference.package_id, codecs, true);
+            const auto index = package.FindExport(reference);
+            if (!index) { compatible = false; break; }
+            if (kind == DefinitionKind::Enum) {
+                auto names = EnumNames(package, *index);
+                if (enumerators && *enumerators != names) { compatible = false; break; }
+                enumerators = std::move(names);
+            } else {
+                auto declaration = ReadSchema(package, *index);
+                if (schema && *schema != declaration) { compatible = false; break; }
+                schema = std::move(declaration);
+            }
+        }
+        // Unversioned defaults in a mod child also contain inherited properties. A
+        // changed game parent need not be shipped by the mod to shift those indices.
+        // Cooked children do not identify which parent schema they were built against;
+        // retain the current game child when the mounted base/patch layers disagree.
+        if (compatible && !schema && !enumerators) throw Invalid("game dependency schema unavailable: " + reference.identity);
+        if (compatible && schema) {
+            compatible = baseline_stable(schema->parent, DefinitionKind::Struct) &&
+                std::all_of(schema->fields.begin(), schema->fields.end(), baseline_field_stable);
+        }
+        active_schemas.erase(key);
+        // A recursive edge can only provisionally succeed while its owner is active.
+        // Cache failures, so a later failure in that owner also reaches other children.
+        if (!compatible) unstable_baselines.insert(key);
+        return compatible;
+    };
     definition_compatible = [&](const Package::TypeReference& before, const Package::TypeReference& after,
-                                const DefinitionKind kind) {
+                                const DefinitionKind kind, const bool inherited_defaults_checked) {
         if (before.identity != after.identity) return false;
-        if (!after.package_id || !mod.packages.contains(after.package_id) || !base.contains(before.package_id)) return true;
+        if (!after.package_id) return true;
+        if (!mod.packages.contains(after.package_id)) return inherited_defaults_checked || baseline_stable(after, kind);
+        if (!base.contains(before.package_id)) return true;
         auto& old_package = base_package(before.package_id);
         auto& new_package = mod_package(after.package_id);
         const auto old_index = old_package.FindExport(before);
@@ -851,7 +1057,7 @@ Ue5ModCompatibilityPlan Ue5ModCompatibility::Prepare(const std::filesystem::path
             const auto& old_definition = before.definitions[i];
             const auto& new_definition = after.definitions[i];
             if (old_definition.kind != new_definition.kind ||
-                !definition_compatible(old_definition.type, new_definition.type, new_definition.kind)) return false;
+                !definition_compatible(old_definition.type, new_definition.type, new_definition.kind, false)) return false;
         }
         for (std::size_t i{}; i < before.inner.size(); ++i)
             if (!field_compatible(before.inner[i], after.inner[i])) return false;
@@ -865,7 +1071,8 @@ Ue5ModCompatibilityPlan Ue5ModCompatibility::Prepare(const std::filesystem::path
         const auto before = ReadSchema(before_package, before_index);
         const auto after = ReadSchema(after_package, after_index);
         bool compatible = before == after;
-        if (compatible) compatible = definition_compatible(before.parent, after.parent, DefinitionKind::Struct);
+        if (compatible) compatible = definition_compatible(before.parent, after.parent, DefinitionKind::Struct,
+            checked_defaults.contains(after_package.Identity(after_index)));
         if (compatible) {
             for (std::size_t i{}; i < before.fields.size(); ++i) {
                 if (!field_compatible(before.fields[i], after.fields[i])) { compatible = false; break; }
@@ -901,7 +1108,13 @@ Ue5ModCompatibilityPlan Ue5ModCompatibility::Prepare(const std::filesystem::path
         if (!compatible) retain.insert(id);
     }
     retain.insert(incompatible_type_packages.begin(), incompatible_type_packages.end());
-    if (retain.empty()) return {};
+    // An uninspected asset importing a converted vehicle may contain a serialized
+    // instance of that class. Its bytes must follow the same verified contract.
+    for (const auto id : migrated) for (const auto& [dependent, store] : mod.store)
+        if (dependent != id && std::find(store.imports.begin(), store.imports.end(), id) != store.imports.end()) {
+            if (!checked_packages.contains(dependent)) retain.insert(id);
+        }
+    if (retain.empty() && migrated.empty()) return {};
     // A mod child cooked against the rejected parent must not be paired with the
     // game's parent. Retain its baseline too; new dependent packages cannot be
     // safely separated and cause a pre-mount refusal instead of a loader fatal.
@@ -919,6 +1132,7 @@ Ue5ModCompatibilityPlan Ue5ModCompatibility::Prepare(const std::filesystem::path
     Ue5ModCompatibilityPlan plan;
     std::size_t retained_storage{};
     for (const auto id : retain) {
+        if (!base.contains(id)) throw Invalid("cannot retain a mod-only vehicle package with unsupported defaults");
         const auto& container = *base.at(id);
         if (container.optional_packages.contains(id) || mod.optional_packages.contains(id))
             throw Invalid("cannot retain a schema with optional package segments");
@@ -934,6 +1148,19 @@ Ue5ModCompatibilityPlan Ue5ModCompatibility::Prepare(const std::filesystem::path
         plan.retained_packages.push_back(package.name);
         retained.push_back({id, std::move(package.bytes), container.store.at(id), std::move(package.name)});
     }
+    for (const auto id : migrated) if (!retain.contains(id)) {
+        auto& package = *classes.at(id);
+        if (mod.optional_packages.contains(id)) throw Invalid("cannot migrate optional package segments");
+        const auto& store = mod.store.at(id);
+        const auto store_bytes = store.shaders.size() + store.imports.size() * sizeof(std::uint64_t);
+        if (package.bytes.size() > MaxOverlayBytes - retained_storage ||
+            store_bytes > MaxOverlayBytes - retained_storage - package.bytes.size())
+            throw Invalid("converted cooked packages exceed memory budget");
+        retained_storage += package.bytes.size() + store_bytes;
+        plan.converted_packages.push_back(package.name);
+        retained.push_back({id, std::move(package.bytes), store, std::move(package.name)});
+    }
+    if (retained.empty()) return {};
     // A retained package must not read mod bulk bytes with the original offsets or sizes.
     // Resolve every colliding chunk against the mounted baseline in the engine's read order.
     for (const auto& chunk : mod.chunks) {
@@ -953,6 +1180,51 @@ Ue5ModCompatibilityPlan Ue5ModCompatibility::Prepare(const std::filesystem::path
         if (!found) throw Invalid("retained package has mod-only bulk data that cannot be masked");
     }
     plan.overlay = WriteOverlay(candidate, output_directory, retained, bulk, plan.memory_files);
+    return plan;
+}
+
+Ue5ModCompatibilityPlan Ue5ModCompatibility::Prepare(const std::filesystem::path& candidate,
+    const std::vector<std::filesystem::path>& official_containers, const std::filesystem::path& output_directory,
+    const Ue5ContainerCodecs& codecs) {
+    // .anomod registrations belong to a mount generation. Do not pin their memory
+    // or file names in a session cache after that generation is released.
+    if (FindMemoryFile(candidate)) return impl_->Run(candidate, official_containers, output_directory, codecs);
+    const auto cached = impl_->prepared.find(candidate);
+    if (cached != impl_->prepared.end()) {
+        const auto& value = cached->second;
+        if (value.official == official_containers && value.directory == output_directory &&
+            value.migration_provider == bool(codecs.property_migration) &&
+            std::all_of(value.files.begin(), value.files.end(), [](const auto& file) { return Impl::State(file.path) == file; }))
+            return value.plan;
+        impl_->prepared.erase(cached);
+    }
+    std::set<std::filesystem::path> inputs;
+    const auto container = [&](std::filesystem::path path) {
+        path.replace_extension(L".utoc"); inputs.insert(path);
+        if (!std::filesystem::is_regular_file(path)) return true;
+        // Partitioned inputs stay uncached until all of their partition stamps can
+        // be tracked. The current single-partition contract never hashes meshes.
+        if (Reader{Range(path, 0, 56)}.At<std::uint32_t>(52) != 1) return false;
+        path.replace_extension(L".ucas"); inputs.insert(path);
+        path.replace_extension(L".pak"); inputs.insert(path);
+        return true;
+    };
+    if (!container(candidate)) return impl_->Run(candidate, official_containers, output_directory, codecs);
+    for (const auto& path : official_containers) {
+        if (!container(path) || !container(path.parent_path() / L"global.utoc"))
+            return impl_->Run(candidate, official_containers, output_directory, codecs);
+    }
+    std::vector<Impl::FileState> before;
+    for (const auto& path : inputs) before.push_back(Impl::State(path));
+    auto plan = impl_->Run(candidate, official_containers, output_directory, codecs);
+    if (!std::all_of(before.begin(), before.end(), [](const auto& file) { return Impl::State(file.path) == file; })) return plan;
+    Impl::Prepared value{official_containers, output_directory, std::move(before), bool(codecs.property_migration), plan};
+    const auto source_inputs = inputs;
+    if (!plan.overlay.empty() && !container(plan.overlay)) return plan;
+    // Keep the stamps of the bytes inspected above, rather than stamping a newer
+    // source version that could arrive just before publishing this cache entry.
+    for (const auto& path : inputs) if (!source_inputs.contains(path)) value.files.push_back(Impl::State(path));
+    impl_->prepared.insert_or_assign(candidate, std::move(value));
     return plan;
 }
 

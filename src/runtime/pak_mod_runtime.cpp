@@ -1075,7 +1075,11 @@ struct PakModRuntime::Impl final {
                     CompatibilityAttachment{compatibility.overlay, overlay.container, compatibility.memory_files});
                 outcome = Mount(desired);
                 if (outcome.mounted) {
-                    outcome.detail = "retained current game serialization definitions and dependencies";
+                    outcome.detail = "prepared cooked package compatibility";
+                    for (const auto& path : compatibility.converted_packages) {
+                        outcome.detail += " " + path;
+                        Log(LogLevel::Info, "pak_mods.properties_migrated id=" + desired.id + " package=" + path);
+                    }
                     for (const auto& path : compatibility.retained_packages) {
                         outcome.detail += " " + path;
                         Log(LogLevel::Warning, "pak_mods.schema_retained id=" + desired.id + " package=" + path);

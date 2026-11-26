@@ -7,6 +7,7 @@
 #include "anomaly/i18n.hpp"
 #include "anomaly/nte_profile_runtime.hpp"
 #include "anomaly/nte_pak_signature_bypass.hpp"
+#include "anomaly/nte_mod_compatibility.hpp"
 #include "anomaly/pak_mod_runtime.hpp"
 #include "anomaly/pak_mod_catalog.hpp"
 #include "anomaly/pak_mod_settings.hpp"
@@ -888,6 +889,37 @@ DWORD PreparePakMods(
             return anomaly::FindUe5PakPlatformFile(binding, memory);
         };
         const auto compatibility = std::make_shared<anomaly::Ue5ModCompatibility>();
+        const auto migration_cache = std::make_shared<std::pair<bool,
+            std::shared_ptr<const anomaly::Ue5CookedPropertyMigration>>>();
+        const auto weak_session = context->session;
+        const auto property_migration = [weak_profile, weak_session, memory_services, migration_cache,
+            log = options.log]() -> std::shared_ptr<const anomaly::Ue5CookedPropertyMigration> {
+            if (migration_cache->first) return migration_cache->second;
+            const auto runtime = weak_profile.lock();
+            const auto session = weak_session.lock();
+            if (!runtime || !session) throw std::runtime_error("vehicle compatibility session unavailable");
+            const auto evidence = runtime->Evidence();
+            const auto resolution = runtime->Resolution();
+            if (!evidence.profile || !resolution || !resolution->FeatureAvailable(anomaly::kUe5ObjectFindFeature))
+                throw std::runtime_error("vehicle compatibility reflection is not ready");
+            auto& dispatchers = session->Dispatchers();
+            if (dispatchers.BoundThread(anomaly::ExecutionDomain::Game) == std::thread::id{})
+                throw std::runtime_error("vehicle compatibility game thread is not ready");
+            const anomaly::LiveSymbolMemory memory(memory_services);
+            const auto find = anomaly::CreateUe5ObjectLookup(*evidence.profile, *resolution, memory);
+            const auto lookup = [&](const wchar_t* path) -> std::uintptr_t {
+                std::uintptr_t address{};
+                const auto result = dispatchers.Invoke(anomaly::ExecutionDomain::Game,
+                    [&] { if (find) address = find(path); }, std::chrono::milliseconds::max());
+                if (result != ERROR_SUCCESS) throw std::runtime_error("vehicle compatibility native lookup failed");
+                return address;
+            };
+            migration_cache->second = anomaly::CreateNteVehiclePropertyMigration(*evidence.profile, *resolution, memory, lookup);
+            migration_cache->first = true;
+            log(anomaly::LogLevel::Info, migration_cache->second && migration_cache->second->current ? "pak_mods.vehicle_property_contract ready" :
+                "pak_mods.vehicle_property_contract unavailable; using package compatibility fallback");
+            return migration_cache->second;
+        };
         const auto compatibility_directory = context->runtime_root / L"cache" / L"mod-compatibility";
         const auto path_key = [](const std::filesystem::path& path) {
             auto key = std::filesystem::absolute(path).lexically_normal().generic_wstring();
@@ -901,7 +933,7 @@ DWORD PreparePakMods(
         if (!compatibility_cache_root.ends_with(L'/')) compatibility_cache_root += L'/';
         const auto compatibility_base = options.engine_base_directory;
         options.prepare_compatibility = [bind, memory_services, compatibility, compatibility_directory,
-            compatibility_mod_root, compatibility_cache_root, compatibility_base, path_key](const std::filesystem::path& candidate) {
+            compatibility_mod_root, compatibility_cache_root, compatibility_base, path_key, property_migration](const std::filesystem::path& candidate) {
             anomaly::Ue5PakBinding binding{};
             if (!bind(binding)) throw std::runtime_error("pak compatibility binding unavailable");
             const anomaly::LiveSymbolMemory memory(memory_services);
@@ -920,8 +952,9 @@ DWORD PreparePakMods(
                     key == candidate_key || anomaly::FindMemoryFile(path)) continue;
                 official.push_back(std::move(path));
             }
-            return compatibility->Prepare(candidate, official, compatibility_directory,
-                anomaly::Ue5PakContainerCodecs(binding));
+            auto codecs = anomaly::Ue5PakContainerCodecs(binding);
+            codecs.property_migration = property_migration;
+            return compatibility->Prepare(candidate, official, compatibility_directory, codecs);
         };
         options.mount_pak = [bind](
             const std::uintptr_t engine,
