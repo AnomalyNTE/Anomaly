@@ -159,6 +159,10 @@ void DrawPlatformUi();
 // The renderer consumes the active menu key while this is true, but must not
 // collapse the surface before the settings recorder accepts that key.
 [[nodiscard]] bool PlatformUiCapturingHotkey() noexcept;
+// Refreshes the shell's occlusion rectangles from the plugin windows drawn this
+// frame. The embedded host calls it right after plugins.Draw(); passing false
+// clears the list so a suppressed plugin draw cannot leave stale rectangles.
+void SyncPlatformPluginWindowRects(bool plugins_drawn);
 // Flushes intents and deferred memory work after the render lock is released.
 void FlushPlatformUiActions();
 // Returns true only when the active UI owner has drained all callbacks and
