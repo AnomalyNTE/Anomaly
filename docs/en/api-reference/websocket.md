@@ -4,7 +4,9 @@
 
 ## Endpoint
 
-- Listener: `127.0.0.1:14514` by default; the port can be changed while running
+- Listener: `127.0.0.1:14514` by default; if occupied or reserved, startup tries
+  successive ports through `14530` in order. `server_info` reports the actual
+  port. The port can be changed while running.
 - Transport: RFC 6455 WebSocket, text frames
 - Scope: process-local clients only
 - Queue: bounded; `publish_text` returns `CONFLICT` when a frame cannot be admitted

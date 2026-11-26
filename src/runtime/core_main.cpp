@@ -608,7 +608,8 @@ DWORD PrepareWebSocketService(
     context->websocket = std::move(server);
     RuntimeLog(
         context, anomaly::LogLevel::Info, "websocket.ready",
-        "websocket=ready address=127.0.0.1:14514");
+        "websocket=ready address=127.0.0.1:" +
+            std::to_string(context->websocket->Snapshot().port));
     return stop_token.stop_requested() ? ERROR_CANCELLED : ERROR_SUCCESS;
 }
 

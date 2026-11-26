@@ -35,6 +35,7 @@ constexpr std::size_t kMaximumClients = 8U;
 constexpr std::size_t kMaximumQueuedFramesPerClient = kMaximumQueuedMessages;
 constexpr std::size_t kMaximumQueuedBytesPerClient =
     kMaximumQueuedFramesPerClient * (kMaximumTextBytes + 10U);
+constexpr std::uint32_t kMaximumStartupPortOffset = 16U;
 constexpr auto kFinalDrainTimeout = std::chrono::milliseconds(1000);
 constexpr std::uint64_t kPortRequestPortMask = 0xFFFFU;
 constexpr unsigned kPortRequestGenerationShift = 16U;
@@ -191,17 +192,25 @@ void CloseSocket(const SOCKET socket) noexcept {
     SOCKET listening = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (listening == INVALID_SOCKET) return INVALID_SOCKET;
 
-    const BOOL reuse = TRUE;
-    static_cast<void>(setsockopt(
-        listening, SOL_SOCKET, SO_REUSEADDR,
-        reinterpret_cast<const char*>(&reuse), sizeof(reuse)));
+    // Each Runtime must own its endpoint; sharing a port can route an overlay
+    // to a different process even when both listeners report successful startup.
+    const BOOL exclusive = TRUE;
+    if (setsockopt(listening, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+            reinterpret_cast<const char*>(&exclusive), sizeof(exclusive)) == SOCKET_ERROR) {
+        const int error = WSAGetLastError();
+        CloseSocket(listening);
+        WSASetLastError(error);
+        return INVALID_SOCKET;
+    }
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_port = htons(port);
     address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     if (bind(listening, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == SOCKET_ERROR ||
         listen(listening, SOMAXCONN) == SOCKET_ERROR || !SetNonBlocking(listening)) {
+        const int error = WSAGetLastError();
         CloseSocket(listening);
+        WSASetLastError(error);
         return INVALID_SOCKET;
     }
     return listening;
@@ -551,17 +560,32 @@ bool WebSocketServer::Start() noexcept {
     if (impl_ == nullptr) return false;
     std::scoped_lock lock(impl_->lifecycle_mutex);
     if (impl_->running.load(std::memory_order_acquire)) return true;
+    const std::uint32_t preferred_port = impl_->port.load(std::memory_order_acquire);
+    if (preferred_port == 0U) return false;
 
     WSADATA data{};
     if (WSAStartup(MAKEWORD(2, 2), &data) != 0) return false;
     impl_->winsock_ready.store(true, std::memory_order_release);
     impl_->generation.fetch_add(1U, std::memory_order_acq_rel);
-    SOCKET listening = CreateListener(impl_->port.load(std::memory_order_acquire));
+    SOCKET listening = INVALID_SOCKET;
+    std::uint32_t port = preferred_port;
+    const std::uint32_t last_port = (std::min)(
+        preferred_port + kMaximumStartupPortOffset,
+        static_cast<std::uint32_t>((std::numeric_limits<std::uint16_t>::max)()));
+    for (; port <= last_port; ++port) {
+        listening = CreateListener(static_cast<std::uint16_t>(port));
+        if (listening != INVALID_SOCKET) break;
+        const int error = WSAGetLastError();
+        // Another game/Runtime or a Windows reservation can own nearby ports.
+        // Try the next port only for these conflicts; never request port zero.
+        if (error != WSAEADDRINUSE && error != WSAEACCES) break;
+    }
     if (listening == INVALID_SOCKET) {
         WSACleanup();
         impl_->winsock_ready.store(false, std::memory_order_release);
         return false;
     }
+    impl_->port.store(static_cast<std::uint16_t>(port), std::memory_order_release);
     impl_->listener.store(listening, std::memory_order_release);
     impl_->running.store(true, std::memory_order_release);
     try {

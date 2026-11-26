@@ -18,6 +18,8 @@ public:
     WebSocketServer(const WebSocketServer&) = delete;
     WebSocketServer& operator=(const WebSocketServer&) = delete;
 
+    // Tries the preferred port, then up to 16 successive ports on conflicts.
+    // Snapshot reports the actual bound port. Port zero is not supported.
     [[nodiscard]] bool Start() noexcept;
     void Stop() noexcept;
     [[nodiscard]] bool PublishText(std::string_view message) noexcept;
