@@ -5,7 +5,7 @@
   "description": "Shows collectibles, enemy spawn points, and city crime locations, with map click teleport and categorized coordinate export.",
   "author": "b1ank",
   "license": "AGPL-3.0-only",
-  "version": "0.1.19",
+  "version": "0.1.20",
   "entry": "plugin.dll",
   "api": {"major": 1, "minMinor": 0, "maxMinor": 0},
   "games": ["nte"],
