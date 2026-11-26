@@ -101,7 +101,7 @@ template<class T> const T* Query(const AnomalyHostApiV1* host, const char* id, s
     return table && table->struct_size >= minimum ? table : nullptr;
 }
 enum class Action { refresh, preview, place, cancel, move, duplicate, remove, clear, save, restore,
-                    select_aim, select_screen, freeze_preview, drop_asset, stop_restore };
+                    select_aim, select_screen, freeze_preview, drop_asset, stop_restore, select_item, deselect, follow_preview };
 struct Command {
     Action action{};
     Handle world;
@@ -241,6 +241,17 @@ Pose Placement(Context& c, const Settings& settings) {
     if (settings.snap) Snap(pose, settings.grid, settings.angle_step);
     return pose;
 }
+std::optional<Pose> PreviewFollowPose(Context& c) {
+    if (!c.preview || !c.camera_valid || !c.preview_follow) return {};
+    auto pose = Placement(c,c.preview_settings);
+    pose.rotation = c.preview->item.pose.rotation; pose.scale = c.preview->item.pose.scale;
+    return pose;
+}
+void SetPreviewFollow(Context& c,bool enabled) {
+    c.preview_follow = enabled; c.preview_settings.follow_player = enabled;
+    if (c.waiting_command && c.waiting_command->action == Action::preview)
+        c.waiting_command->settings.follow_player = enabled;
+}
 std::pair<Vector,Vector> DropSurface(Context& c,const Command& command) {
     if (command.has_surface) return {command.pose.position,command.surface_normal};
     if (!Valid(command.settings) || !c.player ||
@@ -268,6 +279,10 @@ void Add(Context& c, const Item& item) {
     c.items.push_back(c.engine->Spawn(item, c.next_id++, false));
     c.focus = c.items.back().id; c.highlight = c.focus; ++c.edit_revision;
 }
+void ClearSelection(Context& c) {
+    c.focus = 0; c.highlight = 0; c.pending_pick.reset();
+    c.drag_intent.store({}); c.editor_frame.store({}); ++c.edit_revision;
+}
 void Execute(Context& c, const Command& command) {
     if (!Same(command.world, c.world))
         throw std::runtime_error(c.localizer.Text("error.changed", "The world changed; submit the action again"));
@@ -280,7 +295,7 @@ void Execute(Context& c, const Command& command) {
         CancelPreview(c);
         c.preview_settings = command.settings;
         c.preview = c.engine->Spawn({command.settings.asset, Placement(c, command.settings), command.settings.collision}, 0, true);
-        c.preview_follow = true;
+        SetPreviewFollow(c,command.settings.follow_player);
         break;
     case Action::place:
         if (!c.restore_queue.empty()) break;
@@ -296,6 +311,12 @@ void Execute(Context& c, const Command& command) {
         Status(c, c.localizer.Text("status.placed", "Object placed in the current world"));
         break;
     case Action::cancel: CancelPreview(c); break;
+    case Action::deselect: ClearSelection(c); break;
+    case Action::select_item:
+        if (std::any_of(c.items.begin(),c.items.end(),[&](const LiveItem& item) { return item.id == command.id; })) {
+            c.focus = command.id; c.highlight = command.id; ++c.edit_revision;
+        }
+        break;
     case Action::move: {
         auto& item = Selected(c, command.id);
         c.engine->Move(item, command.pose); c.engine->SetCollision(item, command.collision);
@@ -315,11 +336,13 @@ void Execute(Context& c, const Command& command) {
     case Action::remove:
         c.engine->Destroy(Selected(c, command.id));
         std::erase_if(c.items, [&](const LiveItem& item) { return item.id == command.id; });
+        if (c.highlight.load() == command.id) ClearSelection(c);
         break;
     case Action::clear:
         c.restore_queue.clear(); CancelPreview(c);
         for (const auto& item : c.items) c.engine->Destroy(item);
         c.items.clear();
+        ClearSelection(c);
         Status(c, c.localizer.Text("status.cleared", "All objects created by this plugin have been removed"));
         break;
     case Action::save:
@@ -346,7 +369,10 @@ void Execute(Context& c, const Command& command) {
         break;
     }
     case Action::freeze_preview:
-        c.preview_follow = false;
+        SetPreviewFollow(c,false);
+        break;
+    case Action::follow_preview:
+        SetPreviewFollow(c,command.settings.follow_player);
         break;
     case Action::drop_asset: {
         if (c.items.size() >= MaximumItems) throw std::runtime_error(c.localizer.Text("error.limit","The limit is 512 placed objects"));
@@ -368,7 +394,11 @@ void Execute(Context& c, const Command& command) {
     }
     }
 }
+void ShowEditorToolbar(Context& c) {
+    if (c.toolbar_handle.id) static_cast<void>(c.window->set_open(c.window->user,c.toolbar_handle,1));
+}
 void Request(Context& c, Command command) {
+    if (command.action == Action::preview) ShowEditorToolbar(c);
     std::scoped_lock lock(c.requests_mutex); c.requests.push_back(std::move(command));
 }
 void ANOMALY_CALL DrawAhud(void* raw, const AnomalyUe5AhudFrameV1* frame) noexcept;
@@ -386,14 +416,8 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** output) n
             offsetof(AnomalyNtePlayerServiceV1, camera_snapshot) + sizeof(AnomalyNtePlayerServiceV1::camera_snapshot));
         const auto* objects = Query<AnomalyUe5ObjectsServiceV1>(host, ANOMALY_UE5_OBJECTS_SERVICE_V1_ID);
         const auto* names = Query<AnomalyUe5NamesServiceV1>(host, ANOMALY_UE5_NAMES_SERVICE_V1_ID);
-        c->persistence.Initialize(host);
-        c->assets.Initialize(host,*c->names,c->localizer);
         c->render.textures.SetService(Query<AnomalyTextureServiceV1>(host,ANOMALY_TEXTURE_SERVICE_V1_ID),
             Query<AnomalyGpuTextureServiceV1>(host,ANOMALY_GPU_TEXTURE_SERVICE_V1_ID),c->core);
-        const auto document = c->persistence.Snapshot(); c->saved = document.saved; c->render.settings = document.settings;
-        c->editor_settings.store(std::make_shared<const Settings>(document.settings));
-        std::copy(document.settings.filter.begin(), document.settings.filter.end(), c->render.filter);
-        std::copy(document.settings.asset.begin(), document.settings.asset.end(), c->render.asset);
         try {
             if (!c->core || !c->core->read_memory || !c->framework || !c->framework->is_game_thread ||
                 !c->session || !c->session->snapshot || !objects || !objects->generation || !objects->count ||
@@ -403,33 +427,45 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** output) n
             c->engine->Initialize(host);
             Status(*c, c->localizer.Text("status.waiting", "Waiting for the current world"));
         } catch (const std::exception& error) { c->engine.reset(); Status(*c, error.what(), true); }
-        c->window = Query<AnomalyWindowServiceV1>(host, ANOMALY_WINDOW_SERVICE_V1_ID);
-        if (c->window && c->window->register_window && c->window->begin && c->window->end && c->window->state) {
-            AnomalyWindowSpecV1 spec{sizeof(spec)};
-            const auto title = c->localizer.Text("window.title", "CreativeMode");
-            spec.id = StringView("creative-mode"); spec.title = StringView(title);
-            spec.initial_width = 1180; spec.initial_height = 780; spec.minimum_width = 950; spec.minimum_height = 520;
-            spec.default_open = 1;
-            static_cast<void>(c->window->register_window(c->window->user, &spec, &c->window_handle));
-            const auto tools_title = c->localizer.Text("editor.title","World editor");
-            spec.id = StringView("creative-mode-tools"); spec.title = StringView(tools_title);
-            spec.initial_width = 540; spec.initial_height = 160; spec.minimum_width = 350; spec.minimum_height = 100;
-            static_cast<void>(c->window->register_window(c->window->user,&spec,&c->toolbar_handle));
-        }
         Publish(*c); *output = c.release(); return anomaly::sdk::Ok();
     } catch (...) { return {ANOMALY_STATUS_V1_FAILED, 0, StringView("CreativeMode initialization failed")}; }
 }
 AnomalyStatusV1 ANOMALY_CALL Start(void* raw) noexcept {
     if (!raw) return {ANOMALY_STATUS_V1_INVALID_ARGUMENT, 0, {}};
     auto& c = *static_cast<Context*>(raw);
-    if (c.engine && !c.ahud_subscription.id) {
-        c.ahud = Query<AnomalyUe5AhudServiceV1>(c.host,ANOMALY_UE5_AHUD_SERVICE_V1_ID);
-        if (!c.ahud || !c.ahud->subscribe || !c.ahud->unsubscribe)
-            return {ANOMALY_STATUS_V1_UNAVAILABLE,0,StringView("World editor requires the native AHUD projection")};
-        const auto status = c.ahud->subscribe(c.ahud->user,DrawAhud,&c,&c.ahud_subscription);
-        if (status.code != 0) return status;
-    }
-    c.active = true; return anomaly::sdk::Ok();
+    try {
+        if (c.engine && !c.ahud_subscription.id) {
+            c.ahud = Query<AnomalyUe5AhudServiceV1>(c.host,ANOMALY_UE5_AHUD_SERVICE_V1_ID);
+            if (!c.ahud || !c.ahud->subscribe || !c.ahud->unsubscribe)
+                return {ANOMALY_STATUS_V1_UNAVAILABLE,0,StringView("World editor requires the native AHUD projection")};
+            const auto status = c.ahud->subscribe(c.ahud->user,DrawAhud,&c,&c.ahud_subscription);
+            if (status.code != 0) return status;
+        }
+        // A rejected start is immediately unloaded by the Host. Do not leave
+        // Worker callbacks or registered windows behind while AHUD is pending.
+        c.persistence.Initialize(c.host);
+        const auto document = c.persistence.Snapshot(); c.saved = document.saved; c.render.settings = document.settings;
+        c.editor_settings.store(std::make_shared<const Settings>(document.settings));
+        std::copy(document.settings.filter.begin(), document.settings.filter.end(), c.render.filter);
+        std::copy(document.settings.asset.begin(), document.settings.asset.end(), c.render.asset);
+        c.window = Query<AnomalyWindowServiceV1>(c.host, ANOMALY_WINDOW_SERVICE_V1_ID);
+        if (c.window && c.window->register_window && c.window->set_open && c.window->begin && c.window->end && c.window->state) {
+            AnomalyWindowSpecV1 spec{sizeof(spec)};
+            const auto title = c.localizer.Text("window.title", "CreativeMode");
+            spec.id = StringView("creative-mode"); spec.title = StringView(title);
+            spec.initial_width = 1180; spec.initial_height = 780; spec.minimum_width = 950; spec.minimum_height = 520;
+            spec.default_open = 1;
+            static_cast<void>(c.window->register_window(c.window->user, &spec, &c.window_handle));
+            const auto tools_title = c.localizer.Text("editor.title","CreativeMode · Object controls");
+            spec.id = StringView("creative-mode-tools"); spec.title = StringView(tools_title);
+            spec.initial_width = 540; spec.initial_height = 240; spec.minimum_width = 350; spec.minimum_height = 100;
+            spec.default_open = 0;
+            static_cast<void>(c.window->register_window(c.window->user,&spec,&c.toolbar_handle));
+        }
+        Publish(c); c.active = true;
+        c.assets.Initialize(c.host,*c.names,c.localizer);
+        return anomaly::sdk::Ok();
+    } catch (...) { return {ANOMALY_STATUS_V1_FAILED,0,StringView("CreativeMode startup failed")}; }
 }
 AnomalyStatusV1 ANOMALY_CALL Stop(void* raw, std::uint32_t) noexcept {
     if (!raw) return {ANOMALY_STATUS_V1_INVALID_ARGUMENT, 0, {}};
@@ -506,12 +542,12 @@ void ANOMALY_CALL Update(void* raw, double delta) noexcept {
         }
         if (const auto edit = c.drag_intent.exchange({}); edit && Same(edit->world,c.world)) {
             if (edit->preview && c.preview) {
-                c.preview_follow = false; c.engine->Move(*c.preview,edit->pose);
+                SetPreviewFollow(c,false); c.engine->Move(*c.preview,edit->pose);
             } else if (!edit->preview) {
                 c.engine->Move(Selected(c,edit->id),edit->pose); ++c.edit_revision;
             }
         }
-        if (c.preview && c.camera_valid && c.preview_follow) c.engine->Move(*c.preview, Placement(c, c.preview_settings));
+        if (const auto pose = PreviewFollowPose(c)) c.engine->Move(*c.preview,*pose);
         std::optional<Command> command;
         { std::scoped_lock lock(c.requests_mutex); if (!c.requests.empty()) {
             command = std::move(c.requests.front()); c.requests.pop_front();
@@ -620,6 +656,6 @@ void ANOMALY_CALL Draw(void* raw, const AnomalyUiServiceV1* ui) noexcept {
 ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(AnomalyPluginDescriptorV1* output) {
     if (!output || output->struct_size < sizeof(*output)) return {ANOMALY_STATUS_V1_INVALID_ARGUMENT, 0, {}};
     *output = {sizeof(*output), 1, 0, StringView("anomaly.creative-mode"), StringView("CreativeMode"),
-        StringView("Anomaly"), StringView("1.0.10"), Load, Start, Stop, Unload, Update, Draw, nullptr};
+        StringView("Anomaly"), StringView("1.0.16"), Load, Start, Stop, Unload, Update, Draw, nullptr};
     return anomaly::sdk::Ok();
 }

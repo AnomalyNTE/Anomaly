@@ -144,6 +144,10 @@ inline PickedHandle PickHandle(const Frame& frame,Point mouse) {
     if (!frame.selected) return {};
     const auto& scale = frame.gizmos[static_cast<std::size_t>(Mode::Scale)];
     if (scale.visible) {
+        const auto& box = frame.preview ? frame.preview_box : frame.selected_box;
+        for (std::size_t i = 0; i < box.points.size(); ++i)
+            if (box.visible[i] && std::hypot(mouse[0]-box.points[i][0],mouse[1]-box.points[i][1]) < 8)
+                return {Mode::Scale,3};
         if (std::hypot(mouse[0]-scale.origin[0],mouse[1]-scale.origin[1]) < 8) return {Mode::Scale,3};
         for (int axis = 0; axis < 3; ++axis) {
             const auto& arrow = scale.arrows[axis];
@@ -204,12 +208,17 @@ struct Drag {
             if (snap) amount = std::round(amount/settings.grid)*settings.grid;
             for (std::size_t i = 0; i < 3; ++i) pose.position[i] += g.axes[axis][i]*amount;
         } else if (mode == Mode::Scale) {
-            const auto travel = axis == 3 ? static_cast<double>(mouse[0]-cursor[0]-mouse[1]+cursor[1])/120 :
-                geometry::ArrowTravel(g.arrows[axis].base,g.arrows[axis].tip,1,cursor,mouse);
+            double travel{};
+            if (axis == 3) {
+                const double x = static_cast<double>(cursor[0])-g.origin[0],y = static_cast<double>(cursor[1])-g.origin[1];
+                const double dx = static_cast<double>(mouse[0])-cursor[0],dy = static_cast<double>(mouse[1])-cursor[1];
+                const auto length_squared = x*x+y*y;
+                travel = length_squared >= 64 ? (dx*x+dy*y)/length_squared : (dx-dy)/120;
+            } else travel = geometry::ArrowTravel(g.arrows[axis].base,g.arrows[axis].tip,1,cursor,mouse);
             auto ratio = std::max(0.01, 1+travel*factor);
             if (snap) ratio = std::max(0.1, std::round(ratio*10)/10);
-            for (std::size_t i = 0; i < 3; ++i) if (axis == 3 || i == static_cast<std::size_t>(axis))
-                pose.scale[i] = std::clamp(start->pose.scale[i]*ratio,0.01,1000.0);
+            if (axis == 3) ScaleUniformly(pose.scale,ratio);
+            else pose.scale[axis] = std::clamp(start->pose.scale[axis]*ratio,0.01,1000.0);
         } else {
             auto angle = geometry::DragAngle(ring,mouse)*factor;
             if (snap) {

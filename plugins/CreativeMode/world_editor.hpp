@@ -18,6 +18,7 @@ void ANOMALY_CALL DrawAhud(void* raw, const AnomalyUe5AhudFrameV1* native) noexc
                 if (editor::HitBox(box,mouse) && box.depth < closest) { chosen = item.id; closest = box.depth; }
             }
             if (chosen) { c.focus = chosen; c.highlight = chosen; ++c.edit_revision; }
+            else ClearSelection(c);
         }
         auto frame = std::make_shared<editor::Frame>(); frame->world = c.world;
         frame->width = native->viewport_width; frame->height = native->viewport_height;
@@ -85,7 +86,10 @@ bool SceneInput(Context& c, const AnomalyUiServiceV1& ui) {
         if (edge('E')) { r.settings.rotate_handles = !r.settings.rotate_handles; changed = true; }
         if (edge('R')) { r.settings.scale_handles = !r.settings.scale_handles; changed = true; }
         if (edge(VK_RETURN) && frame->preview) send(Action::place);
-        if (edge(VK_ESCAPE) && frame->preview) send(Action::cancel);
+        if (edge(VK_ESCAPE)) {
+            if (frame->preview) send(Action::cancel);
+            else if (frame->selected) send(Action::deselect);
+        }
         if (edge(VK_DELETE) && frame->selected && !frame->preview) send(Action::remove);
     }
     r.hover_axis = -1;
@@ -94,7 +98,10 @@ bool SceneInput(Context& c, const AnomalyUiServiceV1& ui) {
     const auto pick = editor::PickHandle(*frame,mouse); r.hover_axis = pick.axis; r.hover_mode = pick.mode;
     if (pressed) {
         if (r.drag.Begin(frame,mouse)) {
-            if (frame->preview) send(Action::freeze_preview);
+            if (frame->preview) {
+                changed |= r.settings.follow_player; r.settings.follow_player = false;
+                send(Action::freeze_preview);
+            }
         } else {
             Command command{Action::select_screen,frame->world,r.settings}; command.cursor = mouse; Request(c,std::move(command));
         }
@@ -145,7 +152,13 @@ void DrawSceneEditor(Context& c, const AnomalyUiServiceV1& ui) {
                 }
             }
         }
-        if (mode == editor::Mode::Scale) rect(g.origin,10,ANOMALY_RGBA_V1(245,245,245,255));
+        if (mode == editor::Mode::Scale) {
+            const auto color = active_mode == mode && active == 3 ? ANOMALY_RGBA_V1(255,245,160,255) : ANOMALY_RGBA_V1(245,245,245,255);
+            rect(g.origin,10,color);
+            const auto& bounds = frame->preview ? frame->preview_box : frame->selected_box;
+            for (std::size_t i = 0; i < bounds.points.size(); ++i)
+                if (bounds.visible[i]) rect(bounds.points[i],8,color);
+        }
     }
     if (!lines.empty()) ui.draw_screen_primitives(ui.user,lines.data(),lines.size());
     const auto& move = frame->gizmos[static_cast<std::size_t>(editor::Mode::Move)];
@@ -158,7 +171,6 @@ void DrawSceneEditor(Context& c, const AnomalyUiServiceV1& ui) {
 bool DrawEditorToolbar(Context& c, const AnomalyUiServiceV1& ui) {
     if (!c.toolbar_handle.id) return false;
     const auto v = c.view.load();
-    if (v->items.empty() && !v->has_preview) return false;
     AnomalyWindowStateV1 state{sizeof(state)};
     if (c.window->state(c.window->user,c.toolbar_handle,&state).code != 0 || !state.open) return false;
     int visible{};
@@ -168,18 +180,23 @@ bool DrawEditorToolbar(Context& c, const AnomalyUiServiceV1& ui) {
     auto& s = c.render.settings; bool changed{};
     const auto toggle = [&](const char* key,const char* fallback,bool& value) {
         int checked = value;
-        if (ui.checkbox(ui.user,StringView(c.localizer.Text(key,fallback)),&checked)) { value = checked != 0; changed = true; }
+        if (!ui.checkbox(ui.user,StringView(c.localizer.Text(key,fallback)),&checked)) return false;
+        value = checked != 0; changed = true; return true;
     };
-    toggle("editor.move","Move · W",s.move_handles); ui.same_line(ui.user,0,-1);
-    toggle("editor.rotate","Rotate · E",s.rotate_handles); ui.same_line(ui.user,0,-1);
-    toggle("editor.scale","Scale · R",s.scale_handles);
+    toggle("editor.move","Move",s.move_handles); ui.same_line(ui.user,0,-1);
+    toggle("editor.rotate","Rotate",s.rotate_handles); ui.same_line(ui.user,0,-1);
+    toggle("editor.scale","Scale",s.scale_handles); ui.same_line(ui.user,0,-1);
+    if (toggle("editor.follow_player","Follow player",s.follow_player)) Request(c,{Action::follow_preview,v->world,s});
     if (v->has_preview) {
         if (ui.button_enabled(ui.user,StringView(c.localizer.Text("action.place","Place here")),0,0,v->ready))
             Request(c,{Action::place,v->world,s});
         ui.same_line(ui.user,0,-1);
         if (ui.button(ui.user,StringView(c.localizer.Text("action.cancel","Cancel preview")),0,0)) Request(c,{Action::cancel,v->world,s});
     }
-    const auto help = c.localizer.Text("editor.help","Arrows move, rings rotate, squares scale. Handle toggles are independent. Shift: fine · Ctrl: snap · Right click: cancel drag");
-    if (ui.text_wrapped) ui.text_wrapped(ui.user,StringView(help)); else ui.text(ui.user,StringView(help));
+    const auto hint = [&](std::string_view text) {
+        if (ui.text_wrapped) ui.text_wrapped(ui.user,StringView(text)); else ui.text(ui.user,StringView(text));
+    };
+    hint(c.localizer.Text("editor.gestures","Drag arrows: move · Rings: rotate · Corners: uniform scale"));
+    hint(c.localizer.Text("editor.shortcuts","W/E/R: show/hide · Shift: fine · Ctrl: snap · Esc: deselect · Right click: cancel drag"));
     return changed;
 }

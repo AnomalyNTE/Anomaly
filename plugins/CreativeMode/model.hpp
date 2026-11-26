@@ -36,6 +36,11 @@ struct Pose {
             std::all_of(scale.begin(), scale.end(), [](double n) { return n >= 0.01 && n <= 1000; });
     }
 };
+inline void ScaleUniformly(Vector& scale, double ratio) {
+    const auto [smallest,largest] = std::minmax_element(scale.begin(),scale.end());
+    ratio = std::clamp(ratio,0.01 / *smallest,1000.0 / *largest);
+    for (auto& axis : scale) axis = std::clamp(axis*ratio,0.01,1000.0);
+}
 struct Transform {
     std::array<double, 4> rotation{0, 0, 0, 1};
     Vector translation{};
@@ -73,7 +78,7 @@ struct Item {
 struct Settings {
     std::string filter, asset{"/Engine/BasicShapes/Cube.Cube"}, folder;
     double distance{500}, height{}, move_step{50}, angle_step{15}, grid{50};
-    bool snap{true}, collision{true};
+    bool snap{true}, collision{true}, follow_player{};
     Vector rotation{}, scale{1, 1, 1};
     std::uint32_t category{};
     bool editor_enabled{true}, fine_tune{};
@@ -110,7 +115,7 @@ inline nlohmann::json Encode(const Document& d) {
     return {{"settings", {{"filter", s.filter}, {"asset", s.asset}, {"distance", s.distance},
         {"height", s.height}, {"moveStep", s.move_step}, {"angleStep", s.angle_step},
         {"grid", s.grid}, {"snap", s.snap}, {"collision", s.collision}, {"rotation", s.rotation}, {"scale", s.scale},
-        {"editorEnabled",s.editor_enabled},{"fineTune",s.fine_tune},{"category",s.category},
+        {"editorEnabled",s.editor_enabled},{"fineTune",s.fine_tune},{"category",s.category},{"followPlayer",s.follow_player},
         {"moveHandles",s.move_handles},{"rotateHandles",s.rotate_handles},{"scaleHandles",s.scale_handles},
         {"folder",s.folder},{"previewYaw",s.preview_yaw},{"previewElevation",s.preview_elevation},{"previewZoom",s.preview_zoom}}},
         {"saved", {{"world", d.saved.world}, {"items", d.saved.items}}}};
@@ -125,6 +130,7 @@ inline Document Decode(const nlohmann::json& j) {
     s.at("collision").get_to(d.settings.collision);
     s.at("rotation").get_to(d.settings.rotation); s.at("scale").get_to(d.settings.scale);
     d.settings.editor_enabled = s.value("editorEnabled",true);
+    d.settings.follow_player = s.value("followPlayer",false);
     d.settings.move_handles = s.value("moveHandles",true); d.settings.rotate_handles = s.value("rotateHandles",true);
     d.settings.scale_handles = s.value("scaleHandles",true);
     d.settings.fine_tune = s.value("fineTune",false); d.settings.category = s.value("category",0u);

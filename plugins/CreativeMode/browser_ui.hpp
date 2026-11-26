@@ -31,6 +31,12 @@ void DrawContents(Context& c,const AnomalyUiServiceV1& ui) {
         if (set_width) set_width(ui.user,-1);
         return ui.input_double(ui.user,StringView("##"+std::string(label)),&value,step,step*10) != 0;
     };
+    const auto uniform_scale = [&](Vector& scale) {
+        double percent = scale[0]*100;
+        if (!number(TextLocalized("label.scale_percent","Scale (%)"),percent,0.01) || !std::isfinite(percent) || percent <= 0 || !Pose{{},{},scale}.Valid()) return false;
+        ScaleUniformly(scale,percent/(scale[0]*100));
+        return true;
+    };
     const auto send = [&](Action action,std::uint64_t id = 0) { Request(c,{action,view->world,s,id,r.pose,r.collision}); };
     const auto choose = [&](const Asset& asset) {
         s.asset = asset.path; std::fill(std::begin(r.asset),std::end(r.asset),'\0'); std::copy(asset.path.begin(),asset.path.end(),r.asset);
@@ -38,7 +44,7 @@ void DrawContents(Context& c,const AnomalyUiServiceV1& ui) {
     bool changed{};
     const auto select_item = [&](const LiveItem& item) { r.selected = item.id; r.pose = item.item.pose; r.collision = item.item.collision; c.highlight = item.id; };
     if (view->focus != r.last_focus || (!r.drag.Active() && view->edit_revision != r.last_edit_revision)) {
-        if (view->focus != r.last_focus) r.selected = view->focus;
+        r.selected = view->focus;
         r.last_focus = view->focus; r.last_edit_revision = view->edit_revision;
         for (const auto& item : view->items) if (item.id == r.selected) select_item(item);
     }
@@ -195,6 +201,7 @@ void DrawContents(Context& c,const AnomalyUiServiceV1& ui) {
                     r.viewer_input_sequence = r.input.sequence;
                     wrapped(TextLocalized("browser.orbit_help","Right drag: rotate · Wheel: zoom"));
                     if (button(TextLocalized("browser.start_placement","Place"),view->ready && view->camera_valid && Valid(s),-1)) send(Action::preview);
+                    if (button(TextLocalized("editor.show_tools","Controls"),true,-1)) ShowEditorToolbar(c);
                     if (button(TextLocalized("browser.reset_view","Reset preview view"),true,-1)) { s.preview_yaw = 35; s.preview_elevation = 20; s.preview_zoom = 1; r.next_viewer_capture = 0; changed = true; }
                     if (button(TextLocalized("browser.render_again","Refresh images"),r.textures.Available(),-1)) r.textures.Refresh();
                     changed |= check(TextLocalized("label.collision","Enable collision"),s.collision);
@@ -209,9 +216,19 @@ void DrawContents(Context& c,const AnomalyUiServiceV1& ui) {
                         changed |= number(TextLocalized("label.pitch","Pitch (degrees)"),s.rotation[0],s.angle_step);
                         changed |= number(TextLocalized("label.yaw","Yaw (degrees)"),s.rotation[1],s.angle_step);
                         changed |= number(TextLocalized("label.roll","Roll (degrees)"),s.rotation[2],s.angle_step);
-                        changed |= number(TextLocalized("label.scale_x","Scale X"),s.scale[0],0.1);
-                        changed |= number(TextLocalized("label.scale_y","Scale Y"),s.scale[1],0.1);
-                        changed |= number(TextLocalized("label.scale_z","Scale Z"),s.scale[2],0.1);
+                        auto scale = view->preview ? view->preview->item.pose.scale : s.scale;
+                        bool scale_changed = uniform_scale(scale);
+                        scale_changed |= number(TextLocalized("label.scale_x","Scale X"),scale[0],0.1);
+                        scale_changed |= number(TextLocalized("label.scale_y","Scale Y"),scale[1],0.1);
+                        scale_changed |= number(TextLocalized("label.scale_z","Scale Z"),scale[2],0.1);
+                        if (scale_changed) {
+                            s.scale = scale; changed = true;
+                            if (view->preview) {
+                                s.follow_player = false;
+                                auto pose = view->preview->item.pose; pose.scale = scale;
+                                if (pose.Valid()) c.drag_intent.store(std::make_shared<const editor::TransformIntent>(editor::TransformIntent{view->world,0,true,pose}));
+                            }
+                        }
                     }
                 }
             }
@@ -221,7 +238,6 @@ void DrawContents(Context& c,const AnomalyUiServiceV1& ui) {
         const auto label = TextLocalized("tab.edit","Edit placements");
         Tab tab{&ui,ui.begin_tab_item(ui.user,StringView(label),nullptr,0,1) != 0};
         if (tab.open) {
-            wrapped(TextLocalized("editor.help","Drag a handle in the world. Shift: fine adjustment · Ctrl: snap · Right click: cancel drag"));
             if (button(TextLocalized("action.pick","Select placed object at view center"),view->ready)) send(Action::select_aim);
             const LiveItem* selected{};
             for (const auto& item : view->items) if (item.id == r.selected) selected = &item;
@@ -230,7 +246,7 @@ void DrawContents(Context& c,const AnomalyUiServiceV1& ui) {
                 if (list.visible) for (const auto& item : view->items) {
                     const auto name = c.names->Name(item.item.asset).label, id = std::to_string(item.id);
                     const std::array args{std::string_view(id),std::string_view(name)};
-                    if (selected_button(c.localizer.Format("text.item","#{0} {1}",args),r.selected == item.id,260)) { select_item(item); selected = &item; }
+                    if (selected_button(c.localizer.Format("text.item","#{0} {1}",args),r.selected == item.id,260)) { select_item(item); send(Action::select_item,item.id); selected = &item; }
                 }
             }
             line();
@@ -249,6 +265,7 @@ void DrawContents(Context& c,const AnomalyUiServiceV1& ui) {
                         number(TextLocalized("label.pitch","Pitch (degrees)"),r.pose.rotation[0],s.angle_step);
                         number(TextLocalized("label.yaw","Yaw (degrees)"),r.pose.rotation[1],s.angle_step);
                         number(TextLocalized("label.roll","Roll (degrees)"),r.pose.rotation[2],s.angle_step);
+                        uniform_scale(r.pose.scale);
                         number(TextLocalized("label.scale_x","Scale X"),r.pose.scale[0],0.1);
                         number(TextLocalized("label.scale_y","Scale Y"),r.pose.scale[1],0.1);
                         number(TextLocalized("label.scale_z","Scale Z"),r.pose.scale[2],0.1);

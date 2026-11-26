@@ -21,7 +21,7 @@ class Persistence {
               "editorMode":{"type":"integer","minimum":0,"maximum":2},
               "moveHandles":{"type":"boolean"},"rotateHandles":{"type":"boolean"},"scaleHandles":{"type":"boolean"},
               "category":{"type":"integer","minimum":0,"maximum":7},
-              "editorEnabled":{"type":"boolean"},"fineTune":{"type":"boolean"},
+              "editorEnabled":{"type":"boolean"},"fineTune":{"type":"boolean"},"followPlayer":{"type":"boolean"},
               "folder":{"type":"string","maxLength":512},
               "previewYaw":{"type":"number"},"previewElevation":{"type":"number","minimum":-85,"maximum":85},
               "previewZoom":{"type":"number","minimum":0.25,"maximum":4},
