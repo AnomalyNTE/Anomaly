@@ -3,7 +3,7 @@
   "locale": "zh-CN",
   "messages": {
     "window.title": "自动副本",
-    "plugin.description": "选择副本与难度，自动进本、战斗、领取奖励并退出，支持循环执行。",
+    "plugin.description": "选择副本与难度，自动进本、战斗、领取奖励并退出，支持循环执行",
     "text.hotkey_unset": "未设置",
     "text.distance_unknown": "距离未知",
     "text.chest_distance": "距宝箱 {0} 米",

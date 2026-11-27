@@ -3,7 +3,7 @@
   "locale": "zh-CN",
   "messages": {
     "window.title": "粉爪战利品显示",
-    "plugin.description": "显示粉爪大劫案的战利品与撤离点，并提供价值筛选和拾取操作。",
+    "plugin.description": "显示粉爪大劫案的战利品与撤离点，并提供价值筛选和拾取操作",
     "option.enabled": "启用显示",
     "loop.status": "银行循环：{0}；已完成 {1} 轮",
     "loop.stopped": "已停止",

@@ -3,7 +3,7 @@
   "locale": "zh-CN",
   "messages": {
     "window.title": "空无一人",
-    "plugin.description": "调整 Mass 生成器参数以减少人群与交通生成。",
+    "plugin.description": "调整 Mass 生成器参数以减少人群与交通生成",
     "option.empty_streets": "空无一人",
     "action.rescan": "重新扫描",
     "status.waiting_world": "等待世界初始化…",

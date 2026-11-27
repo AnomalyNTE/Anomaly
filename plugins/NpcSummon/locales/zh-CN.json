@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "locale": "zh-CN",
   "messages": {
-    "plugin.description": "搜索并召唤游戏内的 NPC：列出世界里真实运行的 actor 类，支持关键词筛选，一键生成到你面前，并可一键清除自己生成的 NPC。",
+    "plugin.description": "搜索并召唤游戏内的 NPC：列出世界里真实运行的 actor 类，支持关键词筛选，一键生成到你面前，并可一键清除自己生成的 NPC",
     "window.title": "NPC 召唤",
     "window.records.title": "NPC 生成记录",
     "action.spawn": "生成到面前",
@@ -31,7 +31,7 @@
     "label.verdict_unmarked": "[未标记]",
     "label.note": "备注",
     "hint.search": "搜索类名",
-    "hint.spawn": "生成的 NPC 出现在你前方并自动贴地;列表来自世界上真实运行的 actor。",
+    "hint.spawn": "生成的 NPC 出现在你前方并自动贴地;列表来自世界上真实运行的 actor",
     "hint.records_file": "文件位置:<游戏目录>\\Anomaly\\npc-summon-records.txt(可手工编辑后再导入)",
     "status.class_counts": "NPC {0} 个 · 车辆 {1} 个 · 白名单 {2} 个 · 已生成 {3} 个",
     "status.scanning": "(正在扫描场景,请稍候几秒…)",

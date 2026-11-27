@@ -3,7 +3,7 @@
   "locale": "zh-CN",
   "messages": {
     "window.title": "帧率解锁",
-    "plugin.description": "解除 UE 帧率上限，记住开关状态，关闭时恢复原上限。",
+    "plugin.description": "解除 UE 帧率上限，记住开关状态，关闭时恢复原上限",
     "settings.enabled": "解锁帧率"
   }
 }

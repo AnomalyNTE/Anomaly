@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "locale": "zh-CN",
   "messages": {
-    "plugin.description": "读取资源点表自动拾取：角色经验书、魔术师的赠礼、包裹、家具、手办盒、食物、监狱资源、钱包、商店偷取物品及乌鸦石头。",
+    "plugin.description": "读取资源点表自动拾取：角色经验书、魔术师的赠礼、包裹、家具、手办盒、食物、监狱资源、钱包、商店偷取物品及乌鸦石头",
     "window.title": "资源点全自动拾取",
     "action.read_table": "读表",
     "type.all": "全部",

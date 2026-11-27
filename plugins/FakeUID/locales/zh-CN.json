@@ -3,7 +3,7 @@
   "locale": "zh-CN",
   "messages": {
     "window.title": "自定义 UID",
-    "plugin.description": "自定义 NTE 客户端界面上显示的 UID、颜色及动态效果，不修改账号数据。",
+    "plugin.description": "自定义 NTE 客户端界面上显示的 UID、颜色及动态效果，不修改账号数据",
     "current.detecting": "当前 UID：检测中",
     "current.value": "当前 UID：{0}",
     "field.hide_prefix": "隐藏UID：",
@@ -16,7 +16,7 @@
     "action.restore_color": "恢复默认颜色",
     "field.rgb": "RGB 循环变色",
     "field.rgb_period": "RGB 完整循环（秒）",
-    "hint.dynamic_uid": "动态 UID：逐字显示、暂停，再逐字删除并循环。",
+    "hint.dynamic_uid": "动态 UID：逐字显示、暂停，再逐字删除并循环",
     "field.dynamic_uid": "动态 UID",
     "field.typing_interval": "每字间隔（秒）",
     "display.value": "显示 UID：{0}",

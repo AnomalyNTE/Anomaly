@@ -3,16 +3,16 @@
   "locale": "zh-CN",
   "messages": {
     "window.title": "载具飞行",
-    "plugin.description": "接管驾驶输入，按视角方向自由移动当前载具。",
+    "plugin.description": "接管驾驶输入，按视角方向自由移动当前载具",
     "flight.enable": "启用载具飞行",
     "flight.speed": "飞行速度（米/秒）",
     "hotkey.button": "飞行快捷键 · {0}",
     "hotkey.unbound": "未绑定",
-    "hotkey.capture": "请按下要绑定的键或组合键。Esc 取消，退格清除。",
-    "hotkey.conflict": "这个快捷键已被占用。",
-    "hotkey.unavailable": "暂时无法注册这个快捷键。",
-    "hotkey.movement_key": "请选择飞行方向键以外的字母键、数字键或功能键。",
-    "flight.controls_help": "WASD 按视角水平移动，空格上升，Ctrl 下降；Shift 三倍加速（最高 1000 米/秒），松手悬停。无碰撞仅在飞行时生效，关闭后仍可飞行，但会与墙体和实体碰撞。",
+    "hotkey.capture": "请按下要绑定的键或组合键Esc 取消，退格清除",
+    "hotkey.conflict": "这个快捷键已被占用",
+    "hotkey.unavailable": "暂时无法注册这个快捷键",
+    "hotkey.movement_key": "请选择飞行方向键以外的字母键、数字键或功能键",
+    "flight.controls_help": "WASD 按视角水平移动，空格上升，Ctrl 下降；Shift 三倍加速（最高 1000 米/秒），松手悬停无碰撞仅在飞行时生效，关闭后仍可飞行，但会与墙体和实体碰撞",
     "flight.noclip": "无碰撞"
   }
 }

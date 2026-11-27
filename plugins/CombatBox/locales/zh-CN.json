@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "locale": "zh-CN",
   "messages": {
-    "plugin.description": "打怪资源点：打怪宝箱（xx点的赠礼）读表传送，异像家具材料（6个异像怪）硬编码传送，打完后标记并本地缓存。",
+    "plugin.description": "打怪资源点：打怪宝箱（xx点的赠礼）读表传送，异像家具材料（6个异像怪）硬编码传送，打完后标记并本地缓存",
     "window.title": "打怪资源点",
     "type.combat": "打怪宝箱（xx点的赠礼）",
     "type.vision": "异像家具材料",

@@ -3,7 +3,7 @@
   "locale": "zh-CN",
   "messages": {
     "window.title": "传送",
-    "plugin.description": "将当前玩家传送到输入或保存的世界坐标。",
+    "plugin.description": "将当前玩家传送到输入或保存的世界坐标",
     "tab.coordinates": "坐标",
     "tab.points": "点位",
     "tab.settings": "设置",

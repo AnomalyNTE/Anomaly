@@ -69,7 +69,7 @@
     "text.pick_error": "  失败：{0}",
     "text.pick_none": "  光标下没有按钮（或按键时鼠标在插件窗口上）",
     "text.innermost_hint": "  ▶ 为最内层的按钮；其余是外层同样处于悬停的按钮",
-    "text.start_hint": "点「扫描按钮」开始。",
+    "text.start_hint": "点「扫描按钮」开始",
     "text.no_layers": "（没有找到非空的界面层）",
     "section.layers": "界面层（扫描时刻）：",
     "action.scan": "扫描按钮",

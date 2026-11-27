@@ -3,7 +3,7 @@
   "locale": "zh-CN",
   "messages": {
     "window.title": "坐标显示",
-    "plugin.description": "显示玩家与相机坐标、会话状态和快照指标。",
+    "plugin.description": "显示玩家与相机坐标、会话状态和快照指标",
     "status.unavailable": "{0}：不可用",
     "status.result": "{0}：{1}",
     "status.result.detail": "{0}：{1} - {2}",

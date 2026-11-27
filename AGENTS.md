@@ -97,6 +97,7 @@ CMake 文件、构建产物或正在运行的游戏文件来掩盖源码问题�
 - **不许硬编码文案**：所有用户可见文本经 `anomaly.localization` 取，C++ 用 SDK 的
   `anomaly::sdk::Localizer`（`include/anomaly/sdk/localization.hpp`）；C++ 字面量一律写成英文回退，
   中文只存在于 `locales/<locale>.json`。中文注释可以保留，受约束的只有字符串字面量。
+- **禁止中文句号**：所有 i18n 文案（包括宿主、插件和示例的本地化目录）禁止使用中文句号（U+3002），新增或修改文案时不得引入。
 - **manifest 交英文回退**：`name` / `description` 写英文，中文显示名放目录的 `window.title`、中文简介
   放 `plugin.description`——宿主用这两个 key 渲染管理界面，缺失时才回退到 manifest。
 - **单一 Localizer 来源**：在 `Load(host, …)` 里从 host 查一次并保存，不得新增第二个实例，也不得在

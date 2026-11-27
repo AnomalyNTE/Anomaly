@@ -3,7 +3,7 @@
   "locale": "zh-CN",
   "messages": {
     "window.title": "实体边界框 ESP",
-    "plugin.description": "为 NTE 实体绘制可配置的 2D、3D 边界框和标签。",
+    "plugin.description": "为 NTE 实体绘制可配置的 2D、3D 边界框和标签",
     "option.enabled": "启用",
     "option.bbox_2d": "2D 边界框",
     "option.box_3d": "3D 边界框",
