@@ -1759,6 +1759,21 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/CloneEnter/manifest.json
         PACKAGE_NAME CloneEnter
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/CloneEnter")
+    # 自动日常：一条龙（打副本交给 Clone Enter 的 IPC）→ 一咖舍 → 两种奖励领取。
+    anomaly_add_plugin(anomaly_builtin_auto_daily
+        SOURCES
+            plugins/AutoDaily/src/plugin.cpp
+            plugins/AutoDaily/src/state.cpp
+            plugins/AutoDaily/src/settings.cpp
+            plugins/AutoDaily/src/profile_layout.cpp
+            plugins/AutoDaily/src/game.cpp
+            plugins/AutoDaily/src/dungeon.cpp
+            plugins/AutoDaily/src/clone_enter.cpp
+            plugins/AutoDaily/src/chain.cpp
+            plugins/AutoDaily/src/i18n.cpp
+        MANIFEST plugins/AutoDaily/manifest.json
+        PACKAGE_NAME AutoDaily
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/AutoDaily")
     anomaly_add_plugin(anomaly_builtin_scene_loader
         SOURCES plugins/SceneLoader/plugin.cpp
         MANIFEST plugins/SceneLoader/manifest.json
@@ -2246,7 +2261,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         anomaly_builtin_remote_shop
         anomaly_builtin_haunted_house
         anomaly_builtin_wallet_collector anomaly_builtin_box_auto anomaly_builtin_combat_box
-        anomaly_builtin_clone_enter anomaly_builtin_scene_loader
+        anomaly_builtin_clone_enter anomaly_builtin_auto_daily anomaly_builtin_scene_loader
         anomaly_builtin_nte_quick_ultimate
         anomaly_builtin_nte_free_fly anomaly_builtin_vehicle_flight
         anomaly_builtin_skin_changer anomaly_builtin_ui_buttons
@@ -2282,6 +2297,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         target_compile_options(anomaly_builtin_box_auto PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_combat_box PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_clone_enter PRIVATE /utf-8)
+        target_compile_options(anomaly_builtin_auto_daily PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_scene_loader PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_nte_combat_tracker PRIVATE /utf-8)
         target_compile_options(anomaly_builtin_nte_free_fly PRIVATE /utf-8)

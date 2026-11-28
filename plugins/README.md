@@ -16,6 +16,7 @@
 - `BoxAuto`
 - `CombatBox`
 - `CloneEnter`
+- `AutoDaily`
 - `SceneLoader`
 - `QuickUltimate`
 - `WalletCollector`
