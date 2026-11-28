@@ -3,8 +3,8 @@
 // =============================================================================
 //
 //  一条龙：进游戏 → 自动打副本（交给 CloneEnter 插件）→ 领取一咖舍 → 领取奖励。
-//  首次使用需要在面板里确认一次设置；之后勾「启动后就下一次」即可自动跑。
-//  游戏内 Ctrl+S（可在配置文件里改）随时强制停止。
+//  首次使用需要在面板里确认一次设置；之后勾「启动后自动运行」即可每次启动自动跑。
+//  停止用面板上的「停止」按钮（不再注册全局热键）。
 //
 //  约定：
 //    * 打副本不重复造轮子：经 anomaly.ipc 调 ccyellowstar.clone-enter 的 onekey 端点；
@@ -18,6 +18,7 @@
 #include "anomaly/sdk/anomaly_sdk.h"
 
 #include "chain.hpp"
+#include "clone_enter.hpp"
 #include "dungeon.hpp"
 #include "game.hpp"
 #include "i18n.hpp"
@@ -35,7 +36,6 @@ namespace {
 
 constexpr std::uint32_t kPollIntervalMilliseconds = 2000;
 constexpr std::uint32_t kFirstRunWindowSize = 4u;  // ImGuiCond_FirstUseEver
-constexpr const char* kStopHotkeyId = "yu-1021.daily.stop";
 
 template <typename T>
 const T* Query(const AnomalyHostApiV1* host, const char* id, const std::uint32_t version) {
@@ -45,34 +45,6 @@ const T* Query(const AnomalyHostApiV1* host, const char* id, const std::uint32_t
         host->host_context, Str(id, std::strlen(id)), version, &service);
     if (status.code != ANOMALY_STATUS_V1_OK) return nullptr;
     return static_cast<const T*>(service);
-}
-
-void ANOMALY_CALL OnStopHotkey(void*, AnomalyGenerationHandleV1, const AnomalyInputSnapshotV1*) {
-    S().stop_requested.store(true, std::memory_order_release);
-}
-
-void ReleaseHotkey() {
-    State& state = S();
-    if (state.input == nullptr || state.input->release_hotkey == nullptr) return;
-    if (state.stop_hotkey.id == 0) return;
-    static_cast<void>(state.input->release_hotkey(state.input->user, state.stop_hotkey));
-    state.stop_hotkey = {};
-}
-
-void RegisterHotkey() {
-    State& state = S();
-    ReleaseHotkey();
-    if (!HAS(state.input, AnomalyInputServiceV1, register_hotkey)) return;
-    AnomalyHotkeySpecV1 spec{sizeof(spec)};
-    spec.modifiers = state.settings.stop_modifiers;
-    spec.virtual_key = state.settings.stop_vk;
-    spec.flags = ANOMALY_HOTKEY_V1_ALLOW_EXTRA_MODIFIERS;
-    spec.id = Str(kStopHotkeyId, std::strlen(kStopHotkeyId));
-    if (state.input->register_hotkey(state.input->user, &spec, &OnStopHotkey, nullptr,
-                                     &state.stop_hotkey)
-            .code != ANOMALY_STATUS_V1_OK) {
-        WinLog("stop hotkey registration failed");
-    }
 }
 
 // ---- Worker 线程：配置写入与配置文件热更新 ----
@@ -154,8 +126,6 @@ void ANOMALY_CALL ReloadTask(void*, AnomalyGenerationHandleV1) {
     }
     Settings stored{};
     if (state.config_store.Read(stored)) {
-        const std::uint32_t previous_vk = state.settings.stop_vk;
-        const std::uint32_t previous_modifiers = state.settings.stop_modifiers;
         const bool previous_enabled = state.settings.enabled;
         // 只由界面维护的字段不跟着文件走：自动运行武装状态、首次配置完成标记。
         stored.auto_run_pending = state.settings.auto_run_pending;
@@ -165,9 +135,6 @@ void ANOMALY_CALL ReloadTask(void*, AnomalyGenerationHandleV1) {
         NormalizeSettings(stored);
         // 磁盘文档和内存一致就什么都不做：自己刚保存的内容不要再读回来覆盖一遍。
         if (SerializeSettings(stored) != SerializeSettings(state.settings)) {
-            if (stored.stop_vk != previous_vk || stored.stop_modifiers != previous_modifiers) {
-                state.hotkey_dirty.store(true, std::memory_order_release);
-            }
             if (stored.enabled != previous_enabled) {
                 WinLogf("configuration reloaded: enabled=%d", stored.enabled ? 1 : 0);
             }
@@ -219,13 +186,8 @@ void ConsumeRequests() {
         ChainStartSingle(reward_run == 2 ? Stage::PeriodicRewards : Stage::DailyRewards);
     }
     if (state.request_dungeon_only.exchange(0) != 0) {
-        if (DungeonIpcAvailable()) {
-            if (!DungeonStart(state.settings)) {
-                SetStatusText(TextLocalized("status.dungeon_rejected", "The dungeon start request was rejected."));
-            }
-        } else {
-            SetStatusText(TextLocalized("status.dungeon_unavailable", "The dungeon plugin is unavailable."));
-        }
+        // 走同一条阶段状态机：等世界 → 准备副本插件（启用/重载）→ 打副本 → 关掉副本插件。
+        ChainStartSingle(Stage::Dungeon);
     }
     if (state.request_save.exchange(0) != 0) {
         state.settings_dirty.store(true, std::memory_order_release);
@@ -236,9 +198,6 @@ void ConsumeRequests() {
         state.settings.configured = configured;
         state.settings_dirty.store(true, std::memory_order_release);
         SetStatusText(TextLocalized("status.defaults_restored", "Defaults restored."));
-    }
-    if (state.hotkey_dirty.exchange(false, std::memory_order_acq_rel)) {
-        RegisterHotkey();
     }
     if (state.settings_dirty.exchange(false, std::memory_order_acq_rel)) {
         ScheduleSave();
@@ -416,7 +375,7 @@ void DrawSettings(const AnomalyUiServiceV1* ui) {
     if (DrawDungeonPicker(ui, settings)) changed = true;
 
     if (HAS(ui, AnomalyUiServiceV1, separator)) ui->separator(ui->user);
-    ScopedLabel(ui, "settings.hotkey", "Stop hotkey: Ctrl+S (configurable)");
+
     ScopedLabel(ui, "settings.config_path",
             "Config file: Anomaly\\config\\plugins\\yu-1021.daily\\");
 
@@ -608,7 +567,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
     BindLocalization(state.localization);
     state.config = Query<AnomalyConfigServiceV1>(host, ANOMALY_CONFIG_SERVICE_V1_ID, 1);
     state.json = Query<AnomalyJsonServiceV1>(host, ANOMALY_JSON_SERVICE_V1_ID, 1);
-    state.input = Query<AnomalyInputServiceV1>(host, ANOMALY_INPUT_SERVICE_V1_ID, 1);
+
     state.scheduler = Query<AnomalySchedulerServiceV1>(host, ANOMALY_SCHEDULER_SERVICE_V1_ID, 1);
     state.signature = Query<AnomalySignatureServiceV1>(host, ANOMALY_SIGNATURE_SERVICE_V1_ID, 1);
     state.ipc = Query<AnomalyIpcServiceV1>(host, ANOMALY_IPC_SERVICE_V1_ID, 1);
@@ -618,6 +577,10 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
     state.uibuttons =
         Query<AnomalyNteUiButtonsServiceV1>(host, ANOMALY_NTE_UI_BUTTONS_SERVICE_V1_ID, 1);
     state.session = Query<AnomalyNteSessionServiceV1>(host, ANOMALY_NTE_SESSION_SERVICE_V1_ID, 1);
+    state.plugin_state =
+        Query<AnomalyPluginStateServiceV1>(host, ANOMALY_PLUGIN_STATE_SERVICE_V1_ID, 1);
+    // 解析宿主 config/plugin-enablement.json 的位置：副本阶段要用它开关副本插件。
+    static_cast<void>(BindCloneEnterControl());
 
     state.config_store.Bind(state.config, state.json);
     if (state.config_store.RegisterSchema()) {
@@ -663,7 +626,6 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
 }
 
 AnomalyStatusV1 ANOMALY_CALL Start(void*) {
-    RegisterHotkey();
     ScheduleReload();
     SetStatusText(TextLocalized("status.ready", "Ready."));
     WinLog("auto-daily started");
@@ -673,7 +635,6 @@ AnomalyStatusV1 ANOMALY_CALL Start(void*) {
 AnomalyStatusV1 ANOMALY_CALL Stop(void*, std::uint32_t /*deadline_milliseconds*/) {
     State& state = S();
     ChainStop(StopCause::Manual, "stage.stopped_manual", "Stopped");
-    ReleaseHotkey();
     StopWorkerTasks();
     static_cast<void>(state.config_store.Write(state.settings));
     WinLog("auto-daily stopped");
@@ -684,7 +645,6 @@ void ANOMALY_CALL Unload(void*) {
     State& state = S();
     ChainStop(StopCause::Manual, "stage.stopped_manual", "Stopped");
     DungeonCancelPending();
-    ReleaseHotkey();
     StopWorkerTasks();
     static_cast<void>(state.config_store.Write(state.settings));
     ResetState();
@@ -766,10 +726,10 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
     *descriptor = {sizeof(*descriptor),
                    ANOMALY_PLUGIN_API_V1_MAJOR,
                    ANOMALY_PLUGIN_API_V1_MINOR,
-                   Str("yu-1021.daily"),
+                   Str(daily::kPluginId),
                    Str("Auto Daily"),
                    Str("YU-1021"),
-                   Str("4.3.7"),
+                   Str("2.0.0"),
                    daily::Load,
                    daily::Start,
                    daily::Stop,

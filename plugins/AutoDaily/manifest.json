@@ -2,10 +2,10 @@
   "schemaVersion": 2,
   "id": "yu-1021.daily",
   "name": "Auto Daily",
-  "description": "Runs the daily routine in one pass: hands the dungeon run to the Clone Enter plugin, withdraws the one-shop income, then claims daily rewards. Configure once, then let it run after each start; Ctrl+S stops it in game.",
+  "description": "Runs the daily routine in one pass: manages the Clone Enter plugin for the dungeon run, withdraws the one-shop income, then claims daily rewards. Configure once, then let it run after each start.",
   "author": "YU-1021",
   "license": "AGPL-3.0-only",
-  "version": "4.3.7",
+  "version": "2.0.0",
   "entry": "plugin.dll",
   "api": {
     "major": 1,
@@ -48,11 +48,11 @@
       "minVersion": 1
     },
     {
-      "id": "anomaly.input",
+      "id": "anomaly.scheduler",
       "minVersion": 1
     },
     {
-      "id": "anomaly.scheduler",
+      "id": "anomaly.plugin-state",
       "minVersion": 1
     },
     {
@@ -93,7 +93,6 @@
     "ui",
     "configuration",
     "json",
-    "input",
     "scheduler",
     "ipc",
     "interop-signature",

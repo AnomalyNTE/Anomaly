@@ -15,8 +15,9 @@
 
 namespace daily {
 
+constexpr const char* kPluginId = "yu-1021.daily";
 constexpr const char* kConfigSchemaId = "yu-1021.daily.settings";
-constexpr std::uint32_t kConfigSchemaVersion = 1;
+constexpr std::uint32_t kConfigSchemaVersion = 2;
 constexpr const char* kProfileFileName = "compatibility.profile.json";
 constexpr const char* kProfileContract = "auto-daily-v1";
 
@@ -89,8 +90,6 @@ struct Settings {
     bool stage_daily_rewards{true};
     bool stage_periodic_rewards{true};
     DungeonChoice dungeon{};
-    std::uint32_t stop_modifiers{2};        // 2 = ANOMALY_INPUT_MODIFIER_V1_CONTROL
-    std::uint32_t stop_vk{0x53};            // VK_S
     std::uint32_t world_settle_seconds{8};  // 到达世界后静置多久再开跑
     std::uint32_t stage_timeout_seconds{1200};
 };

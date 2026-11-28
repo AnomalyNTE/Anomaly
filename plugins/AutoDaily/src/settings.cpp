@@ -14,7 +14,7 @@ constexpr const char* kSchemaJson = R"JSON({
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "required": ["enabled", "configured", "auto_run_pending", "stages", "dungeon", "hotkey", "timing"],
+  "required": ["enabled", "configured", "auto_run_pending", "stages", "dungeon", "timing"],
   "properties": {
     "enabled": { "type": "boolean" },
     "configured": { "type": "boolean" },
@@ -43,15 +43,6 @@ constexpr const char* kSchemaJson = R"JSON({
         "runs": { "type": "integer", "minimum": 1, "maximum": 50 },
         "enter_wait": { "type": "integer", "minimum": 1, "maximum": 60 },
         "exit_wait": { "type": "integer", "minimum": 1, "maximum": 60 }
-      }
-    },
-    "hotkey": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["stop_modifiers", "stop_vk"],
-      "properties": {
-        "stop_modifiers": { "type": "integer", "minimum": 0, "maximum": 15 },
-        "stop_vk": { "type": "integer", "minimum": 1, "maximum": 254 }
       }
     },
     "timing": {
@@ -151,9 +142,6 @@ void NormalizeSettings(Settings& settings) noexcept {
     if (settings.dungeon.enter_wait > 60) settings.dungeon.enter_wait = 60;
     if (settings.dungeon.exit_wait < 1) settings.dungeon.exit_wait = 1;
     if (settings.dungeon.exit_wait > 60) settings.dungeon.exit_wait = 60;
-    settings.stop_modifiers &= 0x0F;
-    if (settings.stop_vk < 1) settings.stop_vk = 1;
-    if (settings.stop_vk > 254) settings.stop_vk = 254;
     if (settings.world_settle_seconds > 120) settings.world_settle_seconds = 120;
     if (settings.stage_timeout_seconds < 30) settings.stage_timeout_seconds = 30;
     if (settings.stage_timeout_seconds > 7200) settings.stage_timeout_seconds = 7200;
@@ -201,10 +189,6 @@ std::string SerializeSettings(const Settings& settings) {
     AppendUnsigned(out, value.dungeon.enter_wait);
     out += ", \"exit_wait\": ";
     AppendUnsigned(out, value.dungeon.exit_wait);
-    out += "},\n  \"hotkey\": {\"stop_modifiers\": ";
-    AppendUnsigned(out, value.stop_modifiers);
-    out += ", \"stop_vk\": ";
-    AppendUnsigned(out, value.stop_vk);
     out += "},\n  \"timing\": {\"world_settle_seconds\": ";
     AppendUnsigned(out, value.world_settle_seconds);
     out += ", \"stage_timeout_seconds\": ";
@@ -272,12 +256,6 @@ bool ParseSettings(const std::string& document, const AnomalyJsonServiceV1* json
         ReadNumber(json, dungeon, "enter_wait", parsed.dungeon.enter_wait);
         ReadNumber(json, dungeon, "exit_wait", parsed.dungeon.exit_wait);
         static_cast<void>(json->release(json->user, dungeon));
-    }
-    const auto hotkey = FindObject(json, root, "hotkey");
-    if (hotkey.id != 0) {
-        ReadNumber(json, hotkey, "stop_modifiers", parsed.stop_modifiers);
-        ReadNumber(json, hotkey, "stop_vk", parsed.stop_vk);
-        static_cast<void>(json->release(json->user, hotkey));
     }
     const auto timing = FindObject(json, root, "timing");
     if (timing.id != 0) {

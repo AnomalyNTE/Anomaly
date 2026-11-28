@@ -45,7 +45,7 @@ void ANOMALY_CALL OnDungeonResponse(void* user, AnomalyGenerationHandleV1 /*pend
     state.ipc_has_response = true;
 }
 
-bool Send(const char* payload, const std::size_t length) {
+bool Send(const char* payload, const std::size_t length, const bool log_failure = true) {
     State& state = S();
     if (state.ipc == nullptr || state.ipc->invoke_async == nullptr) return false;
     {
@@ -66,7 +66,9 @@ bool Send(const char* payload, const std::size_t length) {
         std::lock_guard<std::mutex> guard(state.ipc_mutex);
         state.ipc_in_flight = false;
         state.ipc_status_code = status.code;
-        WinLogf("ipc invoke_async failed: code=%d", static_cast<int>(status.code));
+        if (log_failure) {
+            WinLogf("ipc invoke_async failed: code=%d", static_cast<int>(status.code));
+        }
         return false;
     }
     state.dungeon_call = call;
@@ -85,6 +87,28 @@ bool ReadField(const AnomalyJsonServiceV1* json, AnomalyGenerationHandleV1 root,
 bool DungeonIpcAvailable() {
     const State& state = S();
     return state.ipc != nullptr && state.ipc->invoke_async != nullptr;
+}
+
+DungeonProbeResult DungeonProbe() {
+    State& state = S();
+    if (state.ipc == nullptr || state.ipc->invoke_async == nullptr) {
+        return DungeonProbeResult::Missing;
+    }
+    bool in_flight = false;
+    {
+        std::lock_guard<std::mutex> guard(state.ipc_mutex);
+        in_flight = state.ipc_in_flight;
+    }
+    if (in_flight) {
+        // 上一次探测还在飞：读到响应就说明端点在线（响应内容对探测没有意义，直接丢掉）。
+        DungeonStatus status{};
+        return DungeonTakeStatus(status) ? DungeonProbeResult::Ready
+                                         : DungeonProbeResult::Pending;
+    }
+    constexpr const char* kStatusPayload = R"({"op":"status"})";
+    return Send(kStatusPayload, std::strlen(kStatusPayload), false)
+               ? DungeonProbeResult::Pending
+               : DungeonProbeResult::Missing;
 }
 
 bool DungeonStart(const Settings& settings) {

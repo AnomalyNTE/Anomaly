@@ -29,6 +29,15 @@ struct DungeonStatus {
 
 bool DungeonIpcAvailable();
 
+// Clone Enter 是否已经注册 IPC 端点：发起一次 status 探测。
+// Missing = 对方没有端点（未启用/未安装），Pending = 等响应，Ready = 已经能正常调用。
+enum class DungeonProbeResult {
+    Missing,
+    Pending,
+    Ready,
+};
+DungeonProbeResult DungeonProbe();
+
 // 三个请求都走 invoke_async：Game 线程禁止阻塞式 IPC。
 bool DungeonStart(const Settings& settings);
 bool DungeonStop();

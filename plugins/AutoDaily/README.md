@@ -1,31 +1,40 @@
 # 自动日常（Auto Daily）
 
 内建插件：进游戏后一条龙完成日常——把打副本交给 [Clone Enter](../CloneEnter/)，接着领一咖舍、
-领奖励。首次使用配置一次，之后每次启动游戏自动跑一次；游戏内 **Ctrl+S** 随时强制停止。
+领奖励。首次使用配置一次，之后每次启动游戏自动跑一次；面板上的「停止」按钮随时停（不再注册全局热键）。
 
 - 插件 id：`yu-1021.daily`
 - 包目录：`Anomaly/plugins/AutoDaily`
-- 版本：4.3.7（与 `manifest.json` 一致）
+- 版本：2.0.0（与 `manifest.json` 一致）
 
 ## 功能
 
 | 阶段 | 做什么 | 依赖 |
 | --- | --- | --- |
-| 等世界 | `anomaly.nte.session` 报 `WORLD_READY`，且游戏内才有的控件（`W_HTButton_AdventureManual` / `W_BoundActionButton_Close_C`）出现在目录里且不是隐藏状态，才算真的进了游戏；期间每秒检测一次登录按钮 `UI_Button_Login`（最多 8 次），就绪后再等 `world_settle_seconds` 秒 | nte.session（可选）+ ui-buttons |
-| 打副本 | 经 `anomaly.ipc` 调 `ccyellowstar.clone-enter.onekey`：`start` / `status` / `stop`；`start` 里固定带 `"melee":true`，平A模式常开、没有开关 | Clone Enter ≥ 0.2.16（可选） |
+| 等世界 | `anomaly.nte.session` 报 `WORLD_READY`，且游戏内才有的控件（`W_HTButton_AdventureManual` / `W_BoundActionButton_Close_C`）出现在目录里且不是隐藏状态，才算真的进了游戏；期间轮询登录按钮 `UI_Button_Login`：**只在宿主报 CLICKABLE 时点，一秒一轮，最多 60 次**——页面加载/转场时点击会被游戏丢掉，所以不做「只点几次」的死限制；进游戏（HUD 就绪）后立即停止，不会重复弹登录，就绪后再等 `world_settle_seconds` 秒 | nte.session（可选）+ ui-buttons |
+| 打副本 | 先把副本插件 `ccyellowstar.clone-enter` 切到启用（已启用就**关闭再打开**＝重新加载，没启用就直接启用），等它的 IPC 端点就绪再经 `anomaly.ipc` 调 `ccyellowstar.clone-enter.onekey`：`start` / `status` / `stop`；`start` 里固定带 `"melee":true`，平A模式常开、没有开关；**打完副本立刻把副本插件关掉** | Clone Enter ≥ 0.2.16（可选） |
 | 领一咖舍 | `ServerStoreManagementRPC`（Type=17）直发，再逐层关弹窗：`Button_Sure`「确定」→ `ButtonDeactivate` → `WB_CommonDeactivate`（最外层 `UI_CommonAwardsPopUpWindows_C_<实例号>`） | 反射 + ui-buttons |
-| 领每日活跃奖励 | 反射领取探索指南五类，再走控件链：开面板 → **「全部」tab（每日活跃页）** → **先领下方单独活跃任务** → **再点上方「全部奖励」** → 关弹窗 → 关面板 | 反射 + ui-buttons |
+| 领每日活跃奖励 | 反射领取探索指南五类，再走控件链：开面板 → **「全部」tab（每日活跃页）** → **先领下方单独活跃任务** → **再点上方「全部奖励」** → **点奖励确认框「确定」** → 关弹窗 → 关面板 | 反射 + ui-buttons |
 | 领环期任务奖励 | 控件链：**`W_HTButton_CombatAward`（HUD 入口，不先开面板）** → **「环期任务」tab** → **`BtnSubmitAllQuest`「全部领取」** → 关弹窗 → 关面板 | ui-buttons |
 
 阶段顺序固定为 **打副本 → 领一咖舍 → 领每日活跃奖励 → 领环期任务奖励**：一咖舍的 RPC 与弹窗都
 处理完（`FonsChainBusy()` 为假）才进奖励阶段，日志里对应 `dungeon stage finished` /
 `cafe stage finished` / `daily reward stage finished`。
 
+副本插件是**按需启停**的：进入副本阶段先探测 Clone Enter 的 IPC 端点——
+端点在线（已启用）就写 false 让它卸载、再写 true 重新加载；端点不在线（没启用/没装）就直接写
+true 尝试启用；等端点就绪（上限 20 秒）后才发 `start`。打副本**结束、被中止、超时或手动停止**
+都会写 false 把副本插件关掉。开关落在宿主的 `config/plugin-enablement.json`，宿主对它有一个
+750ms debounce 的文件监视器，文件一变就重新加载启用表；因此 manifest 声明了
+`anomaly.plugin-state` 服务来定位运行时根目录。解析不到根目录时会退化成「IPC 在线就直接打、
+不在线就跳过副本」，不会去猜路径。
+
 两种领取是**两条独立链路**：设置里各有一个开关（`stages.daily_rewards` /
 `stages.periodic_rewards`），面板上也有各自的一键按钮，可以只跑其中一种。前者**先点下方每一条
 单独活跃任务的领取按钮（`ButtonAccept`，活跃度到账），再点上方「全部奖励」（`ReceiveButton`）**，
-顺序不能反——否则会按领取前的活跃度去领奖励，少领甚至领不到；后者点 `BtnSubmitAllQuest`
-一次性全部领取。
+顺序不能反——否则会按领取前的活跃度去领奖励，少领甚至领不到；点完「全部奖励」会弹奖励确认框，
+还要再点一次「确定」（`Button_Sure`，和一咖舍同一个按钮），不点掉后面的关窗会被弹窗挡住。
+后者点 `BtnSubmitAllQuest` 一次性全部领取。
 
 设置项里的每个开关都是**独立**的：打开/关闭一个不会连带改另一个。后台配置热读（每 2 秒一次）
 只在**面板没开着、且没有未保存改动**时才把磁盘文档应用到内存，面板开着时一律以面板里的开关为准，
@@ -77,7 +86,7 @@ caption 属于游戏数据，代码里写成 UTF-8 字节转义与原文本逐�
 只在扫描完成后才更新，没扫过时 `button_count` 恒为 0。
 
 **一律只检测、不强制**：所有代点都要求宿主报 `CLICKABLE` 才发请求，不用 `FORCE` 标志。
-登录按钮没就绪（加载遮罩、还没加载出来）就继续等，一秒一轮。
+登录按钮没就绪（加载遮罩、还没加载出来）就继续等，一秒一轮；等待不消耗点击次数。
 
 判据按实测校准：**不拿登录页做门**。进世界后 `UI_Button_Login` 还会残留在目录里、甚至仍报
 可点击，用它判断会永远卡住；所以反过来只认「游戏内才有的控件」——
@@ -89,7 +98,7 @@ caption 属于游戏数据，代码里写成 UTF-8 字节转义与原文本逐�
 ## 配置
 
 配置文件：`Anomaly/config/plugins/yu-1021.daily/config-yu-1021.daily.settings.json`
-（外层是宿主信封 `{"data":{...},"schemaVersion":1}`，改里面的 `data` 即可；插件在**设置面板没开着、
+（外层是宿主信封 `{"data":{...},"schemaVersion":2}`，改里面的 `data` 即可；插件在**设置面板没开着、
 且没有未保存改动**时每 2 秒热读一次，改完保存会自动生效，不用重启。面板开着时以面板里的开关为准，
 手改文件不会把正在点的开关覆盖掉）。
 
@@ -116,16 +125,12 @@ caption 属于游戏数据，代码里写成 UTF-8 字节转义与原文本逐�
       "exit_wait": 8              // 出本等待（秒）
       // 平A模式固定开启（请求里恒为 "melee":true），没有开关，也不写进配置
     },
-    "hotkey": { "stop_modifiers": 2, "stop_vk": 83 },   // Ctrl + S
     "timing": { "world_settle_seconds": 8, "stage_timeout_seconds": 1200 },
     "dungeon_table": [ /* 只读对照表，写配置时自动生成，读取时忽略 */ ]
   },
-  "schemaVersion": 1
+  "schemaVersion": 2
 }
 ```
-
-`hotkey.stop_modifiers` 按位：Shift=1、Ctrl=2、Alt=4、Super=8；`stop_vk` 是 Win32 虚拟键码
-（S=83）。
 
 ### 副本序号对照表
 
@@ -180,7 +185,8 @@ cmake --build --preset windows-relwithdebinfo --target anomaly_builtin_auto_dail
 | `src/settings.hpp/.cpp` | 设置模型、副本表、JSON 序列化与 `anomaly.config` 读写 |
 | `src/profile_layout.hpp/.cpp` | 读取并校验 `profile/compatibility.profile.json`、解析签名 |
 | `src/game.hpp/.cpp` | 内存读取、`ProcessEvent`、ui-buttons 代点、两条控件链路 |
-| `src/dungeon.hpp/.cpp` | Clone Enter 的 IPC 客户端（`invoke_async`） |
+| `src/dungeon.hpp/.cpp` | Clone Enter 的 IPC 客户端（`invoke_async`）与端点探测 |
+| `src/clone_enter.hpp/.cpp` | 副本插件的启停：写宿主 `config/plugin-enablement.json`（Worker 线程） |
 | `src/chain.hpp/.cpp` | 一条龙状态机 |
 | `src/i18n.hpp/.cpp` | `anomaly.localization` 薄封装，英文回退 + `{0}..{7}` 占位 |
 
@@ -189,10 +195,14 @@ cmake --build --preset windows-relwithdebinfo --target anomaly_builtin_auto_dail
 - **偏移和签名只在 profile 里**：`profile/compatibility.profile.json` 是唯一来源；文件缺失、
   `contract` 不匹配或任一字段越界时，反射相关功能（一咖舍 RPC、反射领取、本地
   `PlayerState`）整段停用，只用控件链，绝不回落到代码里的默认偏移。
-- **Game/Render 回调不做文件 I/O**：配置写入与热读都通过 `anomaly.scheduler` 投递到 Worker 线程。
+- **Game/Render 回调不做文件 I/O**：配置写入/热读、副本插件启用表的读写都通过
+  `anomaly.scheduler` 投递到 Worker 线程。
+- **副本插件启停靠宿主启用表**：`config/plugin-enablement.json`（`schemaVersion: 1`）是宿主的
+  启动契约，写入时会保留其他插件的开关；文件损坏、读不到或版本不符时**不动它**，只在日志里
+  留痕并退化成「IPC 在线就直接打」。
 - **IPC 走异步**：Game 线程禁止阻塞式 `invoke`，副本请求全部 `invoke_async`，响应在下一
   Game tick 解析。
 - **文案全部本地化**：中文只在 `locales/zh-CN.json`，`src/*.cpp` 里只写英文回退；
   `tools/check_plugin_i18n.ps1 -Plugin AutoDaily` 校验 key 覆盖与残留中文字面量。
-- 停止语义：Ctrl+S 热键只置一个原子标志，由 Game tick 消费；`enabled=false` 也会在下一 tick
-  停止；停止时若正在打副本，会向 Clone Enter 发 `stop`。
+- 停止语义：面板「停止」按钮置一个请求位，由 Game tick 消费；`enabled=false` 也会在下一 tick
+  停止；停止时若正在打副本，会向 Clone Enter 发 `stop` 并把副本插件关掉。

@@ -64,6 +64,7 @@ struct RewardStep {
     // 6=按名字前缀点第一个（控件名带实例号后缀，如 W_BoundActionButton_Close_C_2147458308）
     // 7=尽力关窗：能确认收起来最好，关不掉只记一条警告就往下走
     // 8=确保面板打开：页签行已经可点就直接过，否则才点 target 这个入口按钮
+    // 10=点奖励确认框的「确定」（和一咖舍同一个按钮）；确认框没出现就直接过
     int mode;
     const char* target;
     int wait;
@@ -95,6 +96,9 @@ constexpr RewardStep kDailyRewardSteps[] = {
     // 活跃度到账后才点上方「全部奖励」，否则会按旧的活跃度领奖，少领甚至领不到。
     {1, "ButtonAccept", 45, "daily-task-claims", false, nullptr, true},
     {1, "ReceiveButton", 45, "activity-reward", false, nullptr, true},
+    // 领完活跃度奖励会弹「获得奖励」确认框：和一咖舍一样点同一个「确定」按钮，
+    // 不点掉的话后面的关窗和下一条链路都会被这个弹窗挡着。
+    {10, "Button_Sure", 30, "confirm-activity-reward", false, nullptr, true},
     // 关窗是一步「验证式收尾」：弹窗和面板都从屏幕上消失才算完，关不掉就停在这里，
     // 绝不带着开着的面板进下一条链路（面板会把 HUD 上的入口按钮挡成不可点击）。
     {7, "", 30, "close-reward-ui", true, nullptr, false},
@@ -683,12 +687,14 @@ bool NudgeLoginButton() {
 }
 
 // 诊断：把与登录/HUD 判据相关的控件连同 category 打出来，避免再靠猜。
+// 同时把当前所有**可点**控件列一遍：登录页卡住时，真正能推进的按钮往往不是登录按钮。
 void LogWaitCandidates() {
     const AnomalyNteUiButtonsServiceV1* service = Buttons();
     if (service == nullptr || service->status == nullptr || service->button_at == nullptr) return;
     AnomalyNteUiButtonsStatusV1 status{sizeof(status)};
     if (service->status(service->user, &status).code != ANOMALY_STATUS_V1_OK) return;
     int shown = 0;
+    int clickable_shown = 0;
     std::uint32_t clickable = 0;
     for (std::uint32_t i = 0; i < status.button_count; ++i) {
         AnomalyNteUiButtonSnapshotV1 button{sizeof(button)};
@@ -696,7 +702,14 @@ void LogWaitCandidates() {
             ANOMALY_STATUS_V1_OK) {
             continue;
         }
-        if (ButtonClickable(button)) ++clickable;
+        if (ButtonClickable(button)) {
+            ++clickable;
+            if (clickable_shown < 8) {
+                WinLogf("wait clickable: %s window=%s text=%s", button.name, button.window,
+                        button.text[0] != '\0' ? button.text : "-");
+                ++clickable_shown;
+            }
+        }
         const bool interesting = std::strstr(button.name, "Login") != nullptr ||
                                  std::strstr(button.name, "AdventureManual") != nullptr ||
                                  std::strstr(button.name, "BoundAction") != nullptr;
@@ -778,7 +791,7 @@ bool TryClickWidget(const char* target, char* clicked_name = nullptr,
             std::snprintf(clicked_name, clicked_size, "%s", button.name);
         }
         if (scope_label != nullptr) {
-            WinLogf("reward click target: %s via %s path=%s", button.name, scope_label, button.path);
+            WinLogf("reward click target: %s via %s", button.name, scope_label);
         }
         CancelPendingRequest();
         return service->request_click(service->user, &click, &state.pending_request).code ==
@@ -862,6 +875,29 @@ struct StepOutcome {
     std::uint32_t clicked;
     bool blocked;  // 控件在、但宿主说不可点击（多半已经领过 / 条件不满足）
 };
+
+// 目录里是否存在这个名字、且不是 HIDDEN 的控件。奖励确认框的「确定」在弹窗动画里
+// 可能先是 BLOCKED，动画结束才变成 CLICKABLE；HIDDEN 只可能是上一个弹窗的残留。
+bool ButtonVisible(const char* target) {
+    if (target == nullptr || target[0] == '\0') return false;
+    const AnomalyNteUiButtonsServiceV1* service = Buttons();
+    if (service == nullptr || service->status == nullptr || service->button_at == nullptr) {
+        return false;
+    }
+    AnomalyNteUiButtonsStatusV1 status{sizeof(status)};
+    if (service->status(service->user, &status).code != ANOMALY_STATUS_V1_OK) return false;
+    for (std::uint32_t i = 0; i < status.button_count; ++i) {
+        AnomalyNteUiButtonSnapshotV1 button{sizeof(button)};
+        if (service->button_at(service->user, status.catalog_sequence, i, &button).code !=
+            ANOMALY_STATUS_V1_OK) {
+            continue;
+        }
+        if (std::strcmp(button.name, target) != 0) continue;
+        if (button.category == ANOMALY_NTE_UI_BUTTON_CATEGORY_V1_HIDDEN) continue;
+        return true;
+    }
+    return false;
+}
 
 // 宿主自己维护的窗口列表：这才是「这个窗口现在到底在不在屏幕上」的权威答案。
 // 不能靠目录里的残留控件推断——面板关掉之后 tab 行还会以 BLOCKED/空文本留在目录里。
@@ -1085,8 +1121,8 @@ bool ClickPanelClose(char* clicked_name, const std::size_t clicked_size, const c
     return false;
 }
 
-// 收尾排障：面板/弹窗判定依据 + 目录里所有 tab 行与关闭类控件的原始状态一次打全，
-// 下次就不用再猜「到底哪个控件才是关闭键」。
+// 收尾排障：只打「判定依据 + 相关控件 + 真正开着的窗口」，最多十来行。
+// 完整目录（几十上百个残留窗口）对定位没帮助，只会把日志刷满。
 void LogRewardWindowState(const char* reason) {
     const AnomalyNteUiButtonsServiceV1* service = Buttons();
     if (service == nullptr || service->status == nullptr || service->button_at == nullptr) return;
@@ -1110,42 +1146,28 @@ void LogRewardWindowState(const char* reason) {
             std::strcmp(button.name, kAwardCloseName) == 0 ||
             std::strcmp(button.name, kAwardExitName) == 0;
         if (!tab && !close_like) continue;
-        if (listed++ >= 20) break;
-        WinLogf("reward window entry: %s cat=%d text=%s path=%s", button.name,
-                static_cast<int>(button.category), button.text[0] != '\0' ? button.text : "-",
-                button.path);
+        if (listed >= 10) break;
+        ++listed;
+        WinLogf("reward window entry: %s cat=%d text=%s", button.name,
+                static_cast<int>(button.category), button.text[0] != '\0' ? button.text : "-");
     }
-    // 面板窗口里此刻到底有哪些**可点**控件：这是判断「该按哪个键关门」的决定性证据。
-    const std::string& panel_window = state.reward_window_name;
-    if (!panel_window.empty()) {
-        int clickable_in_window = 0;
-        for (std::uint32_t i = 0; i < status.button_count; ++i) {
-            AnomalyNteUiButtonSnapshotV1 button{sizeof(button)};
-            if (service->button_at(service->user, status.catalog_sequence, i, &button).code !=
-                ANOMALY_STATUS_V1_OK) {
-                continue;
-            }
-            if (std::strcmp(button.window, panel_window.c_str()) != 0) continue;
-            if (!ButtonClickable(button)) continue;
-            if (clickable_in_window++ >= 25) break;
-            WinLogf("reward window clickable: %s kind=%u depth=%u text=%s path=%s", button.name,
-                    button.kind, button.depth, button.text[0] != '\0' ? button.text : "-",
-                    button.path);
-        }
-        WinLogf("reward window clickable: total=%d window=%s", clickable_in_window,
-                panel_window.c_str());
-    }
+    // 只列真的还在屏幕上的窗口（VISIBLE 且不是 CLOSING），最多 8 个。
+    int open_windows = 0;
     for (std::uint32_t i = 0; i < status.window_count && service->window_at != nullptr; ++i) {
         AnomalyNteUiWindowSnapshotV1 window{sizeof(window)};
         if (service->window_at(service->user, status.catalog_sequence, i, &window).code !=
             ANOMALY_STATUS_V1_OK) {
             continue;
         }
+        if ((window.flags & ANOMALY_NTE_UI_WINDOW_V1_VISIBLE) == 0u) continue;
+        if ((window.flags & ANOMALY_NTE_UI_WINDOW_V1_CLOSING) != 0u) continue;
+        if (open_windows >= 8) break;
+        ++open_windows;
         WinLogf("reward window open: %s layer=%s flags=0x%x", window.window, window.layer,
                 window.flags);
     }
-    WinLogf("reward window entries: total=%u catalog=%u windows=%u", listed, status.button_count,
-            status.window_count);
+    WinLogf("reward window summary: entries=%d open=%d catalog=%u windows=%u", listed,
+            open_windows, status.button_count, status.window_count);
 }
 
 // mode 1 会把目录里所有同名按钮都点一遍。
@@ -1157,6 +1179,11 @@ StepOutcome RewardClickStep(const RewardStep& step) {
             outcome.clicked = 1;
             return outcome;
         }
+        if (TryClickWidget(step.target)) outcome.clicked = 1;
+        return outcome;
+    }
+    if (step.mode == 10) {
+        // 奖励确认框只有一个「确定」（Button_Sure），点一次即可。
         if (TryClickWidget(step.target)) outcome.clicked = 1;
         return outcome;
     }
@@ -1437,6 +1464,26 @@ void TickRewardChain() {
         if (RewardClickStep(step).clicked == 0) {
             WinLogf("reward step %s: nothing to close", step.label);
         }
+        AdvanceRewardStep(1u, false);
+        return;
+    }
+    if (step.mode == 10) {
+        // 奖励确认框：有「确定」就点；还没弹出来（或还在动画里）就有限次重试；
+        // 一直没有就说明这次没有确认框，直接过。
+        if (ButtonVisible(step.target)) {
+            const StepOutcome outcome = RewardClickStep(step);
+            if (outcome.clicked > 0) {
+                WinLogf("reward step %s: clicked %s", step.label, step.target);
+                if (SubmitScan()) state.reward_wait = 20;
+                return;
+            }
+        }
+        if (state.reward_retries > 0) {
+            --state.reward_retries;
+            if (SubmitScan()) state.reward_wait = 30;
+            return;
+        }
+        WinLogf("reward step %s: nothing to confirm, skipping", step.label);
         AdvanceRewardStep(1u, false);
         return;
     }

@@ -1744,6 +1744,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
             plugins/AutoDaily/src/profile_layout.cpp
             plugins/AutoDaily/src/game.cpp
             plugins/AutoDaily/src/dungeon.cpp
+            plugins/AutoDaily/src/clone_enter.cpp
             plugins/AutoDaily/src/chain.cpp
             plugins/AutoDaily/src/i18n.cpp
         MANIFEST plugins/AutoDaily/manifest.json

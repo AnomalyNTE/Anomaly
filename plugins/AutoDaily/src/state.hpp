@@ -12,6 +12,7 @@
 #include "anomaly/sdk/services/localization.h"
 #include "anomaly/sdk/services/nte.h"
 #include "anomaly/sdk/services/platform.h"
+#include "anomaly/sdk/services/plugin_state.h"
 #include "anomaly/sdk/services/ui.h"
 #include "anomaly/sdk/services/ui_resources.h"
 #include "anomaly/sdk/services/ue5.h"
@@ -61,7 +62,6 @@ enum class Stage {
 // 停止来源，只用于展示/日志（不进入配置）。
 enum class StopCause {
     None = 0,
-    Hotkey = 1,
     Disabled = 2,
     Manual = 3,
 };
@@ -74,7 +74,6 @@ struct State {
     const AnomalyConfigServiceV1* config{};
     const AnomalyJsonServiceV1* json{};
     const AnomalyProfileServiceV1* profile{};
-    const AnomalyInputServiceV1* input{};
     const AnomalySchedulerServiceV1* scheduler{};
     const AnomalyIpcServiceV1* ipc{};
     const AnomalySignatureServiceV1* signature{};
@@ -82,6 +81,16 @@ struct State {
     const AnomalyUe5ObjectsServiceV1* objects{};
     const AnomalyNteUiButtonsServiceV1* uibuttons{};
     const AnomalyNteSessionServiceV1* session{};
+    const AnomalyPluginStateServiceV1* plugin_state{};
+
+    // 副本插件（Clone Enter）的启用状态管理：写宿主的 config/plugin-enablement.json，
+    // 宿主的 enablement 文件监视器会自动启用/停用（= 关闭再打开就是重新加载）。
+    std::wstring clone_enter_enablement_path{};
+    bool clone_enter_control_ready{};
+    std::atomic_bool clone_enter_write_in_flight{};
+    std::atomic_bool clone_enter_write_pending{};
+    std::atomic_int clone_enter_write_target{};
+    char clone_enter_error[kLogLineBytes]{};
 
     Settings settings{};
     ConfigStore config_store{};
@@ -114,14 +123,10 @@ struct State {
     std::atomic_int request_dungeon_only{};
     std::atomic_int request_save{};
     std::atomic_int request_placeholders{};
-    std::atomic_bool stop_requested{};
     std::atomic_bool settings_dirty{};
     // 面板最近一次绘制的时间（steady_clock 毫秒；0 表示面板没画过/已关）。
     // 面板开着时以内存里的开关为准：Worker 的配置热读不许拿磁盘文档覆盖用户正在点的开关。
     std::atomic<std::int64_t> settings_ui_milliseconds{0};
-
-    // 热键
-    AnomalyGenerationHandleV1 stop_hotkey{};
 
     // 一条龙
     Stage stage{Stage::Idle};
@@ -137,6 +142,7 @@ struct State {
     bool login_clicked{};
     double world_ready_timer{};  // 真正进到游戏里之后计时，用于 world_settle_seconds
     int login_blocked_logs{};    // 「登录按钮存在但不可点击」的诊断日志配额
+    int login_click_logs{};      // 「登录点击结果」的诊断日志配额
     int login_tries{};           // 本轮进游戏已经尝试点登录按钮的次数
     int wait_diag_logs{};        // 「等世界」诊断日志配额
     int wait_diag_wait{};
@@ -146,6 +152,14 @@ struct State {
     std::uint32_t cafe_polls{};
     std::uint32_t reward_polls{};
     char stage_note[kStatusBytes]{};
+
+    // 副本阶段前的「副本插件准备」：先确认/切换到启用，打完再关掉。
+    int dungeon_phase{};          // 0 = 准备副本插件 1 = 副本进行中
+    int dungeon_prepare_phase{};  // 0 = 探测 1 = 等关闭 2 = 等启用
+    double dungeon_prepare_timer{};
+    double dungeon_probe_timer{};  // IPC 端点探测的节流（秒）
+    int dungeon_log_phase{-1};     // 上一次打过日志的副本阶段（只在变化时打）
+    std::uint32_t dungeon_log_runs{};
 
     // 一咖舍链路（RPC + 清弹窗）
     int fons_chain{};
@@ -177,7 +191,6 @@ struct State {
 
     // 副本插件 IPC：完成回调可能来自任意线程，响应只在 Game 线程解析。
     std::atomic_bool save_in_flight{};
-    std::atomic_bool hotkey_dirty{};
     AnomalyGenerationHandleV1 reload_task{};
 
     std::mutex ipc_mutex{};
