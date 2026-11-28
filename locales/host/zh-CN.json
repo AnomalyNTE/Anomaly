@@ -315,6 +315,8 @@
     "settings.interface.reduce_transparency_hint": "用不透明的表面替换液态玻璃，提高对比度",
     "settings.interface.remember_last_page": "记住上次页面",
     "settings.interface.remember_last_page_hint": "下次启动时恢复上次打开的页面",
+    "settings.interface.horizontal_layout": "使用横向排列（实验性）",
+    "settings.interface.horizontal_layout_hint": "关闭使用原生插件界面，开启使用卡片式横向排列界面",
     "settings.input.menu_toggle": "菜单切换键",
     "settings.input.menu_toggle_hint": "打开或折叠宿主界面",
     "settings.input.hide_all_toggle": "隐藏所有界面",

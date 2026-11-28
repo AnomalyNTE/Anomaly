@@ -1861,9 +1861,13 @@ void RenderEmbedded(IDXGISwapChain* swap_chain, UINT flags) {
             phase_started = phase_completed;
         }
         // No plugin draw while the first-launch notice is unanswered.
-        if (!anomaly::HostUiPluginDrawSuppressed()) {
+        const bool plugin_draw_suppressed = anomaly::HostUiPluginDrawSuppressed();
+        if (!plugin_draw_suppressed) {
             state->plugins->Draw(ImGui::GetCurrentContext());
         }
+        // The shell occludes itself against the plugin windows just drawn; a
+        // suppressed draw clears the list instead of leaving stale rectangles.
+        SyncPlatformPluginWindowRects(!plugin_draw_suppressed);
         if (sampled) {
             const auto phase_completed = std::chrono::steady_clock::now();
             state->performance.Record(

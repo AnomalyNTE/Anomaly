@@ -48,6 +48,7 @@ struct PlatformSettingsValues final {
     bool interface_reduced_motion{};
     bool interface_reduced_transparency{};
     bool interface_remember_last_route{true};
+    bool interface_horizontal_layout{};
     // Highest accepted notice version; zero means never acknowledged.
     std::uint32_t interface_notice_accepted_version{};
     std::uint32_t input_menu_toggle{0x2d};

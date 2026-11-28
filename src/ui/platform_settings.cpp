@@ -151,6 +151,7 @@ nlohmann::json Serialize(
             {"interface.reduced_motion", values.interface_reduced_motion},
             {"interface.reduced_transparency", values.interface_reduced_transparency},
             {"interface.remember_last_route", values.interface_remember_last_route},
+            {"interface.horizontal_layout", values.interface_horizontal_layout},
             {"interface.notice_accepted_version", values.interface_notice_accepted_version},
             {"input.menu_toggle", values.input_menu_toggle},
             {"input.hide_all_toggle", values.input_hide_all_toggle},
@@ -330,6 +331,7 @@ public:
             ReadValue(values, "interface.reduced_transparency",
                 snapshot_.values.interface_reduced_transparency);
             ReadValue(values, "interface.remember_last_route", snapshot_.values.interface_remember_last_route);
+            ReadValue(values, "interface.horizontal_layout", snapshot_.values.interface_horizontal_layout);
             ReadValue(values, "interface.notice_accepted_version",
                 snapshot_.values.interface_notice_accepted_version);
             const auto persisted_toggle = values.find("input.menu_toggle");
