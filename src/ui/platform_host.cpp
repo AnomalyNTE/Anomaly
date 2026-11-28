@@ -7067,7 +7067,15 @@ private:
         surface.deep_backdrop = true;
         anomaly::glass::RegisterWindowSurface(surface);
         ImGui::PushStyleColor(ImGuiCol_Text, kNoticeInk);
-        const float footer_height = Scaled(104.0f);
+        ImFont* const footer_font = ue5mem::PlatformUiFontForScale(PlatformUiScale() * 1.12f);
+        const bool footer_pushed = footer_font != nullptr;
+        if (footer_pushed) ImGui::PushFont(footer_font);
+        const float button_height = std::max(Scaled(40.0f), ImGui::GetFrameHeight());
+        const float agree_height = std::max(ImGui::GetFrameHeight(), anomaly::glass::SwitchSize().y);
+        if (footer_pushed) ImGui::PopFont();
+        // Reserve the actual footer rows and leave ten logical pixels below the buttons.
+        const float footer_height = agree_height + button_height +
+            ImGui::GetStyle().ItemSpacing.y * 3.0f + Scaled(10.0f) - ImGui::GetStyle().WindowPadding.y;
         const float body_height = std::max(
             Scaled(110.0f), ImGui::GetContentRegionAvail().y - footer_height);
         ImGui::BeginChild("FirstRunNoticeBody", ImVec2(0.0f, body_height), false);
@@ -7085,9 +7093,6 @@ private:
         ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.0f, 0.0f, 0.0f, 0.14f));
         ImGui::Separator();
         ImGui::PopStyleColor();
-        ImFont* const footer_font =
-            ue5mem::PlatformUiFontForScale(PlatformUiScale() * 1.12f);
-        const bool footer_pushed = footer_font != nullptr;
         if (footer_pushed) ImGui::PushFont(footer_font);
         const std::string agree = StableLabel(
             anomaly::MessageId::NoticeAgree, "first-run-notice-agree");
@@ -7096,35 +7101,69 @@ private:
             StableLabel(anomaly::MessageId::NoticeExit, "first-run-notice-exit");
         const std::string confirm_label =
             StableLabel(anomaly::MessageId::NoticeConfirm, "first-run-notice-confirm");
-        const float button_height = Scaled(32.0f);
         const float frame_padding = ImGui::GetStyle().FramePadding.x * 2.0f;
-        const float exit_width = ImGui::CalcTextSize(exit_label.c_str()).x + frame_padding;
-        const float confirm_width = ImGui::CalcTextSize(confirm_label.c_str()).x + frame_padding;
-        const float footer_width =
-            exit_width + ImGui::GetStyle().ItemSpacing.x + confirm_width;
-        ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(),
-            ImGui::GetWindowContentRegionMax().x - footer_width));
-        // A secondary button needs a fill of its own: the themed button ink is a
-        // dark low-alpha wash tuned for the shell's own veil, which the deep blur
-        // of this pane eats.
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.0f, 0.0f, 0.07f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.0f, 0.0f, 0.0f, 0.12f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.0f, 0.0f, 0.0f, 0.18f));
-        if (ImGui::Button(exit_label.c_str(), ImVec2(exit_width, button_height))) {
+        const float button_width = std::max({Scaled(160.0f),
+            ImGui::CalcTextSize(exit_label.c_str(), nullptr, true).x + frame_padding,
+            ImGui::CalcTextSize(confirm_label.c_str(), nullptr, true).x + frame_padding});
+        const ImVec2 button_size(button_width, button_height);
+        const float spacing = Scaled(20.0f);
+        const float footer_width = button_width * 2.0f + spacing;
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() +
+            std::max(0.0f, (ImGui::GetContentRegionAvail().x - footer_width) * 0.5f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, CapsuleRounding(button_size));
+        const auto notice_button = [&](const std::string& label, const bool primary) {
+            const auto& theme = ue5mem::PlatformUiTheme();
+            ImGui::PushStyleColor(ImGuiCol_Button,
+                primary ? AccentColor() : ImVec4(0.0f, 0.0f, 0.0f, 0.07f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                primary ? AccentColor() : ImVec4(0.0f, 0.0f, 0.0f, 0.12f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,
+                primary ? ThemeColor(theme.accent_active) : ImVec4(0.0f, 0.0f, 0.0f, 0.18f));
+            ImGui::PushStyleColor(ImGuiCol_Text, kClear);
+            const bool pressed = ImGui::Button(label.c_str(), button_size);
+            ImGui::PopStyleColor(4);
+            // Centre the visible glyphs rather than the font's ascent/descent box.
+            ImFont* const font = ImGui::GetFont();
+            const float font_size = ImGui::GetFontSize();
+            const float font_scale = font_size / font->FontSize;
+            const char* const text_end = ImGui::FindRenderedTextEnd(label.c_str());
+            ImVec2 ink_min(FLT_MAX, FLT_MAX), ink_max(-FLT_MAX, -FLT_MAX);
+            float advance = 0.0f;
+            for (const char* text = label.c_str(); text < text_end;) {
+                unsigned int codepoint{};
+                text += ImTextCharFromUtf8(&codepoint, text, text_end);
+                const ImFontGlyph* const glyph = font->FindGlyph(static_cast<ImWchar>(codepoint));
+                if (glyph->Visible) {
+                    ink_min.x = std::min(ink_min.x, advance + glyph->X0 * font_scale);
+                    ink_min.y = std::min(ink_min.y, glyph->Y0 * font_scale);
+                    ink_max.x = std::max(ink_max.x, advance + glyph->X1 * font_scale);
+                    ink_max.y = std::max(ink_max.y, glyph->Y1 * font_scale);
+                }
+                advance += glyph->AdvanceX * font_scale;
+            }
+            const ImVec2 min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
+            ImGui::GetWindowDrawList()->AddText(font, font_size,
+                ImVec2((min.x + max.x - ink_min.x - ink_max.x) * 0.5f,
+                    (min.y + max.y - ink_min.y - ink_max.y) * 0.5f),
+                ImGui::GetColorU32(primary ? ThemeColor(theme.inverse_text) : kNoticeInk),
+                label.c_str(), text_end);
+            return pressed;
+        };
+        if (notice_button(exit_label, false)) {
             notice_agreed_ = false;
             notice_popup_opened_ = false;
             ImGui::CloseCurrentPopup();
             CloseManagementShell();
         }
-        ImGui::PopStyleColor(3);
-        ImGui::SameLine();
+        ImGui::SameLine(0.0f, spacing);
         ImGui::BeginDisabled(!notice_agreed_);
-        if (PrimaryButton(confirm_label.c_str(), ImVec2(confirm_width, button_height))) {
+        if (notice_button(confirm_label, true)) {
             AcceptNotice();
             notice_popup_opened_ = false;
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndDisabled();
+        ImGui::PopStyleVar();
         if (footer_pushed) ImGui::PopFont();
         ImGui::PopStyleColor();
         ImGui::EndPopup();
